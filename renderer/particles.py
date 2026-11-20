@@ -78,6 +78,21 @@ A second instance throws the BULLET IMPACTS' sparks back off a wall (#141,
 tracers themselves are sprites of :class:`ParticleDraw` (their own instance,
 drawn after the units), packed by ``tracers.Tracers.pack``.
 
+THE SPRAY (the fifth consumer, :class:`SpraySystem`; water look arc #97
+W3, ``docs/water_look_design_2026-11-19.md``). Each new ``"blast"`` effect
+is consumed once (``"spray_seen"``) and throws ``rate x strength x`` the WET
+share of its walk's seeds of water droplets from those wet seeds -- a blast
+in a dry room throws none. A droplet's flight is ANALYTIC (critique minor:
+no integration): a straight ground track at its launch speed, clipped at the
+last open point before a wall, and a rise and fall ``z = g age (life - age)
+/ 2`` over ``life = 2 up / g`` (:func:`spray_height`), on the SIM clock; when
+it lands it is gone and its landing point is handed to the water's foam as
+ONE dab (``WaterPass.add_dabs``, a per-frame source list -- the flame's
+pack pattern, never a GPU readback). A round that stops at a wall beside the
+water throws a few back off it (:meth:`SpraySystem.splash`, at the tracers'
+impact). Drawn in the premultiplied lit ``"debris"`` stage
+(:func:`pack_spray`, their own albedo). ``[render.spray]`` holds every dial.
+
 NOT HERE: the renderer's ``_effects`` queue (tracers, explosion rings, hit
 splats) is LEGACY DISPLAY-SPACE EFFECTS, drawn after the resolve -- it is not
 a second particle system and is not migrated in G3 (design §6.1, minor 7).
@@ -1247,6 +1262,332 @@ class DebrisSystem:
 
 
 # ---------------------------------------------------------------------------
+# The spray (the fifth consumer) -- [render.spray]
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SpraySettings:
+    """Every ``[render.spray]`` dial (water look arc #97 W3; design
+    ``docs/water_look_design_2026-11-19.md`` W3 + critique minors). The
+    config is the live value and every key is required
+    (:func:`spray_settings_from_config` refuses)."""
+    enabled: bool
+    rate: float              # droplets per detonation at strength 1, x the wet share of its seeds
+    speed_mps: float         # horizontal launch speed, m/s
+    up_mps: float            # vertical launch speed, m/s (the flight is 2 up / g)
+    spread: float            # each speed x (1 +- spread x U(-1, 1))
+    size_tiles: float        # a droplet's half-width, tiles
+    albedo: tuple            # linear RGB under white light
+    alpha: float             # its opacity (premultiplied in the draw)
+    seed: int                # mixed with each blast's (tick0, pos)
+    cap: int                 # never more in the air at once
+    splash_drops: int        # droplets a round stopping at a wet wall throws
+    splash_speed_mps: float  # their horizontal speed, m/s
+    splash_up_mps: float     # their vertical speed, m/s
+
+
+_SPRAY_KINDS = {f.name: f.type for f in fields(SpraySettings)}
+G_MPS2 = 9.81            # the droplets' gravity
+SPRAY_PATH_SAMPLES = 16  # the wall test along a droplet's ground track
+SPLASH_HALF_ANGLE = math.radians(60.0)   # a splash leaves within this of the
+                                         # flight reversed
+
+
+def spray_config_keys() -> Tuple[str, ...]:
+    """Every key ``[render.spray]`` must carry."""
+    return tuple(_SPRAY_KINDS)
+
+
+def spray_settings_from_config(cfg) -> SpraySettings:
+    """``[render.spray]`` -> settings, read every frame. A REFUSING door
+    (the debris'): a missing section, a missing key or a mistyped value
+    raises ValueError naming it."""
+    sec = getattr(getattr(cfg, "render", None), "spray", None)
+    if sec is None:
+        raise ValueError("config.toml has no [render.spray] section")
+    vals = {}
+    for name, kind in _SPRAY_KINDS.items():
+        if not hasattr(sec, name):
+            raise ValueError(f"[render.spray] is missing {name!r}")
+        v = getattr(sec, name)
+        if kind in ("bool", bool):
+            ok = isinstance(v, bool)
+        elif kind in ("int", int):
+            ok = isinstance(v, int) and not isinstance(v, bool)
+        elif kind in ("tuple", tuple):
+            ok = (isinstance(v, (list, tuple)) and len(v) == 3
+                  and all(isinstance(c, (int, float))
+                          and not isinstance(c, bool) for c in v))
+            v = tuple(float(c) for c in v) if ok else v
+        else:
+            ok = isinstance(v, (int, float)) and not isinstance(v, bool)
+            v = float(v) if ok else v
+        if not ok:
+            raise ValueError(f"[render.spray] {name} has the wrong type: "
+                             f"{v!r}")
+        vals[name] = v
+    s = SpraySettings(**vals)
+    for name in ("size_tiles", "up_mps", "splash_up_mps"):
+        if getattr(s, name) <= 0.0:
+            raise ValueError(f"[render.spray] {name} must be > 0")
+    for name in ("rate", "speed_mps", "splash_speed_mps"):
+        if getattr(s, name) < 0.0:
+            raise ValueError(f"[render.spray] {name} must be >= 0")
+    if not 0.0 <= s.spread < 1.0:
+        raise ValueError("[render.spray] spread must be in [0, 1)")
+    if not 0.0 <= s.alpha <= 1.0:
+        raise ValueError("[render.spray] alpha must be in [0, 1]")
+    if not all(0.0 <= c <= 1.0 for c in s.albedo):
+        raise ValueError("[render.spray] albedo must be in [0, 1]")
+    if s.cap < 0 or s.splash_drops < 0:
+        raise ValueError("[render.spray] cap and splash_drops must be >= 0")
+    return s
+
+
+def spray_count(strength: float, rate: float, wet_share: float) -> int:
+    """How many droplets a detonation throws: ``round(rate x strength x
+    wet_share)`` -- the share of its walk's seeds that stand in water, so
+    a blast in a dry room throws none."""
+    return int(round(max(float(rate), 0.0) * max(float(strength), 0.0)
+                     * min(max(float(wet_share), 0.0), 1.0)))
+
+
+def spray_reach_tiles(speed_mps: float, up_mps: float, spread: float,
+                      tile_m: float) -> float:
+    """The farthest a droplet of these dials lands from where it left (the
+    ground track of the fastest, highest one), tiles: ``v_max x 2 up_max /
+    g`` over the tile."""
+    v = float(speed_mps) * (1.0 + float(spread))
+    up = float(up_mps) * (1.0 + float(spread))
+    return v * 2.0 * up / G_MPS2 / float(tile_m)
+
+
+def spray_height(age, life, g_tiles: float) -> np.ndarray:
+    """THE droplet's height (tiles) over the water at ``age`` of a flight of
+    ``life`` s: the analytic rise and fall ``z = g age (life - age) / 2``,
+    0 at launch and at landing, highest at mid-flight."""
+    a = np.asarray(age, np.float64)
+    return 0.5 * float(g_tiles) * a * (np.asarray(life, np.float64) - a)
+
+
+def _clip_to_open(x0, y0, vx, vy, life, blocked: Optional[np.ndarray]):
+    """Shorten each droplet's ground track so it lands at its last OPEN
+    sample before a wall (it falls down the wall face): the horizontal
+    velocity is scaled, the flight time kept."""
+    if blocked is None or x0.size == 0:
+        return vx, vy
+    h, w = blocked.shape
+    f = np.ones_like(x0)
+    for k in range(1, SPRAY_PATH_SAMPLES + 1):
+        u = k / SPRAY_PATH_SAMPLES
+        px = x0 + vx * life * u
+        py = y0 + vy * life * u
+        ix = np.floor(px).astype(np.int64)
+        iy = np.floor(py).astype(np.int64)
+        inside = (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
+        hit = ~inside | blocked[np.clip(iy, 0, h - 1), np.clip(ix, 0, w - 1)]
+        f = np.where(hit & (f >= 1.0), (k - 1) / SPRAY_PATH_SAMPLES, f)
+    return vx * f, vy * f
+
+
+def spray_spawns(n: int, points, settings: SpraySettings,
+                 rng: np.random.Generator, tile_m: float,
+                 blocked: Optional[np.ndarray] = None, *,
+                 speed_mps: Optional[float] = None,
+                 up_mps: Optional[float] = None,
+                 heading: Optional[Tuple[float, float]] = None,
+                 half_angle: float = math.pi) -> dict:
+    """``n`` droplets leaving ``points`` ((k, 2) x, y tiles; one each,
+    uniformly), at ``speed_mps`` / ``up_mps`` (default the dials) x (1 +-
+    spread x U), in a direction uniform within ``half_angle`` of
+    ``heading`` (default: every direction). The flight is ANALYTIC: a
+    droplet's ``life`` is ``2 up / g``, its ground track straight at
+    ``(vx, vy)`` tiles/s and clipped to the last open point before a wall
+    (:func:`_clip_to_open`). Its launch point is kept in the ``t0`` (x) and
+    ``temp`` (y) columns. Returns arrays x, y, vx, vy, t0, temp, life."""
+    pts = np.asarray(points, np.float64).reshape(-1, 2)
+    if n <= 0 or pts.shape[0] == 0:
+        return {k: np.zeros(0) for k in _SPAWN_KEYS + ("temp",)}
+    sp = settings.speed_mps if speed_mps is None else float(speed_mps)
+    up = settings.up_mps if up_mps is None else float(up_mps)
+    u = rng.random((4, int(n)))                  # point, angle, speed, up
+    idx = np.minimum((u[0] * pts.shape[0]).astype(np.int64),
+                     pts.shape[0] - 1)
+    base = 0.0 if heading is None else math.atan2(heading[1], heading[0])
+    ang = base + (2.0 * u[1] - 1.0) * float(half_angle)
+    v = sp * (1.0 + settings.spread * (2.0 * u[2] - 1.0)) / float(tile_m)
+    vz = up * (1.0 + settings.spread * (2.0 * u[3] - 1.0))
+    life = 2.0 * vz / G_MPS2
+    x0, y0 = pts[idx, 0], pts[idx, 1]
+    vx, vy = _clip_to_open(x0, y0, np.cos(ang) * v, np.sin(ang) * v, life,
+                           blocked)
+    return dict(x=x0.copy(), y=y0.copy(), vx=vx, vy=vy, t0=x0, temp=y0,
+                life=life)
+
+
+def step_spray(p: Particles, dt: float) -> np.ndarray:
+    """Advance every droplet ``dt`` s along its analytic flight (``x = x0
+    + vx age``); a droplet whose age reaches its life LANDS: it is removed
+    and its landing point -- ``x0 + vx life`` exactly -- returned ((k, 2)
+    tiles), one row per droplet. Nothing outlives its life."""
+    if p.n == 0 or dt <= 0.0:
+        return np.zeros((0, 2))
+    d = p.d
+    d[:, AGE] += dt
+    land = d[:, AGE] >= d[:, LIFE]
+    a = np.minimum(d[:, AGE], d[:, LIFE])
+    d[:, X] = d[:, T0] + d[:, VX] * a
+    d[:, Y] = d[:, TEMP] + d[:, VY] * a
+    out = d[land][:, X:Y + 1].copy()
+    if land.any():
+        p.keep(~land)
+    return out
+
+
+def pack_spray(p: Particles, view, px_per_tile: float,
+               settings: SpraySettings) -> np.ndarray:
+    """The droplets in ``view`` ((x0, y0, x1, y1) tiles, None = all) ->
+    ``(2, k, 4)`` float32 in the debris stage's layout (row 0 = x, y world
+    px, rotation 0, half-width px; row 1 = opacity)."""
+    d = p.d
+    if view is not None and p.n:
+        vx0, vy0, vx1, vy1 = view
+        x, y = d[:, X], d[:, Y]
+        d = d[(x >= vx0 - 1.0) & (x <= vx1 + 1.0)
+              & (y >= vy0 - 1.0) & (y <= vy1 + 1.0)]
+    k = int(d.shape[0])
+    out = np.zeros((2, k, 4), np.float32)
+    if k == 0:
+        return out
+    ppt = float(px_per_tile)
+    out[0, :, 0] = d[:, X] * ppt
+    out[0, :, 1] = d[:, Y] * ppt
+    out[0, :, 3] = settings.size_tiles * ppt
+    out[1, :, 0] = settings.alpha
+    return out
+
+
+class SpraySystem:
+    """The droplets' CPU side (#97 W3, the particle primitive's FIFTH
+    consumer): per frame :meth:`update` steps the droplets in the air on the
+    SIM clock and collects the ones that LAND (``landings_last_frame``: one
+    row per droplet, the foam's dabs), then consumes every new ``"blast"``
+    effect ONCE (``"spray_seen"``; never another consumer's flag) and throws
+    ``rate x strength x wet share`` droplets from its walk's WET seeds;
+    :meth:`splash` throws a few back off a wall a round stopped at beside
+    the water. Pure numpy (no GL, no sim import: the seeds, the depth and
+    the walls come in as arguments)."""
+
+    def __init__(self, settings: SpraySettings):
+        self.settings = settings
+        self.p = Particles(settings.cap)
+        self.enabled_override: Optional[bool] = None
+        self._t_prev: Optional[float] = None
+        self.spawned_last_frame = 0
+        self.landings_last_frame = np.zeros((0, 2))
+        self.last_update_ms = 0.0
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.enabled_override if self.enabled_override is not None
+                    else self.settings.enabled)
+
+    def refresh_settings(self, settings: SpraySettings) -> None:
+        if settings.cap != self.p.cap:
+            self.p.set_cap(settings.cap)
+        self.settings = settings
+        if not self.enabled:
+            self.p.clear()
+
+    def _add(self, new: dict, salt: int) -> int:
+        if new["x"].size == 0:
+            return 0
+        room = max(self.p.cap - self.p.n, 0)
+        if new["x"].size > room:                  # a fair subset, not the first
+            rng = np.random.default_rng([int(self.settings.seed) & 0xFFFFFFFF,
+                                         int(salt) & 0xFFFFFFFF])
+            keep = np.sort(rng.permutation(new["x"].size)[:room])
+            new = {k_: v_[keep] for k_, v_ in new.items()}
+        return self.p.add(**new)
+
+    def consume(self, effects, seeds_fn: Callable, sim_tick: int,
+                depth: Optional[np.ndarray], tile_m: float,
+                blocked: Optional[np.ndarray] = None) -> dict:
+        """Mark every new ``"blast"`` effect ``"spray_seen"`` and return the
+        droplets it throws (none while disabled or on a dry map).
+        ``seeds_fn(fy, fx, approach)`` is the blast walk's seed rule;
+        ``depth`` the packed per-tile water depth (m; None = dry)."""
+        s = self.settings
+        keys_all = _SPAWN_KEYS + ("temp",)
+        out = []
+        for fx in effects:
+            if fx.get("kind") != "blast" or fx.get("spray_seen"):
+                continue
+            fx["spray_seen"] = True
+            if not self.enabled or depth is None:
+                continue
+            pos = fx["pos"]
+            seeds = list(seeds_fn(int(pos[1]), int(pos[0]),
+                                  fx.get("approach")) or ())
+            if not seeds:
+                continue
+            h, w = depth.shape
+            wet = [(int(sy), int(sx)) for sy, sx in seeds
+                   if 0 <= sy < h and 0 <= sx < w and depth[sy, sx] > 0.0]
+            n = spray_count(fx.get("strength", 0.0), s.rate,
+                            len(wet) / len(seeds))
+            if n == 0:
+                continue
+            tick0 = fx.get("tick0", sim_tick)
+            rng = spark_rng(s.seed, tick0, pos)
+            pts = np.array([(sx + 0.5, sy + 0.5) for sy, sx in wet])
+            out.append(spray_spawns(n, pts, s, rng, tile_m, blocked))
+        if not out:
+            return {k: np.zeros(0) for k in keys_all}
+        return {k: np.concatenate([o[k] for o in out]) for k in keys_all}
+
+    def splash(self, x: float, y: float, dir_x: float, dir_y: float,
+               tile_m: float, rng: np.random.Generator,
+               blocked: Optional[np.ndarray] = None) -> int:
+        """A round stopped at a wall beside the water (``tracers``' impact:
+        where, the direction back along its flight): throw
+        ``splash_drops`` droplets back off the wall within
+        :data:`SPLASH_HALF_ANGLE`. Returns how many were added."""
+        s = self.settings
+        if not self.enabled or s.splash_drops <= 0:
+            return 0
+        new = spray_spawns(s.splash_drops, [(x, y)], s, rng, tile_m, blocked,
+                           speed_mps=s.splash_speed_mps,
+                           up_mps=s.splash_up_mps, heading=(dir_x, dir_y),
+                           half_angle=SPLASH_HALF_ANGLE)
+        k = self._add(new, int(x * 977) ^ int(y * 131))
+        self.spawned_last_frame += k
+        return k
+
+    def update(self, *, t: float, effects, seeds_fn: Callable,
+               sim_tick: int, depth: Optional[np.ndarray], tile_m: float,
+               blocked: Optional[np.ndarray] = None) -> np.ndarray:
+        """One frame at SIM time ``t`` (monotone; holds while paused): step
+        the droplets in the air, collect the LANDINGS (returned and kept in
+        :attr:`landings_last_frame`: one row per droplet that came down this
+        frame, splashes' included), then add the new blasts' droplets, born
+        at ``t``."""
+        t0w = time.perf_counter()
+        self.spawned_last_frame = 0
+        dt = 0.0 if self._t_prev is None else max(float(t) - self._t_prev, 0.0)
+        self._t_prev = float(t)
+        if not self.enabled:
+            self.p.clear()
+        land = step_spray(self.p, dt)
+        self.landings_last_frame = land
+        new = self.consume(effects, seeds_fn, sim_tick, depth, tile_m,
+                           blocked)
+        self.spawned_last_frame += self._add(new, sim_tick)
+        self.last_update_ms = (time.perf_counter() - t0w) * 1000.0
+        return land
+
+
+# ---------------------------------------------------------------------------
 # The GL face
 # ---------------------------------------------------------------------------
 
@@ -1539,4 +1880,7 @@ __all__ = [
     "debris_count", "debris_keys", "debris_spawns", "integrate_debris",
     "debris_weight", "pack_debris", "DebrisSystem", "DEBRIS_MAX_HOP",
     "DEBRIS_DENSITY_MAX", "DEBRIS_STAGE", "debris_shader_sources",
+    "SpraySettings", "spray_settings_from_config", "spray_config_keys",
+    "spray_count", "spray_reach_tiles", "spray_height", "spray_spawns",
+    "step_spray", "pack_spray", "SpraySystem", "G_MPS2",
 ]

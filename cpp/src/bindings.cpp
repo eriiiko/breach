@@ -652,6 +652,19 @@ PYBIND11_MODULE(breach_physics, m) {
           },
           "#29 P4a: how many times each resident tail stage ran (and did "
           "work) in this process.");
+    m.def("resident_tail_defer", [](bool on) { breach_cuda::resident_tail_defer(on); },
+          py::arg("on"),
+          "#29 P7e.5 (Class T): defer the resident tail's fold (no 'books' sync); "
+          "resident_tail_finish folds after the conductor's one books read.");
+    m.def("resident_tail_pending", []() { return breach_cuda::resident_tail_pending(); });
+    m.def("resident_tail_finish", []() {
+              std::vector<std::vector<int32_t>> rows = breach_cuda::resident_tail_finish();
+              py::list per_env;
+              for (const auto& r : rows) per_env.append(swarm_rows_array(r));
+              return per_env;
+          },
+          "#29 P7e.5: the deferred fold (every env's books into its engine); returns "
+          "each env's swarm death rows.");
     m.def("resident_burn_list", []() {
               std::uintptr_t c = 0, l = 0;
               int n = 0, h = 0, w = 0;
@@ -1166,6 +1179,17 @@ PYBIND11_MODULE(breach_physics, m) {
                                                  (long long)e.n));
                   return py::make_tuple(words, rows);
               }, "#29 P7e.4: THE ONE READ: (words, [(label, kind, offset, n)]).");
+        // #29 P7e.5: THE PROFILE (cuda_unit_books.h; the bench's instrument).
+        m.def("conductor_profile_begin", []() { breach_cuda::profile_begin(); });
+        m.def("conductor_profile_mark",
+              [](const std::string& s) { breach_cuda::profile_mark(s.c_str()); },
+              py::arg("label"));
+        m.def("conductor_profile_end", []() {
+                  py::list out;
+                  for (const auto& s : breach_cuda::profile_end())
+                      out.append(py::make_tuple(s.label, s.gpu_ms, s.host_ms));
+                  return out;
+              }, "#29 P7e.5: [(label, gpu ms, host ms)] between consecutive marks.");
         m.def("host_sync_log_begin", []() { breach_cuda::host_sync_log_begin(); });
         m.def("host_sync_log_end", []() { return breach_cuda::host_sync_log_end(); });
         m.def("unit_verbs_tables",
@@ -6693,6 +6717,11 @@ PYBIND11_MODULE(breach_physics, m) {
                 {N, swarm::ENV_WORDS}, false));
             a.swarm_species = sps.data();
             a.n_swarm_species = (int)sps.size();
+            // #29 P7e.5: the device conductor's tick row (its launch words'
+            // tick and key, written on the device); absent: the host's env.
+            if (sw.contains("tick_row") && !sw["tick_row"].is_none())
+                a.swarm_tick_row = reinterpret_cast<const int64_t*>(
+                    sw["tick_row"].cast<std::uintptr_t>());
             // arc #63 P5a: the device bite plane's address (the batch's buffer).
             a.swarm_bite = sw["bite"].cast<std::uintptr_t>();
             if (a.swarm_bite == 0)

@@ -29,4 +29,9 @@ unchanged and still embedded verbatim); 2026-10-27 (#114, the light's shape as s
 the diffuse term is the wrapped Lambert `max(0, (N.L + w)/(1 + w))`, w 1 = the old half-Lambert,
 and the balanced share's weight wraps alike -- with `u_light_z` now set per frame from
 `[render.unit_shading] light_height` / `wrap`); 2026-11-07 (#64 graphics G5, the light curve: `_COMMON_GLSL` carries
-`_LIGHT_CURVE_GLSL`, the marine scales its body light by one curve factor).
+`_LIGHT_CURVE_GLSL`, the marine scales its body light by one curve factor); 2026-11-20 (#97 water W3, the
+waterline: `_COMMON_GLSL` carries `_WATERLINE_GLSL`, the one copy of the
+`waterlineTint` function and its uniforms, and the marine's `main()` calls it last; a
+SOURCE-text change only -- with no water (`u_waterline.x` 0), a dry tile or a fragment
+above the surface it returns `lit` untouched, and `tests/gl_water_things_check.py` holds the
+dry body's pixels bit-identical to this oracle's previous shader).

@@ -1216,7 +1216,7 @@ def _env_words(draws_list) -> np.ndarray:
     return env
 
 
-def engine_args(gmaps, draws_list, sim_time, *, resident: bool) -> dict:
+def engine_args(gmaps, draws_list, sim_time, *, resident: bool, tick_row=None) -> dict:
     """The keyword arguments of ONE swarm step over the batch ``gmaps`` (env
     order; one map on the host path).
 
@@ -1230,7 +1230,12 @@ def engine_args(gmaps, draws_list, sim_time, *, resident: bool) -> dict:
     reachable only if the tick length or tile size changed after load) and
     the table rows are packed with their proved ranges (``ValueError``
     naming species, row and value). A present swarm whose runner has no
-    bound draws raises ``ValueError``. A dormant species packs zero rows."""
+    bound draws raises ``ValueError``. A dormant species packs zero rows.
+
+    ``tick_row`` (#29 P7e.5, resident only: the device conductor): the
+    device address of the conductor's TICK ROW; the launch words' tick and
+    key are then written ON THE DEVICE from it (``swarm.cu``), so the env
+    words packed here are zeros and no draws are read."""
     from simulation import swarm_tables     # swarm_tables imports this module
     gmaps = list(gmaps)
     draws_list = list(draws_list)
@@ -1239,10 +1244,12 @@ def engine_args(gmaps, draws_list, sim_time, *, resident: bool) -> dict:
         raise ValueError("swarm.engine_args: one draws handle per map, at least one map")
     if not resident and n != 1:
         raise ValueError("swarm.engine_args: the host path steps ONE map")
+    if tick_row is not None and not resident:
+        raise ValueError("swarm.engine_args: a device tick row is the resident path's")
     hws = {sp: np.array([int(getattr(g, high_water_attr(sp))) for g in gmaps],
                         dtype=np.int32) for sp in SWARM_SPECIES}
     present = {sp: bool((hw > 0).any()) for sp, hw in hws.items()}
-    env = (_env_words(draws_list) if any(present.values())
+    env = (_env_words(draws_list) if any(present.values()) and tick_row is None
            else np.zeros((n, ENV_WORDS), dtype=np.uint32))
     dev = gmaps[0].device_ptrs() if resident else None
     packs = []
@@ -1271,7 +1278,8 @@ def engine_args(gmaps, draws_list, sim_time, *, resident: bool) -> dict:
                 high_water=hws[sp], tables=tables))
     if resident:
         return {"packs": packs, "env": env, "bite": int(dev[BITE_PLANE_ATTR]),
-                "count": int(dev[COUNT_PLANE_ATTR])}
+                "count": int(dev[COUNT_PLANE_ATTR]),
+                "tick_row": None if tick_row is None else int(tick_row)}
     g = gmaps[0]
     bite = bite_plane(g)
     count = count_plane(g)

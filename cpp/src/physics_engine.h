@@ -112,6 +112,10 @@ struct ResidentTickArgs {
     const swarm::ResidentSpecies* swarm_species = nullptr;
     int n_swarm_species = 0;
     const uint32_t* swarm_env = nullptr;    // (N, swarm::ENV_WORDS)
+    // #29 P7e.5 (Class T): the device conductor's tick row ((N, TICK_ROW_W)
+    // int64, device): given, the launch words' tick and key are the row's,
+    // written on the device (swarm_env's tick / key words are not read).
+    const int64_t* swarm_tick_row = nullptr;
     // arc #63 P5a: the device bite plane (N, h, w) int32 the stage rebuilds.
     std::uintptr_t swarm_bite = 0;
     // arc #63 P5b: the device count plane (N, h, w) int32, likewise.

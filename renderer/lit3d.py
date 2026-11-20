@@ -142,11 +142,42 @@ vec3 lightCurveAlbedo(vec3 albedo, vec3 curved_light) {
 }
 """
 
+# Water look arc #97 W3 (critique M12): THE WATERLINE, the one copy every
+# lit-3D body that stands in water runs (the units and what they hold, the
+# props; called at the end of their main()). Spec and twin:
+# renderer/water_surface.py ``waterline_tint``. A fragment at WORLD height y
+# (world px over the floor, / u_waterline.y px per metre: the consumer's own
+# drawn scale) below the water standing ``depth`` m deep on its tile (the
+# water pass's own per-tile texture, B = depth, read at the fragment's foot
+# point as the water pass reads it) is seen through the column above it by
+# the water pass's own law for the floor: the Beer-Lambert fade toward
+# water_color and the alpha ramp, with the same [graphics.water] dials. In
+# world height, per fragment, so it holds when the camera tilts (Erik,
+# 2026-11-20). u_waterline.x 0 (no water: the default of an unset uniform),
+# a dry tile or a fragment above the surface return ``lit`` untouched.
+_WATERLINE_GLSL = """
+uniform sampler2D u_waterline_tex; // the water pass's u_water: B = depth, m
+uniform vec4  u_waterline;   // (strength, px per metre, fog_density, height_edge)
+uniform vec4  u_waterline2;  // (alpha_scale, alpha_min, alpha_max, 0)
+uniform vec3  u_waterline_color;  // water_color: the volume colour at depth
+vec3 waterlineTint(vec3 lit, vec3 world_pos, vec2 world_uv) {
+    if (u_waterline.x <= 0.0) return lit;
+    float depth = texture(u_waterline_tex, world_uv).b;
+    float col = depth - world_pos.y / u_waterline.y;
+    if (col <= 0.0) return lit;
+    float fog = exp2(-u_waterline.z * col);
+    float a = clamp(col * u_waterline2.x, u_waterline2.y, u_waterline2.z)
+            * smoothstep(0.0, max(u_waterline.w, 1e-4), col) * u_waterline.x;
+    vec3 vol = u_waterline_color + (lit - u_waterline_color) * fog;
+    return lit + (vol - lit) * a;
+}
+"""
+
 _COMMON_GLSL = """
 // Cheap sRGB -> linear (gamma 2.2), matching shaders/lighting.fs. Output stays
 // linear HDR: WorldComposite.resolve() tone-maps and encodes, once.
 vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
-""" + _SMOKE_SHADOW_GLSL + _LIGHT_CURVE_GLSL
+""" + _SMOKE_SHADOW_GLSL + _LIGHT_CURVE_GLSL + _WATERLINE_GLSL
 
 
 # The light-field SAMPLE + unpack block, shared verbatim by every 3D consumer's
@@ -211,6 +242,10 @@ class LightFieldCtx:
     # Graphics G5: the light curve's uniforms (LightingPass.curve_uniforms);
     # None = off.
     curve: object = None
+    # #97 W3: the waterline (WaterPass.waterline_inputs: the water texture
+    # and the water's own dials); None = no water on the map, the waterline
+    # is off and nothing is sampled.
+    waterline: object = None
 
 
 def set_light_curve_uniforms(shader, curve) -> None:
@@ -266,6 +301,38 @@ def bind_smoke_cover_map(shader, materials, ctx: "LightFieldCtx") -> None:
     set_smoke_shadow_uniforms(shader, ctx.smoke_grid, cast, ctx.smoke_cast2)
 
 
+def bind_waterline_map(shader, materials, ctx: "LightFieldCtx",
+                       px_per_m: float) -> None:
+    """Wire the waterline (:data:`_WATERLINE_GLSL`, #97 W3) into a lit-3D
+    consumer: the water pass's per-tile texture on the EMISSION material-map
+    slot (unit 5, a free slot: albedo 0, light textures 1/2, normal map 3,
+    smoke cover 4), so DrawMesh binds it every draw, plus the uniforms --
+    ``px_per_m`` the consumer's own drawn scale (world px per metre of its
+    model). With no water (``ctx.waterline`` None) the strength goes to 0
+    and nothing is sampled: the fragment is untouched, bit for bit."""
+    MM = rl.MaterialMapIndex
+    shader.locs[rl.ShaderLocationIndex.SHADER_LOC_MAP_EMISSION] =         rl.get_shader_location(shader, "u_waterline_tex")
+    wl = ctx.waterline
+    if wl is None:
+        vals = (("u_waterline", (0.0, 1.0, 0.0, 0.0)),)
+    else:
+        tex, a, b, color = wl
+        for mat in materials:
+            mat.maps[MM.MATERIAL_MAP_EMISSION].texture = tex
+        vals = (("u_waterline", (a[0], float(px_per_m), a[1], a[2])),
+                ("u_waterline2", tuple(b)),
+                ("u_waterline_color", tuple(color)))
+    kinds = {3: rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3,
+             4: rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4}
+    for name, v in vals:
+        loc = rl.get_shader_location(shader, name)
+        if loc >= 0:
+            rl.set_shader_value(shader, loc,
+                                rl.ffi.new(f"float[{len(v)}]",
+                                           [float(x) for x in v]),
+                                kinds[len(v)])
+
+
 # Top-down camera height above the floor, in world px. Ortho => this does NOT
 # affect on-screen size, only near/far framing. It MUST stay below raylib's
 # orthographic far-clip (empirically < ~5000 in this build), so it CANNOT scale
@@ -301,4 +368,5 @@ def make_camera(world_px_w: int, world_px_h: int) -> rl.Camera3D:
 __all__ = ["LightFieldCtx", "make_camera", "_COMMON_GLSL",
            "_FIELD_SAMPLE_GLSL", "_SMOKE_SHADOW_GLSL", "_CAM_HEIGHT",
            "set_smoke_shadow_uniforms", "bind_smoke_cover_map",
-           "_LIGHT_CURVE_GLSL", "set_light_curve_uniforms"]
+           "_LIGHT_CURVE_GLSL", "set_light_curve_uniforms",
+           "_WATERLINE_GLSL", "bind_waterline_map"]

@@ -808,25 +808,37 @@ note = "arc #63 larva bodies: the whole studio fitted -- the two broods read as 
 [[shot]]
 name = "still_pool_flashlight"
 level = "water_studio"
-frames = 180
+frames = 240
 center = [21.0, 16.0]
 zoom = 38.0
 lamps = false
 beacon = false
 flashlight = { pos = [6.5, 15.5], intensity = 2.5, spread = 0.8 }
 light_gain = "game"
-note = "the whole pool hall (30 x 20, 0.30 m) at 7.5 s, before its first blast (8 s): lamps off, a flashlight from the west wall across the still water; the crate stack (NE) burning since 0.5 s. W1 judges one clean reflection here, not a pattern; W4 the net of light under the beam. The hall's SW corner is the octopus's, kept empty."
+note = "the whole pool hall (30 x 20, 0.30 m) at 10 s, 2 s after its first blast (8 s; W4 moved the frame from 7.5 s): lamps off, a flashlight from the west wall across the water; the crate stack (NE) burning since 0.5 s, the blast's smoke drifting. W1 judges the calm surface here; W4 the net of light under the beam and the firelight, none in the dark. The blast agitates only the few tiles around its charge (18, 14), for about a second, under its fireball and smoke: the net in the beam is the still water's. The hall's SW corner is the octopus's, kept empty."
+
+[[shot]]
+name = "still_pool_closeup"
+level = "water_studio"
+frames = 240
+center = [11.0, 15.5]
+zoom = 144.0
+lamps = false
+beacon = false
+flashlight = { pos = [6.5, 15.5], intensity = 2.5, spread = 0.8 }
+light_gain = "game"
+note = "still_pool_flashlight's beam up close (W1b, 2026-11-20): about 11 x 6 tiles (3.7 x 2 m) of still water east of the flashlight at 10 s, 3x the world RT's 48 px per tile (so the picture is magnified, as any close zoom is). Judges the crispness of the wave crests and the caustic net."
 
 [[shot]]
 name = "flooding_corridor"
 level = "water_studio"
 frames = 132
-center = [30.0, 34.0]
+center = [30.0, 28.5]
 zoom = 30.0
 lamps = true
 beacon = false
 light_gain = "game"
-note = "the dam 2.5 s after its gate was blown (3 s): the tank's 1.20 m of water running the 5 x 50 corridor, its front about a third of the way down (tests/test_water_studio.py holds that it is still moving here). W1: the surface streams, no tile grid; W2: foam at the front and along the walls."
+note = "the dam 2.5 s after its gate was blown (3 s): the tank's 1.20 m of water running the 5 x 50 corridor, its front about a third of the way down (tests/test_water_studio.py holds that it is still moving here). W1: the surface streams, no tile grid; W2: foam at the front and along the walls; the Corridor marine (a [[spawn]] row) stands in the front."
 
 [[shot]]
 name = "wade_by_firelight"
@@ -838,3 +850,15 @@ lamps = false
 beacon = false
 light_gain = "game"
 note = "the wading room (24 x 18, 0.15 m) at 12.5 s, lamps off: the marine Wader standing still in the water south-east of the stove (a 2 x 2 steel block its heat sources hold at orange heat), the wood wall west of it and the fuel pile east. W3's waterline and wake are judged here."
+
+[[shot]]
+name = "pool_blast_spray"
+level = "water_studio"
+frames = 206
+hide = ["flash", "heat", "flame", "smoke", "sparks", "debris"]
+center = [18.5, 14.5]
+zoom = 56.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "W3's SPRAY, isolated: the pool hall's first blast (the wave charge at (18, 14), 8 s) 0.58 s on (8.58 s), lamps off, the blast's flash light, heat glow, flame, smoke, sparks and debris hidden. ~90 droplets left the walk's wet seeds (rate 30 x strength 3 x wet share 1), rising and falling on the sim clock and lit by the blast's own light (warm); ~45 are still in the air here and the landed ones have left foam dabs on the water round the charge. Before / after: the same row with spray hidden."

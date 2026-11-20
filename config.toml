@@ -1376,14 +1376,6 @@ camera_mode = "centred"           # how the view follows the possessed marine un
                                   # (renderer/follow_camera.py CAMERA_MODES; "player_up" is the G1p-b
                                   # spike, not built). Refused when it names no mode.
 
-# Water overlay v2 look knobs (water W6b; canon engine/07 §6 — the tasteful
-# placeholder, not the shipped optics pass). RENDER-ONLY and RESTART-BOUND:
-# GameRenderer binds them once at construction (the water_display_max
-# precedent); Ctrl+R re-reads config.toml but does NOT re-bind overlays —
-# restart the game to apply. Erik's eyeball-tuning dials.
-water_ripple_shade = 0.35   # ripple-slope brightness gain: full +/-35% of the tint at slope 0.05 m/tile (fresh splash)
-water_foam_thresh = 0.03    # |grad ripple| (m/tile) above which foam whitens; splash slope ~0.075 foams, settled ~0 never
-water_ambient_base = 0.06   # idle ambient-sine shimmer amplitude on standing water; grows with local ripple energy, cap 0.40
 
 # Diagnostic views (render-only, never read by the sim; Ctrl+R live).
 [debug]
@@ -1421,13 +1413,12 @@ full_speed = "A"
 plant_charge = "X"       # #193: plant the C4 at the feet with the selected timer
 cycle_charge_timer = "5" # #193: step the timer 5 -> 10 -> ... -> 60 -> 5 s
 
-# Water surface OPTICS pass (graphics/water_rendering.md §2/§4/§7 — the shipped
-# GLSL Fresnel/GGX/refraction look, NOT the CPU placeholder above). RENDER-ONLY
-# and RESTART-BOUND: WaterPass binds these once at construction; Ctrl+R re-reads
-# config.toml but does NOT re-push them (the renderer-render-params precedent —
-# restart to apply). Erik's eyeball-tuning dials. The pass is DORMANT-SAFE: with
-# no standing water it outputs alpha 0 (identical render), so these only bite
-# once water is on the floor. v1 CORE only — caustics/foam/CA are a later step.
+# Water surface OPTICS pass (graphics/water_rendering.md §2/§4/§7; the water
+# look arc #97) -- the shipped GLSL Fresnel/GGX/refraction look. RENDER-ONLY.
+# Every key passes ONE refusing door, renderer/water_surface.py::water_settings,
+# read EVERY FRAME (Ctrl+R retunes live; a missing or mistyped key is refused
+# by name). Erik's eyeball-tuning dials. A dry map costs nothing and draws
+# nothing, so these only bite once water is on the floor.
 [graphics.water]
 roughness_base = 0.08       # GGX roughness floor — still puddles glint sharp (alpha = roughness^2)
 roughness_agitation = 0.6   # added roughness per unit local ripple energy — sloshing water shimmers broad
@@ -1452,37 +1443,37 @@ glint_strength = 2.0
 alpha_scale = 6.0
 alpha_min = 0.15
 alpha_max = 0.95
-# --- Phase 2 (mood pass): caustics / foam / chromatic aberration / waves ---
-# Caustics (§3): focused light dancing on the flooded floor under a flashlight.
-# caustic = max(+laplacian(ripple), 0) * caustic_strength * lightRGB, ADDED
-# into the refracted floor term (rides the floor, × alpha). SIGN load-bearing:
-# +laplacian focuses (bright in dips); -div(N) ≡ same; +div(N) would invert it.
-# caustic_scale > 0 layers a touch of high-frequency procedural detail (× the
-# surface energy) for crispness; 0 = pure surface curvature.
-caustic_strength = 2.5
-caustic_scale = 6.0
-# Foam (port of overlays.py:261-277): white whitecaps where |grad ripple| >
-# foam_threshold + the wet/dry shoreline (high depth gradient). Composited LAST
-# into the base (surface scatter, alpha-bound — NOT additive). foam_intensity
-# scales the whiteness; foam_threshold is the steepness/edge above which foam
-# starts (lower = more foam).
-foam_threshold = 0.02
-foam_intensity = 0.6
+# --- Sharp caustics (water W4, #97; renderer/water_surface.py caustic_*) ---
+# The net of light on a flooded floor, from the fine surface's CURVATURE by
+# Wallace's area method (analytic Jacobian of the refraction map, gather):
+# caustic = floor light x (min(1/|det J|, caustic_max) - 1) x caustic_strength,
+# det J = 1 + a tr(H) + a^2 det(H), a = depth x (1 - 1/1.333). SIGNED: it
+# darkens the floor where the surface spreads the light, brightens it where
+# it focuses; no light, no caustic; depth enters only through a. It replaced
+# the Laplacian caustic and its procedural detail (caustic_scale, deleted).
+# Starting values (W4's builder); Erik tunes on levels/water_studio
+# (still_pool_flashlight).
+caustic_strength = 1.0         # 1 = the area method's own contrast; 0 = off
+caustic_max = 3.0              # the most a focus multiplies the light (> 1): the bright lines' cap
 # Chromatic aberration (subtle polish): floor refraction r/g/b sampled at
 # offsets scaled 1 ± ca_amount per channel. Tiny — a barely-there prismatic
 # fringe. 0 = off (single sample).
 ca_amount = 0.012
-# --- The fine surface that flows (water W1, #97; renderer/water_surface.py) ---
-# A repeating texture of fine wave SLOPES laid on the water in METRES (not
-# tiles) and carried by the simulated flow (Vlachos's two-phase flow map),
-# every lookup hex-tiled so it never repeats. It replaced the ambient sines
-# and their wave_scale / ambient_amp. Starting values (W1's builder); Erik
-# tunes by eye on levels/water_studio (shots still_pool_flashlight,
-# flooding_corridor).
-detail_wavelength_m = 0.12     # the dominant fine wave's length, metres
-detail_strength_still = 0.03   # RMS slope of still water (a faint wobble of the floor seen through it)
-detail_strength_flow = 0.3     # RMS slope at full flow / agitation (sparse sparkles under a lamp)
-detail_drift_mps = 0.03        # still water's slow uniform drift, m/s
+# --- The fine surface that flows (water W1 + W1b, #97; renderer/water_surface.py) ---
+# PROCEDURAL travelling sines (W1b, after Erik: "sines in x and y morph
+# differently all the time"), in two layers through one law -- the fine
+# RIPPLES (detail_*, wave_count) and the longer SWELL (swell_*): sharpened
+# sines (Finch's exponent), every one its own direction, wavelength
+# (incommensurate) and phase, running at water's own dispersion speed, so
+# the pattern morphs; a hex lattice of wave_cell_m turns and shifts the sets
+# per cell so no patch repeats; evaluated at the point the simulated flow
+# advected (Vlachos's two-phase flow map). Starting values (W1b's builder);
+# Erik tunes by eye on levels/water_studio (shots still_pool_flashlight,
+# still_pool_closeup, flooding_corridor).
+detail_wavelength_m = 0.12     # the ripples' dominant wavelength, metres (the band 0.6..1.6 x it)
+detail_strength_still = 0.05   # the ripples' RMS slope on still water
+detail_strength_flow = 0.3     # ... at full flow / agitation
+detail_drift_mps = 0.03        # the foam bubbles' slow drift on still water, m/s (the waves run by dispersion)
 detail_zoom_zero = 6.0         # screen px per tile at and below which the fine surface is off
 detail_zoom_full = 14.0        # ... and from which it is at full strength
 flow_cycle_s = 0.6             # the flow map's cycle: each layer resets this often
@@ -1490,8 +1481,57 @@ flow_speed_ref = 1.0           # flow speed (m/s) at which the strength saturate
 flow_max_offset_m = 0.5        # a layer's slide is capped at this (metres)
 flow_edge_depth_m = 0.02       # the flow fades in over the first this-many metres of depth
 flow_phase_noise_m = 3.0       # length (m) of the per-point phase offset (hides the reset pulse)
-agitation_ref = 0.05           # |ripple_v| (m/s) at which the strength saturates
-debug_view = 0                 # 1 = draw (slope x, slope y, strength) instead of the water
+agitation_ref = 0.1            # the RELATIVE agitation (ripple_v against its wet neighbours', m/s) at which
+                               # the fine surface saturates; W2's rough-water foam starts past it. Still rooms'
+                               # frozen residue is <= 0.006 (p99), a blast's crests 0.15-0.33 near the charge
+flow_still_mps = 0.05          # the waves ride the flow from this speed on (slower currents leave them to their own speed)
+wave_count = 10                # the ripples' sines (1..16): the cost scales with it
+wave_sharpness = 1.6           # Finch's crest exponent on still water (1 = plain sines)
+wave_sharpness_flow = 2.6      # ... at full flow / agitation (rough water has sharper crests)
+wave_speed = 1.0               # the waves' speed over water's own dispersion (1 = physical)
+wave_cell_m = 2.5              # the hex lattice's cell: the sets are turned and shifted per cell (no repeats)
+swell_wavelength_m = 0.8       # the swell's dominant wavelength, metres (the band 0.8..1.25 x it)
+swell_wave_count = 5           # the swell's sines (1..16)
+swell_strength_still = 0.06    # the swell's RMS slope on still water
+swell_strength_flow = 0.15     # ... at full flow / agitation
+swell_dir_deg = 30.0           # still water's swell direction, degrees clockwise from east (screen)
+swell_spread_deg = 35.0        # the swell's directions within +- this (the flow's direction where it flows)
+# --- Foam with a life (water W2, #97; renderer/water_foam.py) ---
+# A foam AMOUNT per cell (picture state: never synced, never read by the sim)
+# made by four sources, carried by the simulated flow and lost by decay, on
+# the sim clock in fixed steps; drawn as a threshold on a bubble texture at
+# two sizes (a sheet where the amount is high, lace as it thins, nothing
+# below). Starting values (W2's builder); Erik tunes by eye on
+# levels/water_studio (shot flooding_corridor).
+foam_cells_per_tile = 4        # foam cells per tile, per axis (1..8; the one number chosen on screen)
+foam_step_s = 0.0208333333     # one foam step (1/48 s on the sim clock), split so a step moves <= 1 cell
+foam_decay_s = 2.5             # the amount e-folds over this (seconds)
+foam_froude = 0.8              # whitewater: Froude number |v| / sqrt(g h) above which water foams
+foam_gain_froude = 3.0         # ... amount per second per unit of Froude excess (the excess capped at 1)
+foam_gain_steep = 0.3          # rough water: per second where W1's drive (flow / flow_speed_ref, |ripple_v| / agitation_ref) is twice full strength (the excess over 1, squared)
+foam_gain_edge = 10.0          # advancing edge: per second where the depth rose by all of itself in one tick (x that share^2)
+foam_gain_wall = 4.0           # fast water along a wall: per second next to the wall at flow_speed_ref (x speed^2)
+foam_bubble_m = [0.05, 0.2]    # the bubbles' two sizes, metres (the lace and its clusters)
+foam_cover = 1.0               # the amount at which the foam is a closed sheet
+foam_shadow = 0.5              # how much a closed sheet darkens the floor beneath it (0..1)
+# --- Things in the water (water W3, #97; renderer/water_wake.py, water_foam.splat_rate,
+# lit3d._WATERLINE_GLSL) ---
+# The WATERLINE: a unit's (or a prop's) fragment below the surface is seen through
+# the water column above it by the floor's own law (the Beer-Lambert fade to
+# water_color at fog_density and the alpha ramp alpha_scale/min/max, in metres of
+# the column over the fragment's WORLD height). The RING and the WAKE: a unit
+# standing in water makes foam in a band around its body; walking, the band sweeps
+# its path and makes more with speed. A SPRAY droplet ([render.spray]) that lands
+# drops a dab of foam. All picture state (W2's foam). Starting values (W3's
+# builder); Erik tunes on levels/water_studio (wade_by_firelight, the match).
+waterline_strength = 1.0       # share of the floor's under-water law a submerged fragment takes (0 = off)
+wake_body_m = 0.4              # the foam ring's radius round a unit's centre, metres (just outside its silhouette from above)
+wake_band_m = 0.08             # the ring's half-width, metres
+wake_ring_rate = 0.15          # foam per second in the ring of a STANDING unit (the ring alone)
+wake_gain = 1.5                # extra foam per second per (m/s)^2 of the unit's speed (the wake)
+splash_foam = 0.5              # foam a landing droplet adds at its centre (amount)
+splash_radius_m = 0.1          # the radius of that dab, metres
+debug_view = 0                # 1 = draw (slope x, slope y, strength); 2 = (foam amount, foam cover, 0); 3 = (hxx, hxy, hyy, caustic gain)
 # --- Heightmap attenuation (alpha-only; graphics/water_rendering.md §2 §8) ---
 # An OPTIONAL per-level floor heightmap ([art.bare] height) attenuates the water
 # ALPHA where raised relief (crates, consoles, debris) rises above the local
@@ -2001,6 +2041,34 @@ fade_s = 0.8                # the opacity falls to 0 over the last fade_s of a l
 seed = 6271                 # mixed with each blast's tick and tile
 cap = 512                   # never more alive at once (blast_final's volley throws
                             # ~530; a fair subset beyond it)
+
+[render.spray]
+# Water look arc #97 W3 -- SPRAY, the fifth consumer of THE particle primitive
+# (renderer/particles.py SpraySystem; docs/water_look_design_2026-11-19.md W3).
+# A detonation (the "blast" effect, read once: spray_seen) whose walk's seeds
+# stand in water throws rate x strength x (the WET share of its seeds) water
+# droplets from those wet seeds -- a blast in a dry room throws none. A
+# droplet's flight is analytic: up and back down over 2 up / g seconds along a
+# straight ground track (clipped at a wall), on the SIM clock; where it lands it
+# leaves a dab of foam ([graphics.water] splash_foam / splash_radius_m). A round
+# that stops at a wall beside the water throws splash_drops back off it. Drawn
+# premultiplied, lit by the light field (the particle draw's "debris" stage),
+# under the units. Every key is required (a refusing door); `enabled` is its
+# only switch. Starting values (W3's builder), Erik's to tune. Render-only.
+enabled = true
+rate = 30.0                 # droplets at strength 1 in water; x strength x wet share
+                            # (the pool's engine_death charge, 3: ~90)
+speed_mps = 2.5             # horizontal launch speed, m/s
+up_mps = 3.0                # vertical launch speed, m/s: ~0.6 s in the air
+spread = 0.6                # each speed x (1 +- this x U(-1, 1)); reach <= ~3.1 m
+size_tiles = 0.08           # a droplet's half-width (~3.8 world px)
+albedo = [0.70, 0.78, 0.85] # linear RGB under white light: pale water
+alpha = 0.85                # opacity (premultiplied)
+seed = 4513                 # mixed with each blast's tick and tile
+cap = 1024                  # never more in the air at once
+splash_drops = 6            # droplets a round stopping at a wet wall throws
+splash_speed_mps = 1.0      # their horizontal speed, m/s
+splash_up_mps = 1.5         # their vertical speed, m/s
 
 [render.larvae]
 # Arc #63 -- THE SWARM LARVAE'S BODIES (renderer/larva_bodies.py, shaders/

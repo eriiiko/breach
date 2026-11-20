@@ -240,13 +240,14 @@ amends the rule file, never this line's length.
 | Fire room light (gain + flicker) | `renderer/fire_flicker.py` + `[render.fire_light]` | THE fire's room light: its own gain × a light-only flicker into the sweep's `emit_mult` |
 | Frame lights | `renderer/frame_lights.py` + `src/level_lights.py` | THE one light assembly; never a second |
 | Light curve | `renderer/light_curve.py` + `lit3d._LIGHT_CURVE_GLSL` | THE brightness map on the light, one GLSL copy; Erik's curve |
-| Water flow detail | `renderer/water_surface.py` (the twin) + `renderer/water.py` + `shaders/water.fs` | THE fine water surface: one hex-tiled ripple texture carried by the simulated flow through `advected_noise`'s crossfade; a new surface detail is a term here, never a second wave source |
+| Water flow detail | `renderer/water_surface.py` (the twin) + `renderer/water.py` + `shaders/water.fs` | THE fine water surface: procedural travelling sines (ripples + swell) on one hex lattice, carried by the simulated flow through `advected_noise`'s crossfade; a new surface detail is a term here, never a second wave source or a texture |
+| Water foam | `renderer/water_foam.py` (the twin) + `shaders/water_foam.fs` (the step) + `renderer/water.py` + `shaders/water.fs` (the draw) + `noise_bake.bake_foam_rgba` | THE foam: one amount image made by sources, carried by the flow and lost by decay, per sim-clock step, drawn as a threshold on a bubble raft; a new cause of foam is a source term with its gain, never a second foam layer; picture state only |
 | Dequantize convention | per-field `*_fixed.dequantize_f32` at `upload_state` | Fresh float copies at the render read, never written back, never `/65536` inline |
 | Tile inspector | `renderer/hover_readout.py::pack_hover_readout` | THE per-tile debug readout; tools and HUD read it, never a parallel field probe |
 | 3D units | `renderer/unit_model_renderer.py` + `renderer/unit_looks.py` + `renderer/marine_shader.py` | No model/anim state ever on `Unit`; a new look is a table entry, never a second renderer |
 | Held props | `renderer/held_props.py` + `[render.held_props]` | A held prop is a row on a hand socket, drawn through the units' one shader |
 | Pose layer | `renderer/pose_layer.py` (+ `pose_clips.py`, `pose_skinner.py`) | THE only place a 3D unit's pose is composed; skeleton-agnostic; reactions and carriages are rows |
-| Lit-3D seam | `renderer/lit3d.py` | THE shared light-field GLSL, `LightFieldCtx` and top-down `Camera3D`; a second copy is the bug |
+| Lit-3D seam | `renderer/lit3d.py` | THE shared light-field GLSL, `LightFieldCtx` and top-down `Camera3D`; a second copy is the bug. Since #97 W3 it holds THE waterline (`_WATERLINE_GLSL` + `bind_waterline_map`, twin `water_surface.waterline_tint`): a body below the water is seen through it by the water pass's own law, in world height |
 | Prop generator | `renderer/propgen.py` | THE procedural prop / vegetation geometry; new flora = a generator fn + `PALETTES` row |
 | Static props | `renderer/static_props.py` | The ONLY path drawing placed 3D props; no prop render state on a sim entity |
 | Larva bodies | `renderer/larva_bodies.py` + `shaders/larva_body.*` + `propgen.generate_larva` | THE swarm larvae's picture: one grub mesh, every larva an instance in ONE draw, lit through the lit-3D seam; never a second swarm body renderer |

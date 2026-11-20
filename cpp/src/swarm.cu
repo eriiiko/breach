@@ -10,6 +10,7 @@
 // ============================================================================
 #include "swarm.h"
 #include "swarm_launch.cuh"
+#include "unit_draws_layout.h"   // #29 P7e.5: the tick row's columns
 
 #include <cuda_runtime.h>
 
@@ -164,11 +165,23 @@ int percall_download(const LawIO& L, const SlotIO& d) {
     return deaths;
 }
 
+// #29 P7e.5: env e's launch words from the device tick row (the draws'
+// tick word and key, as _env_words writes them from sim.draws on the host).
+__global__ void k_launch_from_row(uint32_t* launch, const int64_t* row, int n_env) {
+    const int e = blockIdx.x * blockDim.x + threadIdx.x;
+    if (e >= n_env) return;
+    const int64_t* r = row + (size_t)e * unit_draws::TICK_ROW_W;
+    uint32_t* o = launch + (size_t)e * LAUNCH_FIXED_WORDS;
+    o[LAUNCH_TICK] = (uint32_t)((uint64_t)r[unit_draws::TICK_ROW_DRAW_TICK] & 0xffffffffull);
+    o[LAUNCH_SEED_LO] = (uint32_t)((uint64_t)r[unit_draws::TICK_ROW_SEED_LO] & 0xffffffffull);
+    o[LAUNCH_SEED_HI] = (uint32_t)((uint64_t)r[unit_draws::TICK_ROW_SEED_HI] & 0xffffffffull);
+}
+
 int resident_species(int law, const StoreView& st_dev, int max_units, int n_env, int h,
                      int w, const int32_t* d_T, const bool* d_solid,
                      const uint32_t* launch_host, const int64_t* tables_host,
                      int table_width, unsigned long long* d_counters, void* stream,
-                     int32_t* d_bite, int32_t* d_count) {
+                     int32_t* d_bite, int32_t* d_count, const int64_t* d_tick_row) {
     int launch_hw = 0;
     for (int e = 0; e < n_env; ++e) {
         const int hw = (int)launch_host[e * LAUNCH_FIXED_WORDS + LAUNCH_HW];
@@ -195,6 +208,10 @@ int resident_species(int law, const StoreView& st_dev, int max_units, int n_env,
                "H2D resident launch");
     cuda_check(cudaMemcpyAsync(td, th, nt * sizeof(int64_t), cudaMemcpyHostToDevice, st),
                "H2D resident tables");
+    if (d_tick_row != nullptr) {
+        k_launch_from_row<<<(n_env + 127) / 128, 128, 0, st>>>(ld, d_tick_row, n_env);
+        cuda_check(cudaGetLastError(), "launch words from the tick row");
+    }
     ResidentLaunch R;
     R.io.st = st_dev;
     R.io.max_units = max_units;

@@ -61,8 +61,8 @@ import pyray as rl
 
 from config import CFG
 
-from .lit3d import (LightFieldCtx, bind_smoke_cover_map, make_camera,
-                    set_light_curve_uniforms)
+from .lit3d import (LightFieldCtx, bind_smoke_cover_map, bind_waterline_map,
+                    make_camera, set_light_curve_uniforms)
 from .marine_shader import (MARINE_NORMAL_MAP_FILENAME, UNIT_NORMAL_Y_SIGN,
                             load_marine_shader)
 from .unit_looks import (BODY_LIGHT_UNIT, ROLES, LookAssigner, all_look_names,
@@ -927,6 +927,11 @@ class UnitModelRenderer:
             # Graphics G2: the smoke's cast shadow (lit3d's one GLSL copy).
             bind_smoke_cover_map(self._shader, mats, light_ctx)
             set_light_curve_uniforms(self._shader, light_ctx.curve)
+            # #97 W3: the waterline (lit3d's one copy). The model's units are
+            # glTF's metres, so `scale` (world px per model unit: the marine
+            # drawn _SCALE_TILES_TALL tiles from his own height) IS the drawn
+            # world px per metre the fragment's height is measured in.
+            bind_waterline_map(self._shader, mats, light_ctx, scale)
             self._marine_shader.set_frame_uniforms(
                 light_ctx.ambient, light_ctx.light_gain,
                 light_ctx.world_px_w, light_ctx.world_px_h,

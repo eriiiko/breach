@@ -17,7 +17,7 @@ that this pass is drawn BEFORE ``HeatFieldOverlay.draw()`` in the frame
 PLACEHOLDER CONSTANTS, EXPLICITLY PROVISIONAL (design D-7): the stop table
 below is a first guess at a readable cold ramp, not a tuned look — Erik judges
 the look at P-W3 alongside the physics, same as every other provisional
-render pass in this codebase (WaterFieldOverlay's "tasteful placeholder"
+render pass in this codebase (the old water overlay's "tasteful placeholder"
 precedent).
 
 Kelvin-frame note (design D-7, for the brief): this overlay reads game-deg
@@ -121,7 +121,7 @@ def pack_cold_rgba(temperature: np.ndarray, max_alpha: int = 210,
 
 
 class ColdFieldOverlay:
-    """Owns the per-frame cold-tier texture — the WaterFieldOverlay pattern
+    """Owns the per-frame cold-tier texture — the old water overlay's pattern
     (a thin pyray-touching shell around the pure ``pack_cold_rgba``)."""
 
     def __init__(self, grid_h: int, grid_w: int, max_alpha: int = 210):

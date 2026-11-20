@@ -597,7 +597,7 @@ def count_syncs(name, ref, twin, ticks, intents_of=None, step_ref=None):
                 ended = step_ref(k)
             intents = tap.take() if tap is not None else intents_of(tick)
             c.latch(intents)
-            had_orders = bool(c._orders)
+            had_orders = any(c._orders)
             sc.py = []
             bp.host_sync_log_begin()
             try:

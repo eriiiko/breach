@@ -246,6 +246,9 @@ dormant-safe (dry tiles still return `vec4(0)`):
   term** so it rides the floor (× alpha), seen through the water — not the surface-additive glint.
   × `lightRGB` gates it to under a flashlight/fire. Optional `u_caustic_scale` high-frequency procedural
   detail (× ripple energy) for crispness.
+- **Foam port.** (Superseded 2026-11-20 by #97 W2: the gradient foam and its `u_foam_threshold` /
+  `u_foam_intensity` are gone; foam is an amount made, carried and lost per sim-clock step and drawn as
+  lace -- `renderer/water_foam.py`, `docs/water_look_design_2026-11-19.md` W2. The text below is history.)
 - **Foam port (§4-foam).** The CPU algorithm at `overlays.py:261-277` moved into the shader: whitecaps
   where `|∇ripple| > u_foam_threshold` + the wet/dry shoreline (high depth gradient), composited **last**
   into the (Fresnel) base before the premultiply (surface scatter, alpha-bound — not additive). Dials

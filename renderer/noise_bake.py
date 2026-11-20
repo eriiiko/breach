@@ -25,9 +25,9 @@ What this module bakes:
   * :func:`bake_billow_3d` -- the same billow recipe on a periodic cube, the
     3D variant for the tilted cinematic integrator (§2.4, the ``#90``
     raymarcher, G6). Nothing in G1 draws it yet.
-  * :func:`bake_ripple_rgba` -- the water's fine surface SLOPES (#97 W1): a
-    sum of plane waves with integer wave vectors (exactly periodic), the
-    texture the water pass carries along the simulated flow.
+  * :func:`bake_foam_rgba` -- the water FOAM's bubble raft (#97 W2): Worley
+    membranes, rank-equalised to a uniform field the water pass thresholds
+    into lace.
 
 Fixed seeds (``numpy.random.default_rng``, PCG64): byte-identical bakes on
 every run and machine.
@@ -352,89 +352,77 @@ def bake_flame_noise_rgba(size: int = 128, *, seed: int = FLAME_SEED
 
 
 # ---------------------------------------------------------------------------
-# The water RIPPLE texture (water look arc #97, patch W1): fine surface slopes
+# The water FOAM bubble texture (water look arc #97, patch W2)
 # ---------------------------------------------------------------------------
 
-RIPPLE_SEED = 0x97A1                 # "#97 W1"
-# Dominant wavelengths per texture period: the water pass maps one period to
-# RIPPLE_CELLS x [graphics.water] detail_wavelength_m metres.
-RIPPLE_CELLS = 16
-RIPPLE_WAVES = 96                    # plane waves summed
-# The band of wave numbers, in RIPPLE_CELLS: short wind ripples cover about a
-# factor of three in wavelength around the dominant one.
-_RIPPLE_BAND = (0.6, 1.8)
+FOAM_SEED = 0x97F0                   # "#97 foam"
+# Bubbles per texture period on each axis: the water pass maps one period to
+# FOAM_CELLS x [graphics.water] foam_bubble_m metres.
+FOAM_CELLS = 8
 
 
-def ripple_field(coords: np.ndarray, *, seed: int = RIPPLE_SEED,
-                 cells: int = RIPPLE_CELLS, n_waves: int = RIPPLE_WAVES
+def worley_f1_f2(coords: np.ndarray, cells: int, rng: np.random.Generator
                  ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """The fine water surface at ``coords`` (..., 2) = (u, v) in texture
-    units: ``(h, dh/du, dh/dv)``, a sum of ``n_waves`` plane waves.
+    """Periodic 2D Worley ``(F1, F2, nearest cell's flat index)`` at
+    ``coords`` (..., 2) texture units, distances in CELL units (one jittered
+    point per cell, the table wrapping modulo ``cells``: exactly periodic
+    with period 1). ``F2 - F1`` is 0 on the wall between two cells and
+    largest at a cell's heart -- the membrane of a bubble raft."""
+    coords = np.asarray(coords, dtype=np.float64)
+    pts = rng.random(size=(cells, cells, 2))
+    p = coords * cells
+    i0 = np.floor(p).astype(np.int64)
+    f1 = np.full(coords.shape[:-1], np.inf)
+    f2 = np.full(coords.shape[:-1], np.inf)
+    near = np.zeros(coords.shape[:-1], np.int64)
+    for oy in (-1, 0, 1):
+        for ox in (-1, 0, 1):
+            cx = i0[..., 0] + ox
+            cy = i0[..., 1] + oy
+            wx, wy = cx % cells, cy % cells
+            fx = cx + pts[wy, wx, 0]
+            fy = cy + pts[wy, wx, 1]
+            d = np.sqrt((fx - p[..., 0]) ** 2 + (fy - p[..., 1]) ** 2)
+            closer = d < f1
+            f2 = np.where(closer, f1, np.minimum(f2, d))
+            near = np.where(closer, wy * cells + wx, near)
+            f1 = np.where(closer, d, f1)
+    return f1, f2, near
 
-    Each wave has an INTEGER wave vector (so the field is exactly periodic
-    with period 1 on both axes, at any coordinate) drawn isotropically with
-    its length in ``_RIPPLE_BAND`` x ``cells``, a random phase and a height
-    amplitude ``|k|^-2`` (a slope amplitude ``|k|^-1``: the longer ripples
-    carry most of the slope, the short ones crinkle them). The slopes are the
-    analytic derivatives, not differences. Not normalised here (see
-    :func:`bake_ripple_rgba`)."""
+
+def bake_foam_rgba(size: int = 256, *, seed: int = FOAM_SEED,
+                   cells: int = FOAM_CELLS) -> np.ndarray:
+    """Bake the foam BUBBLE texture -> (size, size, 4) float32, row = v.
+
+    R = the bubble field ``b`` in [0, 1]: high on the membranes between
+        bubbles (small ``F2 - F1``), low in their hearts, each bubble's
+        depth scaled by its own random factor so whole bubbles open at
+        different amounts -- then RANK-EQUALISED over the texels, so ``b``
+        is UNIFORM on [0, 1]. The water pass thresholds the mean of two
+        lookups (two sizes) of it: a sheet when the threshold is low, lace
+        as it rises, nothing at the top -- and, the mean of two independent
+        uniforms being triangular, the threshold that covers a fraction f
+        is known in closed form (``water_foam.lace_threshold``), so the
+        drawn cover is the amount's, at any size (Parberry's point: foam
+        breaks into lace, it does not fade).
+    G, B, A = 0.
+    Upload as RGBA32F, REPEAT, mipmapped + trilinear."""
     rng = np.random.default_rng(int(seed))
-    lo, hi = _RIPPLE_BAND[0] * cells, _RIPPLE_BAND[1] * cells
-    ks = []
-    seen = set()
-    while len(ks) < int(n_waves):
-        r = np.sqrt(rng.uniform(lo * lo, hi * hi))
-        a = rng.uniform(0.0, 2.0 * np.pi)
-        kx, ky = int(round(r * np.cos(a))), int(round(r * np.sin(a)))
-        if (kx, ky) in seen or (-kx, -ky) in seen or (kx, ky) == (0, 0):
-            continue
-        seen.add((kx, ky))
-        ks.append((kx, ky, float(rng.uniform(0.0, 2.0 * np.pi))))
-    u = np.asarray(coords, dtype=np.float64)[..., 0]
-    v = np.asarray(coords, dtype=np.float64)[..., 1]
-    h = np.zeros(u.shape)
-    hu = np.zeros(u.shape)
-    hv = np.zeros(u.shape)
-    for kx, ky, ph in ks:
-        kk = float(kx * kx + ky * ky)
-        amp = 1.0 / kk
-        arg = 2.0 * np.pi * (kx * u + ky * v) + ph
-        c = np.cos(arg)
-        h += amp * np.sin(arg)
-        hu += amp * 2.0 * np.pi * kx * c
-        hv += amp * 2.0 * np.pi * ky * c
-    return h, hu, hv
-
-
-def bake_ripple_rgba(size: int = 256, *, seed: int = RIPPLE_SEED,
-                     cells: int = RIPPLE_CELLS,
-                     n_waves: int = RIPPLE_WAVES) -> np.ndarray:
-    """Bake the ripple texture -> (size, size, 4) float32, row = v.
-
-    R, G = the slope ``(dh/du, dh/dv)`` scaled so its RMS length over the
-           texture is exactly 1: the water pass multiplies it by a strength
-           that IS the RMS slope of the fine surface (a dimensionless number,
-           whatever the wavelength).
-    B    = the height in the same scaling (texture-period units: a physical
-           height is ``B x strength x period_m``), for W4's caustic.
-    A    = 0.
-    Upload as RGBA32F, REPEAT, mipmapped + trilinear (the pass sets that):
-    minified, the slopes average toward 0 and the fine surface goes flat
-    instead of sparkling."""
     xy = _grid_coords_2d(int(size))
-    h, hu, hv = ripple_field(xy, seed=seed, cells=cells, n_waves=n_waves)
-    rms = float(np.sqrt(np.mean(hu * hu + hv * hv)))
+    f1, f2, near = worley_f1_f2(xy, int(cells), rng)
+    depth = 0.6 + 0.8 * rng.random(int(cells) * int(cells))
+    raw = -(f2 - f1) * depth[near]
+    order = np.argsort(raw, axis=None, kind="stable")
+    ranks = np.empty(order.size, np.float64)
+    ranks[order] = (np.arange(order.size) + 0.5) / order.size
     out = np.zeros((size, size, 4), dtype=np.float32)
-    out[..., 0] = hu / rms
-    out[..., 1] = hv / rms
-    out[..., 2] = h / rms
+    out[..., 0] = ranks.reshape(raw.shape)
     return out
 
 
 __all__ = [
+    "FOAM_SEED", "FOAM_CELLS", "worley_f1_f2", "bake_foam_rgba",
     "BASE_CELLS", "BILLOW_SEED", "perlin", "perlin_fbm", "worley_f1",
     "worley_domes", "billow_field", "bake_billow_rgba", "bake_billow_3d",
     "FLAME_SEED", "flame_noise_field", "bake_flame_noise_rgba",
-    "RIPPLE_SEED", "RIPPLE_CELLS", "RIPPLE_WAVES", "ripple_field",
-    "bake_ripple_rgba",
 ]
