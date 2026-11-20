@@ -27,7 +27,7 @@ by :class:`DeviceApplier`):
   applier's launch takes as device pointers to ``(N, ...)`` arrays. Most are
   resident fields (``GameMap._RESIDENT_FIELD_NAMES``: the arrays
   ``ResidentBatch.buffers`` holds); :func:`non_resident_planes` names the rest
-  (P8b must hold them on the device).
+  (#29 P7e.1: the render-only ripple pair).
 - :data:`CLEAR_PLANES` -- the per-tick planes the tick-end clears zero.
 
 A NEW EFFECT KIND, BOOK OR PLANE is a row here, ``tools/gen_unit_layout.py
@@ -239,11 +239,12 @@ HORDE_FIELD_KINDS = ("PREY", "PREY_FEARLESS", "NOISE")
 #: The mask planes: ``tile_ok``, ``tile_ok_fearless``, ``bashable`` (zeros
 #: while ``bash_doors`` is off: the host holds None).
 HORDE_MASKS = ("TILE_OK", "TILE_OK_FEARLESS", "BASHABLE")
-#: The stage's per-env LATCH row: the tick, the map's topology serial
-#: (``GameMap._tile_serial``) and the zombie request set's MODE
+#: The stage's per-env LATCH row: the zombie request set's MODE
 #: (:data:`HORDE_MODES`), then one byte-valued column per unit row (1: the
 #: row's id is in the request set) -- what the host writes; never a host slot.
-HORDE_LATCH = ("tick", "serial", "mode")
+#: #29 P7e.1: the tick and the topology serial left it for the TICK ROW
+#: (``unit_draws.TickRow``: the device ``GameMap._tile_serial`` the seam bumps).
+HORDE_LATCH = ("mode",)
 HORDE_MODES = (("CONDUCTOR", -1), ("EMPTY", 0), ("SET", 1))
 
 
@@ -498,11 +499,10 @@ N_PLANES = len(PLANES)
 #: The tick-end clears' planes (Simulation._clear_tick_buffers, with a
 #: physics runner): (GameMap field, dtype). The credit claims' clear is P7's
 #: (its device form is the claims table); the shot tracers' expiry is render.
+#: #29 P7e.1: the three legacy radiation planes (rad_net, rad_amb, rad_flux)
+#: left this list with their host clears: nothing has written them since T6.
 CLEAR_PLANES: tuple = (
     ("heat", "int32"),
-    ("rad_net", "int64"),
-    ("rad_amb", "int64"),
-    ("rad_flux", "int64"),
 )
 CLEAR_NAMES = tuple(p[0] for p in CLEAR_PLANES)
 
@@ -564,12 +564,37 @@ def _signal_codes() -> tuple:
             ("AIRLOCK", tuple(str(n) for n in AIRLOCK_STATE_NAMES)))
 
 
+#: #29 P7e.1: the planes a device slot writes that stay HOST-COMPUTED by
+#: design, never resident: the W6a ripple pair (render-only, stepped on the
+#: host mirror after the exit download, in no digest; the seal's write of 0.0
+#: is the seam's twin of the host's).
+HOST_COMPUTED_PLANES = ("ripple", "ripple_v")
+
+
+def device_slot_planes() -> tuple:
+    """#29 P7e.1: every ``GameMap`` plane a device UNIT slot reads or writes,
+    in first-seen order: the topology seam's :data:`PLANES`, the clears, and
+    each slot face's own field tuple (``unit_kernels.*_FIELDS``). The flight
+    plane is not a GameMap field: it is built ON THE DEVICE from ``solid`` and
+    ``material`` (``unit_kernels.flight_plane``), so those two stand for it."""
+    from simulation import unit_kernels as uk
+    out = list(PLANE_NAMES + CLEAR_NAMES)
+    for tup in (uk.WIND_FIELDS, uk.MOVEMENT_FIELDS, uk.HEAT_FIELDS, uk.GAS_FIELDS,
+                tuple(n for n, _d in uk.IGNITION_FIELDS), uk.SHOOT_FIELDS,
+                tuple(n for n, _d in uk.SPRAY_FIELDS), uk.FLIGHT_SOURCES):
+        out.extend(n for n in tup if n not in out)
+    return tuple(out)
+
+
 def non_resident_planes() -> tuple:
-    """The planes the topology seam writes that are NOT resident fields today
-    (P8b must hold them on the device)."""
+    """The planes a device unit slot reads or writes (:func:`device_slot_planes`)
+    that are NOT resident fields (``GameMap._RESIDENT_FIELD_NAMES``, the arrays
+    ``ResidentBatch.buffers`` holds): what a device tick must still hold on the
+    device some other way. #29 P7e.1: the render-only ripple pair (host-computed
+    on the mirror by design, W6a; the seal's 0.0 write is its device twin)."""
     from simulation.gamemap import GameMap
     res = set(GameMap._RESIDENT_FIELD_NAMES)
-    return tuple(n for n in PLANE_NAMES + CLEAR_NAMES if n not in res)
+    return tuple(n for n in device_slot_planes() if n not in res)
 
 
 # ---------------------------------------------------------------------------

@@ -100,7 +100,7 @@ if str(_ROOT / "tools") not in sys.path:
     sys.path.append(str(_ROOT / "tools"))   # appended: never ahead of the CUDA build
 
 import level_loader  # noqa: E402
-from cuda_unit_lockstep import (ChainedSlots, DeviceSlot, flight_fields,  # noqa: E402
+from cuda_unit_lockstep import (ChainedSlots, DeviceSlot, trow, flight_fields,  # noqa: E402
                                 ShadowLockstep, capture, gather)
 from simulation import (unit_kernels, unit_requests, unit_store,  # noqa: E402
                         unit_tables, unit_traits)
@@ -126,8 +126,8 @@ def fail(msg):
 # ---------------------------------------------------------------------------
 def _run_verbs(st, inp, req):
     from cuda_unit_lockstep import flight_fields       # #215: the flight plane
-    return unit_kernels.verbs(st, req, inp.tick, inp.tables["door_spans"],
-                              inp.scalars["charges_live"], flight_fields(inp))
+    return unit_kernels.verbs(st, req, inp.tick_row, inp.tables["door_spans"],
+                              inp.scalars["charges_live"], flight_fields(inp, st))
 
 
 SLOT_1B = DeviceSlot(label="1b intents", run=_run_verbs,
@@ -1189,8 +1189,8 @@ def part_overflow():
         full = unit_requests.RequestList(1, U)
         st.upload(held["pre"][None])
         full.begin()
-        unit_kernels.verbs(st, full, inp.tick, inp.tables["door_spans"],
-                           inp.scalars["charges_live"], flight_fields(inp))
+        unit_kernels.verbs(st, full, inp.tick_row, inp.tables["door_spans"],
+                           inp.scalars["charges_live"], flight_fields(inp, st))
         want = full.records()[0]
         if len(want) < 2:
             continue
@@ -1370,7 +1370,7 @@ def _run_done(name, drivers, ticks, after=30):
             d.tick()
         rows = np.stack([unit_store.pack(d.sim.units, U) for d in drivers])
         st.upload(rows)
-        got = unit_kernels.match_done(st, [d.sim.tick for d in drivers])
+        got = unit_kernels.match_done(st, trow([d.sim.tick for d in drivers]))
         for e, d in enumerate(drivers):
             want = _done_ref(d)
             if [int(x) for x in got[e]] != want:

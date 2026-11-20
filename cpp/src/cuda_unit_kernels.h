@@ -84,10 +84,11 @@ void unit_wind_impulse(UnitStoreDevice& store, const UnitTablesDevice& tables,
 void unit_apply_orders(UnitStoreDevice& store, const UnitTablesDevice& tables,
                        const int64_t* requests, int n_req, const UnitKernelCounts& out);
 
-// Slot 10' (unit_orders.expire): `ticks` is (N,) int64 host, each env's
-// sim.tick after the advance; staged through input slot 0.
+// Slot 10' (unit_orders.expire): `tick_row` the DEVICE tick row (#29 P7e.1,
+// (N, TICK_ROW_W) int64: unit_draws.TickRow), its tick each env's sim.tick
+// after the advance.
 void unit_expire_orders(UnitStoreDevice& store, const UnitTablesDevice& tables,
-                        const int64_t* ticks, const UnitKernelCounts& out);
+                        std::uintptr_t tick_row, const UnitKernelCounts& out);
 
 // Slot 10's ruleset tail (ai_zombie.convert_marines_to_zombies): every valid
 // row killed by a zombie rises as one.
@@ -163,20 +164,23 @@ struct UnitDamagePlanes {
 void unit_status_tick(UnitStoreDevice& store, const UnitTablesDevice& tables,
                       UnitEventRing& ring, const UnitDamageCounts& out);
 
-// Slot 9c (exchange.apply_environmental_damage). `claims` is (N, n_claims, 4)
-// int64 host rows (channel, y, x, attacker) -- damage.TickCredit, channel
-// unit_events::UNIT_CREDIT_HEAT for the heat buffer, padded with
-// UNIT_CREDIT_PAD -- staged through the store's input slot 1.
+class UnitRecordList;   // cuda_unit_events.h (#29 P7e.1: the claims list)
+
+// Slot 9c (exchange.apply_environmental_damage). `claims` (#29 P7e.1) THE
+// DEVICE CLAIMS LIST (attack_lists.claims_list: (N, cap, 4) rows (channel, y,
+// x, attacker), every claim of the tick in order, channel
+// unit_events::UNIT_CREDIT_HEAT for the heat buffer), read in place; null: no
+// claims. The first matching record within the env's count is the claimant.
 void unit_heat_damage(UnitStoreDevice& store, const UnitTablesDevice& tables,
                       UnitEventRing& ring, const UnitDamagePlanes& planes,
-                      const int64_t* claims, int n_claims, const UnitDamageCounts& out);
+                      UnitRecordList* claims, const UnitDamageCounts& out);
 
 // Slot 9c3 (exchange.apply_teargas_blind, exchange.apply_poison_dose,
 // poison.tick, fused per row); the claims as for 9c (a gas slice's channel is
 // its index).
 void unit_gas_rows(UnitStoreDevice& store, const UnitTablesDevice& tables,
                    UnitEventRing& ring, const UnitDamagePlanes& planes,
-                   const int64_t* claims, int n_claims, const UnitDamageCounts& out);
+                   UnitRecordList* claims, const UnitDamageCounts& out);
 
 // TEST-ONLY (cuda_unit_damage_probe.cu): the device apply_packet on the
 // store's rows, one packet per row: `packets` is (N, U, UNIT_DAMAGE_PROBE_W)
@@ -209,7 +213,7 @@ void unit_damage_probe(UnitStoreDevice& store, const UnitTablesDevice& tables,
 // #215: `flight` a DEVICE (N, fh, fw) bool plane (combat.flight_plane) the
 // throw's release point is walked over.
 void unit_verbs(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitRecordList& requests,
-                const int64_t* ticks, const int64_t* spans, int n_spans, const int64_t* live,
+                std::uintptr_t tick_row, const int64_t* spans, int n_spans, const int64_t* live,
                 std::uintptr_t flight, int fh, int fw, const UnitDamageCounts& out);
 
 // The done kernel: per env (terminal, outcome, winner team, living marine
@@ -218,7 +222,7 @@ void unit_verbs(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitReco
 constexpr int UNIT_DONE_W = 4;
 constexpr int64_t UNIT_DONE_NONE = 0, UNIT_DONE_WIN = 1, UNIT_DONE_DRAW = 2;
 void unit_match_done(UnitStoreDevice& store, const UnitTablesDevice& tables,
-                     const int64_t* ticks, int64_t* out);
+                     std::uintptr_t tick_row, int64_t* out);
 
 // TEST-ONLY (cuda_unit_verbs_probe.cu): the gates on the store's rows -> out
 // (N, U, UNIT_VERBS_PROBE_K) int64 host: [0] acts, [1] can_throw(kind),
@@ -245,7 +249,7 @@ void unit_verbs_probe(UnitStoreDevice& store, const UnitTablesDevice& tables, in
 // row's staging) could not hold.
 class FieldApplier;
 void unit_melee(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& effects,
-                const int64_t* ticks, const UnitDamageCounts& out);
+                std::uintptr_t tick_row, const UnitDamageCounts& out);
 
 // ---- #29 P7b: the grenades and the planted charges on their object tables -------
 //   cuda_unit_objects.cu      slot 1b's appends, slot 2 "2 grenades",
@@ -274,12 +278,18 @@ void unit_table_appends(const UnitTablesDevice& tables, UnitRecordList& requests
 // bounces over `solid`, a DEVICE (N, h, w) bool plane as the slot found it),
 // the fuse-outs' PAYLOAD records in row order. `ticks` (N,) each env's sim.tick.
 void unit_grenades(const UnitTablesDevice& tables, ObjectTable& grenades, UnitRecordList& effects,
-                   const int64_t* ticks, std::uintptr_t solid, int h, int w,
+                   std::uintptr_t tick_row, std::uintptr_t solid, int h, int w,
                    const ObjectSlotCounts& out);
 // Slot 9e(d') charges.tick: the due charges' PAYLOAD records in row order,
 // then the table's stable compaction.
 void unit_charges_tick(const UnitTablesDevice& tables, ObjectTable& charges,
-                       UnitRecordList& effects, const int64_t* ticks,
+                       UnitRecordList& effects, std::uintptr_t tick_row,
+                       const ObjectSlotCounts& out);
+// #29 P7e.1: THE FLIGHT PLANE built on the device (combat.flight_plane): `out`
+// (N, h, w) bool = solid | the tables' mat_blocks_thrown[material], from the
+// DEVICE (N, h, w) solid (bool) and material (int8) planes.
+void unit_flight_plane(const UnitTablesDevice& tables, std::uintptr_t solid,
+                       std::uintptr_t material, std::uintptr_t out_plane, int h, int w,
                        const ObjectSlotCounts& out);
 
 // ---- #29 P6b.1: the doors (cuda_unit_doors.cu) ------------------------------------
@@ -399,10 +409,10 @@ struct UnitShootCounts : UnitDamageCounts {
     int64_t* noise_lost = nullptr;    // (N,) noises past the noise list's capacity
 };
 void unit_shooting(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& effects,
-                   ObjectTable& rounds, ObjectTable& noise, const int64_t* ticks,
-                   const int64_t* keys, const ShootPlanes& p, const UnitShootCounts& out);
+                   ObjectTable& rounds, ObjectTable& noise, std::uintptr_t tick_row,
+                   const ShootPlanes& p, const UnitShootCounts& out);
 void unit_rounds(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& effects,
-                 ObjectTable& rounds, const int64_t* ticks, const int64_t* keys,
+                 ObjectTable& rounds, std::uintptr_t tick_row,
                  const ShootPlanes& p, bool compact, const UnitShootCounts& out);
 
 }  // namespace breach_cuda

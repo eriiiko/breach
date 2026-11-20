@@ -122,7 +122,7 @@ def _run_4c(st, inp, ring, lists):
     return unit_kernels.resolve(
         st, lists["effects"], inp.fields, ring,
         unit_kernels.WalkLists(cells=lists["spray_cells"], door=lists["edits"].door,
-                               claims=lists["claims"]))
+                               claims=lists["claims"]), tick_row=getattr(inp, "tick_row", None))
 
 
 def _conductor(sim, args, kw, caller):

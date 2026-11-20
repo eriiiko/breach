@@ -269,23 +269,25 @@ def _run_2g(st, inp, ring, lists):
     # #215: the flight reads the flight plane as the slot found it (before
     # the DETONATE stage writes the planes)
     from cuda_unit_lockstep import flight_fields
-    unit_kernels.grenades(st, lists["grenades"], lists["payloads"], inp.tick,
-                          flight_fields(inp))
+    unit_kernels.grenades(st, lists["grenades"], lists["payloads"], inp.tick_row,
+                          flight_fields(inp, st))
     lists["edits"].set_seq(inp.scalars["edit_seq"])
     return unit_kernels.detonate(st, lists["payloads"], inp.fields, ring, _walk_lists(lists),
-                                 refused_ok=LS.REPLAY_REFUSED["on"])
+                                 refused_ok=LS.REPLAY_REFUSED["on"], tick_row=inp.tick_row)
 
 
 def _run_9e(st, inp, ring, lists):
-    unit_kernels.charges_tick(st, lists["charges"], lists["payloads"], inp.tick)
+    unit_kernels.charges_tick(st, lists["charges"], lists["payloads"], inp.tick_row)
     lists["edits"].set_seq(inp.scalars["edit_seq"])
-    return unit_kernels.detonate(st, lists["payloads"], inp.fields, ring, _walk_lists(lists))
+    return unit_kernels.detonate(st, lists["payloads"], inp.fields, ring, _walk_lists(lists),
+                                 tick_row=inp.tick_row)
 
 
 def _run_resolve(st, inp, ring, lists):
     lists["edits"].set_seq(inp.scalars["edit_seq"])
     return unit_kernels.resolve(st, lists["effects"], inp.fields, ring,
-                                _walk_lists(lists, cells="spray_cells" in lists))
+                                _walk_lists(lists, cells="spray_cells" in lists),
+                                tick_row=getattr(inp, "tick_row", None))
 
 
 def _conductor(sim, args, kw, caller):

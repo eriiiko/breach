@@ -265,6 +265,19 @@ class GameMap:
         # per-tick upload carries the unit rows instead of the planes.
         "permeability", "wave_absorb",
     )
+    # #29 P7e.1: the planes a device UNIT slot reads or writes that were slot
+    # inputs staged per launch (applier.non_resident_planes()): device buffers
+    # of the batch now, so a device slot is handed `ResidentBatch.buffers` as
+    # they are. `sight_screen` (device sight's screen), the float pair
+    # `heat_atten` / `light_atten` (written by the topology seam as bit
+    # patterns; read by no law, only by tests) are table-derived and patched
+    # by on_tile_changed: they ride the `_tile_serial` upload. `ignition_armed`
+    # (slot 9d's edge trigger, digested) and `div_source` (the blast's pending
+    # source, a digest section) are written by host slots every tick: they
+    # ride the per-tick entry upload while host gameplay is in the loop.
+    _RESIDENT_UNIT_PLANES = ("sight_screen", "heat_atten", "light_atten",
+                             "ignition_armed", "div_source")
+    _RESIDENT_MASKS = _RESIDENT_MASKS + _RESIDENT_UNIT_PLANES
     # arc #63 P2 (engine/17 §2): the swarm store — host-written resident arrays.
     # No device kernel reads them in P2, so no per-tick transfer list names them
     # and device copies go stale after any host store write (spawn/reclaim set

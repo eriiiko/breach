@@ -122,14 +122,14 @@ __device__ inline void record_blow(const int64_t* loc, const int64_t* tr, int t,
     emit_record(sink, rec);
 }
 
-__global__ void k_melee(int64_t* store, int n_units, const int64_t* tables, const int64_t* ticks,
+__global__ void k_melee(int64_t* store, int n_units, const int64_t* tables, const int64_t* trow,
                         RecordListView fx, unsigned long long* cnt) {
     const int r = (int)(blockIdx.x * blockDim.x + threadIdx.x);
     if (r >= n_units) return;
     int64_t* row = unit_row(store, n_units, r);
     if (!row_valid(row) || row[UNIT_COL_PENDING_MELEE] == 0) return;
     const int64_t* tab = env_tables(tables);
-    const int64_t tick = ticks[benv()];
+    const int64_t tick = unit_draws_dev::trow_tick(trow, benv());
     int64_t loc[UNIT_STORE_W];
     for (int c = 0; c < UNIT_STORE_W; ++c) loc[c] = row[c];
     RecordSink sink = list_row_sink(fx, n_units, r);
@@ -165,7 +165,7 @@ __global__ void k_melee(int64_t* store, int n_units, const int64_t* tables, cons
 }  // namespace
 
 void unit_melee(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& effects,
-                const int64_t* ticks, const UnitDamageCounts& out) {
+                std::uintptr_t tick_row, const UnitDamageCounts& out) {
     unit_check_pair(store, tables, "unit_melee");
     UnitRecordList& L = effects.list();
     if (L.n_env() != store.n_env() || L.n_units() != store.n_units() ||
@@ -176,12 +176,12 @@ void unit_melee(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApp
            << store.n_units() << ") and the layout (width " << APPLIER_F << ")";
         throw std::invalid_argument(os.str());
     }
-    if (ticks == nullptr) throw std::invalid_argument("unit_melee: ticks (N,)");
+    if (tick_row == 0) throw std::invalid_argument("unit_melee: the tick row (N, TICK_ROW_W)");
+    const int64_t* d_trow = reinterpret_cast<const int64_t*>(tick_row);
     const int n = store.n_env(), U = store.n_units();
-    const int64_t* d_ticks = store.stage_input(0, ticks, (size_t)n);
     const RecordListView v = list_view(L);
     store.begin_counts();
-    k_melee<<<bgrid(U, n), 128, 0, tstream()>>>(store.rows(), U, tables.values(), d_ticks, v,
+    k_melee<<<bgrid(U, n), 128, 0, tstream()>>>(store.rows(), U, tables.values(), d_trow, v,
                                                  store.counts_dev());
     L.gather();
     const cudaError_t e = cudaGetLastError();

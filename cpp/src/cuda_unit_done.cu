@@ -29,7 +29,7 @@ int64_t* g_out = nullptr;
 size_t g_out_cap = 0;
 
 __global__ void k_match_done(const int64_t* store, int n_units, const int64_t* tables,
-                             const int64_t* ticks, int64_t* out) {
+                             const int64_t* trow, int64_t* out) {
     if (threadIdx.x != 0 || blockIdx.x != 0) return;
     const int e = (int)benv();
     const int64_t* rows = store + (size_t)e * n_units * UNIT_STORE_W;
@@ -48,7 +48,7 @@ __global__ void k_match_done(const int64_t* store, int n_units, const int64_t* t
         ++n_teams;
     }
     const int64_t limit = tab[UNIT_TAB_MATCH_LIMIT_TICKS];
-    const bool terminal = n_teams < 2 || (limit > 0 && ticks[e] >= limit);
+    const bool terminal = n_teams < 2 || (limit > 0 && unit_draws_dev::trow_tick(trow, e) >= limit);
     int64_t* o = out + (size_t)e * UNIT_DONE_W;
     o[0] = terminal ? 1 : 0;
     o[1] = !terminal ? UNIT_DONE_NONE : (n_teams == 1 ? UNIT_DONE_WIN : UNIT_DONE_DRAW);
@@ -59,12 +59,12 @@ __global__ void k_match_done(const int64_t* store, int n_units, const int64_t* t
 }  // namespace
 
 void unit_match_done(UnitStoreDevice& store, const UnitTablesDevice& tables,
-                     const int64_t* ticks, int64_t* out) {
+                     std::uintptr_t tick_row, int64_t* out) {
     unit_check_pair(store, tables, "unit_match_done");
-    if (ticks == nullptr || out == nullptr)
-        throw std::invalid_argument("unit_match_done: ticks (N,) and out (N, 4) are required");
+    if (tick_row == 0 || out == nullptr)
+        throw std::invalid_argument("unit_match_done: the tick row and out (N, 4) are required");
     const int n = store.n_env();
-    const int64_t* d_ticks = store.stage_input(0, ticks, (size_t)n);
+    const int64_t* d_trow = reinterpret_cast<const int64_t*>(tick_row);
     const size_t want = (size_t)n * UNIT_DONE_W;
     if (want > g_out_cap) {
         cudaStreamSynchronize(tstream());
@@ -75,7 +75,7 @@ void unit_match_done(UnitStoreDevice& store, const UnitTablesDevice& tables,
         g_out_cap = want;
     }
     k_match_done<<<dim3(1, n), 1, 0, tstream()>>>(store.rows(), store.n_units(), tables.values(),
-                                                  d_ticks, g_out);
+                                                  d_trow, g_out);
     cudaError_t e = cudaGetLastError();
     if (e == cudaSuccess)
         e = cudaMemcpyAsync(out, g_out, want * sizeof(int64_t), cudaMemcpyDeviceToHost, tstream());

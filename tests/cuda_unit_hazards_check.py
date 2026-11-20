@@ -55,7 +55,7 @@ if str(_ROOT / "tools") not in sys.path:
 
 import level_loader  # noqa: E402
 import cuda_unit_lockstep as LS  # noqa: E402
-from cuda_unit_lockstep import ChainedSlots, DeviceSlot, ShadowLockstep  # noqa: E402
+from cuda_unit_lockstep import ChainedSlots, DeviceSlot, ShadowLockstep, trow  # noqa: E402
 from _hazard_scene import HazardScene, hazard_level  # noqa: E402
 from simulation import (applier, attack_lists, edit_door, object_tables as ot,  # noqa: E402
                         unit_events, unit_kernels as uk, unit_schema as us, unit_store,
@@ -104,10 +104,11 @@ def _run_tc(seed=True):
 
 def _run_pl(seed=True, log="payloads"):
     def run(st, inp, ring, lists):
-        uk.charges_tick(st, lists["charges"], lists[log], inp.tick)
+        uk.charges_tick(st, lists["charges"], lists[log], inp.tick_row)
         if seed:
             lists["edits"].set_seq(inp.scalars["edit_seq"])
-        return uk.detonate(st, lists[log], inp.fields, ring, _walk_lists(lists))
+        return uk.detonate(st, lists[log], inp.fields, ring, _walk_lists(lists),
+                           tick_row=inp.tick_row)
     return run
 
 
@@ -1069,7 +1070,7 @@ class _Rig:
         sg = self._sg
         ap = sg._applier_for(self.st)
         lists = dict(self.sig, doors=self.doors)
-        ticks = np.full(self.n, self.sim.tick, dtype=np.int64)
+        ticks = trow(np.full(self.n, self.sim.tick, dtype=np.int64))
         if self.sim._signal_bus is not None:
             uk.signals_emit(self.st, ap, self.fields, lists, ticks)
             uk.signals_logic(self.st, ap, lists)

@@ -144,7 +144,7 @@ __device__ inline void fire_burst(const MarchMap& m, int r, const int64_t* loc, 
 }
 
 __global__ void k_shooting(int64_t* store, int n_units, const int64_t* tables,
-                           const int64_t* ticks, const int64_t* keys, const bool* solid,
+                           const int64_t* trow, const bool* solid,
                            const int8_t* material, int h, int w, RecordListView fxv,
                            RecordListView rv, RecordListView nv, unsigned long long* cnt) {
     const int r = (int)(blockIdx.x * blockDim.x + threadIdx.x);
@@ -153,7 +153,7 @@ __global__ void k_shooting(int64_t* store, int n_units, const int64_t* tables,
     if (!row_valid(row) || !row_alive(row) || row[UNIT_COL_IS_ZOMBIE] != 0) return;
     const int64_t* tab = env_tables(tables);
     const int e = benv();
-    const int64_t tick = ticks[e];
+    const int64_t tick = unit_draws_dev::trow_tick(trow, e);
     bool bad = tick < -TICK_MAX || tick > TICK_MAX;
     const Flags fl = composed_flags(row, tab, false, &bad);
     if (bad) {
@@ -204,7 +204,7 @@ __global__ void k_shooting(int64_t* store, int n_units, const int64_t* tables,
         m.material = material + (size_t)e * h * w;
         m.h = h;
         m.w = w;
-        m.key = unit_draws_dev::draw_key(keys, e, &bad);
+        m.key = unit_draws_dev::trow_key(trow, e, &bad);
         m.tick = tick;
         bool shot = false;
         if (bad) {
@@ -258,12 +258,12 @@ __global__ void k_shooting(int64_t* store, int n_units, const int64_t* tables,
 
 // Slot 2': one thread per env walks its table of rounds in order.
 __global__ void k_rounds(int64_t* store, int n_units, const int64_t* tables,
-                         const int64_t* ticks, const int64_t* keys, const bool* solid,
+                         const int64_t* trow, const bool* solid,
                          const int8_t* material, int h, int w, RecordListView fxv,
                          RecordListView rv, unsigned long long* cnt) {
     if (threadIdx.x != 0) return;
     const int e = benv();
-    const int64_t tick = ticks[e];
+    const int64_t tick = unit_draws_dev::trow_tick(trow, e);
     bool bad = tick < -TICK_MAX || tick > TICK_MAX;
     MarchMap m;
     m.store = store;
@@ -273,7 +273,7 @@ __global__ void k_rounds(int64_t* store, int n_units, const int64_t* tables,
     m.material = material + (size_t)e * h * w;
     m.h = h;
     m.w = w;
-    m.key = unit_draws_dev::draw_key(keys, e, &bad);
+    m.key = unit_draws_dev::trow_key(trow, e, &bad);
     m.tick = tick;
     RecordSink fx = list_env_sink(fxv);
     int64_t* rows = rv.recs + (size_t)e * rv.cap * rv.width;
@@ -314,22 +314,21 @@ void launch_check(const char* who) {
 }  // namespace
 
 void unit_shooting(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& effects,
-                   ObjectTable& rounds, ObjectTable& noise, const int64_t* ticks,
-                   const int64_t* keys, const ShootPlanes& p, const UnitShootCounts& out) {
+                   ObjectTable& rounds, ObjectTable& noise, std::uintptr_t tick_row,
+                   const ShootPlanes& p, const UnitShootCounts& out) {
     unit_check_pair(store, tables, "unit_shooting");
     check_lists(store, effects, &rounds, &noise, "unit_shooting");
     UnitRecordList& L = effects.list();
     if (L.n_units() != store.n_units() || rounds.n_units() != store.n_units() ||
         noise.n_units() != store.n_units())
         throw std::invalid_argument("unit_shooting: a list's staging rows are not the store's");
-    if (ticks == nullptr || keys == nullptr || p.solid == 0 || p.material == 0)
-        throw std::invalid_argument("unit_shooting: ticks (N,), keys (N, 3), solid, material");
+    if (tick_row == 0 || p.solid == 0 || p.material == 0)
+        throw std::invalid_argument("unit_shooting: the tick row, solid, material");
     const int n = store.n_env(), U = store.n_units();
-    const int64_t* d_ticks = store.stage_input(0, ticks, (size_t)n);
-    const int64_t* d_keys = store.stage_input(1, keys, (size_t)n * unit_draws::DRAW_KEY_W);
+    const int64_t* d_trow = reinterpret_cast<const int64_t*>(tick_row);
     store.begin_counts();
     k_shooting<<<bgrid(U, n), 128, 0, tstream()>>>(
-        store.rows(), U, tables.values(), d_ticks, d_keys, (const bool*)p.solid,
+        store.rows(), U, tables.values(), d_trow, (const bool*)p.solid,
         (const int8_t*)p.material, p.h, p.w, list_view(L), list_view(rounds), list_view(noise),
         store.counts_dev());
     L.gather();
@@ -343,19 +342,18 @@ void unit_shooting(UnitStoreDevice& store, const UnitTablesDevice& tables, Field
 }
 
 void unit_rounds(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& effects,
-                 ObjectTable& rounds, const int64_t* ticks, const int64_t* keys,
+                 ObjectTable& rounds, std::uintptr_t tick_row,
                  const ShootPlanes& p, bool compact, const UnitShootCounts& out) {
     unit_check_pair(store, tables, "unit_rounds");
     check_lists(store, effects, &rounds, nullptr, "unit_rounds");
-    if (ticks == nullptr || keys == nullptr || p.solid == 0 || p.material == 0)
-        throw std::invalid_argument("unit_rounds: ticks (N,), keys (N, 3), solid, material");
+    if (tick_row == 0 || p.solid == 0 || p.material == 0)
+        throw std::invalid_argument("unit_rounds: the tick row, solid, material");
     UnitRecordList& L = effects.list();
     const int n = store.n_env(), U = store.n_units();
-    const int64_t* d_ticks = store.stage_input(0, ticks, (size_t)n);
-    const int64_t* d_keys = store.stage_input(1, keys, (size_t)n * unit_draws::DRAW_KEY_W);
+    const int64_t* d_trow = reinterpret_cast<const int64_t*>(tick_row);
     store.begin_counts();
     k_rounds<<<dim3(1, n), 32, 0, tstream()>>>(
-        store.rows(), U, tables.values(), d_ticks, d_keys, (const bool*)p.solid,
+        store.rows(), U, tables.values(), d_trow, (const bool*)p.solid,
         (const int8_t*)p.material, p.h, p.w, list_view(L), list_view(rounds),
         store.counts_dev());
     launch_check("unit_rounds");

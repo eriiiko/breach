@@ -108,7 +108,9 @@ static ResidentFields resident_fields_from(const py::dict& dev, int h, int w,
     f.flow_vx = get("flow_vx"); f.flow_vy = get("flow_vy");
     f.floor_height = get("floor_height");
     f.sponge_sigma = get("sponge_sigma"); f.sponge_udamp = get("sponge_udamp");
-    f.div_source = get("div_source");   // #29 P7c.2: the device-taken source (0: upload)
+    // #29 P7c.2: the device-taken source (0: upload). #29 P7e.1: its own key,
+    // since the resident set holds the PENDING plane under "div_source".
+    f.div_source = get("div_source_taken");
     return f;
 }
 
@@ -882,14 +884,11 @@ PYBIND11_MODULE(breach_physics, m) {
               }, py::arg("store"), py::arg("tables"), py::arg("requests"),
               "#29 P6.2: slot 1b' (unit_orders.apply_requests) on the device store.");
         m.def("unit_expire_orders",
-              [](UnitStoreDevice& s, const UnitTablesDevice& t,
-                 py::array_t<int64_t, py::array::c_style> ticks) {
-                  if (ticks.ndim() != 1 || ticks.shape(0) != s.n_env())
-                      throw std::invalid_argument("unit_expire_orders: ticks must be (n_env,)");
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, std::uintptr_t tick_row) {
                   Cnt c(s.n_env());
-                  breach_cuda::unit_expire_orders(s, t, ticks.data(), c.view());
+                  breach_cuda::unit_expire_orders(s, t, tick_row, c.view());
                   return c.out();
-              }, py::arg("store"), py::arg("tables"), py::arg("ticks"),
+              }, py::arg("store"), py::arg("tables"), py::arg("tick_row"),
               "#29 P6.2: slot 10' (unit_orders.expire) on the device store.");
         m.def("unit_convert_zombies",
               [](UnitStoreDevice& s, const UnitTablesDevice& t) {
@@ -992,13 +991,6 @@ PYBIND11_MODULE(breach_physics, m) {
             }
             py::tuple out() { return py::make_tuple(cov, flt, ref, drp); }
         };
-        auto claims_of = [](const UnitStoreDevice& s, py::array_t<int64_t, py::array::c_style>& c,
-                            const char* who) {
-            if (c.ndim() != 3 || c.shape(0) != s.n_env() || c.shape(2) != 4)
-                throw std::invalid_argument(std::string(who) +
-                                            ": claims must be (n_env, n_claims, 4) int64");
-            return (int)c.shape(1);
-        };
         m.def("unit_status_tick",
               [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring) {
                   Cnt4 c(s.n_env());
@@ -1007,17 +999,17 @@ PYBIND11_MODULE(breach_physics, m) {
               }, py::arg("store"), py::arg("tables"), py::arg("ring"),
               "#29 P6.3: slot 2b (status.tick_statuses) on the device store.");
         m.def("unit_heat_damage",
-              [claims_of](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
-                          std::uintptr_t heat, std::uintptr_t rad_flux,
-                          std::uintptr_t atmosphere, std::uintptr_t temperature,
-                          std::uintptr_t solid, int h, int w,
-                          py::array_t<int64_t, py::array::c_style> claims) {
-                  const int nc = claims_of(s, claims, "unit_heat_damage");
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
+                 std::uintptr_t heat, std::uintptr_t rad_flux,
+                 std::uintptr_t atmosphere, std::uintptr_t temperature,
+                 std::uintptr_t solid, int h, int w, py::object claims) {
+                  breach_cuda::UnitRecordList* cl =
+                      claims.is_none() ? nullptr : claims.cast<breach_cuda::UnitRecordList*>();
                   breach_cuda::UnitDamagePlanes p;
                   p.heat = heat; p.rad_flux = rad_flux; p.h = h; p.w = w;
                   p.atmosphere = atmosphere; p.temperature = temperature; p.solid = solid;
                   Cnt4 c(s.n_env());
-                  breach_cuda::unit_heat_damage(s, t, ring, p, claims.data(), nc, c.view());
+                  breach_cuda::unit_heat_damage(s, t, ring, p, cl, c.view());
                   return c.out();
               }, py::arg("store"), py::arg("tables"), py::arg("ring"), py::arg("heat"),
               py::arg("rad_flux"), py::arg("atmosphere"), py::arg("temperature"),
@@ -1025,17 +1017,17 @@ PYBIND11_MODULE(breach_physics, m) {
               "#29 P6.3: slot 9c (exchange.apply_environmental_damage; #215: with the "
               "body temperature's air read) on the device store.");
         m.def("unit_gas_rows",
-              [claims_of](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
-                          std::uintptr_t gas, int n_gases, int h, int w,
-                          py::array_t<int64_t, py::array::c_style> claims,
-                          std::uintptr_t bite, std::uintptr_t count) {
-                  const int nc = claims_of(s, claims, "unit_gas_rows");
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
+                 std::uintptr_t gas, int n_gases, int h, int w, py::object claims,
+                 std::uintptr_t bite, std::uintptr_t count) {
+                  breach_cuda::UnitRecordList* cl =
+                      claims.is_none() ? nullptr : claims.cast<breach_cuda::UnitRecordList*>();
                   breach_cuda::UnitDamagePlanes p;
                   p.gas = gas; p.n_gases = n_gases; p.h = h; p.w = w;
                   p.bite = bite;
                   p.count = count;
                   Cnt4 c(s.n_env());
-                  breach_cuda::unit_gas_rows(s, t, ring, p, claims.data(), nc, c.view());
+                  breach_cuda::unit_gas_rows(s, t, ring, p, cl, c.view());
                   return c.out();
               }, py::arg("store"), py::arg("tables"), py::arg("ring"), py::arg("gas"),
               py::arg("n_gases"), py::arg("h"), py::arg("w"), py::arg("claims"),
@@ -1120,13 +1112,12 @@ PYBIND11_MODULE(breach_physics, m) {
                  "#29 P7a.3: (counts (N,), dropped (N,)) int64 alone (no record copy).");
         m.def("unit_verbs",
               [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitRecordList& req,
-                 py::array_t<int64_t, py::array::c_style> ticks,
+                 std::uintptr_t tick_row,
                  py::array_t<int64_t, py::array::c_style> spans,
                  py::array_t<int64_t, py::array::c_style> live, std::uintptr_t flight, int fh,
                  int fw) {
-                  if (ticks.ndim() != 1 || ticks.shape(0) != s.n_env() || live.ndim() != 1 ||
-                      live.shape(0) != s.n_env())
-                      throw std::invalid_argument("unit_verbs: ticks and live must be (n_env,)");
+                  if (live.ndim() != 1 || live.shape(0) != s.n_env())
+                      throw std::invalid_argument("unit_verbs: live must be (n_env,)");
                   if (spans.ndim() != 3 || spans.shape(0) != s.n_env() || spans.shape(2) != 3 ||
                       spans.shape(1) < 1)
                       throw std::invalid_argument(
@@ -1138,23 +1129,20 @@ PYBIND11_MODULE(breach_physics, m) {
                   c.faults = flt.mutable_data();
                   c.refused = ref.mutable_data();
                   c.dropped = drp.mutable_data();
-                  breach_cuda::unit_verbs(s, t, req, ticks.data(), spans.data(),
+                  breach_cuda::unit_verbs(s, t, req, tick_row, spans.data(),
                                           (int)spans.shape(1), live.data(), flight, fh, fw, c);
                   return py::make_tuple(cov, flt, ref, drp);
-              }, py::arg("store"), py::arg("tables"), py::arg("requests"), py::arg("ticks"),
+              }, py::arg("store"), py::arg("tables"), py::arg("requests"), py::arg("tick_row"),
               py::arg("spans"), py::arg("live"), py::arg("flight"), py::arg("h"), py::arg("w"),
               "#29 P6.4a: slot 1b (Simulation._consume_direct_intents) on the device store; "
               "returns (coverage, faults, refused plants, dropped requests).");
         m.def("unit_match_done",
-              [](UnitStoreDevice& s, const UnitTablesDevice& t,
-                 py::array_t<int64_t, py::array::c_style> ticks) {
-                  if (ticks.ndim() != 1 || ticks.shape(0) != s.n_env())
-                      throw std::invalid_argument("unit_match_done: ticks must be (n_env,)");
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, std::uintptr_t tick_row) {
                   py::array_t<int64_t> out({(py::ssize_t)s.n_env(),
                                             (py::ssize_t)breach_cuda::UNIT_DONE_W});
-                  breach_cuda::unit_match_done(s, t, ticks.data(), out.mutable_data());
+                  breach_cuda::unit_match_done(s, t, tick_row, out.mutable_data());
                   return out;
-              }, py::arg("store"), py::arg("tables"), py::arg("ticks"),
+              }, py::arg("store"), py::arg("tables"), py::arg("tick_row"),
               "#29 P6.4a: the done kernel (MatchRules.is_terminal / result) -> (N, 4) "
               "int64: terminal, outcome (0 none, 1 win, 2 draw), winner team, living teams.");
         m.def("unit_verbs_probe",
@@ -1244,11 +1232,6 @@ PYBIND11_MODULE(breach_physics, m) {
             c.dropped = dr.mutable_data();
             return py::make_tuple(ch, fl, rf, dr);
         };
-        auto check_ticks = [](const py::array_t<int64_t, py::array::c_style>& t, int n,
-                              const char* who) {
-            if (t.ndim() != 1 || t.shape(0) != n)
-                throw std::invalid_argument(std::string(who) + ": ticks must be (n_env,)");
-        };
         m.def("unit_table_appends",
               [counts](const UnitTablesDevice& t, UnitRecordList& req, ObjectTable& gr,
                        ObjectTable& ch) {
@@ -1260,29 +1243,38 @@ PYBIND11_MODULE(breach_physics, m) {
               "#29 P7b: slot 1b's THROW requests appended to the grenade table, its "
               "accepted plants to the charge table, in request-list order.");
         m.def("unit_grenades",
-              [counts, check_ticks](const UnitTablesDevice& t, ObjectTable& gr, FieldApplier& a,
-                                    py::array_t<int64_t, py::array::c_style> ticks,
-                                    std::uintptr_t solid, int h, int w) {
-                  check_ticks(ticks, t.n_env(), "unit_grenades");
+              [counts](const UnitTablesDevice& t, ObjectTable& gr, FieldApplier& a,
+                       std::uintptr_t tick_row, std::uintptr_t solid, int h, int w) {
                   ObjectSlotCounts c;
                   py::tuple out = counts(t.n_env(), c);
-                  breach_cuda::unit_grenades(t, gr, a.list(), ticks.data(), solid, h, w, c);
+                  breach_cuda::unit_grenades(t, gr, a.list(), tick_row, solid, h, w, c);
                   return out;
-              }, py::arg("tables"), py::arg("grenades"), py::arg("effects"), py::arg("ticks"),
+              }, py::arg("tables"), py::arg("grenades"), py::arg("effects"), py::arg("tick_row"),
               py::arg("solid"), py::arg("h"), py::arg("w"),
               "#29 P7b: slot 2's grenades -- the flight (#215: the wall walk and the "
               "bounces over the device (N, h, w) solid plane), the fuse-outs as PAYLOAD "
               "records.");
         m.def("unit_charges_tick",
-              [counts, check_ticks](const UnitTablesDevice& t, ObjectTable& ch, FieldApplier& a,
-                                    py::array_t<int64_t, py::array::c_style> ticks) {
-                  check_ticks(ticks, t.n_env(), "unit_charges_tick");
+              [counts](const UnitTablesDevice& t, ObjectTable& ch, FieldApplier& a,
+                       std::uintptr_t tick_row) {
                   ObjectSlotCounts c;
                   py::tuple out = counts(t.n_env(), c);
-                  breach_cuda::unit_charges_tick(t, ch, a.list(), ticks.data(), c);
+                  breach_cuda::unit_charges_tick(t, ch, a.list(), tick_row, c);
                   return out;
-              }, py::arg("tables"), py::arg("charges"), py::arg("effects"), py::arg("ticks"),
+              }, py::arg("tables"), py::arg("charges"), py::arg("effects"), py::arg("tick_row"),
               "#29 P7b: charges.tick -- the due charges as PAYLOAD records, then the prune.");
+        m.def("unit_flight_plane",
+              [counts](const UnitTablesDevice& t, std::uintptr_t solid, std::uintptr_t material,
+                       std::uintptr_t out_plane, int h, int w) {
+                  ObjectSlotCounts c;
+                  py::tuple out = counts(t.n_env(), c);
+                  breach_cuda::unit_flight_plane(t, solid, material, out_plane, h, w, c);
+                  return out;
+              }, py::arg("tables"), py::arg("solid"), py::arg("material"), py::arg("out"),
+              py::arg("h"), py::arg("w"),
+              "#29 P7e.1: THE FLIGHT PLANE on the device (combat.flight_plane): out (N, h, w) "
+              "bool = solid | mat_blocks_thrown[material]; returns (changed, faults, refused, "
+              "dropped).");
         m.def("unit_door_uses",
               [counts](const UnitTablesDevice& t, UnitRecordList& req, ObjectTable& doors) {
                   ObjectSlotCounts c;
@@ -1430,7 +1422,7 @@ PYBIND11_MODULE(breach_physics, m) {
                  py::object claims, py::object noise, py::object blast_log,
                  py::object door_table, py::object door_tiles, py::object duct_table,
                  py::object vent_table, py::object source_table, py::object source_tiles,
-                 std::uintptr_t source_out, py::object signal_tables, py::object ticks,
+                 std::uintptr_t source_out, py::object signal_tables, std::uintptr_t tick_row,
                  py::object timed_table, py::object heat_table, py::object horde) {
                   if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
                       throw std::invalid_argument("applier_run: ptrs must be (N_PLANES,) uint64");
@@ -1477,8 +1469,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   L.source_out = source_out;
                   // #29 P6b.3: the signal tables, (signal, sensor, sensor_tile, node,
                   // node_in, pump, pump_in, door_drive), each an ObjectTableBuffer or
-                  // None, and the EMIT stage's per-env ticks
-                  py::array_t<int64_t, py::array::c_style | py::array::forcecast> tk;
+                  // None (#29 P7e.1: the EMIT stage's tick is the tick row's)
                   if (!signal_tables.is_none()) {
                       py::sequence seq = signal_tables.cast<py::sequence>();
                       if (py::len(seq) != 8)
@@ -1491,12 +1482,7 @@ PYBIND11_MODULE(breach_physics, m) {
                           *dst[k] = o2.is_none() ? nullptr : o2.cast<breach_cuda::ObjectTable*>();
                       }
                   }
-                  if (!ticks.is_none()) {
-                      tk = ticks.cast<py::array_t<int64_t, py::array::c_style | py::array::forcecast>>();
-                      if (tk.ndim() != 1 || tk.shape(0) != a.n_env())
-                          throw std::invalid_argument("applier_run: ticks must be (N,) int64");
-                      L.ticks = tk.data();
-                  }
+                  L.tick_row = tick_row;            // #29 P7e.1: 0 = none
                   // #29 P7d: the HORDE stage's reach, (hdr, keys, dist, masks, pass,
                   // flags, queues, live, latch, fcap) as ten uint64
                   if (!horde.is_none()) {
@@ -1527,7 +1513,7 @@ PYBIND11_MODULE(breach_physics, m) {
               py::arg("duct_table") = py::none(), py::arg("vent_table") = py::none(),
               py::arg("source_table") = py::none(), py::arg("source_tiles") = py::none(),
               py::arg("source_out") = (std::uintptr_t)0,
-              py::arg("signal_tables") = py::none(), py::arg("ticks") = py::none(),
+              py::arg("signal_tables") = py::none(), py::arg("tick_row") = (std::uintptr_t)0,
               py::arg("timed_table") = py::none(), py::arg("heat_table") = py::none(),
               py::arg("horde") = py::none(),
               "#29 P6.4b / P7a.1: the per-env serial applier over the effect lists in a "
@@ -1571,9 +1557,7 @@ PYBIND11_MODULE(breach_physics, m) {
               "#29 P7c.2 TEST-ONLY: the blast walk and air read per query (N, K, 3 + 2 M).");
         m.def("unit_melee",
               [](UnitStoreDevice& s, const UnitTablesDevice& t, FieldApplier& a,
-                 py::array_t<int64_t, py::array::c_style> ticks) {
-                  if (ticks.ndim() != 1 || ticks.shape(0) != s.n_env())
-                      throw std::invalid_argument("unit_melee: ticks must be (n_env,)");
+                 std::uintptr_t tick_row) {
                   py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env()),
                       drp(s.n_env());
                   breach_cuda::UnitDamageCounts c;
@@ -1581,9 +1565,9 @@ PYBIND11_MODULE(breach_physics, m) {
                   c.faults = flt.mutable_data();
                   c.refused = ref.mutable_data();
                   c.dropped = drp.mutable_data();
-                  breach_cuda::unit_melee(s, t, a, ticks.data(), c);
+                  breach_cuda::unit_melee(s, t, a, tick_row, c);
                   return py::make_tuple(cov, flt, ref, drp);
-              }, py::arg("store"), py::arg("tables"), py::arg("effects"), py::arg("ticks"),
+              }, py::arg("store"), py::arg("tables"), py::arg("effects"), py::arg("tick_row"),
               "#29 P7a.1: slot 4a (combat.process_melee_intents) on the device store, its "
               "blows appended to the effect list; returns (coverage, faults, refused, "
               "dropped records).");
@@ -1591,13 +1575,8 @@ PYBIND11_MODULE(breach_physics, m) {
         m.def("unit_shooting",
               [](UnitStoreDevice& s, const UnitTablesDevice& t, FieldApplier& a,
                  breach_cuda::ObjectTable& rounds, breach_cuda::ObjectTable& noise,
-                 py::array_t<int64_t, py::array::c_style> ticks,
-                 py::array_t<int64_t, py::array::c_style> keys, std::uintptr_t solid,
+                 std::uintptr_t tick_row, std::uintptr_t solid,
                  std::uintptr_t material, int h, int w) {
-                  if (ticks.ndim() != 1 || ticks.shape(0) != s.n_env() || keys.ndim() != 2 ||
-                      keys.shape(0) != s.n_env() || keys.shape(1) != 3)
-                      throw std::invalid_argument(
-                          "unit_shooting: ticks must be (n_env,), keys (n_env, 3)");
                   const py::ssize_t n = s.n_env();
                   py::array_t<int64_t> cov(n), flt(n), ref(n), drp(n), rl(n), nl(n);
                   breach_cuda::UnitShootCounts c;
@@ -1609,24 +1588,18 @@ PYBIND11_MODULE(breach_physics, m) {
                   c.noise_lost = nl.mutable_data();
                   breach_cuda::ShootPlanes p;
                   p.solid = solid; p.material = material; p.h = h; p.w = w;
-                  breach_cuda::unit_shooting(s, t, a, rounds, noise, ticks.data(), keys.data(),
-                                             p, c);
+                  breach_cuda::unit_shooting(s, t, a, rounds, noise, tick_row, p, c);
                   return py::make_tuple(cov, flt, ref, drp, rl, nl);
               }, py::arg("store"), py::arg("tables"), py::arg("effects"), py::arg("rounds"),
-              py::arg("noise"), py::arg("ticks"), py::arg("keys"), py::arg("solid"),
+              py::arg("noise"), py::arg("tick_row"), py::arg("solid"),
               py::arg("material"), py::arg("h"), py::arg("w"),
               "#29 P7a.2: slot 4's shooting (combat.process_shooting, the continuous path) "
               "on the device store; returns (coverage, faults, refused, dropped records, "
               "rounds lost, noises lost).");
         m.def("unit_rounds",
               [](UnitStoreDevice& s, const UnitTablesDevice& t, FieldApplier& a,
-                 breach_cuda::ObjectTable& rounds, py::array_t<int64_t, py::array::c_style> ticks,
-                 py::array_t<int64_t, py::array::c_style> keys, std::uintptr_t solid,
+                 breach_cuda::ObjectTable& rounds, std::uintptr_t tick_row, std::uintptr_t solid,
                  std::uintptr_t material, int h, int w, bool compact) {
-                  if (ticks.ndim() != 1 || ticks.shape(0) != s.n_env() || keys.ndim() != 2 ||
-                      keys.shape(0) != s.n_env() || keys.shape(1) != 3)
-                      throw std::invalid_argument(
-                          "unit_rounds: ticks must be (n_env,), keys (n_env, 3)");
                   const py::ssize_t n = s.n_env();
                   py::array_t<int64_t> cov(n), flt(n), ref(n), drp(n), rl(n);
                   breach_cuda::UnitShootCounts c;
@@ -1637,11 +1610,10 @@ PYBIND11_MODULE(breach_physics, m) {
                   c.rounds_lost = rl.mutable_data();
                   breach_cuda::ShootPlanes p;
                   p.solid = solid; p.material = material; p.h = h; p.w = w;
-                  breach_cuda::unit_rounds(s, t, a, rounds, ticks.data(), keys.data(), p, compact,
-                                           c);
+                  breach_cuda::unit_rounds(s, t, a, rounds, tick_row, p, compact, c);
                   return py::make_tuple(cov, flt, ref, drp, rl);
               }, py::arg("store"), py::arg("tables"), py::arg("effects"), py::arg("rounds"),
-              py::arg("ticks"), py::arg("keys"), py::arg("solid"), py::arg("material"),
+              py::arg("tick_row"), py::arg("solid"), py::arg("material"),
               py::arg("h"), py::arg("w"), py::arg("compact") = true,
               "#29 P7a.2: slot 2''s march (Simulation._march_rounds) over the round table; "
               "returns (coverage, faults, refused, dropped records, rounds lost).");

@@ -597,9 +597,8 @@ class FireScene:
     chosen ticks (adjacent tiles in one tick), and the two doors appended to
     slot 7's list on chosen ticks (no shipped door material is flammable).
     ``variant`` moves the layout, the seed, the ignition and the schedule;
-    ``boundary`` / ``ts`` the map. Fixtures for the clears: rad_net / rad_amb /
-    rad_flux written non-zero before each tick (nothing writes them since T6),
-    so a dropped clear shows."""
+    ``boundary`` / ``ts`` the map. (#29 P7e.1: the clears are `heat` alone;
+    the legacy rad_net / rad_amb / rad_flux fixtures went with their clears.)"""
 
     def __init__(self, variant=0, boundary="space", ts=1.0 / 3.0, extra_units=0):
         from simulation import atmosphere_fixed as afx
@@ -653,10 +652,6 @@ class FireScene:
         for t in self.schedule.get(sim.tick, ()):
             if int(g.material[t]) == MAT_WOOD:
                 g.wall_hp[t] = 1
-        k = sim.tick + 1 + self.v
-        g.rad_net[k % FH, (3 * k) % FW] = 1000 + k
-        g.rad_amb[(k + 5) % FH, k % FW] = -(2000 + k)
-        g.rad_flux[(2 * k) % FH, (k + 7) % FW] = 3000 + k
         sim.step()
 
 
