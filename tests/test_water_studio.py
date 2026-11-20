@@ -22,8 +22,9 @@ import gen_water_studio as gen  # noqa: E402
 DATA_FILES = ("level.toml", "tilemap.csv", "water_init.npy", "match.toml")
 IMAGE_FILES = ("diffuse.png", "normal.png")
 # A flood that still runs is metres per second; a settled room's slosh and
-# the solver's rest noise are hundredths (measured 2026-11-20: ~2.3 m/s at the
-# shot's frame, ~0.1 m/s after 45 s). Generous both ways.
+# the solver's rest noise are hundredths (measured 2026-11-20: ~1.95 m/s at
+# the shot's frame, ~0.25 m/s a minute in, when the front has long reached the
+# basin). Generous both ways.
 FLOWING_MPS = 0.5
 
 
