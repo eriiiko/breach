@@ -12,6 +12,7 @@
 //
 // CLASS T (training only): nothing in the played tick calls this TU.
 // ============================================================================
+#include "cuda_unit_books.h"   // #29 P7e.4: the deferred books
 #include "cuda_unit_events.h"
 #include "cuda_batch.cuh"          // tstream, benv
 #include "unit_events_layout.h"    // GENERATED: the event record layout
@@ -105,6 +106,15 @@ void UnitRecordList::gather() {
 }
 
 void UnitRecordList::download(int64_t* recs, int64_t* counts, int64_t* dropped) {
+    if (recs == nullptr && books_deferring()) {      // #29 P7e.4: the counts deferred
+        if (counts) books_defer("list_counts", d_count_, (size_t)n_env_);
+        if (dropped) books_defer("list_dropped", d_drop_, (size_t)n_env_);
+        for (int e = 0; e < n_env_; ++e) {
+            if (counts) counts[e] = 0;
+            if (dropped) dropped[e] = 0;
+        }
+        return;
+    }
     if (recs)
         ev_check(cudaMemcpyAsync(recs, d_ring_, (size_t)n_env_ * cap_ * width_ * sizeof(int64_t),
                                  cudaMemcpyDeviceToHost, tstream()),

@@ -417,8 +417,11 @@ class DeviceTable:
         return self._buf.download()
 
     def check(self, what: str = "") -> None:
-        """Refuse by name an env whose table overflowed."""
-        _rows, _counts, over = self.download()
+        """Refuse by name an env whose table overflowed (#29 P7e.4: the
+        counts alone come down -- the overflow is the record list's dropped
+        count -- deferred to the conductor's one books read while it is
+        open)."""
+        _counts, over = self._buf.counts()
         bad = [e for e in range(len(over)) if int(over[e])]
         if bad:
             e = bad[0]

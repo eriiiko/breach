@@ -21,6 +21,7 @@
 //
 // CLASS T (training only): nothing in the played tick calls this TU.
 // ============================================================================
+#include "cuda_unit_books.h"   // #29 P7e.4: the deferred books
 #include "cuda_unit_kernels.h"
 #include "cuda_object_table.h"
 #include "cuda_unit_lib.cuh"
@@ -96,11 +97,13 @@ void unit_door_uses(const UnitTablesDevice& tables, UnitRecordList& requests, Ob
     du_check(cudaMemsetAsync(g_counts, 0, want * sizeof(int64_t), tstream()), "zero counts");
     k_door_uses<<<dim3(1, n), 1, 0, tstream()>>>(list_view(requests), list_view(doors), g_counts);
     du_check(cudaGetLastError(), "launch");
-    std::vector<int64_t> h(want);
-    du_check(cudaMemcpyAsync(h.data(), g_counts, want * sizeof(int64_t), cudaMemcpyDeviceToHost,
-                             tstream()),
-             "D2H counts");
-    du_check(counted_sync(tstream(), "cuda_unit_doors.cu:103"), "sync");
+    std::vector<int64_t> h(want, 0);
+    if (!books_defer("door_counts", g_counts, want)) {   // #29 P7e.4
+        du_check(cudaMemcpyAsync(h.data(), g_counts, want * sizeof(int64_t),
+                                 cudaMemcpyDeviceToHost, tstream()),
+                 "D2H counts");
+        du_check(counted_sync(tstream(), "cuda_unit_doors.cu:103"), "sync");
+    }
     for (int e = 0; e < n; ++e) {
         if (out.changed) out.changed[e] = h[(size_t)e * C_W + C_CHANGED];
         if (out.faults) out.faults[e] = h[(size_t)e * C_W + C_FAULTS];

@@ -38,6 +38,7 @@
 // planes untouched (its tile range is empty) and the Python face refuses the
 // flush by name at THE ONE READ (books + faults, one copy).
 // ============================================================================
+#include "cuda_unit_books.h"   // #29 P7e.4: the deferred books
 #include "cuda_edit_flush.h"
 
 #include <cuda_runtime.h>
@@ -449,6 +450,11 @@ void EditFlush::run_host_pack(const int64_t* buf, int n_edits, int n_tiles,
 void EditFlush::download_books(int64_t* books, uint64_t* faults) {
     const size_t N = (size_t)n_env_;
     std::vector<unsigned long long> h(N * EDQ_SLOTS + N);
+    if (books_defer("flush_books", d_books_, N * EDQ_SLOTS + N)) {   // #29 P7e.4
+        std::memset(books, 0, N * EDQ_SLOTS * sizeof(int64_t));
+        for (size_t e = 0; e < N; ++e) faults[e] = ~(uint64_t)0;   // "no fault"
+        return;
+    }
     ef_check(cudaMemcpyAsync(h.data(), d_books_, h.size() * sizeof(unsigned long long),
                              cudaMemcpyDeviceToHost, tstream()), "D2H books");
     ef_check(counted_sync(tstream(), "cuda_edit_flush.cu:454"), "books sync");

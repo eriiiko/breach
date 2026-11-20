@@ -56,6 +56,40 @@ class ConductorRefused(RuntimeError):
     """A sim the device conductor does not serve (named at its build)."""
 
 
+class ConductorFault(RuntimeError):
+    """A tick in which a face's operands left its proved range (named at the
+    one books read: the slot, the count)."""
+
+
+class ConductorOverflow(RuntimeError):
+    """A tick in which a record list (the ring, the request list, an effect
+    list, an object or entity table, the cell buffer, the claims list, the
+    edit door) dropped records past its capacity (named at the books read)."""
+
+
+#: The deferred arena's capacity in int64 words (every face's counts of one
+#: tick at N = 1 hold a few hundred).
+BOOKS_CAP = 1 << 14
+
+
+def _refusing_slots() -> dict:
+    """The call lines whose kernel's REFUSED count is a refusal by name (the
+    face raises it at its launch); every other refused count is a book
+    (``store.last_refused``: the plants a full table refuses, the doses the
+    body's store clips)."""
+    from simulation.unit_kernels import ShotRefused, SpraySlotRefused
+    return {"4 shooting": ShotRefused, "4b sprays": SpraySlotRefused}
+
+
+def _book_refusals() -> tuple:
+    """The applier books that refuse the run by name, in the walk face's order."""
+    from simulation import applier as a
+    return (("dropped", a.EffectOverflow), ("refused", a.EffectRefused),
+            ("bulk_refused", a.BulkGasOverflow), ("ledger_refused", a.LedgerRangeRefused),
+            ("signal_refused", a.SignalRangeRefused), ("horde_refused", a.HordeCacheOverflow),
+            ("heat_refused", a.HeatChainRefused), ("faults", a.ApplierFault))
+
+
 def _move(a):
     from simulation import intents
     return intents.MoveDirIntent(int(a[1]), int(a[2]), int(a[3]))
@@ -334,17 +368,38 @@ class DeviceConductor:
 
     def tick(self) -> None:
         """ONE reference tick on the device (``Simulation.step()``'s slots in
-        order, one call line each)."""
+        order, one call line each), its every count deferred to THE ONE
+        BOOKS READ at its end (:meth:`_books_read`), where a refusal is
+        raised by name: a refused tick is refused (the state is partly
+        written; the caller stops)."""
+        bp = self.bp
+        bp.conductor_books_begin(BOOKS_CAP)
+        try:
+            self._walk(bp.conductor_label)
+        except BaseException:
+            if bp.conductor_books_deferring():
+                bp.conductor_books_end()
+            raise
+        finally:
+            bp.conductor_label("")
+        words, entries = bp.conductor_books_end()
+        self.ticks += 1
+        self._books_read(words, entries)
+
+    def _walk(self, L) -> None:
         from simulation import physics_runner as pr, unit_kernels as uk
         from simulation import edit_door as _ed  # noqa: F401
         sim, st, f, tr = self.sim, self.store, self.fields, self.trow
         lists = self.walk
         # 1. the event ring begun; the trace books are host books (reset)
+        L("1 tick head")
         self.ring.begin()
         sim.gmap.reset_trace_books()
         # 1a. integrate + turn
+        L("1a integrate + turn")
         uk.integrate_turn(st)
         # 1b. the hand verbs; their table writes (throws, plants, uses)
+        L("1b intents")
         self.req.begin()
         uk.flight_plane(st, self._planes(uk.FLIGHT_SOURCES), out=self.flight)
         uk.verbs_device(st, self.req, tr, self.doors, self.door_tiles, self.charges,
@@ -352,44 +407,60 @@ class DeviceConductor:
         uk.table_appends(st, self.req, self.grenades, self.charges)
         uk.door_uses(st, self.req, self.doors)
         # 1b'. the commander's orders
-        uk.apply_orders(st, self._order_table())
+        L("1b' orders")
+        if self._orders:                     # dormant on an empty latch, as the host
+            uk.apply_orders(st, self._order_table())
         # 1c. exposure decays
+        L("1c exposure decay")
         uk.exposure_decay(st)
         # 2. the grenades fly (the flight plane as the slot found it), the
         # fuse-outs detonate at once
+        L("2 grenades")
         uk.flight_plane(st, self._planes(uk.FLIGHT_SOURCES), out=self.flight)
         self.det.begin()
         uk.grenades(st, self.grenades, self.det, tr, {"flight": self.flight})
         uk.detonate(st, self.det, f, self.ring, lists, tick_row=tr)
         # 2'. the rounds in flight march, then their landing
+        L("2' rounds")
         self.eff.begin()
         uk.rounds_march(st, self.eff, self.rounds, tr, self._planes(uk.SHOOT_FIELDS))
         uk.resolve(st, self.eff, f, self.ring, lists, tick_row=tr)
         # 2b. statuses
+        L("2b statuses")
         uk.status_tick(st, self.ring)
         # 3. movement
+        L("3 movement")
         uk.movement(st, self._planes(uk.MOVEMENT_FIELDS))
         # 4. shooting, 4a. melee, 4b. sprays (phase A, one effect list)
+        L("4 shooting")
         self.eff.begin()
         self.cells.begin()
         uk.shooting(st, self.eff, self.rounds, self.noise, tr, self._planes(uk.SHOOT_FIELDS))
+        L("4a melee")
         uk.melee(st, self.eff, tr)
+        L("4b sprays")
         uk.sprays(st, self.eff, self.cells, {"solid": f["solid"]}, box_max=self.box_max)
         # 4c. phase B
+        L("4c resolve")
         uk.resolve(st, self.eff, f, self.ring, lists, tick_row=tr)
         # 5. the horde (drains the noise list)
+        L("5 zombie AI")
         uk.horde(st, self.aux, f, self.ring, self.noise, self.doors, self.door_tiles,
                  self.cache, self._horde_latch(), tr)
         # 6. the stamp from the store
+        L("6 stamp_units")
         _r, self.stamp_scratch = uk.stamp(st, self._planes(n for n, _d in uk.STAMP_FIELDS),
                                           self.stamp_scratch)
         # 6b. the flush from the door
+        L("6b edit flush")
         self.flush.run(tr, st.tables, self._planes(n for n, _d in _ed.FLUSH_PLANES),
                        self.n_gases, self.o2, self.n2)
-        self.flush.fold([sim.gmap], [sim.draws])
         # 7. the physics head on the device (the blast source), then slot 7
+        L("7 physics")
         self.aux.begin()
+        L("7 physics head (sources)")
         uk.take_sources(st, self.aux, f, lists, source_out=self.src_out)
+        L("7 physics")
         was = [bool(getattr(self.bp, f"get_{b}_backend")()) for b in SLOT7_BACKENDS]
         for b in SLOT7_BACKENDS:
             getattr(self.bp, f"set_{b}_backend")(True)
@@ -400,52 +471,130 @@ class DeviceConductor:
             for b, on in zip(SLOT7_BACKENDS, was):
                 getattr(self.bp, f"set_{b}_backend")(on)
         # 9. burn-through (the resident fire's list ranked on the device)
+        L("9 burn-through walls")
         uk.burn_through_device(st, self.eff, f,
                                uk.BurnList.resident(self.bp, 1, self.h, self.w), tick_row=tr)
         # 9b. over-pressure walls
+        L("9b over-pressure walls")
         uk.burst_walls(st, self.eff, f, tick_row=tr)
         # 9c. heat, 9c2. wind, 9c3. gas rows (+ poison, bite, corpse, stress)
+        L("9c unit heat damage")
         uk.heat_damage(st, self.ring, self._planes(uk.HEAT_FIELDS), self.claims)
+        L("9c2 wind on units")
         uk.wind_impulse(st, self._planes(uk.WIND_FIELDS))
+        L("9c3 gas rows")
         uk.gas_rows(st, self.ring, self._planes(uk.GAS_FIELDS), self.claims)
         # 9d. ignition
+        L("9d ignition")
         uk.ignition(st, self._planes(n for n, _d in uk.IGNITION_FIELDS))
         # 9e. the entities
+        L("9e(a) signals")
         sig = self.sig
         if self.has_bus:
             uk.signals_emit(st, self.aux, f, sig, tr)
+            L("9e(b) logic")
             uk.signals_logic(st, self.aux, sig)
+            L("9e(c) door inputs")
             uk.signals_door_inputs(st, self.aux, sig)
             if self.has_pumps:
+                L("9e(d) pumps")
                 uk.signals_pumps(st, self.aux, f, sig)
+        L("9e(d) vents")
         if self.has_ducts:
             uk.sweep_vents(st, self.aux, f, self.ducts, self.vents)
+        L("9e(d) doors")
         if self.has_doors:
             uk.sweep_doors(st, self.aux, f, self.doors, self.door_tiles, tick_row=tr)
+        L("9e(d') timed charges")
         if self.has_timed:
             self.aux.begin()
             uk.timed_charges(st, self.aux, f, self.ring, lists, self.timed, tick_row=tr)
+        L("9e(d') planted charges")
         self.det.begin()
         uk.charges_tick(st, self.charges, self.det, tr)
         uk.detonate(st, self.det, f, self.ring, lists, tick_row=tr)
+        L("9e(d'') heat sources")
         if self.has_heat:
             self.aux.begin()
             uk.heat_sources(st, self.aux, f, self.ring, lists, self.heat, tick_row=tr)
         else:
-            self.blast_log.begin()
+            # a source-free level only empties the log (the record list's
+            # begin: its count to 0, on the tick stream, no host round trip)
+            self.blast_log.buffer.begin()
+        L("9e(e) swap")
         if self.has_bus:
             uk.signals_swap(st, self.aux, sig)
         # the tick-end clears: the heat plane, the claims list
+        L("tick-end clears")
         uk.tick_end_clears(self.bp, {"heat": f["heat"]})
         self.claims.begin()
         # 10. the tick advances (the device row and the twin's host clock)
+        L("10 tick advance")
         self._advance()
         # 10'. orders expire; the ruleset's tick end (conversion, the prune)
+        L("10' order expiry")
         uk.expire_orders(st, tr)
+        L("10 tick end (ruleset)")
         uk.convert_zombies(st)
         uk.prune_grenades(self.grenades)
         # 11. the team picture: host, a match only, in no digest (not run)
         self.ticks += 1
+
+    # ------------------------------------------------------------------
+    # THE ONE BOOKS READ
+    # ------------------------------------------------------------------
+    def _books_read(self, words, entries) -> None:
+        """Every face's deferred counts (``cuda_unit_books.h``: one D2H, one
+        sync), raised BY NAME as each face would have raised at its own
+        launch -- the slot (the call line's label) and what was crossed --
+        in walk order (the first refusal wins). The device flush's books are
+        folded into the twin's map books and draws here."""
+        from simulation import applier, edit_door as ed
+        from simulation.physics_runner import fold_edit_queue_books
+        w = np.asarray(words, dtype=np.int64)
+        self.last_books = {}
+        for label, kind, off, n in entries:
+            v = w[int(off):int(off) + int(n)]
+            where = f"tick {int(self.sim.tick) - 1}, slot {label!r}"
+            if kind == "counts":                       # (coverage, faults, refused)
+                if v[1]:
+                    raise ConductorFault(f"device conductor ({where}): {int(v[1])} row(s) left "
+                                         f"the range the kernel was proved for")
+                if v[2] and label in _refusing_slots():
+                    raise _refusing_slots()[label](
+                        f"device conductor ({where}): {int(v[2])} refused by name "
+                        f"(a refused count)")
+            elif kind == "list_dropped":
+                if v.any():
+                    raise ConductorOverflow(f"device conductor ({where}): a list dropped "
+                                            f"{int(v.sum())} record(s) past its capacity")
+            elif kind == "books":
+                b = applier.books_dict(v.reshape(1, -1))
+                for book, exc in _book_refusals():
+                    if int(b[book][0]):
+                        raise exc(f"device conductor ({where}): {book} = {int(b[book][0])}")
+                for k_, x in b.items():
+                    self.last_books[k_] = self.last_books.get(k_, 0) + int(x[0])
+            elif kind in ("door_counts", "object_counts"):
+                if v[1]:
+                    raise ConductorFault(f"device conductor ({where}): {int(v[1])} fault(s)")
+                if kind == "object_counts" and v[2]:
+                    from simulation.unit_kernels import ObjectSlotRefused
+                    raise ObjectSlotRefused(f"device conductor ({where}): a WEGO grenade")
+            elif kind == "flush_books":
+                slots = self.flush.slots
+                books, word = v[:slots], int(v[slots]) & ((1 << 64) - 1)
+                if word != (1 << 64) - 1:
+                    code, row = word >> 32, word & 0xffffffff
+                    name, why = ed.FLUSH_FAULTS.get(code, ("?", "an unknown code"))
+                    raise ed.EditFlushRefused(f"device conductor ({where}): the flush refused "
+                                              f"({name}: {why}; row {row})", 0, code, row)
+                if int(books[self.flush.fail_slot]):
+                    raise ed.EditQueueFailed(f"device conductor ({where}): "
+                                             f"{int(books[self.flush.fail_slot])} edit result(s) "
+                                             f"left their field's range")
+                fold_edit_queue_books(self.bp.EDIT_QUEUE_LAYOUT, self.sim.gmap, books,
+                                      self.sim.draws)
 
     def _advance(self) -> None:
         from simulation.unit_draws import TICK_ROW_KEY, _M32

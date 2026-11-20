@@ -47,6 +47,7 @@
 //
 // CLASS T (training only): nothing in the played tick calls this TU.
 // ============================================================================
+#include "cuda_unit_books.h"   // #29 P7e.4: the deferred books
 #include "cuda_unit_kernels.h"
 #include "cuda_object_table.h"
 #include "cuda_unit_lib.cuh"
@@ -480,11 +481,13 @@ __global__ void k_flight_plane(const int64_t* tables, const uint8_t* solid, cons
 
 void end_counts(int n, const ObjectSlotCounts& out, UnitRecordList* dropped_of) {
     ob_check(cudaGetLastError(), "launch");
-    std::vector<int64_t> h((size_t)n * C_W);
-    ob_check(cudaMemcpyAsync(h.data(), g_counts.d, h.size() * sizeof(int64_t),
-                             cudaMemcpyDeviceToHost, tstream()),
-             "D2H counts");
-    ob_check(counted_sync(tstream(), "cuda_unit_objects.cu:487"), "counts sync");
+    std::vector<int64_t> h((size_t)n * C_W, 0);
+    if (!books_defer("object_counts", g_counts.d, h.size())) {   // #29 P7e.4
+        ob_check(cudaMemcpyAsync(h.data(), g_counts.d, h.size() * sizeof(int64_t),
+                                 cudaMemcpyDeviceToHost, tstream()),
+                 "D2H counts");
+        ob_check(counted_sync(tstream(), "cuda_unit_objects.cu:487"), "counts sync");
+    }
     for (int e = 0; e < n; ++e) {
         if (out.changed) out.changed[e] = h[(size_t)e * C_W + C_CHANGED];
         if (out.faults) out.faults[e] = h[(size_t)e * C_W + C_FAULTS];

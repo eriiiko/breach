@@ -17,6 +17,7 @@
 //
 // CLASS T (training only): nothing in the played tick calls this TU.
 // ============================================================================
+#include "cuda_unit_books.h"   // #29 P7e.4: the deferred books
 #include "cuda_unit_store.h"
 #include "cuda_batch.cuh"          // tstream
 #include "unit_store_layout.h"     // GENERATED: the row layout
@@ -115,6 +116,14 @@ void UnitStoreDevice::begin_counts() {
 
 void UnitStoreDevice::end_counts(int64_t* coverage, int64_t* faults, int64_t* refused) {
     const size_t cnt_bytes = (size_t)3 * n_env_ * sizeof(unsigned long long);
+    if (books_defer("counts", d_cnt_, (size_t)3 * n_env_)) {   // #29 P7e.4
+        for (int e = 0; e < n_env_; ++e) {
+            if (coverage) coverage[e] = 0;
+            if (faults) faults[e] = 0;
+            if (refused) refused[e] = 0;
+        }
+        return;
+    }
     us_check(cudaMemcpyAsync(h_cnt_, d_cnt_, cnt_bytes, cudaMemcpyDeviceToHost, tstream()),
              "D2H counts");
     us_check(counted_sync(tstream(), "cuda_unit_store.cu:120"), "counts sync");

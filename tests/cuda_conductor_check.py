@@ -129,10 +129,10 @@ def locate(ref, twin) -> str:
     from field_ab_harness import ENTITY_DIGEST_KEY, UNIT_DIGEST_KEY
     d = _diff_unit_state(ref.tick, a[UNIT_DIGEST_KEY], b[UNIT_DIGEST_KEY])
     if d:
-        return "; ".join(d[:4])
+        return "; ".join(d[:2])[:600]
     d = _diff_entity_state(ref.tick, a[ENTITY_DIGEST_KEY], b[ENTITY_DIGEST_KEY])
     if d:
-        return "; ".join(d[:4])
+        return "; ".join(d[:2])[:600]
     return "the digests differ but no field, unit or entity was located (swarm?)"
 
 
@@ -196,6 +196,11 @@ def run_gate(name, ref, twin, ticks, intents_of=None, step_ref=None, probe=None,
     if intents_of is None:
         tap = Tap()
         ref.attach_intent_log(tap)
+    if probe is not None:
+        probe.n = 0
+    if BREAK == "slot":                  # the S1 red: slot 2b (the statuses) left out
+        from simulation import unit_kernels
+        unit_kernels.status_tick = lambda store, ring: np.zeros(store.shape[0], np.int64)
     t0 = time.perf_counter()
     c = cd.DeviceConductor(twin, bp=bp)
     t_build = time.perf_counter() - t0
@@ -521,8 +526,138 @@ def part_pinned(which=("bots", "bots_v1")):
             print(f"  pinned {w}: every one of {end} ticks equal")
 
 
+
+# ---------------------------------------------------------------------------
+# PART SYNCS (S4): the host syncs of a conductor tick
+# ---------------------------------------------------------------------------
+#: The named syncs a conductor tick may make: the physics' two (the EOS
+#: stage's max n_sub, the tail's books D2H) and THE ONE BOOKS READ; and, on a
+#: tick whose order latch holds an order, the order table's staging (the
+#: latch's H2D waits for its pinned buffer).
+NAMED_SYNCS = ("max_n_sub", "books", "books_read")
+ORDER_SYNC = "1b' orders"
+
+
+class SyncCount:
+    """Counts a conductor tick's host syncs: the C++ unit side and the
+    resident tick (``bp.host_sync_log_begin`` / ``_end``: every counted_sync,
+    counted_event_sync, tick_sync_point and the books read, labelled by the
+    conductor's call line) and every CuPy download (``cupy.ndarray.get``,
+    ``cupy.asnumpy``) made inside the tick."""
+
+    def __init__(self):
+        import cupy as cp
+        self.cp = cp
+        self.py = []
+        self._get, self._asnp = cp.ndarray.get, cp.asnumpy
+        me = self
+
+        def get(a, *k, **kw):
+            me.py.append("cupy.get " + bp.__dict__.get("_label", ""))
+            return me._get(a, *k, **kw)
+
+        def asnumpy(a, *k, **kw):
+            me.py.append("cupy.asnumpy")
+            return me._asnp(a, *k, **kw)
+        cp.ndarray.get = get
+        cp.asnumpy = asnumpy
+
+    def close(self):
+        self.cp.ndarray.get = self._get
+        self.cp.asnumpy = self._asnp
+
+
+def count_syncs(name, ref, twin, ticks, intents_of=None, step_ref=None):
+    """Play the gate's way for ``ticks`` ticks and log each conductor tick's
+    syncs (the gate's download outside the count). Returns the per-tick logs."""
+    tap = None
+    if intents_of is None:
+        tap = Tap()
+        ref.attach_intent_log(tap)
+    c = cd.DeviceConductor(twin, bp=bp)
+    if BREAK == "sync":                  # the S4 red: a face's download inside the tick
+        walk = c._walk
+
+        def broken(L):
+            c.noise.check("break")
+            c.noise.download()
+            walk(L)
+        c._walk = broken
+    sc = SyncCount()
+    logs = []
+    try:
+        for k in range(ticks):
+            tick = int(ref.tick)
+            if step_ref is None:
+                if hasattr(ref, "_conductor_before"):
+                    ref._conductor_before(k)
+                ref.step()
+                ended = False
+            else:
+                ended = step_ref(k)
+            intents = tap.take() if tap is not None else intents_of(tick)
+            c.latch(intents)
+            had_orders = bool(c._orders)
+            sc.py = []
+            bp.host_sync_log_begin()
+            try:
+                c.tick()
+            finally:
+                cx = list(bp.host_sync_log_end())
+            logs.append((tick, cx + sc.py, had_orders))
+            if ended:
+                break
+    finally:
+        sc.close()
+    return logs
+
+
+def judge_syncs(name, logs):
+    from collections import Counter
+    per = Counter()
+    bad = []
+    # the first conductor tick grows the faces' scratch (an allocation, a
+    # sync, once per process): warm-up, reported, never steady state
+    warm = logs[0][1] if logs else []
+    print(f"  {name}: warm-up tick {logs[0][0] if logs else '-'}: {len(warm)} syncs")
+    logs = logs[1:]
+    for tick, log, had_orders in logs:
+        for entry in log:
+            label, _, what = entry.partition(" | ")
+            per[entry] += 1
+            if what in NAMED_SYNCS:
+                continue
+            if had_orders and label == ORDER_SYNC:
+                continue
+            bad.append((tick, entry))
+    n = len(logs)
+    tot = sum(len(lg) for _t, lg, _o in logs)
+    print(f"  {name}: {n} ticks, {tot / max(1, n):.2f} host syncs per conductor tick")
+    for entry, k in sorted(per.items(), key=lambda kv: -kv[1]):
+        print(f"    {k / max(1, n):6.2f} / tick  {entry}")
+    if bad:
+        fail(f"{name}: {len(bad)} sync(s) outside the named ones, first at tick {bad[0][0]}: "
+             f"{bad[0][1]}")
+
+
+def part_syncs():
+    for name in ("payloads", "hazards0"):
+        make, _ = SCENES[name]
+        judge_syncs(name, count_syncs(name, make(), make(), 60))
+    level, rec = record_match(max_ticks=200)
+    from simulation.match_session import MatchSession
+    ref_s = MatchSession(level, rec.spec, seed=rec.seed, replay=rec, breach_physics=bp)
+    twin_s = MatchSession(level, rec.spec, seed=rec.seed, replay=rec, breach_physics=bp)
+
+    def step_ref(k):
+        ref_s.tick()
+        return ref_s.is_terminal()
+    logs = count_syncs("ship_demo", ref_s.sim, twin_s.sim, rec.end_tick,
+                       intents_of=lambda t: rec.intents.get(t, ()), step_ref=step_ref)
+    judge_syncs("ship_demo", logs)
+
 PARTS = {"scenes": part_scenes, "resident": part_resident, "match": part_match,
-         "pinned": part_pinned}
+         "pinned": part_pinned, "syncs": part_syncs}
 
 
 def main(parts=None) -> int:

@@ -20,6 +20,7 @@
 //
 // CLASS T (training only): nothing in the played tick calls this TU.
 // ============================================================================
+#include "cuda_unit_books.h"   // #29 P7e.4: the deferred books
 #include "cuda_applier.h"
 #include "cuda_batch.cuh"          // tstream, benv, bptr, bgrid, env_off
 #include "cuda_topology.cuh"       // the topology seam
@@ -596,6 +597,10 @@ void FieldApplier::stage(const int64_t* recs, const int64_t* counts) {
 
 void FieldApplier::download_books(int64_t* host) {
     const size_t nb = (size_t)n_env() * APPLIER_N_BOOKS;
+    if (books_defer("books", d_books_, nb)) {        // #29 P7e.4
+        std::memset(host, 0, nb * sizeof(int64_t));
+        return;
+    }
     ap_check(cudaMemcpyAsync(h_books_, d_books_, nb * sizeof(int64_t), cudaMemcpyDeviceToHost,
                              tstream()), "D2H books");
     ap_check(counted_sync(tstream(), "cuda_applier.cu:601"), "books sync");

@@ -2823,14 +2823,17 @@ def heat_sources(store, dev_applier, fields: dict, ring, lists, table,
     if lists is None or lists.blast_log is None:
         raise ValueError(f"unit kernel {name}: the sweep reads the blast log "
                          f"(lists.blast_log)")
-    blast_before = lists.blast_log.download()[1].copy()
+    # the log's count names a refusal; under the device conductor's deferred
+    # books (#29 P7e.4) it is not read (the refusal is named at the one read)
+    blast_before = (None if store.bp.conductor_books_deferring()
+                    else lists.blast_log.download()[1].copy())
     cov, books = walk_effects(store, dev_applier, fields, applier.STAGE_HEAT_SOURCES, ring,
                               lists, heat_table=table, tick_row=tick_row)
     if books["heat_refused"].any():
         envs = [int(e) for e in np.nonzero(books["heat_refused"])[0]]
         hr, hc, _ = table.download()
         named = [f"env {e}: bound {heat_chain_bound(hr[e, :int(hc[e])], int(blast_before[e]))}"
-                 for e in envs]
+                 for e in envs] if blast_before is not None else []
         raise applier.HeatChainRefused(
             f"unit kernel {name}: {len(envs)} env(s) refused at the head of the heat-"
             f"source sweep: the chain's proved bound (the blast log's discs plus the living "
