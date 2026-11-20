@@ -343,7 +343,7 @@ files `energy-books.md`, `fields-gas.md`, `determinism-gates.md`,
 - **EOS checkerboard bench** (`tests/_eos_checkerboard_bench.py`). Draft rule: *THE measure of the EOS odd-even mode: any change to steps 1, 3, 4 or 6 runs `--table` (the four tile sizes), `--steps` and `--solve-bias` before and after; never a second probe.* Its pieces `attribute_tick` (per-step split, self-checking bit for bit against the solver's caches), `float_solve` (the exact twin of step 3's operator) and `kick_phi_kernel` are reusable for any later EOS diagnosis.
 - **The property test** `tests/test_eos_checkerboard.py`. Its strict xfail is removed by the remedy patch.
 
-## 7. Patch U: transport in metres (wind is m/s)
+## 7. Patch U: transport in metres (wind is m/s), v2
 
 Erik's ruling (2026-11-20): **wind is m/s.** Steps 1a and 1d move air `u·dt/dx`
 tiles per tick, as every other reader of u already assumes. This is the arc's
@@ -351,8 +351,17 @@ first behaviour patch, before any remedy of §4. It changes no dial, no field,
 no currency and no stencil: only the one scalar that turns a velocity into a
 displacement in tiles.
 
-Line numbers are at `017b80a3`. "Proved" means read in the code or measured;
-"inferred" says so.
+v2 (2026-11-20) folds the two critiques of §7.8 into the text. Every decision
+that answers a finding carries its id (L1-n = lens 1, L2-n = lens 2) and a
+one-line reason. Line numbers are at `d2887dcb`, the branch after main's #221
+and #97 W0/W1 came in (L2-5). **Re-grep at `d2887dcb`:** `git diff 017b80a3
+d2887dcb -- cpp/ src/simulation` is empty, so every C++ and solver site of v1
+holds at the same lines. Main brought two 0.333 m levels: `levels/test_arena`
+(the tests' fixture since #221, a byte copy of today's playground) and
+`levels/water_studio`. Neither adds a transport site; tests on `test_arena`
+fall under the categories of §7.5.
+
+"Proved" means read in the code or measured; "inferred" says so.
 
 ### 7.1 Inventory
 
@@ -365,13 +374,19 @@ is therefore to fold `1/dx` into that one scalar.
 | # | site | today | bug? | change |
 |---|---|---|---|---|
 | 1 | `eos_solver.cpp:785-801`, the per-tick coefficient cache `coeffE_` / `coeffS_` of step 1d | `mul_q16(quantize(min perm), quantize(dt_s))`: no 1/dx, so `u·dt_s` **tiles** | **bug** | `quantize(dt_s)` → the fold (§7.2) |
-| 2 | `eos_solver.cpp:807, 831-832`, the step-1a SL backtrace `bx_q = -mul_q16(u, dt_s_q)` | displacement `u·dt_s` **tiles** | **bug** | the same fold |
-| 3 | `eos_solver.cpp:2192-2225`, `eos_sl_advect_reference` (`bp.eos_sl_advect_ref`) | tiles; the signature has no dx | test twin of 2 | takes `dx`, uses the fold. Its callers pass the solver's `dx`: the checkerboard bench, `test_thermal_mass_axis.py`, `cuda_p62_check.py`, `cuda_kick_check.py`, `cuda_thermal_mass_eos_check.py` |
-| 4 | `cuda_eos_step.cu:264-281, 367, 420, 577`, the per-call pre-stage (`pre.dt_s_q` feeds the coefficients and the SL launch) | tiles | **bug** (device twin of 1 and 2) | `pre.dt_s_q` → the fold |
-| 5 | `cuda_eos_resident.cu:923`, the fold-table row `r.dt_s_q`, read by `K_coeffs` (:230-257) and `cuda_sl_advection.cu:221` | tiles | **bug** (the resident and batched twin) | the fold. The table key (:910) already holds `solver.dx`, so a dx change rebuilds the table |
-| 6 | `cuda_sl_advection.cu:265-269`, the standalone per-call `eos_sl_advect` (`bp.cuda_eos_sl_advect`). Not on a game path: `sl_advection_backend_is_cuda()` is read only at `cuda_eos_step.cu:115` | tiles | test twin of 3 | takes `dx`, uses the fold |
-| 7 | `cuda_eos_step.h:92` and `cuda_resident_tick.h:81`: the field, documented as "the substep dt" | name and comment | — | renamed `dtdx_s_q` ("substep displacement per m/s, in tiles"), so no reader can take it for seconds |
-| 8 | `tests/_eos_checkerboard_bench.py:289-300` (`mass_flux_faces`, `dt_q = _q(dt)`; the comment at :251 says "coeff = perm*dt in TILES") and :414 (the `eos_sl_advect_ref` call) | the Python twin of 1 and 3 | twin | `_q(dt / dx)`, and pass `dx`. Its `ok` column checks it bit for bit against the solver's N cache every tick |
+| 2 | `eos_solver.cpp:806-807, 831-832`, the step-1a SL backtrace `bx_q = -mul_q16(u, dt_s_q)` | displacement `u·dt_s` **tiles** | **bug** | the same fold, computed once per tick beside the cache (the per-substep re-quantize of the same double goes) |
+| 3 | `eos_solver.cpp:2189-2237`, `eos_sl_advect_reference` (`bp.eos_sl_advect_ref`) | tiles; the signature has no dx | test twin of 2 | takes `dx`, REQUIRED with no default (L1-5), uses the fold |
+| 4 | `cuda_eos_step.cu:264-281, 362-368, 420, 577`, the per-call pre-stage (`eos_prestage_finish` sets `pre.dt_s_q`, which feeds the coefficients and the SL launch) | tiles | **bug** (device twin of 1 and 2) | the fold, in `eos_prestage_finish` (`solver.dx`) |
+| 5 | `cuda_eos_resident.cu:923`, the fold-table row `r.dt_s_q`, read by `K_coeffs` (:230-257) and `cuda_sl_advection.cu:221` | tiles | **bug** (the resident and batched twin) | the fold, INSIDE the row's poisoning `try` (L1-4: a refused fold fails the env, the `k_flux_q` pattern). The table key (:910) already holds `solver.dx` |
+| 6 | `cuda_sl_advection.cu:250-269`, the standalone per-call `eos_sl_advect` (`bp.cuda_eos_sl_advect`). Not on a game path: `sl_advection_backend_is_cuda()` is read only at `cuda_eos_step.cu:115` | tiles | test twin of 3 | takes `dx`, REQUIRED, uses the fold |
+| 7 | `cuda_eos_step.h:92` and `cuda_resident_tick.h:81`: the field, documented as "the substep dt"; the parity check's printed name (`cuda_eos_resident.cu:1477, 1500`) | name and comment | none | renamed `dtdx_s_q` ("substep displacement per m/s, in tiles"), so no reader can take it for seconds. Kept although cosmetic: L1-1 offered dropping it to shrink the twin debt, but `eos_solver.h` changes anyway and is in the same twins' files, so dropping it saves nothing |
+| 8 | `tests/_eos_checkerboard_bench.py:289-300` (`mass_flux_faces`, `dt_q = _q(dt)`; the comment at :251) and :414 (the `eos_sl_advect_ref` call) | the Python twin of 1 and 3 | twin | the fold as the C++ computes it: `float32` dt and dx, `/ n_sub`, `max(dx, 1e-6)` (L1-5); passes `dx=eos.dx`. Its `ok` column checks it bit for bit against the solver's N cache every tick |
+
+**Callers of the two SL entries** (re-grepped; each passes a CHOSEN dx, L1-5):
+
+- `tests/_eos_checkerboard_bench.py:414`, `tests/cuda_kick_check.py:818`: the solver's own `eos.dx` (they replay a live tick).
+- `tests/test_thermal_mass_axis.py:764, 900-902, 1006-1008` and `tests/cuda_thermal_mass_eos_check.py:111-118`: `dx=1.0`. They compare two calls with the same scalar (mask on vs off, CPU vs GPU); 1.0 keeps their numbers bit for bit, so they keep testing what they tested.
+- `tests/cuda_p62_check.py:117-123`: a parameter of `_run_pair`; its cases run at `dx=1.0` plus one at 1/3 m, so the CPU-vs-GPU lockstep covers a non-unit fold.
 
 **Riding the fix, with no change of their own.** Proved by reading:
 
@@ -383,15 +398,15 @@ is therefore to fold `1/dx` into that one scalar.
 **Already in metres: not the bug, unchanged.** Proved:
 
 - n_sub's CFL: `cfl_dx_q = quantize(CFL_ADV·dx)` (`eos_solver.cpp:724-728`; device `cuda_eos_step.cu:335, 358-361`, `cuda_eos_resident.cu:760`).
-- The solve's rhs div u: `inv_2dx_q` (:928-929).
+- The solve's rhs div u: `inv_2dx_q` (:536-537).
 - The operator: `aK ∝ dt²/dx²` (:1746).
 - The kick (:1063-1064).
-- Step 6's `k_flux_q = (γ−1)·T_AMB·dt_s/(2dx)` (:742). This is the pdV work of an m/s velocity across a face of a tile measured in metres. It is right as written: the transport is what disagreed with it (§2.6).
+- Step 6's `k_flux_q = (γ−1)·T_AMB·dt_s/(2dx)` (:742; `energy_flux_scalar_folds` on the device). This is the pdV work of an m/s velocity across a face of a tile measured in metres. It is right as written: the transport is what disagreed with it (§2.6). `step()` keeps `dt_s_d` for it (L1-6).
 
 **Deliberately per tile, unchanged.**
 
-- **Trace face diffusion**, `trace_diffusion_dd_q = quantize(d·dt)` (`bulk_transport.cpp:662-668`; the resident tail folds through the same function). The `[gases.*] diffusion` dial is **declared** "1/s, per tile²" (`config.toml:747`), and its stability door `d·dt ≤ 0.25` (`gases.py:169-200`) is in tile units. It is not the wind. Its units are Open question 2 (§7.7).
-- **The legacy entries `bp.bulk_flux_transport` / `bp.cuda_bulk_flux_transport`** (`bulk_transport.cpp:38-72`, `cuda_bulk_transport.cu:650-684`), which say "dx == 1 tile". Their only callers are `test_eos_p1_species_transport.py` and `cuda_bulk_flux_check.py`, both kernel seams, not the game. They stay unchanged: a caller that wants metres passes `dt/dx`. The header comment at `bulk_transport.cpp:16-22` is re-worded to say so.
+- **Trace face diffusion**, `trace_diffusion_dd_q = quantize(d·dt)` (`bulk_transport.cpp:662-668`; the resident tail folds through the same function). The `[gases.*] diffusion` dial is **declared** "1/s, per tile²" (`config.toml:747`), and its stability door `d·dt ≤ 0.25` (`gases.py:169-200`) is in tile units. It is not the wind. **Settled for this patch: it stays per tile²** (§7.7).
+- **The legacy entries `bp.bulk_flux_transport` / `bp.cuda_bulk_flux_transport`** (`bulk_transport.cpp:38-72`, `cuda_bulk_transport.cu:650-684`), which say "dx == 1 tile". Their only callers are `test_eos_p1_species_transport.py` and `cuda_bulk_flux_check.py`, both kernel seams, not the game. They stay unchanged: a caller that wants metres passes `dt/dx`. The header comment at `bulk_transport.cpp:16-22` is re-worded to say so, and gains the `flux_to_dq` range bound of §7.4.
 
 **Wind readers outside the EOS.** All of them already read u as m/s. Proved by reading and by grepping `wind_x|wind_y` over `src/`, `renderer/` and `cpp/src/`:
 
@@ -399,7 +414,7 @@ is therefore to fold `1/dx` into that one scalar.
 |---|---|---|
 | `GameMap.footprint_wind_load` (`gamemap.py:2423`) → `exchange.apply_wind_force`; on the device, `cuda_unit_impulse.cu` (`[twins.wind_impulse]`, class T) | m/s (`N·u²`) | The law is unchanged. The winds a unit meets change, because the flow changes |
 | `fire_simulation.cpp:257` (W = \|u\| in the `k_wind_fan` / `k_wind_strip` terms) | m/s | The law is unchanged |
-| `renderer/gas_detail.py::tame_wind` / `wind_tiles_per_tick` (:117-160): the smoke relief, prop sway, flame VFX and particles all take its one array | m/s, converted honestly as `v / tile_size_m / tps` (#51) | The law is unchanged. **Its calibration `_WIND_VREF = 1.4`, `_WIND_VSENS = 3.0` (:90-91) is stale.** It was fitted with `tools/wind_drift_probe.py` (2026-10-19) to the sim plume's measured centroid drift, which came out at about 0.35-0.5 × the honest \|u\| (:89). Inferred: that is the 1/3 slowdown at 0.333 m plus the smoothing. After patch U the plume moves about 3× faster at the same \|u\| |
+| `renderer/gas_detail.py::tame_wind` / `wind_tiles_per_tick` (:117-160): the smoke relief, prop sway, flame VFX, particles and (since #97 W1) the water's flow take its one array | m/s, converted honestly as `v / tile_size_m / tps` (#51) | The law is unchanged. **Its calibration `_WIND_VREF = 1.4`, `_WIND_VSENS = 3.0` (:90-91) goes stale:** it was fitted with `tools/wind_drift_probe.py` (2026-10-19) to a plume that drifted at about 0.35-0.5 × the honest \|u\| (:89). The re-fit is a separate render-only follow-up patch (L2-7), not this one |
 | `obs_spec_v1.py:147-164` (the observation's `wind_x`/`wind_y`, `cap_q`) | m/s | none |
 | swarm (`swarm.cpp`, `swarm.h`); pumps and vents (`pump_system.py`, `vent_system.py`, the device PUMPS and VENTS stages) | do not read wind (grep) | none. Vent mass enters through the pump primitives; how it then mixes through the room is the corrected transport |
 | `atmosphere_solver.cpp` | the pre-EOS wave solver | not on the tick (`physics_runner.py:500-508`); out of scope |
@@ -417,25 +432,24 @@ definition, both backends. All three device TUs already include the header
 q16 eos_transport_step_q(float dt, int n_sub, float dx) {
     const double dx_d   = std::max((double)dx, 1e-6);   // == step()'s dx_d
     const double dt_s_d = (double)dt / (double)n_sub;   // == step()'s dt_s_d
-    return quantize(dt_s_d / dx_d);
+    const q16 r = quantize(dt_s_d / dx_d);
+    if (r < 0 || r > FP_ONE) throw std::runtime_error(...);   // range guard
+    return r;
 }
 ```
 
-**Who calls it.** All six fold sites:
-
-- `step()`, once per tick; it replaces `dts_q_c` and the per-substep `dt_s_q`;
-- the SL reference;
-- the per-call pre-stage;
-- the fold table;
-- the standalone SL entry.
+**Who calls it.** All six fold sites: `step()` (once per tick, replacing
+`dts_q_c` and the per-substep `dt_s_q`), the SL reference, the per-call
+pre-stage (`eos_prestage_finish`), the fold table (inside its `try`), and the
+standalone SL entry.
 
 **Why this form.**
 
 - It is the house idiom: a per-tick host double fold, quantized once, like `k_flux_q` and `K_raw`.
 - It is not `mul_q16(dt_s_q, quantize(1/dx))`, which would round twice at every dx ≠ 1.
-- It replaces six double folds with one, so the float ratchet's counts hold or go down.
-- It carries an always-compiled range guard in the `k_flux_q` idiom (:743): a result `> FP_ONE` is refused (a tile under about 4 cm at 24 tps).
+- It carries an always-compiled range guard in the `k_flux_q` idiom (:751): a result above `FP_ONE` (one tile per m/s per substep: a tile under about 4 cm at 24 tps) is refused. **At 1.0 m it is a behaviour change only for dt_s > 1 s** (L1-4), which no caller reaches: the game's dt is 1/tps and the largest test dt is 1/24 s (grep). Accepted: it is the range proof's price, and a refusal is loud.
 - Zero stays legal: `test_eos_div_face_form.py`'s `TINY_DT` relies on a zero displacement, and `quantize(1e-6/0.333) == 0`.
+- (L1-6, L2-10) v1's float-ratchet argument is dropped: these TUs are not in `SIM_TUS`, so the ratchet does not count them either way.
 
 **Bit identity at dx = 1.0 m.** Proved by arithmetic:
 
@@ -444,14 +458,12 @@ q16 eos_transport_step_q(float dt, int n_sub, float dx) {
 - Every downstream kernel consumes only that integer, through unchanged code.
 - So every field, book and digest at 1.0 m is unchanged bit for bit.
 
-**The gate already exists.**
+**The oracles that must not move.**
 
-- `tests/field_ab_harness.py::_scenario_level` is a 16×16 room at `tile_size_m = 1.0`.
-- `default_scenario_sim` puts fire, smoke, water, a wave pulse, a unit and a hull breach to vacuum in it, so wind is non-zero and venting runs.
-- It is the scenario `tests/_xarch_perfield_digest.py` hashes as `GOLDEN_AGGREGATE`. **`GOLDEN_AGGREGATE` must not move:** a changed hash at 1.0 m means a fold site was transcribed wrong.
-- The swarm scenarios use the same level.
-- About 160 more test files build their levels at `tile_size_m = 1.0` (grep), among them the hash pins `test_b1_signal_bus`, `test_b2_nodes` and `test_b6_logic_golden`. They must all stay green unchanged.
-- No new 1.0 m oracle is needed.
+- `tests/field_ab_harness.py::_scenario_level` is a 16×16 room at `tile_size_m = 1.0`; `default_scenario_sim` puts fire, smoke, water, a wave pulse, a unit and a hull breach to vacuum in it, so wind is non-zero and venting runs. It is the scenario `tests/_xarch_perfield_digest.py` hashes as `GOLDEN_AGGREGATE`. **`GOLDEN_AGGREGATE` must not move:** a changed hash at 1.0 m means a fold site was transcribed wrong, and the code is fixed, never the pin.
+- The box match pins `_PRE_122_BOX` (`test_zombie_control.py:105`), `_STAGE1_BOX` (`test_horde_behaviours.py:199`) and `_RE_PIN_1_BOX` (`test_turning_law.py:728`, `test_unit_impulse.py:1049`) all play `test_zombie_control._box`, which writes `tile_size_m=1.0` (:74, proved; L2-1 had it inferred for three). They are 1.0 m oracles with physics on and must not move either.
+- The swarm scenarios use the same 1.0 m level, and about 160 more test files build theirs at `tile_size_m = 1.0`.
+- (L2-10) `test_b1_signal_bus` / `test_b2_nodes` stay green because they run no physics, not because they are 1.0 m oracles; v1 miscounted them.
 
 ### 7.3 What moves at 0.333 m
 
@@ -459,35 +471,39 @@ q16 eos_transport_step_q(float dt, int n_sub, float dx) {
 
 - **Field digest:** no version bump. Membership, dtypes and currencies are unchanged.
 - **`GOLDEN_AGGREGATE`:** unchanged (§7.2).
-- **The pinned matches `bots` and `bots_v1`** (`ship_demo`, 0.333 m) move: air, smoke and the winds on units all change. Both pins (the `bots_v1` G8p pin and the ship_demo controller pin) are re-recorded once, with this rationale; their rule already says a sim change moves them.
-- **Other 0.333 m tests** with a threshold on smoke spread, vent drain or fire timing may move. A failing pre-existing test is reported as a finding, never bent.
+- **The ship_demo match pins** (0.333 m) move for the right reason: air, smoke and the winds on units change. Eight of them (L2-1), re-pinned once each with a dated "#217 patch U (2026-11-20)" comment: `test_bots_v1.py:503` (`_PRE_G8P_SHIP_DEMO`), `test_zombie_control.py:225` (`_PRE_122_SHIP_DEMO`, also `tools/match_pin_check.py`'s), `test_exposure.py:588`, `test_grenade_kinds.py:667`, `test_horde_behaviours.py:52`, `test_turning_law.py:563`, `test_turn_rate.py:317`, `test_unit_impulse.py:883`. The shared pinned plays' self-checks (the bots_v1 G8p pin and the ship_demo controller pin) follow with them.
+- **Not moved in this patch** (L2-8): `docs/rl_agent_rung1_1d_pins/*.json` are tournament records that no test reads (only a docstring of `test_team_picture.py` names them), so they go stale as records, not red.
+- **Other 0.333 m tests** (on `ship_demo`, `test_arena`, the studios): §7.5's categories decide.
 
-**CUDA.** This is a Class-P `[twins.eos]` change. The patch touches
-`eos_solver.cpp`/`.h`, `cuda_eos_step.cu`, `cuda_eos_resident.cu`,
-`cuda_sl_advection.cu` and `bindings.cpp`, all in one patch.
+**CUDA.** This is a Class-P change. The patch touches `eos_solver.cpp`/`.h`,
+`cuda_eos_step.cu`/`.h`, `cuda_eos_resident.cu`, `cuda_resident_tick.h`,
+`cuda_sl_advection.cu`/`.h`, `bulk_transport.cpp` (comment) and
+`bindings.cpp`, all in one patch.
 
-- It merges only with `.cuda_green` == HEAD, and its last commit moves `level_at` (`tools/twin_debt.py --mark-level`).
-- The lockstep gates stay as they are, because both sides change together: `cuda_s8a_check` (N = 1 == CPU, tol 0, built at 1/3 m), `cuda_batch_invariance_check`, `cuda_eos_step_check`, `cuda_p62_check`.
-- `cuda_prestage_parity_check` compares the scalar by name and follows the rename.
+- **Twin debt** (L1-1, L2-2): `eos_solver.h`, `cuda_eos_step.h`, `cuda_resident_tick.h` and `bulk_transport.cpp` are `files` of many twins, so the debt is not `[twins.eos]` alone. The critics counted 12, then 14 (eos, water, trace_tail, div_source, energy_flux, radiation_sweep, temperature, fire, stamp, water_tail, swarm_larva, combustion, edit_queue as P; stamp_rows as T). Decision: **trust `tools/twin_debt.py`** and mark every twin it lists, in the LAST commit (`--mark-level`).
+- **The order** (L2-3): code → re-pins → `tools/twin_debt.py --mark-level` (last commit) → `cpp/build_cuda.bat` in this worktree → `tools/cuda_green.py` → the full suite → `tools/match_pin_check.py --backend cuda` and `--backend resident` against the new pin. A commit after `cuda_green` voids the stamp and restarts at mark-level.
+- The lockstep gates stay as they are, because both sides change together: `cuda_s8a_check` (N = 1 == CPU, tol 0, built at 1/3 m), `cuda_batch_invariance_check`, `cuda_eos_step_check`, `cuda_p62_check` (now with a 1/3 m case).
+- `cuda_prestage_parity_check` compares the scalar by its C++ printed name, which follows the rename.
 - The device conductor (class T) runs slot 7 through `_resident_chain` and needs nothing of its own.
 
-**The checkerboard bench** (`--table`).
+**The checkerboard bench** (`--table`), information only.
 
 - The 1.0 m row is identical to §2.1 (proved, by the arithmetic of §7.2).
 - Below 1 m, cbT/T_amb ÷ cbN should fall from (γ−1)/dx to γ−1 ≈ 0.40 at every tile size (inferred, §2.6).
-- Whether the cbN end level moves is not predicted. The forcing and the restoring signal both act through P (§3.2), but the flux per unit of velocity triples.
-- `--table`, `--steps` and `--solve-bias` are run before and after, and the numbers go in this doc.
+- Whether the cbN end level moves is not predicted.
 
-**Dials tuned against the old transport at 0.333 m** (listed, NOT changed):
+**Dials tuned against the old transport at 0.333 m** (listed, NOT changed;
+the material for one tuning session with Erik after this patch, §7.7):
 
-- `[physics.eos] k_drag = 0.01`, `k_drag2 = 0.225`: tuned by eye in `smoke_light_studio` at 0.333 m (Erik, 2026-10-06) for how far a puff coasts. A puff now covers about 3× the distance for the same wind.
+- `[physics.eos] k_drag = 0.01`, `k_drag2 = 0.225`: tuned by eye in `smoke_light_studio` at 0.333 m (Erik, 2026-10-06) for how far a puff coasts. A puff now covers about 3× the distance for the same wind. `test_drag2_venting_gate.py` leg 2's strict xfail belongs to this dial's note (L2-4): if it XPASSes, that is Erik's.
 - `[gases.smoke] decay = 0.0011` (Erik, 2026-10-22, the #12 fire + smoke session), and the `decay` of steam, poison, teargas and fuel_gas: same lifetime, about 3× the travel.
-- `[gases.*] diffusion`, in tiles²/s (Open question 2).
 - `[physics.combustion] soot_yield = 0.5` and the `[payloads.*] soot_yield` rows: the same smoke, spread wider.
+- (L1-3) `[physics.combustion] burn_rate` and `draw_r`: P-O2b widened the O2 draw while resupply ran at a third of its speed.
+- (L1-3) `[blast] expansion_m3_per_strength` and `heat_mj_per_strength`: calibrated at 0.333 m; after U the same divergence moves three times the mass at the same u (up to the 64 m/s ceiling of §7.4).
 - `[physics.fire] k_wind_fan = 0.5`: the law is in m/s, but the winds at a fire change.
 - `[levelgen.vents] ach = 10.0` and the vent entities' rates: the mass rate is unchanged, the room mixes faster.
 - `[physics] smoke_sink_strength` and `smoke_vent_hops`: the breach-sink hops, if still live.
-- `[render.gas_detail] adv_gain = 1.0`, `[render.props] wind_ref = 0.08`, and the code constants `gas_detail._WIND_VREF` / `_WIND_VSENS` (§7.1). The constants are re-measured with `tools/wind_drift_probe.py`, not tuned.
+- `[render.gas_detail] adv_gain = 1.0`, `[render.props] wind_ref = 0.08`, and the code constants `gas_detail._WIND_VREF` / `_WIND_VSENS`: re-measured with `tools/wind_drift_probe.py` in the render follow-up (L2-7), not tuned.
 - `[loadouts.*] wind_push_mult` (the winds on units).
 
 ### 7.4 Tick cost
@@ -502,39 +518,76 @@ q16 eos_transport_step_q(float dt, int n_sub, float dx) {
 
 - The per-substep displacement grows by 1/dx: up to 15.6 tiles at U_MAX, against 5.2 today.
 - The SL march costs `ceil(|b|)` steps, only in those cells.
-- The donor-cell flux is limited to one cell's mass per substep. Real mass speed therefore saturates at 1 tile per substep, 64 m/s at 0.333 m. **That is the same ceiling as today**: it is now reached at u = 64 m/s instead of u = 192.
-- A per-substep Courant number above 1 under the outflow limiter is not a new regime: 1.0 m levels already run it above 192 m/s.
-- Positivity and mass exactness hold by the limiter.
+- The donor-cell flux is limited to one cell's mass per substep. Real mass speed therefore saturates at 1 tile per substep, 64 m/s at 0.333 m. **That is the same ceiling as today**: it is now reached at u = 64 m/s instead of u = 192. Above it (blasts) the solve/mass mismatch of §3.4 survives (L1, noted).
+- A per-substep Courant number above 1 under the outflow limiter is not a new regime: 1.0 m levels already run it above 192 m/s. Positivity and mass exactness hold by the limiter.
 - Decision: `N_SUB_MAX` stays 8 (Erik's frozen perf dial).
 
-**Range** (inferred).
+**Range** (inferred). `flux_to_dq` narrows to int32. At the cap, |v·dt_s/dx|
+≤ U_MAX·dt/(8·dx): 15.6 at 0.333 m and 20.8 at 0.25 m, against 5.2 today at
+any dx. It therefore wraps only above a donor N of about 2100 (0.333 m) or
+1575 (0.25 m) ambient densities, against 6300 today. Bulk N in play is
+O(1-10). The bound goes into `flux_to_dq`'s header beside the guard of §7.2.
 
-- `flux_to_dq` narrows to int32. At the cap, |v·dt_s/dx| ≤ U_MAX·dt/(8·dx): 15.6 at 0.333 m and 20.8 at 0.25 m, against 5.2 today at any dx.
-- It therefore wraps only above a donor N of about 2100 (0.333 m) or 1575 (0.25 m) ambient densities, against 6300 today. Bulk N in play is O(1-10).
-- The patch writes this bound into `flux_to_dq`'s header, beside the guard of §7.2.
+**Measured** (information): ship_demo's CPU "7 EOS run_substeps" ms
+(`tools/bench_resident_scaling.py --run --backend cpu`, 24 warm-up + 96
+ticks), before and after, in the As-built paragraph.
 
-**Indirect cost** (inferred). A different flow evolves differently, so the
-distribution of n_sub can shift. Measure it before and after with
-`tools/bench_resident_scaling.py` on one generated ship: it prints
-`n_sub_mean_env0` and the "7 EOS" cost column per backend. A change of less
-than 2 % in EOS ms is noise.
+### 7.5 The property test, the reproduction, the categories and the gates
 
-### 7.5 The property test and the gates
+**The E2E reproduction** (L2-6). `tools/wind_drift_probe.py` on
+`smoke_light_studio` (168 ticks) and `fire_studio` (frag at (24,16) on tick
+24, 120 ticks), before and after. The probe's honest velocity is the m/s plane
+converted at `1/tile_size_m/tps`; the plume's centroid follows it by
+continuity where no source adds smoke. The figure of merit is the median over
+source-free windows of centroid drift ÷ |plume-weighted mean u| (a scratch
+reader over the probe's own `probe` / `report`): today about 1/3 (dx), after U
+about 1. Measured before:
 
-**New test: `tests/test_transport_in_metres.py`.**
+| level | windows | median drift ÷ \|mean u\| | IQR |
+|---|---|---|---|
+| smoke_light_studio | 125 | 0.451 | 0.321-0.972 |
+| fire_studio (frag) | 90 | **0.339** | 0.333-0.344 |
 
-- Setup: one uniform wind and density, step 1 of the first tick only (before any kick), at tile sizes 1.0 and 0.5 m. N after step 1 is read from the solver's own `dbg_mg_inputs` cache, as the bench does.
-- Property: **the mass crossing a mid-room face line, per metre of line per second, is the same at both tile sizes**, within Q16 rounding. Likewise the SL displacement of a wind step through `eos_sl_advect_ref`, measured in metres.
-- It breaks if the 1/dx is dropped or doubled at either site. It pins no count.
+The fire_studio plume, a clean drift after the blast, sits at 0.333-0.344:
+the 1/dx of §3.4, reproduced as a player sees it (smoke moves at a third of
+the wind).
 
-**Before merge:**
+**New test: `tests/test_transport_in_metres.py`** (L1-2). Both legs measure
+through the LIVE `step()` (`PhysicsRunner.step`, then the solver's own
+`dbg_mg_inputs` caches, written after step 1 and before the kick), at tile
+sizes 1.0 and 0.5 m in a sealed room. No reference entry is involved, so
+dropping the fold at either live site (the step-1d coefficient cache or
+`step()`'s own SL backtrace) fails it.
 
-- the full suite;
-- `_xarch_perfield_digest.py`, with `GOLDEN_AGGREGATE` unchanged;
-- the pinned-match re-record;
-- `tools/cuda_green.py`;
-- the energy gates of `energy-books.md`: `test_no_transport_mint`, `test_gas_energy_tile_flip`, `_sealedbox_bisect_bench.py`, `_quiet_books_bench.py`;
-- this bench, before and after.
+- **Mass leg:** uniform air, uniform wind U along x. The mass crossing a mid-room face line, per metre of line per second, Σ_downstream(N1−N0)·dx²/(L_m·dt), is N·U at both tile sizes (within Q16 rounding and the substep split). Breaks if the 1/dx is dropped or doubled at the coefficient: the flux then scales with dx.
+- **SL leg:** u_x = U + a·step(x) (a small front, a ≪ U). Step 1a's SL moves the front by U·dt **metres**; it is located, at sub-tile precision, as the centroid of the solver's own `div_u` cache (∂u_x/∂x) over a window around it. Breaks if the fold is dropped or doubled at `step()`'s backtrace: the front then moves U·dt tiles.
+- It pins no count and no hash.
+
+**Re-pin categories** (L2-4). A red after the change is classified into one of:
+
+| cat. | what | members (named by the critics; others classified as they turn red) | action |
+|---|---|---|---|
+| A | match pins that move for the right reason | the eight ship_demo pins of §7.3 | re-pin once, dated comment, rationale |
+| B | thresholds measured at 0.333 m with margins | `test_drag2_venting_gate.py` legs 4/5, `test_air_boundary.py` reflection / refill gates, others on `test_arena` / studios | re-measure, restate the threshold with a dated rationale; the property stays |
+| C | Erik-ruled properties | `test_wind_doorway_e2e.py`, `test_wind_studio.py:101`, `test_gen_ship_vents_air.py` `PRESSURE_BAND` | NEVER re-pinned: red = a finding for Erik, left red and reported |
+| D | strict xfails that may XPASS | `test_drag2_venting_gate.py` leg 2, `test_eos_checkerboard.py` | left as they are, reported to Erik |
+| E | transport-independent, must stay green | `test_trace_resolution`, `test_sky_exchange`, `test_explosion`, `test_fire_vfx_ref`, every 1.0 m oracle of §7.2 | red = a fold site is wrong: fix the code |
+
+Any red that fits none is left alone and reported.
+
+**Before merge:** the full suite; `_xarch_perfield_digest.py` with
+`GOLDEN_AGGREGATE` unchanged; the box pins unchanged; `tools/cuda_green.py`;
+`match_pin_check.py --backend cuda` and `--backend resident`; the energy
+gates of `energy-books.md` (`test_no_transport_mint`,
+`test_gas_energy_tile_flip`, `_sealedbox_bisect_bench.py`,
+`_quiet_books_bench.py`); this bench and the probe, before and after.
+
+**What goes stale by design** (L2-7, L2-8; recorded, not fixed here):
+
+- Replays recorded before U at 0.333 m hit `ReplayDivergence` (the format is unchanged, `FORMAT_VERSION` stays 8: the re-simulation differs, which is what the check is for).
+- RL runs, saved soldiers and imitation records made before U are on the old physics: a resume needs `--allow-code-change`, and the game-ai-lead role is told.
+- `tests/data/fire_smoke_studio_flame_inputs.npz` (a dump of the studio's flame inputs) is re-dumped in the tuning session.
+- `tools/look_shots.toml` is not rendered in this patch: U changes no render code, so the before/after look comparison belongs to the render follow-up (L2-7), whose "before" is after-U.
 
 ### 7.6 Systems addendum
 
@@ -546,26 +599,30 @@ than 2 % in EOS ms is noise.
 - **Face-flux energy step** and **Energy closure identity** (`energy-books.md`): step 6 and `price_face` are untouched, and energy rides the corrected dq inside `e_transport_net_sum`. No new counter.
 - **Batched resident engine** (`device-residency.md`): the fold table stays the one per-config table, already keyed on dx. No new launch, no new sync.
 - **Class P / Class T + the twin ledger**, **CUDA harness**, **A/B lockstep harness** and **GOLDEN_AGGREGATE** (`determinism-gates.md`): §7.2-7.3.
-- **Ingress lint + float ratchet**: the fold is out of line in a TU, not a header law, so `SIM_HEADERS` is unchanged.
-- **Tamed wind (render)** (`render-effects.md`): the law stays; only its measured calibration is re-run, with its own probe.
+- **Tamed wind (render)** (`render-effects.md`): the law stays; its measured calibration is re-run in the follow-up.
 - **Pinned match plays**: re-recorded.
 - **Benches**: this bench, `bench_resident_scaling.py` and `wind_drift_probe.py`. Never a new probe.
 
 **(b) New reusable systems:** none. `eos_transport_step_q` is a helper of an
-existing system. Its one rule line goes into `fields-gas.md` beside Trace
-transport: *step 1's displacement and face coefficient come only from
-`eos_transport_step_q` (dt_s/dx, quantized once); wind is m/s everywhere
-(Erik, 2026-11-20).*
+existing system. **Its rule line goes where it fires** (L2-9): `fields-gas.md`,
+beside Trace transport, as its own subsection *Transport step*: *step 1's
+displacement and face coefficient come only from `eos_transport_step_q`
+(dt_s/dx, quantized once), on every backend; wind is m/s everywhere (Erik,
+2026-11-20).* `fields-gas.md`'s `paths:` gain `cpp/src/eos_solver.h`,
+`cpp/src/cuda_eos_step.cu`, `cpp/src/cuda_eos_resident.cu` and
+`cpp/src/cuda_sl_advection.cu`, the files holding the device folds, so the
+rule fires on every fold site. No CLAUDE.md index line (a helper, not a
+system).
 
-### 7.7 Open questions for Erik
+**(c) Stubs** (L2-11): `stubs/breach_physics.pyi` is regenerated from the
+CUDA build (`docs/dev_setup.md`'s stubgen line), so `cuda_eos_sl_advect` and
+`eos_sl_advect_ref` show the required `dx`.
 
-1. **Re-tune in patch U, or after it?**
-   - Recommendation: patch U lands with every dial of §7.3 unchanged, as a pure units fix with green gates.
-   - Then one fire + smoke tuning session at the screen (`fire-smoke-tuning` skill): k_drag / k_drag2, smoke decay and soot yield, the vent feel, and the `wind_drift_probe` re-fit of the tamed-wind constants.
-   - Until that session, smoke at 0.333 m travels about 3× further per second.
-2. **Is gas diffusion m²/s too?** `[gases.*] diffusion` is declared per tile², so the same dial spreads smoke over 9× less area per second at 0.333 m than at 1.0 m. The wind ruling does not decide it.
-   - Recommendation: keep it per tile in patch U. It is identical at 1.0 m either way, and this changes one look at a time.
-   - If it should be m²/s, that is its own small patch: `d·dt/dx²` in `trace_diffusion_dd_q` and in the gases stability door, with the shipped values rescaled by 0.111 to keep today's 0.333 m look.
+### 7.7 Open questions for Erik (settled for this patch by the brief)
+
+1. **Re-tune in patch U, or after it?** Settled: after. Patch U lands with every dial of §7.3 unchanged, as a pure units fix with green gates. Then one fire + smoke tuning session at the screen (`fire-smoke-tuning` skill) over §7.3's list. Until that session, smoke at 0.333 m travels about 3× further per second.
+2. **Is gas diffusion m²/s too?** Settled for this patch: it stays per tile² (identical at 1.0 m either way; one look change at a time). If it should be m²/s, that is its own small patch: `d·dt/dx²` in `trace_diffusion_dd_q` and in the gases stability door, with the shipped values rescaled by 0.111 to keep today's 0.333 m look.
+3. **The render re-fit** of `_WIND_VREF` / `_WIND_VSENS`: its own render-only patch right after U, with the look shots before and after.
 
 ### 7.8 Critique (one critic at a time, verdicts recorded before the next)
 
