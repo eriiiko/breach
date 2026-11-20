@@ -37,7 +37,7 @@ and who must use it; this file holds the constraints the code cannot say.
 - The only way to write a continuous field: never `gmap.<field>[...] +=` inline.
 - The `gas_energy` row is a DUAL WRITE (store + mirror, through the seam), vetoed by the accountable set. The `gas` policy REFUSES a conservative slice: bulk N is what `gas_energy` is denominated against (arc #54).
 - INTEGER (#29 P3e): an edit's amount is quantized ONCE into its field's currency (`field_edit._CURRENCY`, or handed in as `amount_q`), every weight is an integer, the contribution is rounded ONCE; never a float between the door and the field. A policy dtype with no currency is refused.
-- On the resident path the device edit queue (`cpp/src/cuda_edit_queue.cu`) IS the flush, never a second flush; the CPU flush stays THE oracle and the resident fallback (`edit_fallback_reason`).
+- On the resident path the device edit queue (`cpp/src/cuda_edit_queue.cu`) IS the flush, never a second flush: the played tick feeds it the host pack, a device tick the device door's window (`edit_door.DeviceEditFlush`, `.claude/rules/device-units.md`); the CPU flush stays THE oracle and the resident fallback (`edit_fallback_reason`).
 - A new policy or mode lands in `FIELD_POLICY` AND in the device's ordinal and combine in the same patch (`EDIT_FIELD_ORDINALS` is refused unless equal to the lexicographic ranks).
 
 ## Gas pump primitives

@@ -21,6 +21,8 @@ paths:
   - "src/simulation/attack_lists.py"
   - "src/simulation/edit_door.py"
   - "cpp/src/cuda_edit_door*"
+  - "cpp/src/cuda_edit_flush*"
+  - "tests/cuda_edit_flush_check.py"
 ---
 
 # Device units: the store, its tables, its library, what kernels emit
@@ -180,8 +182,11 @@ system here is Class T: NOT part of the played tick until the `device` backend
 
 ## Device edit door
 - THE way a device producer (an applier effect function) hands a FieldEdit: `cpp/src/cuda_edit_door.cuh`'s device form of the door (`field_edit._edit_door`) and of the region walk, writing `pack_for_device`'s EDIT row plus the sort key's `source_id` and `region` and the region's four arguments (a TILE's tile, a DISC's centre, Q16 radius and falloff, a TILES' tile count and scale flag: what the chained landing rebuilds the edit from), and the TILE rows, into the env's `EditDoor` (`cpp/src/cuda_edit_door.h`, face `edit_door.DeviceEditDoor`). Its forms are TILE, DISC (FLAT or LINEAR, a clamp given) and TILES (the fixed-total deposit: integer weights over their sum), each with the noise (the row's low bound; the draw stays the flush's) and the per-tile scale (the air read) where the reference takes them, and their claims (`disc_claims`, `tiles_claims`); a new region or edit property is a device function THERE, never in a producer's TU, and the host reference `edit_door.door_rows` / `edit_door.edit_of` follows it.
-- `seq` is per env, RESET ONLY at the 6b flush (`begin`) and at env reset, set from the host window when the gate makes its base an input (`set_seq`); never reset at the tick end or the tick head.
-- Until step (c) (P7e) the rows stay in ENQUEUE order and the played edit queue (Class P) is untouched: a producer is gated at the door (its rows equal `door_rows` of the host's edits), an interleave of host and device producers in one walk is refused by name (`edit_door.DoorInterleave`), and a chained run lands the rows through the host's own enqueue (`edit_door.replay`), which must reproduce them.
+- `seq` is per env, RESET ONLY at the 6b flush (`DeviceEditFlush.run` ends with `begin`) and at env reset (`begin`, or `reset_env` for one env of a batch), set from the host window when the gate makes its base an input (`set_seq`); never reset at the tick end or the tick head. It is the noise key: its ABSOLUTE value is the host queue's.
+- The door's rows stay in ENQUEUE order; the door is a WINDOW: every row since the last flush, across the tick boundary (9e's producers write into the next tick's flush), and nothing but the flush empties it.
+- STEP (c): `edit_door.DeviceEditFlush` (`cpp/src/cuda_edit_flush.cu`) is THE 6b flush from the door: each env's rows ranked into `EditQueue.take_ordered`'s stable order, laid out as `physics_runner._edit_buffer` lays out the host pack (the tick word and key from THE TICK ROW, the ambient from `topo_t_amb_q`), fed to the edit queue's K1 / K2 unchanged, then the door's reset. Never a host sort, a second pack or a second buffer layout: a change to `take_ordered`'s key, `pack_for_device`'s rows, checks or fallbacks, or `_edit_buffer`'s layout lands in that TU IN THE SAME PATCH; `tests/cuda_edit_flush_check.py` is the guard.
+- Every refusal and fallback of `pack_for_device` is an env refused by name there (`edit_door.EditFlushRefused`, `FLUSH_FAULTS`): never a clamp, never a host flush (no host exists inside a device tick); the refused env writes nothing, the others are applied. Its books and refusals come down in ONE read (`books` / `fold`), folded by `physics_runner.fold_edit_queue_books`, the resident tick's own fold: never a second fold. The pack's "noisy edits without MatchDraws" has no device form (the tick row always carries the sim's key).
+- The played edit queue (Class P) keeps the host pack until P7e.4: a producer is gated at the door (its rows equal `door_rows` of the host's edits), an interleave of host and device producers in one walk is refused by name (`edit_door.DoorInterleave`), and a chained run lands the rows through the host's own enqueue (`edit_door.replay`), which must reproduce them.
 
 ## Attack lists
 - THE CELL BUFFER (`attack_lists.cell_buffer`, a record list of `(y, x, div)`) is filled in phase A against the walls standing at the slot's start; a SPRAY_CELLS record holds a span into it. The walk NEVER recomputes a cone (an earlier CHEW of the same walk may have opened a wall), and nothing else writes the buffer.

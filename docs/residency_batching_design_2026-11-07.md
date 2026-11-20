@@ -1462,6 +1462,63 @@ golden, no played-tick behaviour moved.
   `tests/cuda_unit_lockstep.py`'s write-set compare learned tuples of arrays
   (the stamp's kept rows).
 
+**As built (P7e.3, 2026-11-20).** Branch `29-p7e3-edit-door-c`. One Class-T
+TU, `cpp/src/cuda_edit_flush.cu` (`EditFlush`, header `cuda_edit_flush.h`),
+face `edit_door.DeviceEditFlush`; K1 / K2 unchanged; no physics, no golden,
+no played-tick behaviour moved (the played tick keeps the host pack).
+- THE SORT: `k_flush_edits`, one block per env, RANKS each door EDIT row by
+  `(field ordinal, source, region)` with the row index as the tie. The door
+  writes rows at consecutive seqs (checked: a gap or a seq that does not end
+  the window refuses the env, `key`), so the index order is the seq order and
+  the rank is `take_ordered`'s stable sort. Choice where silent: a rank, not a
+  sort network or a radix sort -- exact with ties, one int64 of scratch per
+  row, O(E^2 / 256) compares per env (E at most the door's 8192; the scenes'
+  busiest window held a few hundred edits). The per-edit tile spans come from
+  a binary search over the tiles' (ascending) edit column; thread 0 takes the
+  tile prefix in applied order (serial, E steps).
+- THE LAYOUT: fixed-stride edits (env e's at `e * edit_cap + rank`, E_ENV = e,
+  plus one DUMMY row), tiles compacted per env in applied order with the edit
+  index batch-global, env offsets from the totals; `k_flush_tiles` writes the
+  scalars from THE TICK ROW (`draw_tick & M32`, seed lo, seed hi) and the
+  tables' `topo_t_amb_q` (an existing row: no layout regenerated), and pads
+  the tiles past the batch total with the dummy (amount 0, den 1) so K1 takes
+  the capacity `N * tile_cap` and the host reads no count.
+- THE REFUSALS (`edit_door.FLUSH_FAULTS`; the lowest code then the lowest row
+  per env wins, so the name is stable): door overflow, an unknown field,
+  water_depth, a gas slice outside [0, G), a CONSERVATIVE slice (the tables'
+  `gas_trace` row), a mode, den outside (0, 2^62), a noisy low bound, the
+  key, a tile, the product >= 2^125, the contribution >= 2^55 (exact 128-bit
+  compares). A refused env writes nothing (its tile range empty); the others
+  apply. The pack's "noisy edits without MatchDraws" has no device form: the
+  tick row is built from `sim.draws`' key, so such a sim is refused at the
+  latch. Finding: the product bound is implied by the other two (den < 2^62
+  and contribution < 2^55 give a product < 2^117), so a row "just inside" it
+  is refused as `contrib`; it stays as the pack's own check.
+- THE WINDOW AND SEQ: nothing in the flush empties the door before its build;
+  `run` ends with `EditDoor::begin` (rows empty, seq 0). `EditDoor.reset_env`
+  resets one env (an env reset in a batch).
+- THE BOOKS: K2's books and the fault words share one allocation and come
+  down in ONE copy (`books()` / `fold()`), raised there by name
+  (`EditFlushRefused`, then K2's failure slot as `EditQueueFailed`), folded by
+  `physics_runner.fold_edit_queue_books` -- the resident tick's
+  `_fold_edit_books` body moved to a module function both call.
+- Gate: `tests/cuda_edit_flush_check.py`. SORT (seven fields, three regions, a
+  noisy scaled DISC, ties, scrambled arrival, N = 1 / 2; the host's sort,
+  pack and buffer made to raise during the device run); RANGE (each refusal
+  by a row the host refuses or falls back on, the other env applied; den
+  2^62 - 1, contribution 2^55 - 1 and the last trace slice accepted equal);
+  WINDOW (rows across a tick-row advance); SEQ (an absolute base 5 noisy edit,
+  the reset, `reset_env`); SCENES (spray, payload, hazard, N = 1 / 2, 70 ticks
+  each: the host's every enqueue appended to the door at its seq, slots 7 to
+  9e's after the flush so they cross the boundary; the door == the host
+  window at each 6b, planes and books == the host-pack flush, door empty
+  after; census 444 edit ticks, 257 out of order with ties, 29 noisy, 216
+  spanning the boundary). Each property shown red by a break in the TU (the
+  rank by index alone, the contribution check removed, the door emptied
+  before the build, the reset removed). The producers themselves are not
+  re-run in SCENES: the rows are `door_rows` of the host's edits, which the
+  door's own gates hold equal to the device producers' rows.
+
 **Systems (additions to §13).** New, each with its ONE index line and its
 constraints in `.claude/rules/device-units.md` when it is built: the device
 table module and each table on it (charges, grenades, rounds, blast sources,
