@@ -462,9 +462,15 @@ def test_pose_and_unit_anchor_round_trip_with_pinned_handedness(footprint):
     u = Unit("O", x=10, y=20, team=CREATURE_TEAM, footprint=footprint)
     centre = u.tile_x + footprint // 2
     assert int(x_m / tile + 1e-9) == centre == u.center_tile_x()
-    u.facing = cf.heading_rad_to_facing(math.pi / 2)
+    # the facing is written only through the turning law's door (a fixture
+    # stands the unit with turning.place; slot 5b writes it the same way from
+    # the Q24 heading, creature_fixed.heading_q24_to_facing_q16)
+    from simulation import turning
+    turning.place(u, cf.heading_q24_to_facing_q16(
+        cf.heading_q24_from_deg(90.0)))
     assert u.facing_compass() == "N"
-    assert cf.facing_to_heading_rad(u.facing) == math.pi / 2
+    assert cf.facing_to_heading_rad(u.facing) == pytest.approx(math.pi / 2,
+                                                               abs=1e-4)
 
 
 def test_the_ingress_lint_scans_the_creature_modules_clean():

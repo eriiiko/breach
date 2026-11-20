@@ -495,6 +495,9 @@ def _diff_creature_state(t, ca, cb):
     if not out:
         out.append(f"tick {t}: __creature__ carriers differ but no record "
                    f"located -- serialization drift?")
+    return out
+
+
 def _swarm_present(c):
     """A carrier's presence, tolerating an absent carrier (``None`` — a
     pre-P2 snapshot, or the R1 stripped fixture) as simply not-present."""

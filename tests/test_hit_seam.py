@@ -30,6 +30,8 @@ from simulation import creature_fixed as CF  # noqa: E402
 from simulation import creature_system as CS  # noqa: E402
 from simulation import unit_fixed  # noqa: E402
 from simulation.combat import fire_beam, fire_burst, melee_strike  # noqa: E402
+from simulation import unit_fixed  # noqa: E402
+from simulation.draws import MatchDraws  # noqa: E402  (#29 P3b: the keyed draws)
 from simulation.damage import DamagePacket, apply_packet  # noqa: E402
 from simulation.events import UnitHitEvent  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
@@ -156,8 +158,8 @@ def _near_miss(sc):
 
 def _fire_k5(units, shooter, fx, fy, angle, gmap, events):
     return fire_burst(gmap, units, shooter, fx, fy, fx + math.cos(angle), fy + math.sin(angle),
-                      0, [], 0.0, np.random.default_rng(1), events,
-                      spread_deg=0.0, aim_angle=angle)
+                      0, [], 0.0, MatchDraws(1), events,
+                      spread_deg=0.0, aim_q=unit_fixed.quantize_scalar(angle))
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +196,7 @@ def test_the_march_picks_the_same_human_target_with_the_seam_on_and_off(monkeypa
         for u in units:
             sim.add_unit(u)
         events, shots = [], []
-        rng = np.random.default_rng(11)
+        rng = MatchDraws(11)
         shooter = units[0]
         for tgt in units[1:]:
             fire_burst(sim.gmap, units, shooter, shooter.center_tile_x(), shooter.center_tile_y(),
@@ -309,8 +311,8 @@ def test_a_beam_skewers_an_arm():
     shooter = _marine("M", 2, y - 1)
     events = []
     fire_beam(sc.sim.gmap, [shooter, u], shooter, 3.5, y + 0.5, 4.5, y + 0.5, 0, [], 0.0,
-              np.random.default_rng(1), events,
-              weapon=get_tables().weapons.by_name["lance_3"], spread_deg=0.0, aim_angle=0.0)
+              MatchDraws(1), events,
+              weapon=get_tables().weapons.by_name["lance_3"], spread_deg=0.0, aim_q=0)
     hits = [e for e in events if isinstance(e, UnitHitEvent)]
     assert [(e.unit_id, e.source) for e in hits] == [(u.id, "laser")]
     assert body.last_hit == (a_exp, k_exp)
@@ -348,12 +350,12 @@ def test_a_bite_on_an_arm_tile_does_not_land_but_one_on_the_crown_does():
     events = []
     hp0, last0 = u.current_hp, body.last_hit
     assert not melee_strike([m, u], m, t[0] + 0.5, t[1] + 0.5,
-                            np.random.default_rng(1), events, knife)
+                            MatchDraws(1), events, knife)
     assert not events and u.current_hp == hp0 and body.last_hit == last0
     # the control: beside the crown, a crown tile
     x0, y0 = min(fp)
     c = _marine("C", x0 + 3, y0)
-    assert melee_strike([c, u], c, x0 + 2.5, y0 + 0.5, np.random.default_rng(1), events, knife)
+    assert melee_strike([c, u], c, x0 + 2.5, y0 + 0.5, MatchDraws(1), events, knife)
     assert [e.unit_id for e in events if isinstance(e, UnitHitEvent)] == [u.id]
 
 

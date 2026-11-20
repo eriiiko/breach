@@ -3,9 +3,14 @@
 Erik's ruling of 2026-10-31: "I'd rather we assume we can control the speed
 from 0 to its max speed, as if we had an Xbox controller; we have good
 control over the actual speed. If we build this, we can always reduce
-later." A MOVE_DIR carries a direction AND ``speed_q`` (Q16, 0 .. ONE of the
-unit's maximum); the creature's HUB picks the gait from it
-(``creature_primitives``' speed law over ``[creatures.octopus.locomotion]``).
+later." A MOVE_DIR carries a direction AND main's move THROTTLE
+``throttle_q`` (Q16, 0 .. ONE; G1p); for a creature the throttle is its
+analog speed (of the unit's maximum, ``creature_primitives.
+creature_speed_q16``: the throttle itself, main's WALK -- throttle 0 -- the
+crawl band's top) and its HUB picks the gait from it (the speed law over
+``[creatures.octopus.locomotion]``). Merged onto main 2026-11-20: the
+octopus's own ``speed_q`` field and its keyboard scheme are gone (main's
+throttle and main's direct scheme carry them).
 
 Properties protected (each test names the change that must break it):
 
@@ -22,14 +27,12 @@ Properties protected (each test names the change that must break it):
   them faster than the hold), the travel goal changes exactly once per
   boundary, each after ``gait_hold_ticks`` ticks of asking; a flicker
   across a boundary changes nothing; stopping is immediate.
-* SPEED 0 IDLES (a MOVE_DIR with no speed is no travel goal).
-* MARINES: a marine's movement is byte-identical whatever ``speed_q`` says
-  (the marines' law reads ``speed_mode`` only).
-* CONTROL: the gamepad's stick magnitude -> ``speed_q`` past the deadzone
-  (pure); the keyboard map (pure); ``--play creature`` selects the creature
-  and routes a MOVE_DIR to its hub (headless, through the control seam,
-  renderer None), refused for a non-direct scheme; the ``creature``
-  controller hunts at the row's ``hunt_speed``.
+* NO MOVE_DIR IDLES; a throttle of 0 (main's walk) crawls at the band top.
+* CONTROL: the stick's throttle past the deadzone is the creature's speed
+  (pure); ``--play creature`` selects the creature for main's direct scheme
+  and routes its frames' MOVE_DIR to the hub (headless, through
+  ``DirectControl._emit``), refused for a non-direct scheme; the
+  ``creature`` controller hunts at the row's ``hunt_speed``.
 * DETERMINISM: a run whose speed ramps across all three gaits is
   byte-identical twice, record for record.
 
@@ -171,8 +174,8 @@ def test_the_gait_switches_once_per_boundary_after_the_hold():
     every tick (so it straddles each boundary for a while): the travel goal
     runs crawl -> cruise -> escape, each switch EXACTLY once, on the tick
     the new band has been asked ``gait_hold`` ticks in a row; a speed
-    flickering across crawl_until every tick never switches; dropping to 0
-    idles on that tick. Breaks if the hysteresis is lost (flicker), stops
+    flickering across crawl_until every tick never switches; dropping the
+    MOVE_DIR idles on that tick. Breaks if the hysteresis is lost (flicker), stops
     being an elapsed counter, or delays a stop."""
     sc = SC.Scenario("hyst", size=40)
     b = sc.body
@@ -201,20 +204,26 @@ def test_the_gait_switches_once_per_boundary_after_the_hold():
         s = c + 64 if k % 2 else c          # starts in the crawl
         fl.step(1, each=lambda q, s=s: q.move(0.0, s))
         assert fl.body.goal_kind == P.GOAL_CRAWL, k
-    # a stop is immediate, from any travel goal
-    sc.step(1, each=lambda q: q.move(0.0, 0))
+    # a stop (no MOVE_DIR) is immediate, from any travel goal
+    sc.step(1, each=lambda q: q.stop())
     assert b.goal_kind == P.GOAL_NONE and b.gait == P.GAIT_IDLE
 
 
-def test_speed_zero_idles():
-    """A MOVE_DIR at speed 0 is no travel goal: the hub idles (seated) and
-    the crown stays put over 3 s. Breaks if a zero speed starts a gait."""
+def test_no_move_dir_idles_and_a_zero_throttle_walks():
+    """No MOVE_DIR is no travel goal: the hub idles (seated) and the crown
+    stays put over 3 s. A MOVE_DIR at throttle 0 is main's WALK, which a
+    creature reads as its crawl at the band top (``creature_speed_q16``).
+    Breaks if the absence of a move starts a gait, or main's walk stops
+    moving a creature (the keyboard's WASD without the full-speed key)."""
     sc = SC.Scenario("zero", size=40)
     x0 = sc.body.bufs.body[0, 0, :2].copy()
-    sc.seconds(3.0, each=lambda q: q.move(0.0, 0))
+    sc.seconds(3.0, each=lambda q: q.stop())
     assert sc.body.goal_kind == P.GOAL_NONE and sc.body.gait == P.GAIT_IDLE
     moved = np.hypot(*(sc.body.bufs.body[0, 0, :2] - x0).astype(float)) / CF.CHAIN_ONE
     assert moved < 0.05, moved
+    sc.step(1, each=lambda q: q.move(0.0, 0))
+    assert sc.body.goal_kind == P.GOAL_CRAWL
+    assert sc.body.goal_speed == sc.body.dials.crawl_until
 
 
 def test_a_ramp_across_every_gait_is_byte_identical_twice():
@@ -233,77 +242,40 @@ def test_a_ramp_across_every_gait_is_byte_identical_twice():
 
 
 # ---------------------------------------------------------------------------
-# Marines: the analog speed is not their law
+# The throttle -> the creature's speed (pure)
 # ---------------------------------------------------------------------------
-def test_a_marines_movement_ignores_speed_q(tmp_path):
-    """A marine driven by MOVE_DIR for 2 s: the per-tick digest is the same
-    with ``speed_q`` absent (ONE), 0.3 and 0 -- the marines' law reads only
-    ``speed_mode``. Breaks if the marines' continuous move reads the analog
-    speed (which would move every golden)."""
-    from field_ab_harness import capture_snapshot
-    from field_digest import tick_digest
-    from simulation import Simulation
-    from simulation.ruleset import ContinuousRealtime
-    from simulation.unit import Unit
-    level = SC.write_room(tmp_path, "marine", w=40, h=30)
-
-    def go(speed):
-        sim = Simulation(level, seed=3, breach_physics=bp, enable_recorder=False,
-                         ruleset=ContinuousRealtime())
-        u = Unit("m", 10, 12, team=0)
-        sim.add_unit(u)
-        out = []
-        for _ in range(48):
-            if speed is None:
-                sim.set_move_dir(u.id, 46341, -46341, 0)
-            else:
-                sim.set_move_dir(u.id, 46341, -46341, 0, speed_q=speed)
-            sim.set_paused(False)
-            sim.step()
-            out.append(tick_digest(capture_snapshot(sim)))
-        return out, (u.x, u.y)
-    base, pos = go(None)
-    assert pos != (10, 12), "the marine did not move"
-    for sp in (ONE, round(0.3 * ONE), 0):
-        assert go(sp)[0] == base, sp
+def test_the_throttle_is_the_creatures_speed_and_the_walk_its_crawl():
+    """``creature_speed_q16``: every throttle above 0 is the creature's
+    analog speed unchanged; 0 (main's walk) is ``crawl_until``. Breaks if the
+    throttle is rescaled for a creature or the walk stops meaning the crawl
+    at its full tempo."""
+    d = _dials()
+    assert P.creature_speed_q16(0, d) == d.crawl_until
+    for t in (1, d.crawl_until // 4, d.crawl_until, d.swim_until, ONE):
+        assert P.creature_speed_q16(t, d) == t
 
 
 # ---------------------------------------------------------------------------
 # Control: the stick, the keys, --play creature, the controller
 # ---------------------------------------------------------------------------
 def test_the_stick_magnitude_past_the_deadzone_is_the_speed():
-    """analog_speed_q: 0 inside the deadzone, rising from ~0 just past it to
-    ONE at full deflection (a corner reading > 1 clamped), monotone in the
-    magnitude and the same in every direction. Breaks if the deadzone is
-    not rescaled out or the clamp is lost."""
-    from control_source import analog_speed_q
+    """main's ``stick_throttle_q`` (the pad half's throttle) is the creature's
+    analog speed: just past the deadzone a slow crawl, ONE at full
+    deflection the jet train, monotone in the magnitude. Breaks if the
+    pad's throttle stops reaching a creature as its speed."""
+    from control_source import quantize_stick_direction, stick_throttle_q
+    d = _dials()
     dz = 0.2
-    assert analog_speed_q(0.0, 0.0, dz) == 0
-    assert analog_speed_q(0.19, 0.0, dz) == 0
-    assert 0 < analog_speed_q(0.21, 0.0, dz) < ONE // 50
-    assert analog_speed_q(1.0, 0.0, dz) == ONE
-    assert analog_speed_q(0.9, 0.9, dz) == ONE
-    assert analog_speed_q(0.6, 0.0, dz) == analog_speed_q(0.0, -0.6, dz) == round(0.5 * ONE)
-    mags = np.linspace(0.0, 1.2, 61)
-    sp = [analog_speed_q(float(m), 0.0, dz) for m in mags]
+
+    def speed(ax, ay):
+        _, _, mag = quantize_stick_direction(ax, ay, 0.0)
+        return P.creature_speed_q16(stick_throttle_q(mag, dz), d)
+
+    assert P.speed_band(speed(0.22, 0.0), d) == P.GOAL_CRAWL
+    assert speed(0.22, 0.0) < d.crawl_until
+    assert speed(1.0, 0.0) == ONE and P.speed_band(ONE, d) == P.GOAL_ESCAPE
+    sp = [speed(float(m), 0.0) for m in np.linspace(0.21, 1.2, 61)]
     assert all(a <= b for a, b in zip(sp, sp[1:]))
-
-
-def test_the_keyboard_map():
-    """keyboard_move: WASD -> a unit vector (screen: W = -y), opposite keys
-    cancel (None), full speed by default, Shift -> slow_speed, Ctrl ->
-    mid_speed, Shift wins. Breaks if a binding or a speed moves."""
-    from control_keyboard import keyboard_move, keyboard_settings
-    slow, mid = keyboard_settings()
-    assert 0.0 <= slow <= mid <= 1.0
-    assert keyboard_move(False, False, False, False, False, False, slow, mid) is None
-    assert keyboard_move(True, True, False, False, False, False, slow, mid) is None
-    dx, dy, s = keyboard_move(True, False, False, False, False, False, slow, mid)
-    assert (dx, dy, s) == (0, -ONE, ONE)
-    dx, dy, s = keyboard_move(True, False, False, True, True, False, slow, mid)
-    assert dx > 0 and dy < 0 and abs(dx + dy) <= 1 and s == round(slow * ONE)
-    assert keyboard_move(False, True, False, False, False, True, slow, mid)[2] == round(mid * ONE)
-    assert keyboard_move(False, True, False, False, True, True, slow, mid)[2] == round(slow * ONE)
 
 
 def _tank_sim():
@@ -323,53 +295,53 @@ def _tank_sim():
 
 
 def test_play_creature_drives_the_octopus_through_the_control_seam():
-    """--play creature + the keyboard scheme, headless (renderer None): the
-    driven unit is the octopus, W + Shift sends it a MOVE_DIR North at the
-    slow speed, and after the hold its hub crawls North while the squad has
-    no intent and stands; W alone asks the jet train. A WEGO scheme and an
-    unknown name are refused. Breaks if --play stops selecting the creature,
-    the scheme stops routing to its hub, or the squad gets a driver."""
+    """--play creature + main's direct scheme, headless (``DirectControl``'s
+    one emit seam, no device read): the possessed unit is the octopus; the
+    keyboard's walk (W, throttle 0) sends it North and after the hold its
+    hub crawls North while the squad has no intent and stands; full speed
+    (throttle ONE) asks the jet train; no move stops it. A non-direct scheme
+    and an unknown name are refused. Breaks if --play stops selecting the
+    creature, the scheme stops routing to its hub, or the squad gets a
+    driver."""
     import control_source
-    from control_keyboard import KeyboardDirect
+    from control_direct import DeviceFrame, DirectControl
     from simulation.factions import CREATURE_TEAM
-    held = set()
-    kd = KeyboardDirect(key_down=lambda k: k in held, key_pressed=lambda k: False,
-                        mouse_down=lambda b: False)
+    dc = DirectControl()
     sim, octo = _tank_sim()
-    control_source.select_play(sim, kd, "creature")
+    control_source.select_play(sim, dc, "creature")
     assert sim.player_team == CREATURE_TEAM
+    dc._bind_possessed(sim)
+    assert dc.selected_unit_id == octo.id
     body = sim._creature_system.bodies[octo.id]
     y0 = int(body.bufs.body[0, 0, 1])
-    held.update({"W", "LEFT_SHIFT"})
-    for _ in range(3 * TPS):
-        kd.handle_frame(sim, None)
+
+    def frame(move):
+        dc._emit(sim, dc.possessed_id, DeviceFrame(move=move, aim=None,
+                                                   trigger=False, throw=None,
+                                                   use=False))
         sim.set_paused(False)
         sim.step()
-    assert kd.selected_unit_id == octo.id
+
+    for _ in range(3 * TPS):
+        frame((0, -ONE, 0))                       # W, walking
     mv = octo.live_move_dir
-    assert (mv.dx_q, mv.dy_q) == (0, -ONE) and mv.speed_q == round(kd.slow_speed * ONE)
+    assert (mv.dx_q, mv.dy_q, mv.throttle_q) == (0, -ONE, 0)
     assert body.goal_kind == P.GOAL_CRAWL and body.gait == P.GAIT_CRAWL
     assert (y0 - int(body.bufs.body[0, 0, 1])) / CF.CHAIN_ONE > 0.2   # North = -y
     for u in sim.units:
         if u is not octo:
             assert getattr(u, "live_move_dir", None) is None
-    held.discard("LEFT_SHIFT")
     for _ in range(body.dials.gait_hold):
-        kd.handle_frame(sim, None)
-        sim.set_paused(False)
-        sim.step()
-    assert octo.live_move_dir.speed_q == ONE and body.goal_kind == P.GOAL_ESCAPE
-    held.clear()
-    kd.handle_frame(sim, None)
-    sim.set_paused(False)
-    sim.step()
+        frame((0, -ONE, ONE))                     # W + the full-speed key
+    assert octo.live_move_dir.throttle_q == ONE and body.goal_kind == P.GOAL_ESCAPE
+    frame(None)
     assert octo.live_move_dir is None and body.goal_kind == P.GOAL_NONE
-    # refusals: a WEGO scheme cannot play a creature; an unknown name
+    # refusals: a non-direct scheme cannot play a creature; an unknown name
     sim2, _ = _tank_sim()
     with pytest.raises(SystemExit, match="direct control scheme"):
         control_source.select_play(sim2, control_source.IdleControl(), "creature")
     with pytest.raises(SystemExit, match="--play must be one of"):
-        control_source.select_play(sim2, kd, "zombie")
+        control_source.select_play(sim2, dc, "zombie")
     control_source.select_play(sim2, control_source.IdleControl(), None)   # absent: no-op
     assert sim2.player_team == 0
 
@@ -402,7 +374,7 @@ def test_the_creature_controller_hunts_at_the_rows_hunt_speed(tmp_path):
             ctl = control_source.create_controller("creature", CREATURE_TEAM)
             ctl.handle_frame(sim, None)
             want = CF.q16_from_scalar(hunt if hunt is not None else row.locomotion.hunt_speed)
-            assert octo.live_move_dir.speed_q == want == hunt_speed_q16(octo)
+            assert octo.live_move_dir.throttle_q == want == hunt_speed_q16(octo)
         finally:
             if ctx is not None:
                 ctx.__exit__(None, None, None)

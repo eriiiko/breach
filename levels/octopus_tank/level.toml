@@ -7,7 +7,7 @@
 #
 # v2 codes ARE canon material ids (src/simulation/materials.py):
 #   0=air 1=hull
-version = "2"
+version = "3"
 name = "Octopus Tank"
 
 tilemap = "tilemap.csv"

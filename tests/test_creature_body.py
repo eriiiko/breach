@@ -245,6 +245,17 @@ def OCTO_ROW():
     return get_creature("octopus")
 
 
+def _unit_of_pose(cx, cy, heading_q24, F):
+    """What slot 5b writes onto the unit from the integer pose: the anchor
+    through the unit's float door (``Unit.set_pos``: quantized once onto the
+    Q16 grid) and the facing through ``turning.place`` from the Q24 heading
+    rounded once to Q16 (merge of main, 2026-11-20)."""
+    from simulation.unit_fixed import quantize_scalar
+    ax, ay = CF.pose_to_unit_anchor(float(CF.chain_to_m(cx)), float(CF.chain_to_m(cy)), F, TILE_M)
+    return (quantize_scalar(ax) / 65536.0, quantize_scalar(ay) / 65536.0,
+            CF.heading_q24_to_facing_q16(heading_q24) / 65536.0)
+
+
 def test_the_unit_anchor_and_facing_are_the_pose(limp):
     """Every tick, ``Unit.x/y/facing`` equal the integer pose through the
     converters -- the only per-tick writer. Breaks on a stale or second
@@ -253,8 +264,7 @@ def test_the_unit_anchor_and_facing_are_the_pose(limp):
     F = u.footprint
     for row in rows:
         cx, cy = row["crown"]
-        ax, ay = CF.pose_to_unit_anchor(float(CF.chain_to_m(cx)), float(CF.chain_to_m(cy)), F, TILE_M)
-        assert row["unit"] == (ax, ay, CF.heading_q24_to_rad(row["heading"]))
+        assert row["unit"] == _unit_of_pose(cx, cy, row["heading"], F)
 
 
 # ---------------------------------------------------------------------------
@@ -314,10 +324,9 @@ def test_intents_are_the_goal_never_a_move(room):
             sim.set_paused(False)
             sim.step()
             d = CS.decode_record(capture_snapshot(sim)[CS.CREATURE_DIGEST_KEY]["records"][0])
-            F = u.footprint
-            ax, ay = CF.pose_to_unit_anchor(float(CF.chain_to_m(int(d["body"][0]))),
-                                            float(CF.chain_to_m(int(d["body"][1]))), F, TILE_M)
-            assert (u.x, u.y, u.facing) == (ax, ay, CF.heading_q24_to_rad(int(d["body"][3])))
+            assert (u.x, u.y, u.facing) == _unit_of_pose(
+                int(d["body"][0]), int(d["body"][1]), int(d["body"][3]),
+                u.footprint)
             traj.append(d)
         return traj, body_of(sim, u), u
 
@@ -331,24 +340,34 @@ def test_intents_are_the_goal_never_a_move(room):
     assert not np.array_equal(c[-1]["p"], a[-1]["p"]), "the primitives ignored the goal"
 
 
-def test_the_wave_push_is_a_body_impulse_never_a_displacement(room):
-    """With a pressure gradient across the crown's footprint, the unit push
-    row leaves a creature's anchor alone and the creature row adds the push
-    to the crown's velocity (x only, away from the high side). Breaks if the
-    unit row displaces a creature or the creature row is lost."""
-    from simulation import atmosphere_fixed
-    from simulation.exchange import apply_creature_wave_impulse, apply_wave_push
+def test_the_wind_is_a_body_impulse_never_a_displacement(room):
+    """With a wind blowing East across the crown's footprint, the ONE wind
+    row (``exchange.apply_wind_force``, main's G5p-b read and price) leaves a
+    creature's anchor and its unit impulse state alone and adds the push to
+    the crown's velocity (x only, downwind); with ``creatures=None`` (the
+    veto) the crown is untouched. Breaks if the wind row displaces a
+    creature, hands it to the unit impulse law, or loses the creature
+    response. (The pre-merge test drove the retired grad-P push row.)"""
+    from simulation.exchange import apply_wind_force
+    from simulation.gases import INERT_N2, O2
+    from simulation.gas_fixed import BULK_ONE
     sim = make_sim(room)
     (u,) = sim.spawn_creatures(room.creatures)
     b = body_of(sim, u)
     g = sim.gmap
-    tx = u.tile_x
-    g.atmosphere[:, :tx + 2] += atmosphere_fixed.quantize_scalar(3.0)   # high on the west
+    open_ = ~g.solid
+    g.gas[O2][open_] = BULK_ONE // 5
+    g.gas[INERT_N2][open_] = BULK_ONE - BULK_ONE // 5
+    g.wind_x[open_] = 30 * 65536                  # 30 m/s East
+    g.wind_y[open_] = 0
     x0, y0 = u.x, u.y
     v0 = b.bufs.body[0, 0].copy()
-    apply_wave_push(sim.units, g, TPS)
+    apply_wind_force(sim.units, g, sim.impulse_table)          # vetoed
+    assert np.array_equal(b.bufs.body[0, 0], v0)
+    apply_wind_force(sim.units, g, sim.impulse_table,
+                     creatures=sim._creature_system)
     assert (u.x, u.y) == (x0, y0)
-    apply_creature_wave_impulse(sim.units, g, TPS, sim._creature_system)
+    assert (u.imp_x, u.imp_y, u.stand_x, u.stand_y) == (0, 0, 0, 0)
     v1 = b.bufs.body[0, 0]
     assert int(v1[AC.BS_VX]) > int(v0[AC.BS_VX])
     assert int(v1[AC.BS_VY]) == int(v0[AC.BS_VY])
@@ -559,7 +578,9 @@ def test_written_rows_load_and_spawn_as_written(room):
     (u,) = sim.spawn_creatures(room.creatures)
     assert (u.name, u.team, u.footprint) == ("C-0", CREATURE_TEAM, OCTO_ROW().body.footprint)
     assert abs(u.x - OCTO.x) < 1e-6 and abs(u.y - OCTO.y) < 1e-6
-    assert abs(u.facing - np.radians(OCTO.heading)) < 1e-6
+    # the facing is the unit's Q16 radians (rounded once from the Q24 pose
+    # heading, merge of main 2026-11-20): within one Q16 count
+    assert abs(u.facing - np.radians(OCTO.heading)) <= 2.0 ** -16
 
 
 def test_a_match_spawns_its_creatures(tmp_path):

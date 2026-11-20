@@ -82,7 +82,9 @@ def test_the_heading_is_the_facing_convention(crawled):
     body, unit = crawled.body, crawled.unit
     v = CS.read_chain(body, unit)
     assert v.heading == CF.heading_rad_to_facing(CF.heading_q24_to_rad(body.heading_q24))
-    assert v.heading == unit.facing
+    # the unit's facing is the same heading on the Q16 grid (rounded once
+    # from Q24 at slot 5b, merge of main 2026-11-20): within one Q16 count
+    assert abs(float(v.heading) - unit.facing) <= 2.0 ** -16
     sc = SC.Scenario("acc_rest", size=60, heading=40.0)
     r = CS.read_chain(sc.body, sc.unit)
     assert abs(r.heading - math.radians(40.0)) < 1e-6
