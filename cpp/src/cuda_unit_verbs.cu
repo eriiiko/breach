@@ -59,6 +59,7 @@ namespace {
 
 using namespace unit_lib;
 using namespace unit_requests;
+using namespace object_tables;   // #29 P7e.4: the door and charge rows
 
 //: The per-row shove scratch: target row (-1 none), jx, jy, angular, the
 //: row's own "changed" flag from the first kernel.

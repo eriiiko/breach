@@ -91,6 +91,12 @@ LATCH_COLUMNS = {
     "set_flashlight": ("flashlight_on", lambda a: not bool(a[1])),
     "plant_charge_intent": ("pending_plant", lambda a: int(a[1])),
 }
+#: The solver backends slot 7's resident chain runs on (run_on_cuda's set): the
+#: conductor turns them on around its slot 7 and restores what it found, so a
+#: host re-simulation in the same process keeps its own path.
+SLOT7_BACKENDS = ("temperature", "water", "fire", "radiation", "bulk_flux",
+                  "sl_advection", "mg_solve", "kick_compression", "combustion")
+
 #: The latches that are not a unit column.
 OTHER_LATCHES = ("order_intent", "drive_zombies")
 
@@ -126,6 +132,14 @@ class DeviceConductor:
             # the render-only ripple pair (host-computed by design, W6a): the
             # seal's 0.0 write needs a device plane; never read back
             f[name] = cp.asarray(np.ascontiguousarray(getattr(g, name)))[None].copy()
+        # On the C++ stamp path the host's `obstacles` IS `solid`
+        # (GameMap._update_caches aliases them; the C++ stamp writes in place,
+        # so a destroyed wall opens both at once): the device does the same
+        # (the stamp's `obstacles` output is the `solid` buffer). The finding
+        # P7e.2 reported, mirrored, not changed.
+        self.obstacles_is_solid = g.obstacles is g.solid
+        if self.obstacles_is_solid:
+            f["obstacles"] = f["solid"]
         self.fields = f
         self.flight = cp.zeros((1, self.h, self.w), dtype=cp.bool_)
         self.src_out = cp.zeros((1, self.h, self.w), dtype=cp.int32)
@@ -376,8 +390,15 @@ class DeviceConductor:
         # 7. the physics head on the device (the blast source), then slot 7
         self.aux.begin()
         uk.take_sources(st, self.aux, f, lists, source_out=self.src_out)
-        pr.run_resident_conductor(sim.physics_runner, sim.gmap, self.sim_time,
-                                  int(self.src_out.data.ptr))
+        was = [bool(getattr(self.bp, f"get_{b}_backend")()) for b in SLOT7_BACKENDS]
+        for b in SLOT7_BACKENDS:
+            getattr(self.bp, f"set_{b}_backend")(True)
+        try:
+            pr.run_resident_conductor(sim.physics_runner, sim.gmap, self.sim_time,
+                                      int(self.src_out.data.ptr))
+        finally:
+            for b, on in zip(SLOT7_BACKENDS, was):
+                getattr(self.bp, f"set_{b}_backend")(on)
         # 9. burn-through (the resident fire's list ranked on the device)
         uk.burn_through_device(st, self.eff, f,
                                uk.BurnList.resident(self.bp, 1, self.h, self.w), tick_row=tr)
@@ -400,16 +421,16 @@ class DeviceConductor:
         if self.has_ducts:
             uk.sweep_vents(st, self.aux, f, self.ducts, self.vents)
         if self.has_doors:
-            uk.sweep_doors(st, self.aux, f, self.doors, self.door_tiles)
+            uk.sweep_doors(st, self.aux, f, self.doors, self.door_tiles, tick_row=tr)
         if self.has_timed:
             self.aux.begin()
-            uk.timed_charges(st, self.aux, f, self.ring, lists, self.timed)
+            uk.timed_charges(st, self.aux, f, self.ring, lists, self.timed, tick_row=tr)
         self.det.begin()
         uk.charges_tick(st, self.charges, self.det, tr)
         uk.detonate(st, self.det, f, self.ring, lists, tick_row=tr)
         if self.has_heat:
             self.aux.begin()
-            uk.heat_sources(st, self.aux, f, self.ring, lists, self.heat)
+            uk.heat_sources(st, self.aux, f, self.ring, lists, self.heat, tick_row=tr)
         else:
             self.blast_log.begin()
         if self.has_bus:
@@ -457,6 +478,8 @@ class DeviceConductor:
             self._zombie[k] = bool(u.is_zombie)
         sw = set(swarm.SWARM_RESIDENT_NAMES) | set(swarm.SWARM_PLANE_NAMES)
         names = [n for n in GameMap._RESIDENT_FIELD_NAMES if n not in sw]
+        if self.obstacles_is_solid:
+            names = [n for n in names if n != "obstacles"]   # the host alias of solid
         g.to_host(names + list(swarm.resident_exit_names(g)))
         recs = self.ring.records()[0]
         sim.tick_events[:] = [unit_events.event_of(r) for r in recs]

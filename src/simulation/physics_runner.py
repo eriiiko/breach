@@ -2186,6 +2186,7 @@ def _resident_chain(runners, gmaps, ctxs, sim_time, water_before_base, div_sourc
     engines = [r.engine for r in runners] if n_env > 1 else None
     e0 = r0.engine
     cons = g0.gases.conservative
+    n_gases = int(g0.gas.shape[0])
     # 3a. water: the substep loop, then the W5/W3 tail, masked per env.
     active = [not c["water_dormant"] for c in ctxs]
     if any(active):

@@ -231,6 +231,9 @@ def run_gate(name, ref, twin, ticks, intents_of=None, step_ref=None, probe=None,
             if probe is not None:
                 probe.on = False
             name_ = type(e).__name__
+            if os.environ.get("CONDUCTOR_TRACE"):
+                import traceback
+                traceback.print_exc()
             print(f"  {name}: tick {tick} REFUSED by the conductor ({name_}: {e}) after "
                   f"{n_equal} equal ticks")
             return n_equal, f"{name_}: {e}"
