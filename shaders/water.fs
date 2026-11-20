@@ -371,7 +371,17 @@ void main() {
     float smoke_sh = smokeShadow(world_uv, light_dir_2d, 0.0);
     vec3 lightRGB = tex_a.rgb * u_light_gain * smoke_sh;  // incoming (B)
     lightRGB *= lightCurveGain(lightRGB);
-    vec3 L = normalize(vec3(light_dir_2d, u_light_z));
+    // The light comes from u_light_z's elevation along the field's flux
+    // direction. The direction is a UNIT vector per tile (light_field's
+    // flux_dir), but bilinear filtering shortens it where two tiles' light
+    // runs opposite ways (the line between two sources): left as it is, L
+    // there turned vertical -- an overhead light no source is -- and the
+    // near-mirror still surface (W1) lit a tile-stepped staircase of GGX
+    // glints along that line. The filtered direction is renormalised, so no
+    // seam ever reads as an overhead light (W1, 2026-11-20).
+    float dir_len = length(light_dir_2d);
+    vec2 light_dir_unit = dir_len > 1e-4 ? light_dir_2d / dir_len : vec2(0.0);
+    vec3 L = normalize(vec3(light_dir_unit, u_light_z));
 
     // --- REFRACTION branch (head-on; dominates top-down) -----------------
     // Warp the floor sample by the surface tilt, scaled by depth so the

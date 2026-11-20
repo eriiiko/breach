@@ -283,8 +283,8 @@ _WATER_DIALS = (
     ("ca_amount", 0.012, "Chrom ab", 0.0, 0.06),
     # W1: the fine surface that flows.
     ("detail_wavelength_m", 0.12, "Detail m", 0.03, 0.5),
-    ("detail_strength_still", 0.025, "Still str", 0.0, 0.2),
-    ("detail_strength_flow", 0.16, "Flow str", 0.0, 0.5),
+    ("detail_strength_still", 0.03, "Still str", 0.0, 0.2),
+    ("detail_strength_flow", 0.3, "Flow str", 0.0, 0.8),
     ("detail_drift_mps", 0.03, "Drift m/s", 0.0, 0.3),
     ("flow_cycle_s", 0.6, "Flow cyc s", 0.1, 3.0),
     ("flow_speed_ref", 1.0, "Flow ref", 0.05, 4.0),
