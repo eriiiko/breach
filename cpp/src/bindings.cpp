@@ -3037,7 +3037,7 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<int32_t> temperature,
              py::array_t<bool> solid, py::array_t<bool> is_vacuum,
              py::array_t<float> dyn_permeability,
-             float dt, int n_sub,
+             float dt, int n_sub, float dx,
              py::object thermal_solid) -> uint64_t {   // THERMAL-MASS AXIS
               auto [wx, h, w]    = get_2d(wind_x);
               auto [wy, h2, w2]  = get_2d(wind_y);
@@ -3053,15 +3053,17 @@ PYBIND11_MODULE(breach_physics, m) {
                   tsol = ta.data(0, 0);
               }
               return breach_cuda::eos_sl_advect(wx, wy, t, sol, vac, pm,
-                                                h, w, dt, n_sub, tsol);
+                                                h, w, dt, n_sub, dx, tsol);
           },
           py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
           py::arg("solid"), py::arg("is_vacuum"), py::arg("dyn_permeability"),
-          py::arg("dt"), py::arg("n_sub"),
+          py::arg("dt"), py::arg("n_sub"), py::arg("dx"),
           py::arg("thermal_solid") = py::none(),
           "P6.2 isolated: run the GPU fused SL-advection substep chain in place "
           "on wind_x/wind_y/temperature (bit-identical to eos_sl_advect_ref) and "
-          "return the chained FNV digest (== EOSSolver.digest_advect).");
+          "return the chained FNV digest. dx (tile size, m) is REQUIRED: the "
+          "displacement is eos_transport_step_q(dt, n_sub, dx) tiles per m/s "
+          "(#217 patch U).");
 
     // EOS P6.1: the GPU bulk donor-cell flux (cuda_bulk_transport.cu — the
     // water K3-K8 precompute-then-gather pattern with per-face coefficients,
@@ -5195,7 +5197,7 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<int32_t> temperature,
              py::array_t<bool> solid, py::array_t<bool> is_vacuum,
              py::array_t<float> dyn_permeability,
-             float dt, int n_sub,
+             float dt, int n_sub, float dx,
              py::object thermal_solid) -> uint64_t {   // THERMAL-MASS AXIS
               auto [wx, h, w]    = get_2d(wind_x);
               auto [wy, h2, w2]  = get_2d(wind_y);
@@ -5211,15 +5213,17 @@ PYBIND11_MODULE(breach_physics, m) {
                   tsol = ta.data(0, 0);
               }
               return eos_sl_advect_reference(wx, wy, t, sol, vac, pm,
-                                             h, w, dt, n_sub, nullptr, tsol);
+                                             h, w, dt, n_sub, dx, nullptr, tsol);
           },
           py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
           py::arg("solid"), py::arg("is_vacuum"), py::arg("dyn_permeability"),
-          py::arg("dt"), py::arg("n_sub"),
+          py::arg("dt"), py::arg("n_sub"), py::arg("dx"),
           py::arg("thermal_solid") = py::none(),
           "P6.2 CPU reference: replay EOSSolver::step's SL-advection substep "
           "chain in place on wind_x/wind_y/temperature; returns the chained "
-          "FNV digest (== EOSSolver.digest_advect for the same inputs).");
+          "FNV digest over (wy, wx). dx (tile size, m; the solver's own) is "
+          "REQUIRED: the displacement is eos_transport_step_q(dt, n_sub, dx) "
+          "tiles per m/s (#217 patch U).");
 
     // EOS P6.4: the standalone CPU reference for the momentum kick +
     // compression work (eos_solver.cpp eos_kick_compression_reference — the

@@ -111,16 +111,18 @@ def _make_inputs(rng, h, w, wind_mag, t_mag, force_floor_wsum):
     }
 
 
-def _run_pair(inp, dt, n_sub):
-    """Run CPU reference + GPU chain on identical copies; return everything."""
+def _run_pair(inp, dt, n_sub, dx):
+    """Run CPU reference + GPU chain on identical copies; return everything.
+    ``dx`` (tile size, m) is required by both entries since #217 patch U: the
+    displacement is eos_transport_step_q(dt, n_sub, dx) tiles per m/s."""
     f_ref = {k: inp[k].copy() for k in ("wind_x", "wind_y", "temperature")}
     dig_ref = bp.eos_sl_advect_ref(
         f_ref["wind_x"], f_ref["wind_y"], f_ref["temperature"],
-        inp["solid"], inp["is_vacuum"], inp["perm"], dt, n_sub)
+        inp["solid"], inp["is_vacuum"], inp["perm"], dt, n_sub, dx)
     f_gpu = {k: inp[k].copy() for k in ("wind_x", "wind_y", "temperature")}
     dig_gpu = bp.cuda_eos_sl_advect(
         f_gpu["wind_x"], f_gpu["wind_y"], f_gpu["temperature"],
-        inp["solid"], inp["is_vacuum"], inp["perm"], dt, n_sub)
+        inp["solid"], inp["is_vacuum"], inp["perm"], dt, n_sub, dx)
     return f_ref, dig_ref, f_gpu, dig_gpu
 
 
@@ -128,25 +130,32 @@ def part1_isolated() -> bool:
     print("PART 1 — isolated GPU vs CPU reference (synthetic, all branches):")
     ok = True
     rng = np.random.default_rng(20260711)
-    # (h, w, dt, wind_mag [m/s-class], t_mag, n_sub, force_floor_wsum)
+    # (h, w, dt, wind_mag [m/s-class], t_mag, n_sub, force_floor_wsum, dx)
+    # #217 patch U: dx [m] is a column. The old cases run at 1.0, where the
+    # transport step dt_s/dx is the pre-U dt_s bit for bit; the 1/3 m cases
+    # put a non-unit fold through the lockstep. eos_transport_step_q refuses
+    # a step above one tile per m/s per substep, so the old (40, 40, dt 2.0,
+    # wind 4) deep march is the same 8 tiles as (dt 1.0, wind 8).
     configs = [
-        (16, 16, 0.5,  0.0,   300.0, 1, False),   # zero wind (identity fast path)
-        (16, 16, 0.5,  0.6,   300.0, 1, False),   # sub-cell fractional
-        (16, 16, 0.5,  0.6,   300.0, 3, True),    # substepped + floor-wsum renorm
-        (24, 32, 1.0,  3.0,   900.0, 2, True),    # multi-cell both-sign marches
-        (31, 17, 0.75, 5.0,  2000.0, 8, True),    # odd dims, deep march, full cap
-        (40, 40, 2.0,  4.0,  6000.0, 1, False),   # very deep march (8 tiles)
-        (12, 20, 1.0,  1.5,   300.0, 8, True),
-        (1, 50, 1.0,  2.0,   300.0, 2, False),    # degenerate 1-row
-        (50, 1, 1.0,  2.0,   300.0, 2, False),    # degenerate 1-col
-        (8, 8, 0.5,  1.0,   300.0, 3, True),
+        (16, 16, 0.5,  0.0,   300.0, 1, False, 1.0),   # zero wind (identity fast path)
+        (16, 16, 0.5,  0.6,   300.0, 1, False, 1.0),   # sub-cell fractional
+        (16, 16, 0.5,  0.6,   300.0, 3, True, 1.0),    # substepped + floor-wsum renorm
+        (24, 32, 1.0,  3.0,   900.0, 2, True, 1.0),    # multi-cell both-sign marches
+        (31, 17, 0.75, 5.0,  2000.0, 8, True, 1.0),    # odd dims, deep march, full cap
+        (40, 40, 1.0,  8.0,  6000.0, 1, False, 1.0),   # very deep march (8 tiles)
+        (12, 20, 1.0,  1.5,   300.0, 8, True, 1.0),
+        (1, 50, 1.0,  2.0,   300.0, 2, False, 1.0),    # degenerate 1-row
+        (50, 1, 1.0,  2.0,   300.0, 2, False, 1.0),    # degenerate 1-col
+        (8, 8, 0.5,  1.0,   300.0, 3, True, 1.0),
+        (16, 16, 1.0 / 24.0, 20.0, 300.0, 1, True, 1.0 / 3.0),   # ship tiles
+        (31, 17, 1.0 / 24.0, 60.0, 2000.0, 8, True, 1.0 / 3.0),  # ship tiles, cap
     ]
     n_cfg = 0
-    for (h, w, dt, wmag, tmag, n_sub, floor_w) in configs:
+    for (h, w, dt, wmag, tmag, n_sub, floor_w, dx) in configs:
         for seed_bump in range(5):
             n_cfg += 1
             inp = _make_inputs(rng, h, w, wmag, tmag, floor_w)
-            f_ref, dig_ref, f_gpu, dig_gpu = _run_pair(inp, dt, n_sub)
+            f_ref, dig_ref, f_gpu, dig_gpu = _run_pair(inp, dt, n_sub, dx)
             for k in ("wind_x", "wind_y", "temperature"):
                 if not np.array_equal(f_ref[k], f_gpu[k]):
                     ok = False
@@ -234,7 +243,8 @@ def part2_trajectory() -> bool:
         inp = {"wind_x": wx0, "wind_y": wy0, "temperature": t0,
                "solid": g.solid, "is_vacuum": g.is_vacuum,
                "perm": g.dyn_permeability}
-        f_ref, dig_ref, f_gpu, dig_gpu = _run_pair(inp, dt, n_sub)
+        f_ref, dig_ref, f_gpu, dig_gpu = _run_pair(inp, dt, n_sub,
+                                                   float(eos.dx))
 
         # P-E1 (energy-books design SS2.1.1/SS2.1.6, AUTHORIZED REWRITE —
         # Appendix A): the "ref_digest == EOSSolver.digest_advect" leg is

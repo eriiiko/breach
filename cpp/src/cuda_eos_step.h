@@ -89,7 +89,9 @@ struct EOSHostPrestage {
     // `cap2` below. == dbg_last_c_local_q.
     int32_t c_local_q = 0;
     int     n_sub     = 1;   // the substep schedule (== dbg_last_n_sub)
-    int32_t dt_s_q    = 0;   // quantize(dt/n_sub) — the substep dt
+    // #217 patch U: THE TRANSPORT STEP, eos_transport_step_q(dt, n_sub, dx):
+    // the substep displacement per m/s, in TILES (dt_s/dx), never seconds.
+    int32_t dtdx_s_q  = 0;
     int32_t t_min_q   = 0;   // quantize(T_MIN) — P-E1's recovery clamp (§2.1.5)
     // Per-tick host planes (H2D'd once by the caller).
     std::vector<int32_t> coeffE, coeffS;   // donor-cell face-coeff cache
@@ -146,7 +148,7 @@ EOSHostPrestage eos_host_prestage(
     // coeffE/coeffS cache on the HOST, as always. false stops after the
     // scalar folds, cap2 / c_LOCAL and max|u| (all read tick-entry wind and
     // temperature, which nothing before the EOS writes on the device) and
-    // leaves n_sub, dt_s_q, coeffE and coeffS to the caller: the resident
+    // leaves n_sub, dtdx_s_q, coeffE and coeffS to the caller: the resident
     // path scans the DEVICE gas (eos_step_resident) and calls
     // eos_prestage_finish with its max. `gas` and `dyn_permeability` are then
     // not read (they may be stale on the mirror).
@@ -154,8 +156,9 @@ EOSHostPrestage eos_host_prestage(
 
 // #29 P4a: the n_sub fold, from the scan's max K·|∇P|·dt/N̂ (Q16 raw, >= 0):
 // u_est = max|u| + max_du + 1, clipped at max(c_LOCAL, U_MAX); n_sub =
-// clamp(ceil_div(dt·u_est, CFL·dx), 1, N_SUB_MAX); dt_s_q = quantize(dt/n_sub).
-// Sets pre.n_sub / pre.dt_s_q and solver.dbg_last_n_sub. ONE transcription:
+// clamp(ceil_div(dt·u_est, CFL·dx), 1, N_SUB_MAX); dtdx_s_q =
+// eos_transport_step_q(dt, n_sub, dx) (#217 patch U: tiles per m/s).
+// Sets pre.n_sub / pre.dtdx_s_q and solver.dbg_last_n_sub. ONE transcription:
 // eos_host_prestage's host scan and the resident device scan both call it.
 void eos_prestage_finish(const EOSSolver& solver, EOSHostPrestage& pre,
                          int64_t max_du_raw);

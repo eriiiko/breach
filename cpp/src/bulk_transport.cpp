@@ -14,8 +14,19 @@ using namespace fixedpoint;
 namespace {
 
 // One shared truncation: flux_wide (Q32.32, a mul_wide(v_face, N_donor)) times
-// a per-face Q16.16 coefficient (face_permeability * dt, dx == 1 tile) ->
-// Q16.16, via a 128-bit intermediate. Ported verbatim from water_solver.cpp's
+// a per-face Q16.16 coefficient -> Q16.16, via a 128-bit intermediate. The
+// coefficient is face_permeability * s, where s is whatever "displacement per
+// unit velocity, in TILES" the caller folded: on the game path (EOSSolver::step
+// and its device twins) s = eos_transport_step_q(dt, n_sub, dx) = dt_s/dx,
+// because wind is m/s (#217 patch U, Erik 2026-11-20). The legacy kernel-seam
+// entries bulk_flux_transport / cuda_bulk_flux_transport below fold s = dt
+// ("dx == 1 tile"); a caller that wants metres passes dt/dx as their dt.
+// RANGE (#217 patch U, inferred, docs/eos_checkerboard_design_2026-11-20.md
+// §7.4): the result narrows to int32. With s <= FP_ONE (eos_transport_step_q's
+// guard) and |v| <= U_MAX, |v*s| reaches U_MAX*dt/(8*dx) at the substep cap:
+// 15.6 tiles at 0.333 m, 20.8 at 0.25 m (5.2 before patch U at any dx), so the
+// narrowing wraps only above a donor N of ~2100 (0.333 m) / ~1575 (0.25 m)
+// ambient densities. Bulk N in play is O(1-10). Ported verbatim from water_solver.cpp's
 // flux_to_dq (S1 §2 / P2), generalized to a runtime PER-FACE coefficient (water's
 // coefficient was the single constant dt/dx; here it additionally carries the
 // per-face permeability gate, so every face gets its own coefficient — computed

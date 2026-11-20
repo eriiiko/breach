@@ -762,7 +762,7 @@ def test_eos_sl_advect_is_u_only_and_never_writes_temperature():
         T = T0.copy()
         wx, wy = wx0.copy(), wy0.copy()
         bp.eos_sl_advect_ref(wx, wy, T, solid, vac, perm,
-                             dt=1.0 / 24.0, n_sub=4, **kw)
+                             dt=1.0 / 24.0, n_sub=4, dx=1.0, **kw)
         assert np.array_equal(T, T0), (
             "the retired SL T-copy is back: eos_sl_advect_ref wrote "
             "temperature (mask=%s)" % ("on" if kw else "off"))
@@ -898,9 +898,9 @@ def test_eos_step1b_mask_never_moves_velocity():
     a = (wx0.copy(), wy0.copy(), T0.copy())
     b = (wx0.copy(), wy0.copy(), T0.copy())
     bp.eos_sl_advect_ref(a[0], a[1], a[2], solid, vac, perm,
-                         dt=1.0 / 24.0, n_sub=3, thermal_solid=tsol)
+                         dt=1.0 / 24.0, n_sub=3, dx=1.0, thermal_solid=tsol)
     bp.eos_sl_advect_ref(b[0], b[1], b[2], solid, vac, perm,
-                         dt=1.0 / 24.0, n_sub=3)
+                         dt=1.0 / 24.0, n_sub=3, dx=1.0)
     assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1]), (
         "the thermal mask changed the velocity field — cmask must be untouched")
     # P-E1: the second leg INVERTS. It used to read "vacuous: T did not change
@@ -1004,9 +1004,10 @@ def test_eos_furniture_free_identity_at_the_replay_boundary(entry):
         a = (wx0.copy(), wy0.copy(), T0.copy())
         b = (wx0.copy(), wy0.copy(), T0.copy())
         da = bp.eos_sl_advect_ref(a[0], a[1], a[2], solid, vac, perm,
-                                  dt=1.0 / 24.0, n_sub=3, thermal_solid=tsol)
+                                  dt=1.0 / 24.0, n_sub=3, dx=1.0,
+                                  thermal_solid=tsol)
         db = bp.eos_sl_advect_ref(b[0], b[1], b[2], solid, vac, perm,
-                                  dt=1.0 / 24.0, n_sub=3)
+                                  dt=1.0 / 24.0, n_sub=3, dx=1.0)
         assert da == db
     else:
         p_new = _q32(rng.integers(-FP_ONE // 4, FP_ONE // 2, size=(h, w)))

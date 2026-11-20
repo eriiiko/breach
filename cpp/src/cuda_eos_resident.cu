@@ -225,7 +225,7 @@ __global__ void K_max_du(unsigned long long* __restrict__ out,
 // K_coeffs — step()'s donor-cell face-coefficient cache (eos_host_prestage's
 // coeffE / coeffS), every cell written (0 where the host left the assign's
 // 0): an open east / south face between two non-solid cells carries
-// mul_q16(quantize((double)min(perm_i, perm_j)), dt_s_q) when that min is
+// mul_q16(quantize((double)min(perm_i, perm_j)), dtdx_s_q) when that min is
 // positive. std::min(a, b) is (b < a) ? b : a, spelled as such.
 __global__ void K_coeffs(int32_t* __restrict__ coeffE, int32_t* __restrict__ coeffS,
                          const bool* __restrict__ solid,
@@ -233,7 +233,7 @@ __global__ void K_coeffs(int32_t* __restrict__ coeffE, int32_t* __restrict__ coe
                          int32_t dts_q, int h, int w,
                          const EnvSub* __restrict__ es) {
     const int n = h * w;
-    if (es) dts_q = es[benv()].dt_s_q;   // #29 P5: the env's own substep dt
+    if (es) dts_q = es[benv()].dtdx_s_q;   // #29 P5: the env's own transport step
     coeffE = bptr(coeffE, n); coeffS = bptr(coeffS, n);
     solid = bptr(solid, n); perm = bptr(perm, n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
@@ -899,7 +899,8 @@ struct EOSResidentScratch {
 EOSResidentScratch g_eos_res;
 
 // THE FOLD TABLE (design §4.2): one row per n_sub in [1, N_SUB_MAX] (row 0
-// unused) — dt_s_q = quantize(dt / n_sub), the energy flux's k_flux_q and
+// unused) — dtdx_s_q = eos_transport_step_q(dt, n_sub, dx) (#217 patch U),
+// the energy flux's k_flux_q and
 // flux_pu_cap through energy_flux_scalar_folds (THE transcription). Built on
 // the host once per config (keyed by every input), range-checked at build: a
 // row whose k_flux_q is refused (the fold's own range guard) is kept with
@@ -916,12 +917,13 @@ void ensure_fold_table(const EOSSolver& solver, float dt, EOSResidentScratch& S)
         throw std::runtime_error("eos_step_resident: N_SUB_MAX < 1");
     std::vector<EnvSub> t((size_t)rows);
     std::memset(t.data(), 0, t.size() * sizeof(EnvSub));
-    const double dt_d = (double)dt;
     for (int k = 1; k < rows; ++k) {
         EnvSub& r = t[(size_t)k];
         r.n_sub = k;
-        r.dt_s_q = quantize(dt_d / (double)k);
         try {
+            // #217 patch U: THE TRANSPORT STEP (step()'s one function),
+            // inside the poisoning try: a refused fold fails the env.
+            r.dtdx_s_q = eos_transport_step_q(dt, k, solver.dx);
             const EnergyFluxScalarFolds ef = energy_flux_scalar_folds(
                 dt, solver.dx, solver.adiabatic_index, solver.T_AMB_K, solver.C,
                 solver.T_MIN, solver.T_MAX_PHYS, k);
@@ -929,6 +931,7 @@ void ensure_fold_table(const EOSSolver& solver, float dt, EOSResidentScratch& S)
             r.flux_pu_cap = ef.flux_pu_cap;
             S.ef_base = ef;          // t_amb_q / t_min_q / t_max_phys_q / c_q: n_sub-free
         } catch (const std::runtime_error&) {
+            r.dtdx_s_q = 0;
             r.k_flux_q = 0;          // refused at build: selecting it fails the env
             r.flux_pu_cap = 0;
         }
@@ -945,7 +948,7 @@ void ensure_fold_table(const EOSSolver& solver, float dt, EOSResidentScratch& S)
 // The device pre-stage on (N, h, w) planes: zeroed books expected (the caller
 // memsets the pre slots and nsub_max). p_prev := atmosphere, the scan, the
 // tick-entry Dalton N (K_ntot), the per-env max_du, the per-env fold, then
-// coeffE / coeffS at each env's own dt_s_q. Launch only, on the tick stream.
+// coeffE / coeffS at each env's own dtdx_s_q. Launch only, on the tick stream.
 // ONE transcription: the resident tick and the parity probe both run it.
 void device_prestage(const EOSSolver& solver, const EOSHostPrestage& pre,
                      const KickScalarFolds& kf, EOSResidentScratch& S,
@@ -1393,7 +1396,7 @@ long long eos_mg_build_parity(
 // ============================================================================
 // TEST-ONLY (#29 P5, design §5.1's first check): the DEVICE pre-stage against
 // the HOST pre-stage at N = 1 on the same tick-entry planes — n_sub, c_LOCAL,
-// dt_s_q, the cap² plane, the absorb plane and coeffE / coeffS, compared
+// dtdx_s_q, the cap² plane, the absorb plane and coeffE / coeffS, compared
 // exactly. Runs device_prestage (the tick's own code path) on a private
 // scratch; allocates and copies: never on the hot path.
 // ============================================================================
@@ -1474,7 +1477,7 @@ long long eos_prestage_parity(
         scalar("n_sub (row)", es.n_sub, hp.n_sub);
         scalar("max n_sub", (long long)hpre[EOS_PRE_SLOTS], hp.n_sub);
         scalar("c_local_q", (long long)(int64_t)hpre[EOS_PRE_C_LOCAL], hp.c_local_q);
-        scalar("dt_s_q", es.dt_s_q, hp.dt_s_q);
+        scalar("dtdx_s_q", es.dtdx_s_q, hp.dtdx_s_q);
         auto plane = [&](const char* name, const void* dev, const void* host, size_t elems,
                          size_t es_) {
             std::vector<uint8_t> buf(elems * es_);
@@ -1497,7 +1500,7 @@ long long eos_prestage_parity(
         if (report) {
             std::ostringstream hdr;
             hdr << "n_sub " << hp.n_sub << " c_local_q " << hp.c_local_q
-                << " dt_s_q " << hp.dt_s_q << "\n";
+                << " dtdx_s_q " << hp.dtdx_s_q << "\n";
             *report = hdr.str() + rep.str();
         }
     } catch (...) {

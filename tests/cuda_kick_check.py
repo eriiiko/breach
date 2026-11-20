@@ -816,7 +816,8 @@ def part2_trajectory() -> bool:
         # digests were being compared for equality, which cannot pass by
         # construction. Dropped, not worked around.
         bp.eos_sl_advect_ref(wx0, wy0, t0, g.solid, g.is_vacuum,
-                             g.dyn_permeability, dt, n_sub)
+                             g.dyn_permeability, dt, n_sub,
+                             dx=float(eos.dx))   # #217 patch U: the solver's own
         # `t0` is INTENTIONALLY left as the tick-START temperature — P-E1
         # retired the SL T-copy, so nothing advects it any more (T evolution
         # now happens entirely inside the energy-transport pass, which has

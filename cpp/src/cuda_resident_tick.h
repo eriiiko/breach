@@ -78,7 +78,8 @@ void resident_capture_abort();
 // device pre-stage picks each env's row from that env's own reductions.
 struct EnvSub {
     int32_t n_sub;        // the env's substep count, 1..N_SUB_MAX
-    int32_t dt_s_q;       // quantize(dt / n_sub) — the substep dt
+    int32_t dtdx_s_q;     // eos_transport_step_q(dt, n_sub, dx): the substep
+                          // displacement per m/s, in tiles (#217 patch U)
     int32_t k_flux_q;     // energy_flux_scalar_folds(..., n_sub).k_flux_q (0: refused row)
     int32_t c_local_q;    // the env's c_LOCAL (telemetry: dbg_last_c_local_q)
     int64_t flux_pu_cap;  // FLUX_MAG_CAP / k_flux_q

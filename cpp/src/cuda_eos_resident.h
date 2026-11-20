@@ -110,7 +110,7 @@ long long eos_nsub_reads();
 
 // TEST-ONLY (#29 P5, design §5.1's first check): the device pre-stage vs the
 // host pre-stage at N = 1 on the same tick-entry planes (n_sub, c_LOCAL,
-// dt_s_q, cap2, absorb_q, coeffE / coeffS, p_prev); returns the mismatch count
+// dtdx_s_q, cap2, absorb_q, coeffE / coeffS, p_prev); returns the mismatch count
 // (0 == bit-identical), the details in *report.
 long long eos_prestage_parity(
     const EOSSolver& solver,

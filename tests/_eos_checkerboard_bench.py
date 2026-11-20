@@ -248,7 +248,8 @@ def step(sim):
 #   T2               the mirror after step 6 + 7
 # The step-1 mass flux is re-derived from (u1, N0) with the engine's own
 # integer face law (bulk_transport.cpp: v_face = (u_i + u_j) >> 1, upwind
-# donor, coeff = perm*dt in TILES, one >>32 truncation per plane) and checked
+# donor, coeff = perm * (dt_s/dx), the transport step in tiles per m/s since
+# #217 patch U, one >>32 truncation per plane) and checked
 # against N1, then split into its central part (v_face * face-mean N) and its
 # upwind part.
 #
@@ -285,13 +286,21 @@ def _q(v):
     return int(np.floor(v * Q + 0.5)) if v >= 0 else -int(np.floor(-v * Q + 0.5))
 
 
-def mass_flux_faces(g, ux_raw, uy_raw, n_planes, dt):
+def transport_step_q(dt, n_sub, dx):
+    """eos_transport_step_q (eos_solver.cpp, #217 patch U), transcribed: the
+    float32 dt and dx the engine holds, dt_s = dt / n_sub and the dx floor in
+    double, ONE quantize of dt_s / dx (tiles per m/s per substep)."""
+    dx_d = max(float(np.float32(dx)), 1e-6)
+    return _q(float(np.float32(dt)) / float(n_sub) / dx_d)
+
+
+def mass_flux_faces(g, ux_raw, uy_raw, n_planes, dt, dx, n_sub=1):
     """The step-1d donor-cell face flux, per conservative plane, in raw Q16
     (bulk_transport.cpp:133-142 for n_sub == 1). Returns (dq_e, dq_s) summed
     over the planes, each split (total, central) as float raw counts."""
     sol = g.solid
     perm = g.dyn_permeability.astype(np.float64)
-    dt_q = _q(float(np.float32(dt)))
+    dt_q = transport_step_q(dt, n_sub, dx)   # #217 patch U: dt_s/dx, tiles
     oe, os_ = _open_faces(g)
     pe = np.minimum(perm[:, :-1], perm[:, 1:])
     ps = np.minimum(perm[:-1, :], perm[1:, :])
@@ -413,7 +422,7 @@ def attribute_tick(sim, pr):
     u1x, u1y, t_scr = u0x.copy(), u0y.copy(), T0.copy()
     bp.eos_sl_advect_ref(u1x, u1y, t_scr, g.solid, g.is_vacuum,
                          g.dyn_permeability, float(np.float32(dt)), n_sub,
-                         thermal_solid=g.thermal_solid)
+                         dx=float(eos.dx), thermal_solid=g.thermal_solid)
     # validation 1: the face-form divergence of u1 == the solver's div_u
     sol = g.solid
     def f2(u, axis):
@@ -433,7 +442,8 @@ def attribute_tick(sim, pr):
     # --- step 1d: the mass flux, re-derived and checked ---
     mass_ok = None
     if n_sub == 1:
-        (te, ts), (ce_, cs_) = mass_flux_faces(g, u1x, u1y, n_planes0, dt)
+        (te, ts), (ce_, cs_) = mass_flux_faces(g, u1x, u1y, n_planes0, dt,
+                                               float(eos.dx), n_sub)
         dN = apply_div(N0.shape, te, ts)
         mass_ok = bool(np.array_equal((N0 + dN.astype(np.int64))[live], N1[live]))
         dN_cen = apply_div(N0.shape, ce_, cs_)

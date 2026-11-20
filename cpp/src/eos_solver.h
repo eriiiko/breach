@@ -777,6 +777,25 @@ int64_t eos_energy_books_sum(
     int32_t t_amb_raw = 0);
 
 // ---------------------------------------------------------------------------
+// #217 patch U (Erik, 2026-11-20: WIND IS m/s) — THE TRANSPORT STEP: the one
+// scalar that turns a velocity into a displacement in TILES for step 1 (the
+// 1a SL backtrace `bx = -u·s` and the 1d donor-cell face coefficient
+// `min(perm)·s`), s = dt_s/dx = (dt/n_sub)/dx, folded in double and quantized
+// ONCE (Q16.16, "tiles per (m/s) per substep"). Every fold site calls it, on
+// every backend: EOSSolver::step, eos_sl_advect_reference, the per-call
+// pre-stage (eos_prestage_finish), the resident fold table and the standalone
+// device SL entry. Never re-derive it (no `mul_q16(dt_s_q, quantize(1/dx))`:
+// that rounds twice) and never drop the 1/dx (before patch U the scalar was
+// dt_s alone, so air moved u·dt TILES a tick: 1/dx too slow below 1 m).
+// Bit-identical to the pre-U scalar at dx == 1.0 (IEEE x/1.0 is exact).
+// ALWAYS-COMPILED RANGE GUARD (the k_flux_q idiom): a result outside
+// [0, FP_ONE] (more than one tile per m/s per substep: a tile under ~4 cm at
+// 24 tps) throws; zero is legal (a dt so small the displacement quantizes
+// away). Defined out of line in eos_solver.cpp (/fp:strict).
+// docs/eos_checkerboard_design_2026-11-20.md §7.
+int32_t eos_transport_step_q(float dt, int n_sub, float dx);
+
+// ---------------------------------------------------------------------------
 // EOS P6.2 — standalone CPU reference for the SL-advection substep loop
 // (docs/eos_p6_gpu_alignment_review.md §4 row P6.2). Replays EXACTLY the
 // step-1a/1f chain of EOSSolver::step for a GIVEN substep count: the per-tick
@@ -800,11 +819,14 @@ int64_t eos_energy_books_sum(
 // THERMAL-MASS AXIS: `thermal_solid` is RETIRED here with the T sample — the
 // A2 T-only occluder mask had no consumer once the `.t` slot went (design
 // §2.1.1). The parameter is kept for ABI/back-compat and ignored.
+// #217 patch U: `dx` (the tile size in metres, the solver's own `dx`) is
+// REQUIRED — the displacement is eos_transport_step_q(dt, n_sub, dx) tiles
+// per m/s, exactly step()'s.
 uint64_t eos_sl_advect_reference(
     int32_t* wind_x, int32_t* wind_y, int32_t* temperature,
     const bool* solid, const bool* is_vacuum,
     const float* dyn_permeability,
-    int h, int w, float dt, int n_sub,
+    int h, int w, float dt, int n_sub, float dx,
     const bool* is_ambient = nullptr,
     const bool* thermal_solid = nullptr);
 

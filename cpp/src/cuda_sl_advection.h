@@ -16,8 +16,8 @@
 // §1.4; device precedent: the (since deleted) cuda_smoke.cu's backtrace class, S4a).
 //
 // The transport core is pure-integer Q16.16; the ONLY float is the host-side
-// dt_s_q = quantize((double)dt / n_sub) scalar fold, replicated in double
-// exactly as the CPU does (/fp:strict host pass), and the per-cell
+// transport step dtdx_s_q = eos_transport_step_q(dt, n_sub, dx) (#217 patch U:
+// dt_s/dx, tiles per m/s; the CPU's one function, /fp:strict), and the per-cell
 // permeability <= 0 COMPARISON inside the cmask build (a comparison, not
 // arithmetic — bit-exact by construction). The bilinear renorm uses
 // reciprocal_q16_dev (the shared verbatim Newton reciprocal).
@@ -57,6 +57,7 @@ uint64_t eos_sl_advect(
     const bool* is_vacuum,
     const float* dyn_permeability, // FLOAT (h,w) — cmask build only (<= 0 test)
     int h, int w, float dt, int n_sub,
+    float dx,                      // #217 patch U: tile size in metres (REQUIRED)
     // THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md §4
     // items 1-2): the per-medium THERMAL mask. Where it is true the T write is
     // SKIPPED (the TemperatureSolver owns that tile's temperature) and the T
@@ -99,10 +100,10 @@ void sl_advect3_device(int32_t* d_wind_x, int32_t* d_wind_y,
                        const int32_t* d_src_vx, const int32_t* d_src_vy,
                        const int32_t* d_src_t,
                        const bool* d_solid, const uint8_t* d_cmask,
-                       int32_t dt_s_q, int h, int w,
+                       int32_t dtdx_s_q, int h, int w,
                        // #29 P5: the batch (every plane (N, h, w)); `es` the
                        // per-env fold-table rows (nullptr: unbatched, the
-                       // scalar dt_s_q) and `s` this substep's index — an env
+                       // scalar dtdx_s_q) and `s` this substep's index — an env
                        // whose n_sub <= s does nothing.
                        int n_env = 1, const EnvSub* es = nullptr, int s = 0);
 

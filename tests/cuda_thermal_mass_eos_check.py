@@ -110,14 +110,14 @@ def part1_isolated() -> bool:
                 c = (t.copy(), wx.copy(), wy.copy())
                 d_cpu = bp.eos_sl_advect_ref(
                     a[1], a[2], a[0], solid, vac, perm,
-                    dt=1.0 / 24.0, n_sub=n_sub, thermal_solid=tsol)
+                    dt=1.0 / 24.0, n_sub=n_sub, dx=1.0, thermal_solid=tsol)
                 d_gpu = bp.cuda_eos_sl_advect(
                     b[1], b[2], b[0], solid, vac, perm,
-                    dt=1.0 / 24.0, n_sub=n_sub, thermal_solid=tsol)
+                    dt=1.0 / 24.0, n_sub=n_sub, dx=1.0, thermal_solid=tsol)
                 # the MASK-OMITTED control (the pre-patch behaviour)
                 bp.cuda_eos_sl_advect(
                     c[1], c[2], c[0], solid, vac, perm,
-                    dt=1.0 / 24.0, n_sub=n_sub, thermal_solid=None)
+                    dt=1.0 / 24.0, n_sub=n_sub, dx=1.0, thermal_solid=None)
                 if d_cpu != d_gpu or not np.array_equal(a[0], b[0]) \
                         or not np.array_equal(a[1], b[1]) \
                         or not np.array_equal(a[2], b[2]):

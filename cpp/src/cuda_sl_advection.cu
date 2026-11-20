@@ -201,7 +201,7 @@ __device__ __forceinline__ FusedSample eos_backtrace_sample3_q_dev(
 // Per destination cell, reading ONLY the frozen src snapshots (the CPU's
 // vx_src_/vy_src_/t_src_) + cmask — a pure gather, one writer per cell:
 //   solid       -> u := 0, T untouched (the CPU `continue`);
-//   otherwise   -> backtrace -u_src*dt_s, fused sample, u := sample,
+//   otherwise   -> backtrace -u_src*dt_s/dx (tiles), fused sample, u := sample,
 //                  T := is_vacuum ? 0 : sample.
 // Step 1f's "zero u on solid" re-pass is subsumed: this kernel already zeroes
 // solid cells' u and nothing between substeps re-touches u (the interleaved
@@ -213,12 +213,13 @@ __global__ void sl_advect3(int32_t* __restrict__ wind_x,
                            const int32_t* __restrict__ src_t,
                            const bool* __restrict__ solid,
                            const uint8_t* __restrict__ cmask,
-                           int32_t dt_s_q, int h, int w,
+                           int32_t dtdx_s_q, int h, int w,
                            const EnvSub* __restrict__ es, int s) {
     // #29 P5: (N, h, w) — this block's env; a masked env does nothing; the
-    // substep dt is the env's fold-table row (es) or the scalar (unbatched).
+    // transport step (#217 patch U: dt_s/dx, tiles per m/s) is the env's
+    // fold-table row (es) or the scalar (unbatched).
     if (sub_off(es, s)) return;
-    if (es) dt_s_q = es[benv()].dt_s_q;
+    if (es) dtdx_s_q = es[benv()].dtdx_s_q;
     const int n = h * w;
     wind_x = bptr(wind_x, n); wind_y = bptr(wind_y, n);
     src_vx = bptr(src_vx, n); src_vy = bptr(src_vy, n); src_t = bptr(src_t, n);
@@ -228,8 +229,8 @@ __global__ void sl_advect3(int32_t* __restrict__ wind_x,
         if (solid[i]) { wind_x[i] = 0; wind_y[i] = 0; continue; }
         const int y = i / w;
         const int x = i % w;
-        const int32_t bx_q = -mul_q16(src_vx[i], dt_s_q);
-        const int32_t by_q = -mul_q16(src_vy[i], dt_s_q);
+        const int32_t bx_q = -mul_q16(src_vx[i], dtdx_s_q);
+        const int32_t by_q = -mul_q16(src_vy[i], dtdx_s_q);
         const FusedSample fs = eos_backtrace_sample3_q_dev(
             src_vx, src_vy, src_t, x, y, bx_q, by_q, cmask, h, w);
         wind_x[i] = fs.vx;
@@ -250,7 +251,7 @@ uint64_t eos_sl_advect(
     int32_t* wind_x, int32_t* wind_y, int32_t* temperature,
     const bool* solid, const bool* is_vacuum,
     const float* dyn_permeability,
-    int h, int w, float dt, int n_sub,
+    int h, int w, float dt, int n_sub, float dx,
     const bool* thermal_solid) {
     const int n = h * w;
     if (n <= 0 || dt <= 0.0f || n_sub < 1) return 0;
@@ -261,12 +262,10 @@ uint64_t eos_sl_advect(
     const bool t_occlude = eos_thermal_occludes(thermal_solid, solid,
                                                 dyn_permeability, n);
 
-    // ---- Host scalar precompute (eos_solver.cpp, VERBATIM, in double):
-    //      dt_s_d = (double)dt / n_sub; dt_s_q = quantize(dt_s_d). Constant
-    //      across substeps (the CPU re-quantizes the same double each substep
-    //      — computing it once here is the identical value). /fp:strict host. -
-    const double dt_s_d = (double)dt / (double)n_sub;
-    const q16 dt_s_q = quantize(dt_s_d);
+    // ---- Host scalar precompute: THE TRANSPORT STEP (#217 patch U),
+    //      eos_transport_step_q(dt, n_sub, dx) — the CPU's one function
+    //      (eos_solver.cpp, /fp:strict), constant across substeps. ---------
+    const q16 dtdx_s_q = eos_transport_step_q(dt, n_sub, dx);
 
     // ---- Device buffers (3 fields + 3 src snapshots + masks + perm + cmask).
     //      Per-call H2D/D2H (S1/S3/S4a pattern); residency is S8. -------------
@@ -328,7 +327,7 @@ uint64_t eos_sl_advect(
         cuda_check(cudaMemcpy(d_svy, d_wy, nb, cudaMemcpyDeviceToDevice), "D2D src_vy");
         cuda_check(cudaMemcpy(d_st,  d_t,  nb, cudaMemcpyDeviceToDevice), "D2D src_t");
         sl_advect3<<<grid, block>>>(d_wx, d_wy, d_svx, d_svy, d_st,
-                                    d_sol, d_cmask, dt_s_q, h, w, nullptr, 0);
+                                    d_sol, d_cmask, dtdx_s_q, h, w, nullptr, 0);
         cuda_check(cudaGetLastError(), "advect launch");
     }
 
@@ -379,13 +378,13 @@ void sl_advect3_device(int32_t* d_wind_x, int32_t* d_wind_y,
                        const int32_t* d_src_vx, const int32_t* d_src_vy,
                        const int32_t* d_src_t,
                        const bool* d_solid, const uint8_t* d_cmask,
-                       int32_t dt_s_q, int h, int w,
+                       int32_t dtdx_s_q, int h, int w,
                        int n_env, const EnvSub* es, int s) {
     const int n = h * w;
     const int block = 256;
     sl_advect3<<<bgrid(n, n_env, block), block, 0, tstream()>>>(d_wind_x, d_wind_y,
                                 d_src_vx, d_src_vy, d_src_t,
-                                d_solid, d_cmask, dt_s_q, h, w, es, s);
+                                d_solid, d_cmask, dtdx_s_q, h, w, es, s);
     cuda_check(cudaGetLastError(), "advect launch (P6.5 chained)");
 }
 

@@ -780,10 +780,16 @@ void EOSSolver::step(
     // source; the energy books now solve that structurally, by never letting
     // relative energy cross a ts face at all (rule (d), §2.1.4). `cmask_` is
     // untouched, so velocity / pressure / gas flow are bit-identical.)
-    // donor-cell face coefficients (min-perm quantize x dt_s — the exact
+    // #217 patch U (Erik, 2026-11-20: WIND IS m/s): THE TRANSPORT STEP —
+    // dt_s/dx, tiles per (m/s) per substep, ONE fold for both step-1 uses
+    // (the 1a backtrace and the 1d face coefficient). Before patch U this was
+    // quantize(dt_s_d): air moved u·dt_s TILES, 1/dx too slow below 1 m.
+    // Bit-identical to that at dx == 1.0 (eos_transport_step_q's header).
+    const q16 dtdx_s_q = eos_transport_step_q(dt, n_sub, dx);
+    // donor-cell face coefficients (min-perm quantize x dt_s/dx — the exact
     // legacy bulk_flux_transport per-face chain, hoisted):
     {
-        const q16 dts_q_c = quantize(dt_s_d);
+        const q16 dts_q_c = dtdx_s_q;
         for (int i = 0; i < n; ++i) { coeffE_[i] = 0; coeffS_[i] = 0; }
         for (int y = 0; y < h; ++y) {
             const int row = y * w;
@@ -804,7 +810,6 @@ void EOSSolver::step(
 
     for (int s = 0; s < n_sub; ++s) {
         const float dt_s = (float)dt_s_d;
-        const q16 dt_s_q = quantize(dt_s_d);
 
         // P-E0 bracket open: substep transport-block entry (design §2.5).
         const int64_t eth_pre_transport = eth_books_sum();
@@ -828,8 +833,8 @@ void EOSSolver::step(
             for (int x = 0; x < w; ++x) {
                 const int i = y * w + x;
                 if (solid[i]) { wind_x[i] = 0; wind_y[i] = 0; continue; }
-                const int32_t bx_q = -mul_q16(vx_src_[i], dt_s_q);
-                const int32_t by_q = -mul_q16(vy_src_[i], dt_s_q);
+                const int32_t bx_q = -mul_q16(vx_src_[i], dtdx_s_q);
+                const int32_t by_q = -mul_q16(vy_src_[i], dtdx_s_q);
                 const FusedSample fs = eos_backtrace_sample3_q(
                     vx_src_.data(), vy_src_.data(), t_src_.data(),
                     x, y, bx_q, by_q,
@@ -2166,6 +2171,25 @@ void EOSSolver::mg_run_solve_cpu(int n_levels) const {
 }
 
 // ===========================================================================
+// #217 patch U — THE TRANSPORT STEP (declared in eos_solver.h; rationale
+// there). dt_s/dx in double, quantized once; the dx floor is step()'s own
+// `std::max((double)dx, 1e-6)` and dt_s is step()'s `dt_d / n_sub`, so at
+// dx == 1.0 the result is the pre-patch-U `quantize(dt_s_d)` bit for bit.
+// ===========================================================================
+int32_t eos_transport_step_q(float dt, int n_sub, float dx) {
+    const double dx_d   = std::max((double)dx, 1e-6);
+    const double dt_s_d = (double)dt / (double)std::max(1, n_sub);
+    const q16 s_q = quantize(dt_s_d / dx_d);
+    if (s_q < 0 || s_q > FP_ONE) {
+        throw std::runtime_error(
+            "EOS transport step dt_s/dx out of range (more than one tile per "
+            "m/s per substep) -- check dt / n_sub / dx; see "
+            "docs/eos_checkerboard_design_2026-11-20.md Sec 7.2");
+    }
+    return s_q;
+}
+
+// ===========================================================================
 // EOS P6.2 — standalone CPU reference for the SL-advection substep loop
 // (declared in eos_solver.h; rationale there). A VERBATIM replay of step()'s
 // step-1a/1f chain for a GIVEN n_sub:
@@ -2175,8 +2199,8 @@ void EOSSolver::mg_run_solve_cpu(int n_levels) const {
 //                       backtrace via the SAME file-local
 //                       eos_backtrace_sample3_q (one routine, zero drift),
 //                       solid cells zero u;
-//   * dt_s_q          — quantize((double)dt / (double)n_sub), exactly the
-//                       dt_d/dt_s_d fold step() performs.
+//   * dtdx_s_q        — eos_transport_step_q(dt, n_sub, dx), exactly the
+//                       fold step() performs (#217 patch U: tiles per m/s).
 // The step-1f "zero u on solid" pass is subsumed: the advection pass itself
 // zeroes solid cells' u, and nothing between (bulk flux writes only gas
 // planes + T) re-touches u — replicated here by construction.
@@ -2190,7 +2214,7 @@ uint64_t eos_sl_advect_reference(
         int32_t* wind_x, int32_t* wind_y, int32_t* temperature,
         const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability,
-        int h, int w, float dt, int n_sub,
+        int h, int w, float dt, int n_sub, float dx,
         const bool* is_ambient, const bool* thermal_solid) {
     const int n = h * w;
     if (n <= 0 || dt <= 0.0f || n_sub < 1) return 0;
@@ -2209,9 +2233,9 @@ uint64_t eos_sl_advect_reference(
     }
 
     std::vector<int32_t> vx_src(n), vy_src(n), t_src(n);
-    const double dt_s_d = (double)dt / (double)n_sub;   // == step()'s dt_d/n_sub
+    // #217 patch U: the one transport step (== step()'s, one function).
+    const q16 dtdx_s_q = eos_transport_step_q(dt, n_sub, dx);
     for (int s = 0; s < n_sub; ++s) {
-        const q16 dt_s_q = quantize(dt_s_d);
         for (int i = 0; i < n; ++i) {
             vx_src[i] = wind_x[i];
             vy_src[i] = wind_y[i];
@@ -2221,8 +2245,8 @@ uint64_t eos_sl_advect_reference(
             for (int x = 0; x < w; ++x) {
                 const int i = y * w + x;
                 if (solid[i]) { wind_x[i] = 0; wind_y[i] = 0; continue; }
-                const int32_t bx_q = -mul_q16(vx_src[i], dt_s_q);
-                const int32_t by_q = -mul_q16(vy_src[i], dt_s_q);
+                const int32_t bx_q = -mul_q16(vx_src[i], dtdx_s_q);
+                const int32_t by_q = -mul_q16(vy_src[i], dtdx_s_q);
                 const FusedSample fs = eos_backtrace_sample3_q(
                     vx_src.data(), vy_src.data(), t_src.data(),
                     x, y, bx_q, by_q,

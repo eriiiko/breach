@@ -264,8 +264,9 @@ EOSHostPrestage eos_host_prestage(
     pre.coeffE.assign(n, 0);
     pre.coeffS.assign(n, 0);
     {
-        // == quantize(dt_d / n_sub), the fold's own dt_s_q (one expression).
-        const q16 dts_q_c = pre.dt_s_q;
+        // == eos_transport_step_q(dt, n_sub, dx), the fold's own dtdx_s_q
+        // (one function, #217 patch U: tiles per m/s).
+        const q16 dts_q_c = pre.dtdx_s_q;
         for (int y = 0; y < h; ++y) {
             const int row = y * w;
             for (int x = 0; x < w; ++x) {
@@ -360,11 +361,11 @@ void eos_prestage_finish(const EOSSolver& solver, EOSHostPrestage& pre,
         (q16)std::min<int64_t>(numer_wide, (int64_t)INT32_MAX), pre.cfl_dx_q));
     if (n_sub > solver.N_SUB_MAX) n_sub = solver.N_SUB_MAX;
     solver.dbg_last_n_sub = n_sub;
-    const double dt_s_d = pre.dt_d / (double)n_sub;
-    // dt_s_q: the CPU re-quantizes the SAME double each substep — one fold
-    // here is the identical value (the proven P6.2 host fold).
-    pre.n_sub  = n_sub;
-    pre.dt_s_q = quantize(dt_s_d);
+    // #217 patch U: THE TRANSPORT STEP, step()'s one function (the CPU folds
+    // it once per tick too). pre.dt_d is (double) of the float dt, so the
+    // float round trip is exact.
+    pre.n_sub    = n_sub;
+    pre.dtdx_s_q = eos_transport_step_q((float)pre.dt_d, n_sub, solver.dx);
 }
 
 long long eos_step_cuda_calls() { return g_eos_step_cuda_calls; }
@@ -417,7 +418,7 @@ void eos_step_cuda(
     // the kick now reads pre.cap2 (below), not this scalar; pre.c_local_q
     // itself still feeds dbg_last_c_local_q via eos_host_prestage.
     const int n_sub     = pre.n_sub;
-    const q16 dt_s_q    = pre.dt_s_q;
+    const q16 dtdx_s_q  = pre.dtdx_s_q;
     const std::vector<int32_t>& coeffE = pre.coeffE;
     const std::vector<int32_t>& coeffS = pre.coeffS;
     const std::vector<int>& cons = pre.cons;
@@ -574,7 +575,7 @@ void eos_step_cuda(
             cuda_check(cudaMemcpy(d_svy, d_wy, nb, cudaMemcpyDeviceToDevice), "D2D src_vy");
             cuda_check(cudaMemcpy(d_st,  d_t,  nb, cudaMemcpyDeviceToDevice), "D2D src_t");
             sl_advect3_device(d_wx, d_wy, d_svx, d_svy, d_st,
-                              d_sol, d_cmask, dt_s_q, h, w);
+                              d_sol, d_cmask, dtdx_s_q, h, w);
             // -- d. bulk O2/N2 donor-cell flux on THIS substep's u, WITH the
             //    thermal energy riding it (P-E1, design §2.1). The mass chain
             //    inside is the UNCHANGED P6.1 B1..B5 per plane. BC: the ring
