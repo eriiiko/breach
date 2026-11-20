@@ -48,7 +48,7 @@ struct DevI64 {
     void down(int64_t* host) const {
         kit_check(cudaMemcpyAsync(host, d, n * sizeof(int64_t), cudaMemcpyDeviceToHost, tstream()),
                   "D2H");
-        kit_check(cudaStreamSynchronize(tstream()), "sync");
+        kit_check(counted_sync(tstream(), "cuda_unit_kit_probe.cu:51"), "sync");
     }
     ~DevI64() { cudaFree(d); }
     DevI64(const DevI64&) = delete;

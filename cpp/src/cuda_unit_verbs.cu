@@ -48,7 +48,9 @@
 // CLASS T (training only): nothing in the played tick calls this TU.
 // ============================================================================
 #include "cuda_unit_kernels.h"
+#include "cuda_object_table.h"
 #include "cuda_unit_lib.cuh"
+#include "object_tables_layout.h"   // GENERATED: the door and charge rows (#29 P7e.4)
 #include "unit_requests_layout.h"   // GENERATED: the request records
 
 namespace breach_cuda {
@@ -57,6 +59,7 @@ namespace {
 
 using namespace unit_lib;
 using namespace unit_requests;
+using namespace object_tables;   // #29 P7e.4: the door and charge rows
 
 //: The per-row shove scratch: target row (-1 none), jx, jy, angular, the
 //: row's own "changed" flag from the first kernel.
@@ -72,7 +75,7 @@ struct GrowBuf {
     size_t cap = 0;
     int64_t* get(size_t n) {
         if (n > cap) {
-            cudaStreamSynchronize(tstream());
+            counted_sync(tstream(), "cuda_unit_verbs.cu:78");
             if (d) cudaFree(d);
             d = nullptr;
             if (cudaMalloc(reinterpret_cast<void**>(&d), n * sizeof(int64_t)) != cudaSuccess)
@@ -83,6 +86,7 @@ struct GrowBuf {
     }
 };
 GrowBuf g_scratch;
+GrowBuf g_inputs;   // #29 P7e.4: the spans and live counts built from the tables
 
 __device__ __forceinline__ bool tick_ok(int64_t v) { return v >= -TICK_MAX && v <= TICK_MAX; }
 
@@ -567,9 +571,11 @@ __global__ void k_plant_accept(int64_t* store, int n_units, const int64_t* table
 
 }  // namespace
 
-void unit_verbs(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitRecordList& requests,
-                std::uintptr_t tick_row, const int64_t* spans, int n_spans, const int64_t* live,
-                std::uintptr_t flight, int fh, int fw, const UnitDamageCounts& out) {
+namespace {
+
+void check_verbs_args(UnitStoreDevice& store, const UnitTablesDevice& tables,
+                      UnitRecordList& requests, std::uintptr_t tick_row, std::uintptr_t flight,
+                      int fh, int fw) {
     unit_check_pair(store, tables, "unit_verbs");
     if (requests.n_env() != store.n_env() || requests.n_units() != store.n_units() ||
         requests.width() != UNIT_REQ_F || requests.row_cap() != UNIT_REQ_ROW_CAP) {
@@ -580,17 +586,22 @@ void unit_verbs(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitReco
            << ") and the layout (width " << UNIT_REQ_F << ", row cap " << UNIT_REQ_ROW_CAP << ")";
         throw std::invalid_argument(os.str());
     }
-    if (tick_row == 0 || spans == nullptr || live == nullptr || n_spans < 1)
-        throw std::invalid_argument("unit_verbs: the tick row, spans (N, n >= 1, 3), live (N,)");
+    if (tick_row == 0)
+        throw std::invalid_argument("unit_verbs: the tick row");
     if (flight == 0 || fh <= 0 || fw <= 0)
         throw std::invalid_argument("unit_verbs: the flight plane (N, h, w)");
+}
+
+// The three kernels of slot 1b on device inputs (the counts begun by the
+// caller): the per-row verbs, the shove's push, the gather, the plant pass.
+void verbs_launch(UnitStoreDevice& store, const UnitTablesDevice& tables,
+                  UnitRecordList& requests, std::uintptr_t tick_row, const int64_t* d_spans,
+                  int n_spans, const int64_t* d_live, std::uintptr_t flight, int fh, int fw,
+                  const UnitDamageCounts& out) {
     const int n = store.n_env(), U = store.n_units();
     const int64_t* d_trow = reinterpret_cast<const int64_t*>(tick_row);
-    const int64_t* d_spans = store.stage_input(1, spans, (size_t)n * n_spans * SPAN_W);
-    const int64_t* d_live = store.stage_input(2, live, (size_t)n);
     int64_t* sc = g_scratch.get((size_t)n * U * SC_W);
     const RecordListView v = list_view(requests);
-    store.begin_counts();
     k_verbs<<<bgrid(U, n), 128, 0, tstream()>>>(store.rows(), U, tables.values(), d_trow,
                                                  d_spans, n_spans, v, sc,
                                                  reinterpret_cast<const uint8_t*>(flight), fh, fw,
@@ -607,6 +618,96 @@ void unit_verbs(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitReco
     }
     store.end_counts(out.coverage, out.faults, out.refused);
     if (out.dropped) requests.download(nullptr, nullptr, out.dropped);
+}
+
+// #29 P7e.4: slot 1b's two derived inputs built ON THE DEVICE from the
+// tables (unit_requests.door_spans / charges_live): ONE thread per env walks
+// the door table in row (= sim._doors) order and writes each LIVE door's span
+// tiles (row index, ty, tx) in span order, the rest of the n_spans rows pads
+// (index -1); and counts the charge table's live rows. A door whose span
+// leaves the tile table, or more span tiles than n_spans, FAULTS the env (its
+// spans are then all pads).
+__global__ void k_verbs_inputs(const int64_t* doors, const int64_t* door_n, int door_cap,
+                               const int64_t* tiles, const int64_t* tile_n, int tile_cap,
+                               const int64_t* charges, const int64_t* charge_n, int charge_cap,
+                               int n_spans, int64_t* spans, int64_t* live,
+                               unsigned long long* cnt) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    const int e = (int)benv();
+    const int64_t* dr = doors + (size_t)e * door_cap * OBJ_DOOR_W;
+    const int64_t* tr = tiles + (size_t)e * tile_cap * OBJ_DOOR_TILE_W;
+    const int64_t* cr = charges + (size_t)e * charge_cap * OBJ_CHARGE_W;
+    int64_t* sp = spans + (size_t)e * n_spans * SPAN_W;
+    const int64_t nd = door_n[e], nt = tile_n[e], nc = charge_n[e];
+    int k = 0;
+    bool bad = nd < 0 || nd > door_cap || nt < 0 || nt > tile_cap || nc < 0 || nc > charge_cap;
+    for (int64_t d = 0; !bad && d < nd; ++d) {
+        const int64_t* row = dr + d * OBJ_DOOR_W;
+        if (!row[OBJ_DOOR_COL_ALIVE]) continue;
+        const int64_t a = row[OBJ_DOOR_COL_TILE_START], c = row[OBJ_DOOR_COL_TILE_COUNT];
+        if (a < 0 || c < 0 || a + c > nt || k + c > n_spans) {
+            bad = true;
+            break;
+        }
+        for (int64_t t = a; t < a + c; ++t, ++k) {
+            sp[(size_t)k * SPAN_W + 0] = d;
+            sp[(size_t)k * SPAN_W + 1] = tr[t * OBJ_DOOR_TILE_W + OBJ_DOOR_TILE_COL_TY];
+            sp[(size_t)k * SPAN_W + 2] = tr[t * OBJ_DOOR_TILE_W + OBJ_DOOR_TILE_COL_TX];
+        }
+    }
+    if (bad) {
+        k = 0;
+        count_fault(cnt);
+    }
+    for (; k < n_spans; ++k) {
+        sp[(size_t)k * SPAN_W + 0] = -1;
+        sp[(size_t)k * SPAN_W + 1] = 0;
+        sp[(size_t)k * SPAN_W + 2] = 0;
+    }
+    int64_t n_live = 0;
+    for (int64_t i = 0; !bad && i < nc; ++i)
+        if (cr[i * OBJ_CHARGE_W + OBJ_CHARGE_COL_LIVE]) ++n_live;
+    live[e] = n_live;
+}
+
+}  // namespace
+
+void unit_verbs(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitRecordList& requests,
+                std::uintptr_t tick_row, const int64_t* spans, int n_spans, const int64_t* live,
+                std::uintptr_t flight, int fh, int fw, const UnitDamageCounts& out) {
+    check_verbs_args(store, tables, requests, tick_row, flight, fh, fw);
+    if (spans == nullptr || live == nullptr || n_spans < 1)
+        throw std::invalid_argument("unit_verbs: spans (N, n >= 1, 3), live (N,)");
+    const int n = store.n_env();
+    const int64_t* d_spans = store.stage_input(1, spans, (size_t)n * n_spans * SPAN_W);
+    const int64_t* d_live = store.stage_input(2, live, (size_t)n);
+    store.begin_counts();
+    verbs_launch(store, tables, requests, tick_row, d_spans, n_spans, d_live, flight, fh, fw,
+                 out);
+}
+
+void unit_verbs_tables(UnitStoreDevice& store, const UnitTablesDevice& tables,
+                       UnitRecordList& requests, std::uintptr_t tick_row, ObjectTable& doors,
+                       ObjectTable& door_tiles, ObjectTable& charges, std::uintptr_t flight,
+                       int fh, int fw, const UnitDamageCounts& out) {
+    check_verbs_args(store, tables, requests, tick_row, flight, fh, fw);
+    const int n = store.n_env();
+    if (doors.n_env() != n || door_tiles.n_env() != n || charges.n_env() != n ||
+        doors.width() != OBJ_DOOR_W || door_tiles.width() != OBJ_DOOR_TILE_W ||
+        charges.width() != OBJ_CHARGE_W)
+        throw std::invalid_argument("unit_verbs_tables: the door, door tile and charge tables "
+                                    "of the store's envs");
+    const int n_spans = door_tiles.cap();
+    int64_t* buf = g_inputs.get((size_t)n * n_spans * SPAN_W + (size_t)n);
+    int64_t* d_spans = buf;
+    int64_t* d_live = buf + (size_t)n * n_spans * SPAN_W;
+    store.begin_counts();
+    k_verbs_inputs<<<dim3(1, n), 1, 0, tstream()>>>(
+        doors.records_dev(), doors.count_dev(), doors.cap(), door_tiles.records_dev(),
+        door_tiles.count_dev(), door_tiles.cap(), charges.records_dev(), charges.count_dev(),
+        charges.cap(), n_spans, d_spans, d_live, store.counts_dev());
+    verbs_launch(store, tables, requests, tick_row, d_spans, n_spans, d_live, flight, fh, fw,
+                 out);
 }
 
 }  // namespace breach_cuda

@@ -135,6 +135,7 @@ if(BREACH_CUDA)
         # device damage pipeline (cuda_unit_damage.cuh); pure integer, on the
         # same target-wide CUDA determinism floor.
         src/cuda_unit_events.cu     # the event ring
+        src/cuda_unit_books.cu      # #29 P7e.4: the conductor's one books read, the sync count
         src/cuda_unit_status.cu     # slot 2b
         src/cuda_unit_exchange.cu   # slots 9c, 9c3
         src/cuda_unit_damage_probe.cu # TEST-ONLY: apply_packet on synthetic rows

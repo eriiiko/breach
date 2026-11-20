@@ -20,6 +20,7 @@
 //
 // CLASS T (training only): nothing in the played tick calls this TU.
 // ============================================================================
+#include "cuda_unit_books.h"   // #29 P7e.4: the deferred books
 #include "cuda_applier.h"
 #include "cuda_batch.cuh"          // tstream, benv, bptr, bgrid, env_off
 #include "cuda_topology.cuh"       // the topology seam
@@ -533,8 +534,8 @@ FieldApplier::FieldApplier(int n_env, int cap, int n_units, int row_cap)
 }
 
 FieldApplier::~FieldApplier() {
-    if (staged_) cudaEventSynchronize(static_cast<cudaEvent_t>(staged_));
-    cudaStreamSynchronize(tstream());
+    if (staged_) counted_event_sync(static_cast<cudaEvent_t>(staged_), "cuda_applier.cu:536");
+    counted_sync(tstream(), "cuda_applier.cu:537");
     if (staged_) cudaEventDestroy(static_cast<cudaEvent_t>(staged_));
     if (d_books_) cudaFree(d_books_);
     if (d_land_) cudaFree(d_land_);
@@ -547,7 +548,7 @@ FieldApplier::~FieldApplier() {
 uint8_t* FieldApplier::touched(int n_units) {
     const size_t want = (size_t)n_env() * (size_t)(n_units > 0 ? n_units : 1);
     if (want > touched_cap_) {
-        cudaStreamSynchronize(tstream());
+        counted_sync(tstream(), "cuda_applier.cu:550");
         if (d_touched_) cudaFree(d_touched_);
         d_touched_ = nullptr;
         ap_check(cudaMalloc(reinterpret_cast<void**>(&d_touched_), want), "malloc touched");
@@ -558,7 +559,7 @@ uint8_t* FieldApplier::touched(int n_units) {
 
 void* FieldApplier::walk_scratch(int n_cells) {
     if (n_cells > walk_cells_) {
-        cudaStreamSynchronize(tstream());
+        counted_sync(tstream(), "cuda_applier.cu:561");
         if (d_walk_) cudaFree(d_walk_);
         d_walk_ = nullptr;
         const size_t N = (size_t)n_env(), nc = (size_t)n_cells;
@@ -575,7 +576,7 @@ void FieldApplier::stage(const int64_t* recs, const int64_t* counts) {
     const int n = n_env(), c = cap();
     const size_t nr = (size_t)n * c * APPLIER_F;
     // the pinned buffer is free once the previous stage copy read it
-    ap_check(cudaEventSynchronize(static_cast<cudaEvent_t>(staged_)), "stage wait");
+    ap_check(counted_event_sync(static_cast<cudaEvent_t>(staged_), "cuda_applier.cu:578"), "stage wait");
     std::memcpy(h_stage_, recs, nr * sizeof(int64_t));
     int64_t* cnt = h_stage_ + nr;
     unsigned long long* drp = reinterpret_cast<unsigned long long*>(h_stage_ + nr + n);
@@ -596,9 +597,13 @@ void FieldApplier::stage(const int64_t* recs, const int64_t* counts) {
 
 void FieldApplier::download_books(int64_t* host) {
     const size_t nb = (size_t)n_env() * APPLIER_N_BOOKS;
+    if (books_defer("books", d_books_, nb)) {        // #29 P7e.4
+        std::memset(host, 0, nb * sizeof(int64_t));
+        return;
+    }
     ap_check(cudaMemcpyAsync(h_books_, d_books_, nb * sizeof(int64_t), cudaMemcpyDeviceToHost,
                              tstream()), "D2H books");
-    ap_check(cudaStreamSynchronize(tstream()), "books sync");
+    ap_check(counted_sync(tstream(), "cuda_applier.cu:601"), "books sync");
     std::memcpy(host, h_books_, nb * sizeof(int64_t));
 }
 
@@ -942,7 +947,7 @@ void blast_probe(FieldApplier& a, const UnitTablesDevice& tables, const ApplierP
         a.walk_cells());
     ap_check(cudaGetLastError(), "blast probe launch");
     ap_check(cudaMemcpyAsync(out, dout, no * 8, cudaMemcpyDeviceToHost, tstream()), "probe D2H");
-    ap_check(cudaStreamSynchronize(tstream()), "probe sync");
+    ap_check(counted_sync(tstream(), "cuda_applier.cu:945"), "probe sync");
     cudaFree(dq);
     cudaFree(dout);
 }

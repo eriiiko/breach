@@ -1519,6 +1519,101 @@ no played-tick behaviour moved (the played tick keeps the host pack).
   re-run in SCENES: the rows are `door_rows` of the host's edits, which the
   door's own gates hold equal to the device producers' rows.
 
+**As built (P7e.4, 2026-11-20).** Branch `29-p7e4-conductor`. The device
+conductor, `simulation.conductor.DeviceConductor` (Class T); no physics, no
+golden, no played-tick behaviour moved (slot 7's chain is code motion).
+- THE SHAPE (a choice where the design was silent): the walk is a Python
+  function, one call line per slot of `Simulation.step()` over the
+  `unit_kernels` faces (each one to three launches), not a C++ orchestration.
+  Its cost on ship_demo is about 11 to 12 ms a conductor tick (all slots,
+  slot 7 included, the latch included; host Python plus launches), measured
+  by the gate on the pinned matches.
+- STATE: the twin sim seeds the device ONCE at the build (its map made
+  resident through `ResidentBatch([sim])`, the store packed and uploaded, every
+  object and entity table staged, the horde cache staged persistent, the door
+  at the host's seq); nothing is restaged between ticks (the gate's restage
+  probe counts every store / table / cache / `from_host` upload inside a tick:
+  zero; shown red with `CONDUCTOR_BREAK=restage`). The ripple pair, the only
+  non-resident planes the seam writes, are conductor-owned device copies.
+- THE LATCHES: `latch(intents)` takes the tap's `(kind, args)`; each intent
+  method (`set_move_dir` .. `set_flashlight`, `plant_charge_intent`) writes ONE
+  `Unit` attribute from its arguments alone (it reads the unit's existence and
+  nothing else; `throttle` and the plant fuse are clamped BEFORE the tap, so
+  the recorded args are the written value; `_possessed_ids` arms no device
+  slot), so the latch is a CuPy column scatter of the schema's encodings into
+  the store (`LATCH_COLUMNS`), last write per (unit, column) winning. The
+  order table (`order_intent`, `until` from the conductor's tick) is staged to
+  slot 1b' only on a tick that holds an order (the host's dormancy); the
+  zombie request set is the HORDE latch. `order_intent`'s door
+  (`unit_orders.check`) reads `u.alive` / `u.is_zombie`, but it refuses BEFORE
+  the tap: a recorded order is one the reference accepted. The tick row is
+  written once at the build and advanced on the device at slot 10 (tick and
+  draw tick); the twin's host `tick` / `real_time` advance beside it (the
+  swarm's env words read `sim.draws.tick`: left to P7e.5 as cut).
+- SLOT 1b's two host inputs (H3) are built on the device:
+  `unit_kernels.verbs_device` -> `unit_verbs_tables` (one thread per env walks
+  the door table for the LIVE doors' span tiles, counts the charge table's
+  live rows), the same three kernels after it.
+- SLOT 7: `physics_runner._resident_chain` (the water stage to the tail's
+  books D2H) is now ONE function both `run_resident_batch` and
+  `run_resident_conductor` call; the conductor's slot 7 runs the head's host
+  books (trace dt check, saturation books), the chain with the SOURCES stage's
+  device hand-over, no stamp rows / edit buffer / entry upload / exit download,
+  and brackets the solver backends ON (restoring them, so a host
+  re-simulation in the same process keeps the CPU path). Slot 9 ranks the
+  resident fire's own list (`BurnList.resident`); 9b, 6 and 6b are P7e.2's and
+  P7e.3's device forms.
+- THE TILE SERIAL: every walk that can change a tile is handed the tick row
+  (`sweep_doors`, `timed_charges`, `heat_sources` gained the argument): without
+  it the door sweep's seal / unseal left the serial behind and the horde
+  cache's refresh rule diverged (found by the gate's cache compare).
+- `obstacles` IS `solid` on the host's C++ stamp path (P7e.2's finding): the
+  device mirrors the alias (the stamp writes the `solid` buffer for it);
+  without it every opened door or burnt wall diverged in `obstacles`.
+- ONE BOOKS READ (`cpp/src/cuda_unit_books.{h,cu}`): while a conductor tick
+  runs, `UnitStoreDevice::end_counts`, a record list's counts-only download,
+  `FieldApplier::download_books`, the door and object slots' counts and the
+  flush's books copy D2D into one arena under the call line's label and hand
+  the host zeros; `_books_read` raises by name at the tick's end (a fault, an
+  overflow, each applier book that refuses, a shot / spray refusal, the
+  flush's refusals; the flush's books are folded there). `DeviceTable.check`
+  reads the counts alone (it downloaded the whole table); a source-free
+  level empties the blast log by the record list's `begin` (no upload).
+  Every unit-side host sync now goes through `counted_sync` /
+  `counted_event_sync` and `tick_sync_point` notes its own: the S4 count.
+- GATE `tests/cuda_conductor_check.py` (wrapper `tests/test_cuda_conductor.py`),
+  the reference on the CPU path beside the conductor's twin,
+  `match_replay.match_digests` compared every tick, then the state in no
+  digest (rounds, grenades, noise, sources and their tiles, the edit door's
+  window, the horde cache) against the reference's record functions:
+  S1 the hand scenes (payloads, hazards 0 / 2, sprays, horde and horde with
+  the controller, signals, fire 0 / 1, walking), between-tick fixtures hoisted
+  into the setup or dropped, 160 ticks each, every tick equal; RESIDENT the
+  restage probe, zero; S2 a 300-tick ship_demo bots match recorded through
+  `run_match(record=True)` and replayed (the reference by the replay
+  controller, the conductor from the intent rows), every tick equal; S3 the
+  pinned `bots` (1349 ticks, 22867 intents) and `bots_v1` (272 ticks, 6566
+  intents) recorded and replayed to their end, every tick equal, no refusal
+  met (no beam in the loadout; vent ledgers, the horde cache, bulk gas, the
+  list capacities and the edit door's caps held over the full length); S4 3
+  host syncs per steady conductor tick on payloads, hazards and ship_demo
+  (`max_n_sub`, the physics books, the books read; the first tick's scratch
+  growth, 6 syncs, is warm-up) and nothing else, shown red by a face's download
+  inside the tick (`CONDUCTOR_BREAK=sync`). The digest compare shown red by
+  leaving slot 2b out (`CONDUCTOR_BREAK=slot`: a unit's statuses, tick 1).
+- Twin rows `payload`, `sources` and `conductor` (Class T); the signal and
+  hazard stages stay `[not_twinned]` (neither the corpus nor a played
+  ship_demo match holds a bus, a timed charge or a heat source, so no tick
+  traces them: a twin row would have no files), their reasons corrected.
+- Host seams left open, by design (named): the twin's host clock beside the
+  device row; the swarm's env words (host tick, P7e.5); the order table's H2D
+  on a tick with an order; the team picture, the recorder and the render-only
+  events (swarm deaths, Wall / DoorDestroyedEvent) not run; the `Z-` name and
+  the momentum books (diagnostics read by no rule) set / not kept on the twin;
+  the solid books' sink (`TemperatureSolver.book_solid_seam`: the closure
+  identity's `e_solid_seam_sum` and the books snapshot, read by no law; the
+  device's twin is the applier's solid book, kept in `last_books`).
+
 **Systems (additions to §13).** New, each with its ONE index line and its
 constraints in `.claude/rules/device-units.md` when it is built: the device
 table module and each table on it (charges, grenades, rounds, blast sources,

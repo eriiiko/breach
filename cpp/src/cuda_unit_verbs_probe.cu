@@ -68,7 +68,7 @@ void unit_verbs_probe(UnitStoreDevice& store, const UnitTablesDevice& tables, in
     cudaError_t e = cudaGetLastError();
     if (e == cudaSuccess)
         e = cudaMemcpyAsync(out, d_out, bytes, cudaMemcpyDeviceToHost, tstream());
-    if (e == cudaSuccess) e = cudaStreamSynchronize(tstream());
+    if (e == cudaSuccess) e = counted_sync(tstream(), "cuda_unit_verbs_probe.cu:71");
     cudaFree(d_out);
     if (e != cudaSuccess) {
         std::ostringstream os;

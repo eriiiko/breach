@@ -429,8 +429,36 @@ def verbs(store, requests, tick_row, door_spans, charges_live, fields) -> np.nda
     return cov
 
 
+def verbs_device(store, requests, tick_row, doors, door_tiles, charges, fields) -> np.ndarray:
+    """#29 P7e.4: slot 1b as :func:`verbs`, its two derived inputs built ON
+    THE DEVICE from the tables (the device conductor's form, never staged
+    from the host): the live doors' span tiles from ``doors`` /
+    ``door_tiles`` (``unit_requests.door_spans``) and the live charges from
+    ``charges`` (``unit_requests.charges_live``), all
+    ``object_tables.DeviceTable`` s of the store's envs. Refuses what
+    :func:`verbs` refuses; a door whose span leaves its tile table faults
+    (:class:`UnitKernelFault`)."""
+    from simulation.unit_requests import UnitRequestOverflow
+    _check_requests("verbs", store, requests)
+    _check_tables("verbs", store, doors, door_tiles, charges)
+    t = _trow(tick_row, store, "verbs")
+    ptr, fh, fw = _flight_plane("verbs", store, fields)
+    cov, flt, ref, drp = (np.asarray(c, dtype=np.int64) for c in store.bp.unit_verbs_tables(
+        store.buffer, store.tables, requests.buffer, t, doors.buffer, door_tiles.buffer,
+        charges.buffer, ptr, fh, fw))
+    cov = _done(store, "verbs", (cov, flt, ref))
+    store.last_dropped = drp
+    if drp.any():
+        envs = [int(e) for e in np.nonzero(drp)[0]]
+        raise UnitRequestOverflow(
+            f"unit kernel verbs: {int(drp.sum())} request(s) in env(s) {envs} "
+            f"did not fit the request list (its R_max, or a row's staging): "
+            f"nothing was written past the capacity")
+    return cov
+
+
 #: The done kernel's columns.
-DONE_COLUMNS = ("terminal", "outcome", "winner", "living_teams")
+DONE_COLUMNS =("terminal", "outcome", "winner", "living_teams")
 DONE_NONE, DONE_WIN, DONE_DRAW = 0, 1, 2
 
 
@@ -454,7 +482,7 @@ def verbs_probe(store, kind=0, tick=0, base=0) -> np.ndarray:
 
 
 __all__ = ["REQUEST_WIDTH", "NO_REQUEST", "UnitKernelFault",
-           "verbs", "DONE_COLUMNS", "DONE_NONE", "DONE_WIN", "DONE_DRAW",
+           "verbs", "verbs_device", "DONE_COLUMNS", "DONE_NONE", "DONE_WIN", "DONE_DRAW",
            "match_done", "verbs_probe",
            "exposure_decay", "integrate_turn", "WIND_FIELDS", "wind_impulse",
            "requests_of", "pad_requests", "apply_orders", "expire_orders",
@@ -1690,7 +1718,7 @@ def door_uses(store, requests, doors) -> np.ndarray:
     return ch
 
 
-def sweep_doors(store, dev_applier, fields: dict, doors, tiles) -> tuple:
+def sweep_doors(store, dev_applier, fields: dict, doors, tiles, tick_row=None) -> tuple:
     """Slot 9e(d)'s door sweep (``door_system.sweep_doors``) as the applier's
     DOORS stage: every env's door table walked in row (= ordinal) order on its
     planes (``fields`` as :func:`walk_effects`' -- every ``applier.PLANES``
@@ -1710,7 +1738,8 @@ def sweep_doors(store, dev_applier, fields: dict, doors, tiles) -> tuple:
     b, _cov, _rdrop = store.bp.applier_run(
         dev_applier.buffer, store.buffer, store.tables, ptrs, n_gases, h, w,
         int(applier.STAGE_DOORS), None, door_table=doors.buffer,
-        door_tiles=tiles.buffer)
+        door_tiles=tiles.buffer,
+        tick_row=0 if tick_row is None else _trow(tick_row, store, name))
     books = applier.books_dict(b)
     store.last_books = books
     if books["faults"].any():
@@ -2756,7 +2785,8 @@ def heat_chain_bound(heat_recs, n_blast: int) -> int:
     return n
 
 
-def timed_charges(store, dev_applier, fields: dict, ring, lists, table) -> tuple:
+def timed_charges(store, dev_applier, fields: dict, ring, lists, table,
+                  tick_row=None) -> tuple:
     """Slot 9e(d') (``timed_charge_system.sweep_timed_charges``) as the
     applier's TIMED_CHARGES stage: every env's timed-charge table (``table``)
     walked in row (= ordinal) order on its planes (``fields`` as
@@ -2771,10 +2801,11 @@ def timed_charges(store, dev_applier, fields: dict, ring, lists, table) -> tuple
     from simulation import applier
     _check_tables("applier[TIMED_CHARGES]", store, table)
     return walk_effects(store, dev_applier, fields, applier.STAGE_TIMED_CHARGES, ring,
-                        lists, timed_table=table)
+                        lists, timed_table=table, tick_row=tick_row)
 
 
-def heat_sources(store, dev_applier, fields: dict, ring, lists, table) -> tuple:
+def heat_sources(store, dev_applier, fields: dict, ring, lists, table,
+                 tick_row=None) -> tuple:
     """Slot 9e(d'') (``heat_source_system.sweep_heat_sources``) as the
     applier's HEAT_SOURCES stage: per env the blast log (``lists.blast_log``:
     the tick's discs so far) read as a GROWING list into the heat-source
@@ -2792,14 +2823,17 @@ def heat_sources(store, dev_applier, fields: dict, ring, lists, table) -> tuple:
     if lists is None or lists.blast_log is None:
         raise ValueError(f"unit kernel {name}: the sweep reads the blast log "
                          f"(lists.blast_log)")
-    blast_before = lists.blast_log.download()[1].copy()
+    # the log's count names a refusal; under the device conductor's deferred
+    # books (#29 P7e.4) it is not read (the refusal is named at the one read)
+    blast_before = (None if store.bp.conductor_books_deferring()
+                    else lists.blast_log.download()[1].copy())
     cov, books = walk_effects(store, dev_applier, fields, applier.STAGE_HEAT_SOURCES, ring,
-                              lists, heat_table=table)
+                              lists, heat_table=table, tick_row=tick_row)
     if books["heat_refused"].any():
         envs = [int(e) for e in np.nonzero(books["heat_refused"])[0]]
         hr, hc, _ = table.download()
         named = [f"env {e}: bound {heat_chain_bound(hr[e, :int(hc[e])], int(blast_before[e]))}"
-                 for e in envs]
+                 for e in envs] if blast_before is not None else []
         raise applier.HeatChainRefused(
             f"unit kernel {name}: {len(envs)} env(s) refused at the head of the heat-"
             f"source sweep: the chain's proved bound (the blast log's discs plus the living "

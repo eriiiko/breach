@@ -17,6 +17,7 @@
 //
 // CLASS T (training only): nothing in the played tick calls this TU.
 // ============================================================================
+#include "cuda_unit_books.h"   // #29 P7e.4: the deferred books
 #include "cuda_unit_store.h"
 #include "cuda_batch.cuh"          // tstream
 #include "unit_store_layout.h"     // GENERATED: the row layout
@@ -72,8 +73,8 @@ UnitStoreDevice::UnitStoreDevice(int n_env, int n_units, int width)
 UnitStoreDevice::~UnitStoreDevice() {
     // Never throw from a destructor: finish the stream's work on the buffers,
     // then free them (errors ignored).
-    if (staged_) cudaEventSynchronize(static_cast<cudaEvent_t>(staged_));
-    cudaStreamSynchronize(tstream());
+    if (staged_) counted_event_sync(static_cast<cudaEvent_t>(staged_), "cuda_unit_store.cu:75");
+    counted_sync(tstream(), "cuda_unit_store.cu:76");
     if (staged_) cudaEventDestroy(static_cast<cudaEvent_t>(staged_));
     if (d_) cudaFree(d_);
     if (h_) cudaFreeHost(h_);
@@ -86,7 +87,7 @@ UnitStoreDevice::~UnitStoreDevice() {
 }
 
 void UnitStoreDevice::stage_wait() {
-    us_check(cudaEventSynchronize(static_cast<cudaEvent_t>(staged_)), "staging wait");
+    us_check(counted_event_sync(static_cast<cudaEvent_t>(staged_), "cuda_unit_store.cu:89"), "staging wait");
 }
 
 void UnitStoreDevice::upload(const int64_t* host) {
@@ -115,9 +116,17 @@ void UnitStoreDevice::begin_counts() {
 
 void UnitStoreDevice::end_counts(int64_t* coverage, int64_t* faults, int64_t* refused) {
     const size_t cnt_bytes = (size_t)3 * n_env_ * sizeof(unsigned long long);
+    if (books_defer("counts", d_cnt_, (size_t)3 * n_env_)) {   // #29 P7e.4
+        for (int e = 0; e < n_env_; ++e) {
+            if (coverage) coverage[e] = 0;
+            if (faults) faults[e] = 0;
+            if (refused) refused[e] = 0;
+        }
+        return;
+    }
     us_check(cudaMemcpyAsync(h_cnt_, d_cnt_, cnt_bytes, cudaMemcpyDeviceToHost, tstream()),
              "D2H counts");
-    us_check(cudaStreamSynchronize(tstream()), "counts sync");
+    us_check(counted_sync(tstream(), "cuda_unit_store.cu:120"), "counts sync");
     for (int e = 0; e < n_env_; ++e) {
         if (coverage) coverage[e] = (int64_t)h_cnt_[e];
         if (faults) faults[e] = (int64_t)h_cnt_[n_env_ + e];
@@ -132,7 +141,7 @@ const int64_t* UnitStoreDevice::stage_input(int slot, const int64_t* host, size_
     if (host == nullptr) throw std::invalid_argument("UnitStoreBuffer.stage_input: null input");
     // The previous use of this slot's buffers must be done (a kernel driver
     // ends with end_counts' stream sync; this keeps the rule local).
-    us_check(cudaStreamSynchronize(tstream()), "input staging wait");
+    us_check(counted_sync(tstream(), "cuda_unit_store.cu:135"), "input staging wait");
     if (n > in_cap_[slot]) {
         if (d_in_[slot]) cudaFree(d_in_[slot]);
         if (h_in_[slot]) cudaFreeHost(h_in_[slot]);
@@ -167,7 +176,7 @@ UnitTablesDevice::UnitTablesDevice(int n_env, int width) : n_env_(n_env), width_
 }
 
 UnitTablesDevice::~UnitTablesDevice() {
-    cudaStreamSynchronize(tstream());
+    counted_sync(tstream(), "cuda_unit_store.cu:170");
     if (d_) cudaFree(d_);
 }
 
@@ -175,14 +184,14 @@ void UnitTablesDevice::upload(const int64_t* host) {
     if (host == nullptr) throw std::invalid_argument("UnitTablesBuffer.upload: null rows");
     us_check(cudaMemcpyAsync(d_, host, (size_t)n_env_ * width_ * sizeof(int64_t),
                              cudaMemcpyHostToDevice, tstream()), "H2D tables");
-    us_check(cudaStreamSynchronize(tstream()), "tables sync");
+    us_check(counted_sync(tstream(), "cuda_unit_store.cu:178"), "tables sync");
 }
 
 void UnitTablesDevice::download(int64_t* host) {
     if (host == nullptr) throw std::invalid_argument("UnitTablesBuffer.download: null out");
     us_check(cudaMemcpyAsync(host, d_, (size_t)n_env_ * width_ * sizeof(int64_t),
                              cudaMemcpyDeviceToHost, tstream()), "D2H tables");
-    us_check(cudaStreamSynchronize(tstream()), "tables sync");
+    us_check(counted_sync(tstream(), "cuda_unit_store.cu:185"), "tables sync");
 }
 
 int unit_store_width() { return unit_store::UNIT_STORE_W; }

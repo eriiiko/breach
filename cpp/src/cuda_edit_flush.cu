@@ -38,6 +38,7 @@
 // planes untouched (its tile range is empty) and the Python face refuses the
 // flush by name at THE ONE READ (books + faults, one copy).
 // ============================================================================
+#include "cuda_unit_books.h"   // #29 P7e.4: the deferred books
 #include "cuda_edit_flush.h"
 
 #include <cuda_runtime.h>
@@ -330,7 +331,7 @@ EditFlush::EditFlush(int n_env, int edit_cap, int tile_cap)
 }
 
 EditFlush::~EditFlush() {
-    cudaStreamSynchronize(tstream());
+    counted_sync(tstream(), "cuda_edit_flush.cu:333");
     for (int64_t* p : {d_edits_, d_tiles_, d_off_, d_env_, d_rank_, d_tsrc_, d_tcnt_, d_tpre_,
                        d_total_, d_contrib_, d_host_})
         if (p) cudaFree(p);
@@ -423,7 +424,7 @@ void EditFlush::run_host_pack(const int64_t* buf, int n_edits, int n_tiles,
                          (size_t)n_tiles * EDQ_TILE_COLS;
     if (count > host_cap_) {
         if (d_host_) {
-            cudaStreamSynchronize(st);
+            counted_sync(st, "cuda_edit_flush.cu:426");
             cudaFree(d_host_);
         }
         d_host_ = dev_alloc<int64_t>(count, "malloc host pack");
@@ -431,7 +432,7 @@ void EditFlush::run_host_pack(const int64_t* buf, int n_edits, int n_tiles,
     }
     ef_check(cudaMemcpyAsync(d_host_, buf, count * sizeof(int64_t), cudaMemcpyHostToDevice, st),
              "H2D host pack");
-    ef_check(cudaStreamSynchronize(st), "host pack sync");   // buf is pageable host memory
+    ef_check(counted_sync(st, "cuda_edit_flush.cu:434"), "host pack sync");   // buf is pageable host memory
     ef_check(cudaMemsetAsync(d_books_, 0, N * EDQ_SLOTS * sizeof(unsigned long long), st),
              "zero books");
     ef_check(cudaMemsetAsync(d_books_ + N * EDQ_SLOTS, 0xff, N * sizeof(unsigned long long),
@@ -449,9 +450,14 @@ void EditFlush::run_host_pack(const int64_t* buf, int n_edits, int n_tiles,
 void EditFlush::download_books(int64_t* books, uint64_t* faults) {
     const size_t N = (size_t)n_env_;
     std::vector<unsigned long long> h(N * EDQ_SLOTS + N);
+    if (books_defer("flush_books", d_books_, N * EDQ_SLOTS + N)) {   // #29 P7e.4
+        std::memset(books, 0, N * EDQ_SLOTS * sizeof(int64_t));
+        for (size_t e = 0; e < N; ++e) faults[e] = ~(uint64_t)0;   // "no fault"
+        return;
+    }
     ef_check(cudaMemcpyAsync(h.data(), d_books_, h.size() * sizeof(unsigned long long),
                              cudaMemcpyDeviceToHost, tstream()), "D2H books");
-    ef_check(cudaStreamSynchronize(tstream()), "books sync");
+    ef_check(counted_sync(tstream(), "cuda_edit_flush.cu:454"), "books sync");
     std::memcpy(books, h.data(), N * EDQ_SLOTS * sizeof(int64_t));
     std::memcpy(faults, h.data() + N * EDQ_SLOTS, N * sizeof(uint64_t));
 }
@@ -466,7 +472,7 @@ void EditFlush::download_rows(int64_t* edits, int64_t* tiles, int64_t* off, int6
     ef_check(cudaMemcpyAsync(off, d_off_, (N + 1) * 8, cudaMemcpyDeviceToHost, st), "D2H off");
     ef_check(cudaMemcpyAsync(env, d_env_, N * EDQ_ENV_COLS * 8, cudaMemcpyDeviceToHost, st),
              "D2H env");
-    ef_check(cudaStreamSynchronize(st), "rows sync");
+    ef_check(counted_sync(st, "cuda_edit_flush.cu:469"), "rows sync");
 }
 
 bool edit_door_append_probe(EditDoor& door, int env, const int64_t* edits, int n_edits,
@@ -481,7 +487,7 @@ bool edit_door_append_probe(EditDoor& door, int env, const int64_t* edits, int n
     ef_check(cudaMemcpyAsync(&ec, EL.count_dev() + env, 8, cudaMemcpyDeviceToHost, st), "D2H");
     ef_check(cudaMemcpyAsync(&tc, TL.count_dev() + env, 8, cudaMemcpyDeviceToHost, st), "D2H");
     ef_check(cudaMemcpyAsync(&seq, door.seq_dev() + env, 8, cudaMemcpyDeviceToHost, st), "D2H");
-    ef_check(cudaStreamSynchronize(st), "probe sync");
+    ef_check(counted_sync(st, "cuda_edit_flush.cu:484"), "probe sync");
     if (ec + n_edits > EL.cap() || tc + n_tiles > TL.cap()) return false;
     for (int k = 0; k < n_edits; ++k)
         if (edits[(size_t)k * EDIT_DOOR_COLS + EDQ_E_KEY] != seq + k) return false;
@@ -503,7 +509,7 @@ bool edit_door_append_probe(EditDoor& door, int env, const int64_t* edits, int n
     ef_check(cudaMemcpyAsync(TL.count_dev() + env, &tc2, 8, cudaMemcpyHostToDevice, st), "H2D");
     ef_check(cudaMemcpyAsync(door.seq_dev() + env, &seq2, 8, cudaMemcpyHostToDevice, st),
              "H2D");
-    ef_check(cudaStreamSynchronize(st), "probe sync");
+    ef_check(counted_sync(st, "cuda_edit_flush.cu:506"), "probe sync");
     return true;
 }
 

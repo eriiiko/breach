@@ -39,6 +39,12 @@ inline cudaStream_t tstream() {
     return static_cast<cudaStream_t>(tick_stream_handle());
 }
 
+// #29 P7e.4: every host sync of the unit side goes through these (counted
+// under the conductor's current label while a count is open; see
+// cuda_unit_books.h). Defined in cuda_unit_books.cu.
+cudaError_t counted_sync(cudaStream_t s, const char* what);
+cudaError_t counted_event_sync(cudaEvent_t ev, const char* what);
+
 // EnvSub (one fold-table row per env) is declared in cuda_resident_tick.h.
 
 // The env of this block.

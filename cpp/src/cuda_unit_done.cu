@@ -67,7 +67,7 @@ void unit_match_done(UnitStoreDevice& store, const UnitTablesDevice& tables,
     const int64_t* d_trow = reinterpret_cast<const int64_t*>(tick_row);
     const size_t want = (size_t)n * UNIT_DONE_W;
     if (want > g_out_cap) {
-        cudaStreamSynchronize(tstream());
+        counted_sync(tstream(), "cuda_unit_done.cu:70");
         if (g_out) cudaFree(g_out);
         g_out = nullptr;
         if (cudaMalloc(reinterpret_cast<void**>(&g_out), want * sizeof(int64_t)) != cudaSuccess)
@@ -79,7 +79,7 @@ void unit_match_done(UnitStoreDevice& store, const UnitTablesDevice& tables,
     cudaError_t e = cudaGetLastError();
     if (e == cudaSuccess)
         e = cudaMemcpyAsync(out, g_out, want * sizeof(int64_t), cudaMemcpyDeviceToHost, tstream());
-    if (e == cudaSuccess) e = cudaStreamSynchronize(tstream());
+    if (e == cudaSuccess) e = counted_sync(tstream(), "cuda_unit_done.cu:82");
     if (e != cudaSuccess) {
         std::ostringstream os;
         os << "CUDA error in unit_match_done: " << cudaGetErrorString(e);

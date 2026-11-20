@@ -96,7 +96,7 @@ build = [
 "src/simulation/events.py" = "Class T: the tick's event rows (slots 2 / 4 / 5: hits, kills, render-only shots and reloads), built with their producers from P7a"
 "src/simulation/factions.py" = "setup only"
 "src/simulation/generation.py" = "setup only"
-"src/simulation/heat_source_system.py" = "setup only on the corpus (no heat source): slot 9e(d'')'s device form is the applier's HEAT_SOURCES stage (cpp/src/cuda_unit_hazards.cuh, #29 P6b.4), traced by no corpus tick: tests/cuda_unit_hazards_check.py is the guard"
+"src/simulation/heat_source_system.py" = "setup only on the corpus (no heat source): slot 9e(d'')'s device form is the applier's HEAT_SOURCES stage, #29 P6b.4; the device conductor runs it since P7e.4, but neither the corpus nor a played ship_demo match holds a heat source, so no tick traces it: tests/cuda_unit_hazards_check.py and tests/cuda_conductor_check.py are the guard"
 "src/simulation/intents.py" = "Class T: slot 1b, built from P6"
 "src/simulation/line_of_fire.py" = "the observation's line-of-fire flags (#195 1g; outside step, read through the sight routine): never a twin -- the device observation is P8b's gather"
 "src/simulation/loadouts.py" = "setup only: the bank compile (P8a)"
@@ -104,19 +104,19 @@ build = [
 "src/simulation/match_session.py" = "the host loop (MatchSession): the farm's session, never a twin"
 "src/simulation/materials.py" = "setup only: the materials table (its upload is Class P)"
 "src/simulation/obs_spec_v1.py" = "the observation spec v1 (#195 1g; outside step, the env's observe through the sensor accessor): never a twin -- the device observation is P8b's gather"
-"src/simulation/payloads.py" = "Class T: the payload executor (every detonation site); its device form is cpp/src/cuda_unit_payload.cuh, every row since #29 P7c.2, but the corpus (300 ticks) detonates nothing, so no twin traces it: tests/cuda_unit_payloads_check.py is the guard"
+"src/simulation/payloads.py" = "Class T: the payload executor (every detonation site); its device form is cpp/src/cuda_unit_payload.cuh, the [twins.payload] row (every row since #29 P7c.2; run by the device conductor since P7e.4), but the corpus (300 ticks) detonates nothing, so no twin traces it: tests/cuda_unit_payloads_check.py is the guard"
 "src/simulation/physics.py" = "Class T: apply_explosion and add_explosion_smoke (every detonation, through the payload executor); device form cpp/src/cuda_unit_payload.cuh (#29 P7c.1 / P7c.2), traced by no twin (the corpus detonates nothing): tests/cuda_unit_payloads_check.py is the guard"
 "src/simulation/rng_salts.py" = "Class T: the one Philox salt enum (#29 P3b), constants the device twins of draws.py / the wander read"
 "src/simulation/room_graph.py" = "setup only on the corpus: the room graph's host reads (#195 1b; place_at, 1f), imported by the bots for the commander; never called in the tick"
 "src/simulation/sensor_accessor.py" = "the bots' controller side (outside step, #183 G8p): the position features read fire / smoke / pressure / temperature through EntityFieldAccessor.sample_many; never a twin (the sensors' resident gather is its own later backing)"
-"src/simulation/signal_bus.py" = "setup only on the corpus (no bus): slot 9e's signal sub-steps' device forms are the applier's EMIT / LOGIC / DOOR_INPUTS / PUMPS / SWAP stages (cpp/src/cuda_unit_signals.cuh, #29 P6b.3), traced by no corpus tick: tests/cuda_unit_signals_check.py is the guard"
+"src/simulation/signal_bus.py" = "setup only on the corpus (no bus): slot 9e's signal sub-steps' device forms are the applier's EMIT / LOGIC / DOOR_INPUTS / PUMPS / SWAP stages, #29 P6b.3; run by the device conductor since P7e.4, but neither the corpus nor a played ship_demo match has a bus, so no tick traces them: tests/cuda_unit_signals_check.py and tests/cuda_conductor_check.py are the guard"
 "src/simulation/speeds.py" = "setup only: the [speeds] door and its per-map quantization (Simulation.speed_table; the table is an upload with slot 3 and the horde, Class T, P6 / P7d)"
 "src/simulation/species.py" = "setup only: the species table (Class T upload, P8b)"
 "src/simulation/stats.py" = "the bots' controller side (outside step), never a twin"
 "src/simulation/swarm_brood.py" = "setup only: the brood spawn at load, before tick 0 (arc #63 P4: Simulation._reset_internal scatters the broods into the swarm store from the match draws); never in a tick, so never a twin (the corpus carries no brood)"
 "src/simulation/swarm_larva.py" = "setup only on the corpus: the larva rules run at GameMap construction and the reload seam (arc #63 P3); the corpus carries no larvae, and the law is C++ (the swarm_larva twin)"
 "src/simulation/team_picture.py" = "the team picture (#195 1d, conductor slot 11, a match only): host-side match memory, never synced or hashed; the device's own arrays at the residency arc's later stage (RL agent design 9)"
-"src/simulation/timed_charge_system.py" = "setup only on the corpus (no charge): slot 9e(d')'s device form is the applier's TIMED_CHARGES stage (cpp/src/cuda_unit_hazards.cuh, #29 P6b.4), traced by no corpus tick: tests/cuda_unit_hazards_check.py is the guard"
+"src/simulation/timed_charge_system.py" = "setup only on the corpus (no charge): slot 9e(d')'s device form is the applier's TIMED_CHARGES stage, #29 P6b.4; run by the device conductor since P7e.4, but neither the corpus nor a played ship_demo match holds a timed charge, so no tick traces it: tests/cuda_unit_hazards_check.py and tests/cuda_conductor_check.py are the guard"
 "src/simulation/unit_schema.py" = "setup only on the corpus: the unit schema (#29 P3a: Unit.__slots__, the column defaults at construction, the digest record); the device unit store's column table from P6"
 "src/simulation/vision.py" = "Class T: has_los, built at P7a (the bots read it outside step); its many-tiles routine (#195 1c) is PhysicsEngine.sight_rays / sight_window, cpp/src/sight_lines.cpp, a host call in both modules"
 
@@ -126,7 +126,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_water.cu"]
 slots = ["7 water (cpu/per-call)"]
 level = true
-level_at = "95ba23aa8bc30e3c5ac1bfc54facdcc40311bf47"
+level_at = "2f9a34e0285efb57d099a1e9650664f2f7f0d337"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -173,7 +173,7 @@ device = [
 ]
 slots = ["7 physics", "7 EOS run_substeps (cpu/per-call)"]
 level = true
-level_at = "95ba23aa8bc30e3c5ac1bfc54facdcc40311bf47"
+level_at = "2f9a34e0285efb57d099a1e9650664f2f7f0d337"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.cpp",
@@ -253,7 +253,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_resident.h", "cpp/src/cuda_kick_compression.cu"]
 slots = ["7 physics", "7 EOS run_substeps (cpu/per-call) / div_source"]
 level = true
-level_at = "95ba23aa8bc30e3c5ac1bfc54facdcc40311bf47"
+level_at = "2f9a34e0285efb57d099a1e9650664f2f7f0d337"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -428,7 +428,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_combustion.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h"]
 slots = ["7 combustion (host)"]
 level = true
-level_at = "95ba23aa8bc30e3c5ac1bfc54facdcc40311bf47"
+level_at = "2f9a34e0285efb57d099a1e9650664f2f7f0d337"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/combustion.cpp",
     "cpp/src/combustion.h",
@@ -543,7 +543,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_water_tail.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h"]
 slots = ["7 water (cpu/per-call)"]
 level = true
-level_at = "95ba23aa8bc30e3c5ac1bfc54facdcc40311bf47"
+level_at = "2f9a34e0285efb57d099a1e9650664f2f7f0d337"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -1281,4 +1281,71 @@ files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/unit.py",
     "src/simulation/unit_fixed.py",
     "src/simulation/unit_impulse.py",
+]
+
+[twins.payload]
+# #29 P7c.1 / P7c.2 (a row since P7e.4): CLASS T, the device payload function
+# (cpp/src/cuda_unit_payload.cuh: execute_payload for every row) and the blast
+# walk (cpp/src/cuda_unit_blast.cuh) at every call site the conductor walks:
+# slot 2's DETONATE, the RESOLVE stage (2''s landing, 4c), slot 9e(d')'s planted
+# charges. The corpus detonates nothing in its 300 ticks (payloads.py, physics.py
+# and blast_air.py stay [not_twinned] rows with that reason):
+# tests/cuda_unit_payloads_check.py and the conductor's payload scene and pinned
+# matches are the guard. Training only.
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_payload.cuh", "cpp/src/cuda_unit_blast.cuh", "cpp/src/cuda_edit_door.cuh", "cpp/src/cuda_topology.cuh", "cpp/src/cuda_unit_damage.cuh", "cpp/src/cuda_unit_sight.cuh", "cpp/src/gas_energy.h", "cpp/src/fixed_point.h", "cpp/src/cuda_applier.cu", "cpp/src/cuda_applier.h", "cpp/src/applier_layout.h", "cpp/src/cuda_object_table.cu", "cpp/src/cuda_object_table.h", "cpp/src/object_tables_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/applier.py", "src/simulation/object_tables.py", "src/simulation/unit_schema.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py", "src/simulation/edit_door.py"]
+slots = ["2 grenades", "4c resolve", "9e(d') planted charges"]
+level = true
+level_at = "512164a0054875ad8bf1823742ee24b46896c824"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/exposure.py",
+    "src/simulation/simulation.py",
+    "src/simulation/simultaneous.py",
+]
+
+[twins.sources]
+# #29 P7c.2 (a row since P7e.4): CLASS T, slot 7's head on the device, the
+# applier's SOURCES stage (take_source_plane over the blast-source table,
+# cpp/src/cuda_unit_blast.cuh), the hand-over the device conductor's slot 7 reads
+# (physics_runner.run_resident_conductor's div_source_dev). Training only. Gate:
+# tests/cuda_unit_payloads_check.py (SOURCES, HANDOVER) and the conductor.
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_blast.cuh", "cpp/src/cuda_applier.cu", "cpp/src/cuda_applier.h", "cpp/src/applier_layout.h", "cpp/src/cuda_object_table.cu", "cpp/src/cuda_object_table.h", "cpp/src/object_tables_layout.h", "src/simulation/applier.py", "src/simulation/object_tables.py", "src/simulation/unit_kernels.py"]
+slots = ["7 physics"]
+level = true
+level_at = "2f9a34e0285efb57d099a1e9650664f2f7f0d337"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/blast_expansion.py",
+    "src/simulation/gamemap.py",
+    "src/simulation/gas_fixed.py",
+    "src/simulation/gases.py",
+    "src/simulation/physics_runner.py",
+    "src/simulation/swarm.py",
+    "src/simulation/swarm_tables.py",
+]
+
+[twins.conductor]
+# #29 P7e.4, CLASS T: THE DEVICE CONDUCTOR (src/simulation/conductor.py): the
+# reference tick's slot order (Simulation.step) on the device at N = 1, every
+# face's counts deferred to ONE books read (cpp/src/cuda_unit_books.cu), slot 1b's
+# inputs from the device tables (unit_verbs_tables, cpp/src/cuda_unit_verbs.cu),
+# the actions latched by a column scatter, the tick row advanced on the device;
+# slot 7 is physics_runner.run_resident_conductor (the played chain, code motion).
+# Its slots here are the tick's head and tail it orders itself (the event buffer,
+# the tick advance, the ruleset's tail); every other slot is its face's own twin.
+# Training only. Gate: tests/cuda_conductor_check.py (hand scenes, a recorded
+# match, the pinned matches to their end, the residency probe, the sync count).
+class = "T"
+kind = "driver"
+device = ["src/simulation/conductor.py", "cpp/src/cuda_unit_books.cu", "cpp/src/cuda_unit_books.h", "cpp/src/cuda_unit_verbs.cu", "src/simulation/unit_kernels.py", "src/simulation/physics_runner.py"]
+slots = ["1 events + round head", "10 tick end (ruleset)"]
+level = true
+level_at = "512164a0054875ad8bf1823742ee24b46896c824"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/ai_zombie.py",
+    "src/simulation/gamemap.py",
+    "src/simulation/ruleset.py",
+    "src/simulation/unit.py",
 ]

@@ -31,7 +31,7 @@ EditDoor::EditDoor(int n_env, int edit_cap, int tile_cap)
 }
 
 EditDoor::~EditDoor() {
-    cudaStreamSynchronize(tstream());
+    counted_sync(tstream(), "cuda_edit_door.cu:34");
     if (d_seq_) cudaFree(d_seq_);
 }
 
@@ -57,13 +57,13 @@ void EditDoor::reset_env(int e) {
 void EditDoor::set_seq(const int64_t* seq) {
     ed_check(cudaMemcpyAsync(d_seq_, seq, (size_t)n_env() * sizeof(int64_t),
                              cudaMemcpyHostToDevice, tstream()), "H2D seq");
-    ed_check(cudaStreamSynchronize(tstream()), "seq sync");
+    ed_check(counted_sync(tstream(), "cuda_edit_door.cu:60"), "seq sync");
 }
 
 void EditDoor::download_seq(int64_t* seq) {
     ed_check(cudaMemcpyAsync(seq, d_seq_, (size_t)n_env() * sizeof(int64_t),
                              cudaMemcpyDeviceToHost, tstream()), "D2H seq");
-    ed_check(cudaStreamSynchronize(tstream()), "seq sync");
+    ed_check(counted_sync(tstream(), "cuda_edit_door.cu:66"), "seq sync");
 }
 
 }  // namespace breach_cuda
