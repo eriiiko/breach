@@ -250,6 +250,10 @@ void main() {
     vec3 rim_col = mix(vec3(1.0), albedo, u_rim_albedo);
     lit += u_rim_strength * rim * rim_col * (u_ambient + light_rgb);
 
+    // #97 W3: below the water standing on its tile, the body is seen through
+    // the water above it (lit3d's one waterline; no water = untouched).
+    lit = waterlineTint(lit, fragWorldPos, world_uv);
+
     // Linear HDR out (G0 P1): the world resolve tone-maps and encodes, once.
 
     // alpha = 1.0: the world RT is blitted premultiplied; a translucent marine
