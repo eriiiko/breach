@@ -46,6 +46,7 @@ const char* breach_build_id();
 #include "cuda_applier.h"          // #29 P6.4b: the per-env serial applier (Class T)
 #include "cuda_object_table.h"     // #29 P7.0b: the device object tables (Class T)
 #include "cuda_edit_door.h"        // #29 P7a.3: the device edit door (Class T)
+#include "cuda_edit_flush.h"       // #29 P7e.3: the edit door, step (c) (Class T)
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -1325,6 +1326,8 @@ PYBIND11_MODULE(breach_physics, m) {
                  py::arg("tile_cap"))
             .def("begin", [](EditDoor& d) { d.begin(); },
                  "The 6b flush's reset: every env's rows empty, its seq 0.")
+            .def("reset_env", [](EditDoor& d, int e) { d.reset_env(e); }, py::arg("env"),
+                 "#29 P7e.3: env e's reset alone: its rows empty, its seq 0.")
             .def("set_seq", [](EditDoor& d, py::array_t<int64_t, py::array::c_style> seq) {
                      if (seq.ndim() != 1 || seq.shape(0) != d.n_env())
                          throw std::invalid_argument("EditDoorBuffer.set_seq: (n_env,) int64");
@@ -1339,6 +1342,102 @@ PYBIND11_MODULE(breach_physics, m) {
                      return d.edits(); }, py::return_value_policy::reference_internal)
             .def_property_readonly("tiles", [](EditDoor& d) -> UnitRecordList& {
                      return d.tiles(); }, py::return_value_policy::reference_internal);
+        // #29 P7e.3: the edit door, step (c) -- slot 6b's flush from the device
+        // door (cuda_edit_flush.h; face simulation.edit_door.DeviceEditFlush).
+        {
+            using breach_cuda::EditFlush;
+            auto planes_of = [](py::array_t<uint64_t, py::array::c_style> p) {
+                if (p.ndim() != 1 || p.shape(0) != 10)
+                    throw std::invalid_argument("edit flush: planes must be (10,) uint64");
+                std::array<std::uintptr_t, 10> a{};
+                for (int k = 0; k < 10; ++k) a[k] = (std::uintptr_t)p.data()[k];
+                return a;
+            };
+            m.def("edit_flush_layout", []() {
+                      py::dict d;
+                      d["slots"] = (int)breach_cuda::EDQ_SLOTS;
+                      d["fail"] = (int)breach_cuda::EDQ_B_FAIL;
+                      d["n_codes"] = (int)breach_cuda::EF_N_CODES;
+                      d["door_overflow"] = (int)breach_cuda::EF_DOOR_OVERFLOW;
+                      d["field"] = (int)breach_cuda::EF_FIELD;
+                      d["water_depth"] = (int)breach_cuda::EF_WATER_DEPTH;
+                      d["gas_slice"] = (int)breach_cuda::EF_GAS_SLICE;
+                      d["conservative"] = (int)breach_cuda::EF_CONSERVATIVE;
+                      d["mode"] = (int)breach_cuda::EF_MODE;
+                      d["den"] = (int)breach_cuda::EF_DEN;
+                      d["noise_low"] = (int)breach_cuda::EF_NOISE_LOW;
+                      d["key"] = (int)breach_cuda::EF_KEY;
+                      d["tile"] = (int)breach_cuda::EF_TILE;
+                      d["product"] = (int)breach_cuda::EF_PRODUCT;
+                      d["contrib"] = (int)breach_cuda::EF_CONTRIB;
+                      return d;
+                  }, "#29 P7e.3: the flush's books width and its fault codes by name.");
+            py::class_<EditFlush>(m, "EditFlushBuffer",
+                    "#29 P7e.3: slot 6b's flush buffers built on the device from the edit "
+                    "door (Class T).")
+                .def(py::init<int, int, int>(), py::arg("n_env"), py::arg("edit_cap"),
+                     py::arg("tile_cap"))
+                .def("run", [planes_of](EditFlush& f, EditDoor& door, const UnitTablesDevice& t,
+                                        std::uintptr_t tick_row,
+                                        py::array_t<uint64_t, py::array::c_style> planes,
+                                        int h, int w, int n_gases, int o2, int n2,
+                                        uint32_t salt) {
+                         const auto p = planes_of(planes);
+                         f.run(door, t, tick_row, p.data(), h, w, n_gases, o2, n2, salt);
+                     }, py::arg("door"), py::arg("tables"), py::arg("tick_row"),
+                     py::arg("planes"), py::arg("h"), py::arg("w"), py::arg("n_gases"),
+                     py::arg("o2_idx"), py::arg("n2_idx"), py::arg("salt"),
+                     "Build from the door, K1 / K2, the door's reset. Downloads nothing.")
+                .def("run_host_pack", [planes_of](EditFlush& f,
+                                                  py::array_t<int64_t, py::array::c_style> buf,
+                                                  int n_edits, int n_tiles,
+                                                  py::array_t<uint64_t, py::array::c_style> planes,
+                                                  int h, int w, int n_gases, int o2, int n2,
+                                                  uint32_t salt) {
+                         if (buf.ndim() != 1)
+                             throw std::invalid_argument("edit flush: buf must be 1-D int64");
+                         const auto p = planes_of(planes);
+                         f.run_host_pack(buf.data(), n_edits, n_tiles, p.data(), h, w, n_gases,
+                                         o2, n2, salt);
+                     }, py::arg("buf"), py::arg("n_edits"), py::arg("n_tiles"),
+                     py::arg("planes"), py::arg("h"), py::arg("w"), py::arg("n_gases"),
+                     py::arg("o2_idx"), py::arg("n2_idx"), py::arg("salt"),
+                     "THE GATE'S REFERENCE: K1 / K2 fed from a host pack (_edit_buffer).")
+                .def("books", [](EditFlush& f) {
+                         py::array_t<int64_t> b({f.n_env(), (int)breach_cuda::EDQ_SLOTS});
+                         py::array_t<uint64_t> fl(f.n_env());
+                         f.download_books(b.mutable_data(), fl.mutable_data());
+                         return py::make_tuple(b, fl);
+                     }, "THE ONE READ: (books (N, EDQ_SLOTS), fault words (N,), ~0 none).")
+                .def("rows", [](EditFlush& f) {
+                         const int N = f.n_env();
+                         py::array_t<int64_t> e({N * f.edit_cap() + 1,
+                                                 (int)breach_cuda::EDQ_EDIT_COLS});
+                         py::array_t<int64_t> t({N * f.tile_cap(),
+                                                 (int)breach_cuda::EDQ_TILE_COLS});
+                         py::array_t<int64_t> o(N + 1);
+                         py::array_t<int64_t> v({N, (int)breach_cuda::EDQ_ENV_COLS});
+                         f.download_rows(e.mutable_data(), t.mutable_data(), o.mutable_data(),
+                                         v.mutable_data());
+                         return py::make_tuple(e, t, o, v);
+                     }, "The gate's download: (edits, tiles, env offsets, env scalars).")
+                .def_property_readonly("n_env", &EditFlush::n_env)
+                .def_property_readonly("edit_cap", &EditFlush::edit_cap)
+                .def_property_readonly("tile_cap", &EditFlush::tile_cap);
+            m.def("edit_door_append_probe",
+                  [](EditDoor& door, int env, py::array_t<int64_t, py::array::c_style> edits,
+                     py::array_t<int64_t, py::array::c_style> tiles) {
+                      if (edits.ndim() != 2 || edits.shape(1) != breach_cuda::EDIT_DOOR_COLS ||
+                          tiles.ndim() != 2 || tiles.shape(1) != breach_cuda::EDQ_TILE_COLS)
+                          throw std::invalid_argument(
+                              "edit_door_append_probe: edits (E, EDIT_DOOR_COLS), tiles (T, 4)");
+                      return breach_cuda::edit_door_append_probe(
+                          door, env, edits.data(), (int)edits.shape(0), tiles.data(),
+                          (int)tiles.shape(0));
+                  }, py::arg("door"), py::arg("env"), py::arg("edits"), py::arg("tiles"),
+                  "TEST-ONLY (#29 P7e.3): append host rows to an env of the door as a "
+                  "producer would (keys must continue its seq). False: nothing written.");
+        }
         m.def("unit_sprays",
               [](UnitStoreDevice& s, const UnitTablesDevice& t, breach_cuda::FieldApplier& a,
                  UnitRecordList& cells, std::uintptr_t solid, int h, int w, int64_t box_max) {

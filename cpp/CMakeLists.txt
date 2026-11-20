@@ -199,6 +199,11 @@ if(BREACH_CUDA)
         # unit store and the refill. Class T, pure integer, on the same
         # target-wide CUDA determinism floor.
         src/cuda_unit_sorts.cu
+        # #29 P7e.3: the edit door, step (c) -- slot 6b's flush buffers built
+        # on the device from the door's rows (the sort, the range checks), fed
+        # to the edit queue's K1 / K2. Class T, pure integer, on the same
+        # target-wide CUDA determinism floor.
+        src/cuda_edit_flush.cu
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like
