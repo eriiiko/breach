@@ -142,8 +142,15 @@ _STAGE1_SHIP_DEMO = dict(
     # (was ab061346257c0c5b2ec5a2bf99fbad26aa74d6661a3886119c759f1de459b05e)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was 5fb9a9f6b1d847cf09e2b1b21457507ca529d4962ea730e9a71f4d7046025a62)
-    tick_digest="eb45f863f0da2c7d672c00773f5541f1"
-                "fd0864f830902d935158d2c722ef241b",
+    # arc #63 P5c re-baseline (2026-11-19, Erik's ONE approved re-pin: "I approve the re-pin"):
+    # the corpse's body is its hp below zero; a death KEEPS the body
+    # temperature and the heat row and the blast reach corpses. Outcome,
+    # team, ticks and field digest unmoved; only corpse rows move (first
+    # divergence: a unit dying with its body off ambient,
+    # docs/swarm_P5c_impl.md, the pin table).
+    # (was eb45f863f0da2c7d672c00773f5541f1fd0864f830902d935158d2c722ef241b)
+    tick_digest="361cd7447d440d99314a522973e2acbe"
+                "97ab00cbc9b53bc4cd3f2b0c918685e9",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -180,8 +187,15 @@ _STAGE1_SHIP_DEMO = dict(
     # (was 6707d27e1ccba0eb1ce455803d552c1b4126cdd87cf55780d3c82cc5f5c24560)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was fe0be81e4a8b59edd89ec8ac8c2b0f6a57124f911504098cb9dbbc390d8b8dfc)
-    unit_stream="915a9b55c646a6b96094be1f68b6adf8"
-                "0212ec055a972f2139e2e8802e877ec9")
+    # arc #63 P5c re-baseline (2026-11-19, Erik's ONE approved re-pin: "I approve the re-pin"):
+    # the corpse's body is its hp below zero; a death KEEPS the body
+    # temperature and the heat row and the blast reach corpses. Outcome,
+    # team, ticks and field digest unmoved; only corpse rows move (first
+    # divergence: a unit dying with its body off ambient,
+    # docs/swarm_P5c_impl.md, the pin table).
+    # (was 915a9b55c646a6b96094be1f68b6adf80212ec055a972f2139e2e8802e877ec9)
+    unit_stream="db77315b12fbe891e3b85a91e3bacbcd"
+                "f99f11e09dd7c8a5a39945320f757b59")
 _STAGE1_BOX = dict(
     # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
     # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;

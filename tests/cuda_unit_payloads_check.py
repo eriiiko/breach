@@ -572,6 +572,18 @@ def _probe_sim(rng, k, hw=None):
         u.current_hp = float(rng.choice([3.0, 20.0, 45.0, 90.0, 400.0]))
         if rng.random() < 0.35:
             apply_status(u, BLINDED, 0, int(rng.integers(1, 90)))
+    # arc #63 P5c: corpses the blast reaches -- whole, worn, at the edge of
+    # destruction and destroyed (the body is the hp below zero, corpse.body_q)
+    from simulation import corpse
+    from simulation.damage import KINETIC, DamagePacket, apply_packet
+    for i in range(int(rng.integers(2, 6))):
+        y, x = (int(v) for v in open_t[int(rng.integers(len(open_t)))])
+        u = Unit(f"k{i}", x=float(x), y=float(y), team=int(rng.integers(0, 2)))
+        sim.add_unit(u)
+        apply_packet(u, DamagePacket(amount=u.current_hp, dtype=KINETIC), None,
+                     source="explosion")
+        body = corpse.body_q(u)
+        u.hp_q = -int(rng.choice([0, body // 3, body - 5 * ONE, body - 1, body]))
     return sim
 
 
@@ -595,11 +607,18 @@ class ProbeCensus:
         o_ap = exchange.apply_packet
 
         def ap(u, pk, events=None, source=None, **kw):
+            from simulation import corpse
             was = u.alive
             r = o_ap(u, pk, events, source=source, **kw)
             c["blast: a packet lands"] += 1
             if was and not u.alive:
                 c["blast: a kill"] += 1
+            if not was:                  # arc #63 P5c: a corpse's packet
+                c["blast: a corpse hit"] += 1
+                if events is not None:
+                    c["blast: a corpse hit with an event (forbidden)"] += 1
+                if corpse.destroyed(u):
+                    c["blast: a corpse destroyed"] += 1
             return r
         exchange.apply_packet = ap
         self._saved.append((exchange, "apply_packet", o_ap))
@@ -686,10 +705,13 @@ def _blast_census(c, sim, fy, fx, p):
     if not p.unit_damage > 0:
         return
     r_q = ufx.quantize_scalar(float(p.radius))
+    from simulation import corpse
     for u in sim.units:
-        if not u.alive:
-            c["blast: a dead unit skipped"] += 1
+        if not u.alive and corpse.destroyed(u):
+            c["blast: a destroyed corpse skipped"] += 1
             continue
+        if not u.alive:
+            c["blast: a corpse in the walk"] += 1
         dx, dy = u.center_tile_x() - fx, u.center_tile_y() - fy
         d2 = (dx * dx + dy * dy) << 32
         if d2 > r_q * r_q:
@@ -1051,12 +1073,22 @@ def _payload_call(sim, rng, names, k):
                                   approach=appr))
 
 
-def _hit_item(sim, rng):
+def _hit_item(sim, rng, c=None):
+    from simulation import corpse
     from simulation.damage import DamagePacket
     live = [u for u in sim.units if u.alive]
-    if not live:
+    dead = [u for u in sim.units if not u.alive]
+    # arc #63 P5c: a resolve's packet on a corpse (today's same-slot reach;
+    # a destroyed corpse takes nothing, apply_packet's own gate)
+    if dead and (not live or rng.random() < 0.3):
+        u = dead[int(rng.integers(len(dead)))]
+        if c is not None:
+            c["hit: a destroyed corpse hit (untouched)" if corpse.destroyed(u)
+              else "hit: a corpse hit"] += 1
+    elif not live:
         return None
-    u = live[int(rng.integers(len(live)))]
+    else:
+        u = live[int(rng.integers(len(live)))]
     pk = DamagePacket(amount=int(rng.integers(1, 30)), dtype=0,
                       attacker_id=int(rng.choice([-1] + [v.id for v in sim.units])),
                       expose=int(rng.integers(1, 3)) * ONE // 2)
@@ -1070,7 +1102,9 @@ PROBE_BRANCHES = (
     "disc: a stencil reads a tile destroyed earlier in the disc",
     "blast: a packet lands", "blast: a kill", "blast: outside the radius",
     "blast: below the threshold", "blast: at or above the threshold",
-    "blast: a dead unit skipped",
+    "blast: a destroyed corpse skipped", "blast: a corpse in the walk",
+    "blast: a corpse hit", "blast: a corpse destroyed",
+    "hit: a corpse hit", "hit: a destroyed corpse hit (untouched)",
     "flash: sees the flash", "flash: no line of sight", "flash: out of the bound",
     "flash: facing it (f = 1)", "flash: turned away (f < 1)", "flash: BLINDED applied",
     "flash: already blinded longer (kept)", "flash: a shorter BLINDED refreshed longer",
@@ -1126,7 +1160,7 @@ def part_probe(trials=PROBE_TRIALS):
                         items = []
                         for k in range(int(rng.integers(1, 5))):
                             if stage == applier.STAGE_RESOLVE and rng.random() < 0.5:
-                                hi = _hit_item(sim, rng)
+                                hi = _hit_item(sim, rng, census.c)
                                 if hi is not None:
                                     items.append(hi)
                             items.append(_payload_call(sim, rng, names, int(rng.integers(99))))
@@ -1143,6 +1177,8 @@ def part_probe(trials=PROBE_TRIALS):
     miss = [b for b in PROBE_BRANCHES if not c[b]]
     if miss:
         fail(f"probe: branches never taken {miss}")
+    if c["blast: a corpse hit with an event (forbidden)"]:    # arc #63 P5c
+        fail("probe: a corpse's blast packet was handed the events")
     print(f"probe: {2 * trials} trials (shipped rows, then the variants) compared "
           f"{dict(tot)} ({time.perf_counter() - t0:.0f} s)")
     print("probe census: " + "; ".join(f"{k} = {v}" for k, v in sorted(c.items())))

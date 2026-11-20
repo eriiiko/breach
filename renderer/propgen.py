@@ -623,15 +623,115 @@ def generate_palm(seed: int, palette: str = "green", height: float = 2.8
     return soup.arrays()
 
 
+def larva_profile(s, tail_taper: float, head_taper: float) -> np.ndarray:
+    """The grub's radius along its body as a share of the full radius, at
+    ``s`` in [0, 1] (0 the tail tip, 1 the head tip): ``sin(pi s) ** p``
+    with ``p = tail_taper`` on the tail half and ``head_taper`` on the head
+    half. A small exponent is a blunt end, a large one a pointed end (a
+    maggot is blunt behind and pointed in front). Zero at both tips."""
+    s = np.clip(np.asarray(s, dtype=np.float64), 0.0, 1.0)
+    p = np.where(s < 0.5, float(tail_taper), float(head_taper))
+    return np.sin(math.pi * s) ** p
+
+
+def generate_larva(length: float, radius: float, rings: int,
+                   height_ratio: float, tail_taper: float, head_taper: float
+                   ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """THE swarm larva's body (arc #63): ONE template mesh every larva is an
+    instance of (``renderer/larva_bodies.py`` bends, places and lights it in
+    its vertex shader; never a copy of this geometry elsewhere).
+
+    A segmented grub as the TOP HALF of a tube lying along +x: ``rings``
+    interior rings (Chebyshev-spaced, crowding toward the tips so the ends
+    are round) between a tail tip at ``x = -length / 2``
+    and a head tip at ``+length / 2``, each a half-ellipse of four points
+    (floor left, two shoulders, floor right: three strips) with lateral
+    half-width ``radius * larva_profile(s)`` and height ``height_ratio``
+    times that. Being the top half only, the mesh is a HEIGHTFIELD seen from
+    the game's straight-down camera: no triangle hides another, so it needs
+    no depth test. Triangle count: ``6 * rings`` (per strip two tip fans
+    plus two per gap between rings). Every triangle is wound
+    counter-clockwise seen from +y (its face normal points up), the winding
+    raylib's back-face culling keeps under the top-down camera.
+
+    Same triangle-array contract as :func:`generate_tree` (Y-up, the units
+    of ``length``), with the alpha as DATA: ``alpha = round(255 s)``, the
+    along-body coordinate (0 tail, 255 head). RGB is a baked occlusion shade
+    (the belly darker than the back), never the colour (the colours are the
+    consumer's dials). Deterministic, no seed (every larva is the same grub;
+    per-larva variety is the consumer's instance data)."""
+    rings = int(rings)
+    if rings < 2:
+        raise ValueError("generate_larva needs at least 2 rings")
+    L, R, hr = float(length), float(radius), float(height_ratio)
+    n = rings + 2                                  # + the two tips
+    # Chebyshev spacing: the rings crowd toward the tips, so the ends round
+    # off instead of ending in one long fan
+    s = 0.5 - 0.5 * np.cos(np.linspace(0.0, math.pi, n))
+    x = (s - 0.5) * L
+    r = R * larva_profile(s, tail_taper, head_taper)
+    # dr/dx for the normals' axial lean, on the profile itself
+    ds = 1e-4
+    rp = R * (larva_profile(np.clip(s + ds, 0, 1), tail_taper, head_taper)
+              - larva_profile(np.clip(s - ds, 0, 1), tail_taper, head_taper)
+              ) / (2 * ds * L)
+    theta = np.array([0.0, math.pi / 3.0, 2.0 * math.pi / 3.0, math.pi])
+
+    def point(i, j):
+        """Ring i, cross-section point j: position, normal, shade, s."""
+        c, sn = math.cos(theta[j]), math.sin(theta[j])
+        pos = np.array([x[i], hr * r[i] * sn, r[i] * c])
+        if i == 0 or i == n - 1:                   # a tip: lean out + up
+            nrm = np.array([-1.0 if i == 0 else 1.0, 0.6, 0.0])
+        else:
+            # P(x, t) = (x, hr r sin t, r cos t); the normal is P_t x P_x
+            # turned outward (its lateral part along cos t, never down)
+            px = np.array([1.0, hr * rp[i] * sn, rp[i] * c])
+            pt = np.array([0.0, hr * r[i] * c, -r[i] * sn])
+            nrm = _cross3(pt, px)
+            if nrm[1] * sn + nrm[2] * c < 0.0:
+                nrm = -nrm
+        nrm = nrm / max(_norm3(nrm), 1e-12)
+        shade = 0.72 + 0.28 * sn                   # the belly in shadow
+        return pos, nrm, shade, s[i]
+
+    verts, norms, cols = [], [], []
+
+    def tri(a, b, c):
+        if _cross3(b[0] - a[0], c[0] - a[0])[1] < 0.0:   # CCW from above
+            b, c = c, b
+        for v in (a, b, c):
+            verts.append(v[0])
+            norms.append(v[1])
+            cols.append((v[2], v[2], v[2], v[3]))
+
+    for j in range(3):
+        # the tail tip's fan, the strips between rings, the head tip's fan
+        tri(point(0, 0), point(1, j), point(1, j + 1))
+        for i in range(1, n - 2):
+            a, b = point(i, j), point(i, j + 1)
+            c, d = point(i + 1, j), point(i + 1, j + 1)
+            tri(a, c, d)
+            tri(a, d, b)
+        tri(point(n - 1, 0), point(n - 2, j), point(n - 2, j + 1))
+
+    v = np.asarray(verts, dtype=np.float32)
+    nn = np.asarray(norms, dtype=np.float32)
+    c = np.asarray(cols, dtype=np.float64)
+    rgba = np.round(np.clip(c, 0.0, 1.0) * 255.0).astype(np.uint8)
+    return v, nn, rgba
+
+
 # Registry of the generators by the name the (P3) prop entity stores.
+# (``generate_larva`` is no placed prop and is not registered here.)
 GENERATORS = {
     "tree": generate_tree,
     "palm": generate_palm,
 }
 
 
-__all__ = ["generate_tree", "generate_palm", "GENERATORS", "PALETTES",
-           "STYLES", "DECORS"]
+__all__ = ["generate_tree", "generate_palm", "generate_larva",
+           "larva_profile", "GENERATORS", "PALETTES", "STYLES", "DECORS"]
 
 
 if __name__ == "__main__":  # pragma: no cover - a hand-run budget probe

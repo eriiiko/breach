@@ -521,7 +521,12 @@ class RewardBooks:
                                            st.zombie, st.bar_q),
                               _health(nw.hp_q, nw.alive, nw.bar_q), nw)
                 continue
-            if h[uid] != nw.hp_q or al[uid] != nw.alive:
+            # arc #63 P5c: a corpse's hp is its BODY (simulation.corpse):
+            # the blast and the heat row lower it with no event, and a
+            # corpse's health is 0 either way, so a dead unit's hp is outside
+            # the books (its life is not).
+            if (h[uid] != nw.hp_q and (al[uid] or nw.alive)) \
+                    or al[uid] != nw.alive:
                 raise RewardBooksMismatch(
                     f"tick {tick}: unit {uid}'s events end at hp_q {h[uid]} "
                     f"alive {al[uid]}, the unit holds hp_q {nw.hp_q} alive "

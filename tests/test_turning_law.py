@@ -652,8 +652,15 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # (was 1775613f19c56ce58fb53975fa1ad64ce472ccb59073b404578eaff67c99ed93)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was 7cbd7ba684584080bd09ee0568198de2abfc5d154613c37da1508a45ba5d2fc0)
-    tick_digest="56f51734ba130218c8fbd0b175d1c778"
-                "f4bece711306da6c2f8b26d8a1af040f",
+    # arc #63 P5c re-baseline (2026-11-19, Erik's ONE approved re-pin: "I approve the re-pin"):
+    # the corpse's body is its hp below zero; a death KEEPS the body
+    # temperature and the heat row and the blast reach corpses. Outcome,
+    # team, ticks and field digest unmoved; only corpse rows move (first
+    # divergence: a unit dying with its body off ambient,
+    # docs/swarm_P5c_impl.md, the pin table).
+    # (was 56f51734ba130218c8fbd0b175d1c778f4bece711306da6c2f8b26d8a1af040f)
+    tick_digest="248a9dcbafe04272e3c57fd847aefea1"
+                "c6003d29d8db94177145e65b950b69d5",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -690,8 +697,15 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # (was 27cefe3132431e8d06ca4838afe4b4d48219ea21403d53c2d300fdecfdf8643b)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was a0ddc32f29b6bae03fa1d4f93815397b1a0967d20633d148f54c6c0971e616ad)
-    unit_stream="feeae05c5a1a3d7e419a501a9e5495b7"
-                "01fad28b4976a0c2a849d7acbad8ea7d")
+    # arc #63 P5c re-baseline (2026-11-19, Erik's ONE approved re-pin: "I approve the re-pin"):
+    # the corpse's body is its hp below zero; a death KEEPS the body
+    # temperature and the heat row and the blast reach corpses. Outcome,
+    # team, ticks and field digest unmoved; only corpse rows move (first
+    # divergence: a unit dying with its body off ambient,
+    # docs/swarm_P5c_impl.md, the pin table).
+    # (was feeae05c5a1a3d7e419a501a9e5495b701fad28b4976a0c2a849d7acbad8ea7d)
+    unit_stream="cedff24ccba0711385f302761c54a1de"
+                "843cded4afdbc1b0b1b15475c9281cd9")
 #: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
 #: residency P3d: the horde descends an integer BFS field, no A*; see
 #: tests/test_zombie_control.py's pins for the law and its proof). This

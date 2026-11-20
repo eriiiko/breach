@@ -97,3 +97,15 @@ weight = 1.5                    # B.3's 0.15 against the quarters' 0.1
 [physics]
 temp = "ambient"
 pressure = "ambient"
+
+# Vocabulary Part G (arc #63 P5d, 2026-11-19): where larvae nest. chance =
+# the probability this department hosts on a `nest` ship (every one of its
+# instances, both wings); rooms = the recipe rooms that may host (the
+# largest on the ship takes it); density = larvae per free floor tile; max =
+# the cap per brood; with = chance multipliers by other departments on the
+# ship. PLACEHOLDER numbers, Erik tunes.
+[brood]
+chance = 0.1
+rooms = ["morgue"]
+density = 0.5
+max = 200

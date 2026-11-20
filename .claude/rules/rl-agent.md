@@ -51,7 +51,7 @@ and who must use it; this file holds the constraints the code cannot say. The
 ## Reward profile
 - The env returns ONE number per group for every `in_match` row, dead and turned rows included, and NEVER their sum (the trainer weights the groups and blends own against team). A new term is a new counter in a group, its sign fixed in `_COUNTER_TERMS`.
 - Health is counted in BARS (`TeamPicture.bars`), clipped at one. A team's balance is ONE function (`standing` / `balance`), also the full view's column.
-- A change not credited to a unit is a team's UNCREDITED REST, built from its sources, never computed as a remainder; a tick whose events do not reproduce a unit's hp or life raises `RewardBooksMismatch` (a game finding).
+- A change not credited to a unit is a team's UNCREDITED REST, built from its sources, never computed as a remainder; a tick whose events do not reproduce a unit's life, or a LIVING unit's hp, raises `RewardBooksMismatch` (a game finding). A corpse's hp is its body (the Corpse law), lowered by the blast and the heat row with no event: outside the books.
 - Eliminations, the win and the clock come from `MatchRules` (never a second rule of who won). Under a profile the clock is an ENDING (`terminated`, never `truncated`). Read-side only: nothing synced, no digest moves.
 
 ## Training snapshot

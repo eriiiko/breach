@@ -171,7 +171,13 @@ def _hook_step(monkeypatch, sim, fn):
 
 def _kill(victim, by_zombie=False, source="burning"):
     def fn(sim):
-        apply_packet(victim, DamagePacket(10_000, KINETIC, -1),
+        amount = 10_000
+        if by_zombie:
+            # arc #63 P5c: a converting kill stays within the body (an overkill of a
+            # whole body more destroys the corpse, which then never rises): one
+            # point left, a one-point packet
+            victim.hp_q, amount = 1 << 16, 1
+        apply_packet(victim, DamagePacket(amount, KINETIC, -1),
                      sim.tick_events, source=source,
                      mark_killed_by_zombie=by_zombie)
     return fn

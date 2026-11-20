@@ -85,8 +85,15 @@ __device__ __forceinline__ EventSink env_sink(const UnitRingView& v) {
                      v.count + benv(), v.dropped + benv()};
 }
 
+// No sink (arc #63 P5c): a corpse's blast or heat packet emits no event
+// (the reference hands apply_packet events=None).
+__device__ __forceinline__ EventSink null_sink() {
+    return EventSink{nullptr, 0, nullptr, nullptr};
+}
+
 __device__ inline void emit(EventSink& s, int64_t kind, int64_t uid, int64_t dmg_q,
                             int64_t cause, int64_t attacker, int64_t dx, int64_t dy) {
+    if (s.recs == nullptr) return;                  // the null sink
     const int64_t n = *s.count;
     if (n >= s.cap) {
         atomicAdd(s.dropped, 1ULL);
@@ -213,7 +220,8 @@ __device__ __forceinline__ int64_t raise_amount(const int64_t* tab, const int64_
 // the alive -> dead transition. Writes (all or nothing): the hp; the hit
 // event; on the kill life_state, the death clears (exposure.on_death,
 // unit_impulse.clear, horde.clear, unit_orders.clear, poison.clear, #215's
-// stress.clear and body_temp.clear; the stress producer before it; the
+// stress.clear (the body temperature kept since arc #63 P5c); the stress
+// producer before it; the
 // conversion flag when the packet marks it) and the kill event; on a living
 // target the exposure raise (exposure.on_hit). `landing` null: the raise
 // and the death's zeroing at once (every caller but a resolve stage's HIT);
@@ -236,6 +244,9 @@ __device__ inline int64_t apply_packet(int64_t* row, const int64_t* tab, const P
         *bad = true;
         return 0;
     }
+    // arc #63 P5c: a DESTROYED corpse (corpse.destroyed) takes nothing more:
+    // no hp, no event.
+    if (corpse_destroyed(row, tab)) return 0;
     const int64_t x = row[UNIT_COL_EXPOSURE + p.dtype];
     if (x > EXPOSURE_MAX || x < -EXPOSURE_MAX) {
         *bad = true;
@@ -312,10 +323,9 @@ __device__ inline int64_t apply_packet(int64_t* row, const int64_t* tab, const P
         put(row, UNIT_COL_POISON_X1, 0, changed);
         put(row, UNIT_COL_POISON_SRC, -1, changed);
         put(row, UNIT_COL_STRESS_Q, 0, changed);                   // stress.clear
-        put(row, UNIT_COL_BODY_TEMP_Q, tab[UNIT_TAB_HEAT_AMBIENT_Q], changed);  // body_temp.clear
+        // (the body temperature is KEPT: arc #63 P5c, the heat row runs on corpses)
         put(row, UNIT_COL_POISON_CAUSE, UNIT_CAUSE_POISON_GAS, changed);   // arc #63 P5a
         put(row, UNIT_COL_INFEST_Q, 0, changed);                   // corpse.on_death (P5b)
-        put(row, UNIT_COL_CORPSE_INTEGRITY_Q, tab[UNIT_TAB_CORPSE_INTEGRITY_Q], changed);
         if (p.mark_killed_by_zombie) put(row, UNIT_COL_KILLED_BY_ZOMBIE, 1, changed);
         emit(sink, UNIT_EVKIND_KILLED, uid, 0, p.cause, attacker, 0, 0);
         *killed = true;

@@ -1387,7 +1387,7 @@ water_ambient_base = 0.06   # idle ambient-sine shimmer amplitude on standing wa
 
 # Diagnostic views (render-only, never read by the sim; Ctrl+R live).
 [debug]
-swarm_dots = true           # arc #63 P4: draw each swarm unit as a dot + heading tick, and a fading fleck where one dies (renderer/swarm_dots.py). On while larvae have no bodies.
+swarm_dots = false          # arc #63 P4: draw each swarm unit as a dot + heading tick, and a fading fleck where one dies (renderer/swarm_dots.py), ON TOP of the bodies. Off since the larvae have bodies ([render.larvae]); a debug view.
 
 # Direct-control keys (gameplay pack v1 G1p; src/control_direct.py, `--control
 # direct`): action -> key name, read through the refusing door
@@ -1987,6 +1987,50 @@ fade_s = 0.8                # the opacity falls to 0 over the last fade_s of a l
 seed = 6271                 # mixed with each blast's tick and tile
 cap = 512                   # never more alive at once (blast_final's volley throws
                             # ~530; a fair subset beyond it)
+
+[render.larvae]
+# Arc #63 -- THE SWARM LARVAE'S BODIES (renderer/larva_bodies.py, shaders/
+# larva_body.vs/.fs; the mesh is renderer/propgen.py generate_larva). Every
+# larva is an instance of ONE procedural grub (the top half of a segmented
+# tube, 6 x rings triangles), ALL of them in ONE instanced draw on the floor
+# under the smoke, lit by the light field through the lit-3D block. It
+# wriggles by the distance it has walked (the store's dist_walked): a
+# crawling larva undulates, a still one is still. A dead one goes limp, flat
+# and dark, then fades (sim clock). Re-read every frame (F5); every key is
+# required (a refusing door); `enabled` is its only switch. Render-only.
+# Colours are sRGB 8-bit. The look is Claude's (Erik's licence, 2026-11-19);
+# Erik judges it in larva_studio.
+enabled = true
+length_m = 0.10             # body length: 0.30 of a 0.333 m tile, the dot view's
+                            # reach (the law's comment says ~6 cm; drawn larger
+                            # to read at game zoom)
+radius_m = 0.021            # full lateral half-width: a fat grub (width 0.42 x length)
+height_ratio = 0.85         # height / half-width (1 = a round section)
+rings = 6                   # geometric rings: 36 triangles a larva
+tail_taper = 0.35           # profile exponent, tail half: small = blunt rear
+head_taper = 1.1            # head half: large = pointed front (a maggot)
+size_jitter = 0.12          # each larva is length x (1 +- this x hash(unit id))
+segments = 7                # visible body segments (shaded grooves)
+groove_depth = 0.4          # how dark and deep a groove reads, 0..1
+body_rgb = [232, 222, 196]  # pale cream
+head_rgb = [84, 52, 36]     # the dark mouth end
+head_start = 0.82           # along the body (0 tail, 1 head) the head colour begins
+coma_rgb = [176, 192, 212]  # cold, mixed in for a larva in chill coma
+coma_mix = 0.45             # how much
+dead_rgb = [92, 74, 52]     # a dead larva once limp: brown-grey
+gloss = 0.9                 # the wet highlight, x the local light
+gloss_power = 28.0          # its tightness (Blinn exponent)
+rim = 0.25                  # a rim of the local light at the silhouette
+light_z = 0.6               # the lit-3D block's grazing key (props: 0.35)
+peristalsis = 0.22          # the crawl wave's stretch amplitude (< 0.9)
+sway = 0.05                 # the lateral wave, share of the length
+body_waves = 1.0            # waves along the body at once
+stride_m = 0.05             # metres walked per wriggle cycle: 4 a second at the
+                            # law's 0.2 m/s
+limp_s = 0.5                # a dead larva goes limp over this (sim s)
+fade_s = 6.0                # then fades out over this
+dead_flatten = 0.45         # a limp body's height share
+dead_cap = 2048             # never more dead bodies at once (the newest kept)
 
 [render.shimmer]
 # Graphics G3 F4a -- HEAT SHIMMER, the first term of the resolve's DISTORTION
@@ -5024,7 +5068,7 @@ heart_hill_n = 2
 #   level += infest_rate x n x dt - infest_decay x level x dt
 # At infest_threshold the corpse RISES through the one conversion door (any
 # corpse, a zombie's included, any number of times); the level resets to 0.
-# A corpse whose INTEGRITY is gone never rises. Construction-bound; each value
+# A corpse whose BODY is gone (body_factor) never rises. Construction-bound; each value
 # quantized once. Every number is the lead's first value ("it should matter"),
 # Erik's to tune. At these values one larva settles at 0.4 and never raises a
 # corpse, three settle at 1.2 and raise it in about half a minute, ten in
@@ -5036,8 +5080,11 @@ infest_rate = 0.02
 infest_decay = 0.05
 # infest_threshold -- the level at which the corpse rises.
 infest_threshold = 1.0
-# integrity -- hit points a fresh corpse holds; at 0 it can never rise.
-integrity = 200.0
+# body_factor -- the body is the unit's hit points continuing below zero
+# (arc #63 P5c; Erik 2026-11-19): a corpse is DESTROYED, never to rise, at
+# hp <= -body_factor x its full health. 1.0 = a 100 HP marine's body takes
+# another 100 HP (the killing blow's overkill counts).
+body_factor = 1.0
 
 [zombie]
 # A TURNED marine's hit points (a spawned zombie has the human vitality, 100).

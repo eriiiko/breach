@@ -222,7 +222,11 @@ def test_death_and_conversion_clear_the_order():
     assert a.order_what and b.order_what
     apply_packet(a, DamagePacket(amount=1e9, dtype=KINETIC), source="bullet")
     assert not a.alive and O.held(a) == O.NO_ORDER
-    apply_packet(b, DamagePacket(amount=1e9, dtype=KINETIC), source="melee",
+    # arc #63 P5c: a converting kill stays within the body (an overkill of a
+    # whole body more destroys the corpse, which then never rises): one
+    # point left, a one-point packet
+    b.hp_q = 1 << 16
+    apply_packet(b, DamagePacket(amount=1.0, dtype=KINETIC), source="melee",
                  mark_killed_by_zombie=True)
     _step(sim)                                  # on_tick_end converts it
     assert b.is_zombie and b.alive and O.held(b) == O.NO_ORDER

@@ -88,9 +88,9 @@ strategy. Every rule below serves that.
 | `bots.md` | bot layers, position features, door bots, tournament |
 | `render-core.md` | tone-map, look shots, wall seam, lighting, light curve, frame lights, inspector, ping-pong, BLAS, UI, blackbody |
 | `render-effects.md` | gas medium, smoke relief + cast, tamed wind, FireVFX, particles, distortion, shock, muzzle flame, tracers, fire light |
-| `render-units.md` | 3D units, held props, pose layer, static props |
+| `render-units.md` | 3D units, held props, pose layer, static props, larva bodies |
 | `audio.md` | sound layer, sound samples |
-| `levels.md` | level data layer, generators, recipes, archetype grammar, layout stage, LevelSpec |
+| `levels.md` | level data layer, generators, recipes, archetype grammar, layout stage, LevelSpec, brood placement |
 | `determinism-gates.md` | tests, field digest, test conventions, E2E driver, benches |
 | `characters.md` | character kit, game-ready step, toon look, worker builder |
 
@@ -247,6 +247,7 @@ amends the rule file, never this line's length.
 | Lit-3D seam | `renderer/lit3d.py` | THE shared light-field GLSL, `LightFieldCtx` and top-down `Camera3D`; a second copy is the bug |
 | Prop generator | `renderer/propgen.py` | THE procedural prop / vegetation geometry; new flora = a generator fn + `PALETTES` row |
 | Static props | `renderer/static_props.py` | The ONLY path drawing placed 3D props; no prop render state on a sim entity |
+| Larva bodies | `renderer/larva_bodies.py` + `shaders/larva_body.*` + `propgen.generate_larva` | THE swarm larvae's picture: one grub mesh, every larva an instance in ONE draw, lit through the lit-3D seam; never a second swarm body renderer |
 | UI split | `ui/model.py` (pure) / `ui/draw.py` (dumb) | Decisions in model as data; draw decides nothing |
 | Sound layer | `audio/model.py` / `audio/device.py` / `audio/game.py` + `[sound]` | THE only audio path, presentation only; a sound is a cue row + a binding row; loops play from state |
 | Sound samples | `tools/sound_audition.py --export` → `assets/sounds/` | Every sample is exported from a generated clip and sourced in `assets/sounds/SOURCES.md`; never hand-cut |
@@ -264,7 +265,7 @@ amends the rule file, never this line's length.
 | Poison | `src/simulation/poison.py` + `[damage.poison]` | Poison is ONE conserving law entered only through `poison.dose` |
 | Clearing step | `src/simulation/clearing.py` (device `unit_lib::clearing_drain`) | A unit state that drains by a fraction a tick uses this step; never a second one |
 | Stress | `src/simulation/stress.py` + `[damage.stress]` | Fed only through its producer rows' one door, cleared only by its own tick; heart rate is the one Hill function, derived, never stored |
-| Corpse law | `src/simulation/corpse.py` + `[corpse]` + `exchange.apply_corpse_infestation` | A dead unit's infestation level and integrity: the one writer of both; a corpse rises only through the one conversion door |
+| Corpse law | `src/simulation/corpse.py` + `[corpse]` + `exchange.apply_corpse_infestation` | A dead unit's infestation level (its one writer) and its body, the hp below zero; a corpse rises only through the one conversion door |
 | Body temperature | `src/simulation/body_temp.py` + `[combat]` body dials | A unit's shell temperature, written by the heat coupling row alone; what warms a body changes the felt temperature or the air, never the body |
 | Magazines | `combat.mag_*` / `reload_begin` + `[weapons.*] mag_size` | Ammunition is magazines; a reload discards the one in the gun; the law is these functions only |
 | Grenade kinds | `[loadouts.*] grenades` + `WeaponsTables.hand_grenade_rows` | A throwable is a hand-grenade `[ammo.*]` row appended to the family, never a verb |
@@ -331,6 +332,7 @@ amends the rule file, never this line's length.
 | Archetype recipe + grammar | `levels/recipes/archetypes/` + `tools/ship_grammar.py` | A ship kind is one archetype file; the grammar is the only stage 1 of a recipe ship |
 | Layout stage | `tools/ship_layout.py` | A recipe ship's geometry is produced ONLY here; never a search or a second layouter |
 | LevelSpec | level.toml `[levelgen]` + `gen_ship.generate_from_spec` | A recipe ship records every generator input in one table and is a pure function of it |
+| Brood placement | `tools/ship_broods.py` + department `[brood]` / archetype `[infestation]` rows + `gen_ship._build_broods` | Where a recipe ship's larvae nest is recipe data drawn on the level seed's own stream; never a placement pass after `embed` or a hand-written brood in a generated level |
 | Declared-edge contact | `ship_layout.layout` openings loop | Every declared quotient edge is a shared wall of its opening; an undeclared touch is a blank wall |
 | Axis parity | `ship_layout._opening_at` | An axis-axis opening is centred and even; never an airlock |
 | Character kit | `art/characters/charkit/` | The scripted-Blender kit for the existing scripted characters; not the default for new ones |

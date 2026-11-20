@@ -249,6 +249,20 @@ class Physics:
 
 
 @dataclass(frozen=True)
+class BroodRule:
+    """A department's ``[brood]`` row (vocabulary Part G, arc #63 P5d): the
+    chance it hosts a nest on a ``nest`` ship, the recipe rooms that may
+    host (empty: every room that is neither the entry nor a corridor), the
+    larvae per free floor tile, the cap per brood, and ``with_``: chance
+    multipliers keyed by other departments present on the ship."""
+    chance: float
+    rooms: tuple = ()
+    density: float = 0.5
+    max: int = 200
+    with_: tuple = ()               # ((department, multiplier), ...) sorted
+
+
+@dataclass(frozen=True)
 class Department:
     name: str
     placement: str
@@ -264,6 +278,7 @@ class Department:
     secret: Secret | None = None
     physics: Physics = Physics()
     path: str = ""
+    brood: BroodRule | None = None
 
     def room(self, rid: str) -> RecipeRoom:
         for r in self.rooms:
@@ -789,7 +804,8 @@ def load_department(path, *, root=None, fixtures: dict | None = None,
         fixtures = load_fixtures(root / "fixtures.toml")
     raw = _read(path)
     _keys(path, "file", raw, ("department", "room", "edge", "duct", "cycle",
-                              "secret", "physics"), ("department", "room"))
+                              "secret", "physics", "brood"),
+          ("department", "room"))
     d = raw["department"]
     _keys(path, "[department]", d, _DEPT_KEYS,
           ("name", "placement", "cell", "entry", "toward"))
@@ -910,6 +926,8 @@ def load_department(path, *, root=None, fixtures: dict | None = None,
     placement = _one_of(path, "department.placement", d["placement"],
                         PLACEMENTS)
     rooms = _resolve_attach(path, rooms, placement, entry)
+    brood = (_brood(path, raw["brood"], rooms, entry, library)
+             if "brood" in raw else None)
     dept = Department(
         name=name,
         placement=placement,
@@ -919,9 +937,82 @@ def load_department(path, *, root=None, fixtures: dict | None = None,
         rooms=tuple(rooms), edges=tuple(edges),
         wish_near=wishes["wish_near"], wish_far=wishes["wish_far"],
         cycles=tuple(dcycles), ducts=tuple(ducts), secret=secret,
-        physics=physics, path=str(path))
+        physics=physics, path=str(path), brood=brood)
     _check_structure(path, dept, fixtures)
     return dept
+
+
+_BROOD_KEYS = ("chance", "rooms", "density", "max", "with")
+
+
+def _brood_capacity() -> int:
+    """The larva store's slots per env (``[swarm.larva] max_units``): one
+    brood can never ask more (the spawn refuses ``SwarmFull``)."""
+    row = _table("swarm.larva")
+    return int(getattr(row, "max_units", 0) or 0)
+
+
+def brood_eligible(dept: Department) -> tuple:
+    """The recipe rooms that may host the department's brood: its
+    ``[brood] rooms``, or (none named) every room that is neither the entry
+    nor a corridor (vocabulary Part G.1)."""
+    if dept.brood is not None and dept.brood.rooms:
+        return dept.brood.rooms
+    return tuple(r.id for r in dept.rooms
+                 if r.id != dept.entry and r.shape == "room")
+
+
+def _brood(path, t, rooms, entry: str, library: set) -> BroodRule:
+    """The ``[brood]`` door (vocabulary Part G.1): refused by name -- an
+    unknown key, a chance outside [0, 1], a room that is not a room of the
+    department or is its entry or a corridor, a density <= 0, a cap outside
+    [1, the larva store's max_units], a ``with`` key that is no department,
+    a multiplier < 0."""
+    _keys(path, "[brood]", t, _BROOD_KEYS, ("chance",))
+    ch = t["chance"]
+    if not _is_num(ch) or not 0.0 <= float(ch) <= 1.0:
+        raise _err(path, "brood.chance", f"{ch!r} is not a probability in "
+                                         f"[0, 1]")
+    by_id = {r.id: r for r in rooms}
+    eligible = _str_list(path, "brood.rooms", t.get("rooms", []))
+    for j, rid in enumerate(eligible):
+        w = f"brood.rooms[{j}]"
+        if rid not in by_id:
+            raise _err(path, w, f"{rid!r} is no room of this department "
+                                f"({sorted(by_id)})")
+        if rid == entry or by_id[rid].shape != "room":
+            raise _err(path, w, f"room {rid!r} is the entry or a corridor: a "
+                                f"brood never nests in a department's way in")
+    if len(set(eligible)) != len(eligible):
+        raise _err(path, "brood.rooms", f"{list(eligible)} names a room twice")
+    dens = t.get("density", BroodRule.density)
+    if not _is_num(dens) or float(dens) <= 0.0:
+        raise _err(path, "brood.density", f"{dens!r} is not a number > 0 "
+                                          f"(larvae per free floor tile)")
+    cap, store = t.get("max", BroodRule.max), _brood_capacity()
+    if not _is_int(cap) or not 1 <= cap <= store:
+        raise _err(path, "brood.max", f"{cap!r} is not an integer in [1, "
+                                      f"{store}] ([swarm.larva] max_units)")
+    w_tbl = t.get("with", {})
+    if not isinstance(w_tbl, dict):
+        raise _err(path, "brood.with", f"{w_tbl!r} is not a table of "
+                                       f"department = multiplier")
+    for dn, m in w_tbl.items():
+        if dn not in library and dn not in BLESSED_DEPARTMENTS:
+            raise _err(path, f"brood.with.{dn}",
+                       f"{dn!r} is no department in the library "
+                       f"({sorted(library)}) nor a blessed one "
+                       f"({list(BLESSED_DEPARTMENTS)})")
+        if dn == Path(path).stem:
+            raise _err(path, f"brood.with.{dn}", "a department's chance "
+                                                 "cannot depend on itself")
+        if not _is_num(m) or float(m) < 0.0:
+            raise _err(path, f"brood.with.{dn}", f"{m!r} is not a multiplier "
+                                                 f">= 0")
+    return BroodRule(chance=float(ch), rooms=eligible, density=float(dens),
+                     max=int(cap),
+                     with_=tuple(sorted((str(k), float(v))
+                                        for k, v in w_tbl.items())))
 
 
 def _room_ref(path, where: str, v, ids: set) -> str:

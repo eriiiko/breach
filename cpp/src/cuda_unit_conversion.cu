@@ -7,7 +7,7 @@
 // Integer for integer convert_marines_to_zombies: every valid dead row that
 // rises (ai_zombie.rises_as_zombie: a non-zombie a zombie killed, OR -- arc #63
 // P5b -- any corpse whose infestation reached the threshold; never a destroyed
-// corpse, integrity <= 0) joins the horde's team
+// corpse, P5c: hp <= -body_factor x max_hp) joins the horde's team
 // (factions.ZOMBIE_TEAM, a table value), becomes a zombie and alive, takes the
 // zombie class's full health times its HP hook (unit_traits.max_hp_q, the
 // library's scaled()), and is cleared of exposure (exposure.clear), of its
@@ -42,7 +42,7 @@ __global__ void k_convert_zombies(int64_t* store, int n_units, const int64_t* ta
     const int64_t* tab = env_tables(tables);
     // ai_zombie.rises_as_zombie (arc #63 P5b: + corpse.rises; a destroyed
     // corpse rises by neither trigger)
-    if (row[UNIT_COL_CORPSE_INTEGRITY_Q] <= 0) return;
+    if (corpse_destroyed(row, tab)) return;        // P5c: hp <= -body_factor x max_hp
     const bool by_kill = !row[UNIT_COL_IS_ZOMBIE] && row[UNIT_COL_KILLED_BY_ZOMBIE];
     const bool by_infest = row[UNIT_COL_INFEST_Q] >= tab[UNIT_TAB_CORPSE_THRESHOLD_Q];
     if (!by_kill && !by_infest) return;
@@ -89,9 +89,8 @@ __global__ void k_convert_zombies(int64_t* store, int n_units, const int64_t* ta
     put(row, UNIT_COL_STRESS_Q, 0, changed);
     put(row, UNIT_COL_BODY_TEMP_Q, tab[UNIT_TAB_HEAT_AMBIENT_Q], changed);
     put(row, UNIT_COL_POISON_CAUSE, unit_events::UNIT_CAUSE_POISON_GAS, changed);   // arc #63 P5a
-    // corpse.clear (arc #63 P5b): the rise spent, the body whole again
+    // corpse.clear (arc #63 P5b): the rise spent (the hp above made the body whole)
     put(row, UNIT_COL_INFEST_Q, 0, changed);
-    put(row, UNIT_COL_CORPSE_INTEGRITY_Q, tab[UNIT_TAB_CORPSE_INTEGRITY_Q], changed);
     put(row, UNIT_COL_ZOMBIE_ACTIVATED, 1, changed);
     put(row, UNIT_COL_KILLED_BY_ZOMBIE, 0, changed);
     if (changed) count_changed(cnt);

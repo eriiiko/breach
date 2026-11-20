@@ -3,7 +3,8 @@
 // (the heat row) and slot 9c3 (the gas rows and the poison law). See
 // cuda_unit_kernels.h; residency design §4.4b.
 //
-// Slot 9c is exchange.apply_environmental_damage: per valid LIVING row, the
+// Slot 9c is exchange.apply_environmental_damage: per valid row (a corpse
+// too since arc #63 P5c: uncredited, no event; a destroyed one skipped), the
 // body temperature (#215, body_temp.advance: the felt temperature the flow
 // in, the air on the footprint and the radiated share the loss) read by the
 // band, the felt temperature (cuda_unit_damage.cuh's felt_temperature_q: the footprint's
@@ -40,8 +41,8 @@
 //
 // arc #63 P5b: after the bite, on a DEAD row, exchange.apply_corpse_infestation
 // -> corpse.infest: n = the SUM of the swarm's count plane over the footprint;
-// a row whose level is 0 and n 0 is skipped; a destroyed corpse (integrity <=
-// 0) holds its level at 0; else level += n x rise - clearing_drain(level,
+// a row whose level is 0 and n 0 is skipped; a destroyed corpse (P5c:
+// unit_lib::corpse_destroyed) holds its level at 0; else level += n x rise - clearing_drain(level,
 // decay, 2^-24) (the drain on the level before the rise), a level or rise past
 // corpse.LEVEL_MAX a fault.
 //
@@ -83,13 +84,18 @@ __global__ void k_heat_damage(int64_t* store, int n_units, const int64_t* tables
     const int r = (int)(blockIdx.x * blockDim.x + threadIdx.x);
     if (r >= n_units) return;
     int64_t* row = unit_row(store, n_units, r);
-    if (!row_valid(row) || !row_alive(row)) return;
+    if (!row_valid(row)) return;
     const int64_t* tab = env_tables(tables);
+    // arc #63 P5c: a CORPSE runs the same row (its body in the air it lies
+    // in, the same packet on its hp), uncredited, through the null sink; a
+    // destroyed corpse is left alone.
+    const bool corpse = !row_alive(row);
+    if (corpse && corpse_destroyed(row, tab)) return;
     const size_t plane = (size_t)h * w;
     bool bad = false;
     const FeltTemp ft = felt_temperature_q(row, tab, bptr(heat, plane), bptr(rad, plane), h, w,
                                            &bad);
-    EventSink sink = row_sink(ring, n_units, r);
+    EventSink sink = corpse ? null_sink() : row_sink(ring, n_units, r);
     int64_t loc[UNIT_STORE_W];
     for (int c = 0; c < UNIT_STORE_W; ++c) loc[c] = row[c];
     if (!bad) {
@@ -137,7 +143,7 @@ __global__ void k_heat_damage(int64_t* store, int n_units, const int64_t* tables
                         Packet p;
                         p.amount_q = dmg;
                         p.dtype = UNIT_DTYPE_HEAT;
-                        p.attacker = ft.from_heat ? credit_at(claims, UNIT_CREDIT_HEAT,
+                        p.attacker = (ft.from_heat && !corpse) ? credit_at(claims, UNIT_CREDIT_HEAT,
                                                               ft.peak_y, ft.peak_x)
                                                   : -1;
                         p.indirect = true;
@@ -289,7 +295,7 @@ __global__ void k_gas_rows(int64_t* store, int n_units, const int64_t* tables, c
         if (corpse_bad) {
             bad = true;
         } else if (corpse_n > 0 || loc[UNIT_COL_INFEST_Q] != 0) {
-            if (loc[UNIT_COL_CORPSE_INTEGRITY_Q] <= 0) {
+            if (corpse_destroyed(loc, tab)) {
                 put(loc, UNIT_COL_INFEST_Q, 0, changed);            // destroyed: held at 0
             } else {
                 const int64_t x = loc[UNIT_COL_INFEST_Q];

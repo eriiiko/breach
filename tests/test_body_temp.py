@@ -422,10 +422,11 @@ def test_only_the_body_temp_module_writes_the_body():
     assert not bad, bad
 
 
-def test_death_resets_the_body_and_an_ambient_body_hashes_as_untouched():
-    """Property: a unit that dies goes back to ambient, and a body at ambient
-    carries no digest row. Breaks if the death clear forgets the body or the
-    column's default is not the ambient."""
+def test_death_keeps_the_body_and_an_ambient_body_hashes_as_untouched():
+    """Property: a unit that dies KEEPS its body temperature (arc #63 P5c:
+    the corpse is the same body, the heat row runs on it), and a body at
+    ambient carries no digest row. Breaks if the death clears the body again
+    or the column's default is not the ambient."""
     from simulation.damage import KINETIC, DamagePacket, apply_packet
     u = _marine()
     assert "body_temp_q" not in unit_schema.digest_record(u)
@@ -433,7 +434,7 @@ def test_death_resets_the_body_and_an_ambient_body_hashes_as_untouched():
     assert "body_temp_q" in unit_schema.digest_record(u)
     u.current_hp = 1.0
     apply_packet(u, DamagePacket(amount=5.0, dtype=KINETIC), None, source="bullet")
-    assert not u.alive and u.body_temp_q == AMB_Q
+    assert not u.alive and u.body_temp_q == AMB_Q + 300 * ONE
 
 
 def test_a_cold_body_in_still_ambient_air_never_moves(unprotected):

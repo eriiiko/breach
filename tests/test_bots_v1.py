@@ -596,8 +596,15 @@ _PRE_G8P_SHIP_DEMO = dict(
     # (was 931e69092a57230f06ecfdfdcb21248c2028fa980c9ea014ebc55b6533e6cc94)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was 49836c002d43dc7888b96dda2f9e1f982605638df1ff30e00d59f16b02568abd)
-    tick_digest="8549068be9af40d408f874c245835f5e"
-                "7a5b06e5ed5a6df6c90eba215fcb2a63",
+    # arc #63 P5c re-baseline (2026-11-19, Erik's ONE approved re-pin: "I approve the re-pin"):
+    # the corpse's body is its hp below zero; a death KEEPS the body
+    # temperature and the heat row and the blast reach corpses. Outcome,
+    # team, ticks and field digest unmoved; only corpse rows move (first
+    # divergence: a unit dying with its body off ambient,
+    # docs/swarm_P5c_impl.md, the pin table).
+    # (was 8549068be9af40d408f874c245835f5e7a5b06e5ed5a6df6c90eba215fcb2a63)
+    tick_digest="255a1226903fab9d12c309cf07d37834"
+                "9dbee46967ca8ce56fff518879b221ad",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -634,8 +641,15 @@ _PRE_G8P_SHIP_DEMO = dict(
     # (was 27aeb24c34c49368bff2a7884bb8f019ed959d02130ccc799fb38d2d30f2a3c0)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was 1eb5ec49f1f32e0dab16d1c8c53d49833406cdb844c7dca2a1f169da83867216)
-    unit_stream="a9184a10a6cd7ad6988db27d9e566bcc"
-                "3b4b2a7782193b89eb02e3dd47200c0d")
+    # arc #63 P5c re-baseline (2026-11-19, Erik's ONE approved re-pin: "I approve the re-pin"):
+    # the corpse's body is its hp below zero; a death KEEPS the body
+    # temperature and the heat row and the blast reach corpses. Outcome,
+    # team, ticks and field digest unmoved; only corpse rows move (first
+    # divergence: a unit dying with its body off ambient,
+    # docs/swarm_P5c_impl.md, the pin table).
+    # (was a9184a10a6cd7ad6988db27d9e566bcc3b4b2a7782193b89eb02e3dd47200c0d)
+    unit_stream="f60a03365dcadd2e1059ef5f1205e2f0"
+                "7bbc54145897fe1aa544739230d25b07")
 
 
 def v1_spec(level):

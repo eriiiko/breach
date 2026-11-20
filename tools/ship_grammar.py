@@ -73,6 +73,10 @@ ROWS = ("A", "B")
 EXITS_RANGE = (1, 3)           # archetype doc §1.1: `spawn.exits` within 1-3
 ZOMBIE_ROOMS = ("axis_section",)
 PROFILE_OPS = ("cycles_shift", "secrets", "zombies_scale", "promote")
+# The ship-level brood states (vocabulary Part G.1, arc #63 P5d), in the
+# order the [infestation] draw walks them: an archetype without the table
+# is always the first.
+INFESTATION_STATES = ("clean", "nest", "infested")
 # [validation]: the closed registry of metric gates (archetype doc §1, L8).
 # The gates themselves run after layout + embed (the layout patch); here the
 # keys and their shapes. "sized" = {size = [lo, hi]} per allowed size.
@@ -787,6 +791,10 @@ class Archetype:
     # does not fit that size -- the grammar will reroll draws near the top
     # of its ranges there (archetype doc §6 item 2: a warning, not a refusal)
     warnings: dict = field(compare=False, repr=False, default_factory=dict)
+    # ((state, weight), ...) in INFESTATION_STATES order, the [infestation]
+    # table's weights normalised to sum 1 (vocabulary Part G.1); empty: the
+    # archetype has none, every ship is "clean"
+    infestation: tuple = ()
 
     def promoted(self, profile: str) -> tuple:
         p = self.profiles[profile].promote
@@ -839,7 +847,7 @@ def _err(path, where: str, why: str) -> ArchetypeError:
 
 
 _FILE_KEYS = ("archetype", "cells", "axiom", "apply", "validation",
-              "profiles")
+              "profiles", "infestation")
 _ARCH_KEYS = ("name", "skeleton", "sizes", "passageway", "lobby", "band",
               "spawn", "zombies", "secrets", "allow_cross_cell_leak")
 _APPLY_KEYS = ("phase", "department", "cycle", "on", "count")
@@ -984,7 +992,8 @@ def load_archetype(name_or_path, *, library: R.RecipeLibrary | None = None
         secret_size=secret_size, allow_cross_cell_leak=leak, promote=promote,
         axiom=tuple(axiom), applies=tuple(applies), validation=validation,
         profiles=profiles, ranges={}, sections={}, path=str(path),
-        library=library)
+        library=library,
+        infestation=_infestation(path, raw.get("infestation")))
     _closure(arch)
     for size in sizes:
         arch.sections[size] = _sections(arch, size)
@@ -1005,6 +1014,24 @@ def load_archetype(name_or_path, *, library: R.RecipeLibrary | None = None
             if warn:
                 arch.warnings[(size, pn)] = warn
     return arch
+
+
+def _infestation(path, t) -> tuple:
+    """The ``[infestation]`` door (vocabulary Part G.1): state -> weight >= 0
+    over :data:`INFESTATION_STATES`, at least one > 0; an unknown state is
+    refused by name. Returns the weights normalised, in state order (a
+    missing state weighs 0); ``()`` when the archetype has no table."""
+    if t is None:
+        return ()
+    R._keys(path, "[infestation]", t, INFESTATION_STATES)
+    for k, v in t.items():
+        if not R._is_num(v) or v < 0:
+            raise _err(path, f"infestation.{k}", f"{v!r} is not a weight >= 0")
+    total = float(sum(t.values()))
+    if total <= 0.0:
+        raise _err(path, "[infestation]", "every weight is 0: name at least "
+                                          "one state with a weight > 0")
+    return tuple((s, float(t.get(s, 0)) / total) for s in INFESTATION_STATES)
 
 
 def _apply_entry(path, i: int, t, sizes, library, skel, hub_dept
