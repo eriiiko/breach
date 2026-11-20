@@ -42,13 +42,14 @@ W1 and W2 are most of the gain. W4 may run before W3. W5 is last and optional.
 ### W0. The water studio
 
 - **Why first:** every later patch is judged by eye, and there is nothing to look at. A level made for it also keeps the pinned levels untouched.
-- **What:** `levels/water_studio`, written through `level_lib` by a small generator in `tools/` (the precedent is `tools/gen_explosion_studio.py`; never a hand-written `level.toml`). Tile size 0.333 m. Three areas:
-  - a still pool about 12 x 8 tiles, 0.3 m deep, with one lamp that can be switched off;
-  - a corridor about 3 x 25 tiles with a water source at one end and a drain or a lower basin at the other, so water runs along it for the whole shot;
-  - a shallow wading lane, 0.15 m, beside a fuel pile for firelight.
-- **Shots** added to `tools/look_shots.toml`: `still_pool_flashlight`, `flooding_corridor`, `wade_by_firelight`. The existing `steam_over_pool` stays.
-- **To check before building:** how a level declares a standing depth at load and a continuous source (`water_sources`); if a level cannot hold either today, that is a finding to report, not something to add to the simulation in this track.
-- **Gate:** the level loads, the airtight lint passes, the three shots render; a property test that the corridor's water is still moving at the shot's frame (flow speed above a floor), since a shot of still water proves nothing about W1.
+- **What:** `levels/water_studio`, written through `level_lib` by a small generator in `tools/` (the precedent is `tools/gen_explosion_studio.py`; never a hand-written `level.toml`). Tile size 0.333 m. Designed with Erik on 2026-11-20 (section 8 has the rulings). Three rooms:
+  - **The pool hall,** about 12 x 8 tiles, flooded to 0.3 m, with one lamp that can be switched off. A stack of crates (`[materials.furniture]`) stands in the water and is set burning at the start, so there is firelight and smoke over the water. A periodic `timed_charge` goes off in the water every 20 s or so, for waves now and spray in W3. One corner is kept empty for the octopus (section 8): nothing is placed there and nothing is coded for it.
+  - **The dam and the corridor,** a corridor about 3 x 25 tiles. At its head is a deep glass tank (1.2 m, the `aquarium_demo` precedent and its safe band). A `timed_charge` breaks the glass a few seconds in, and the flood runs down the corridor into a basin room at the far end. This is one-shot by design: a running source does not exist in a level today and is not added here.
+  - **The wading room,** flooded to 0.15 m. A `heat_source` entity (a stove or furnace) gives steady firelight along one side, and a fuel pile and a wood wall beside it can catch from it. A marine and a zombie fight here: a `match.toml` with one marine on the layered `bots` and one zombie, spawn rooms inside this room, watched live with `main.py --control match`.
+- **Water today:** a standing depth at load is the level's `[water] depth_map` (`water_init.npy`, written through `level_lib`; the map editor and `aquarium_demo` are the precedent). There is no level declaration for a continuous source or a drain (`gmap.water_sources` is filled only by the debug pour and one bench). The floor is flat (`floor_height` is all zero), so each room's water levels out over the whole room: a "pool" is a flooded room sealed by its walls.
+- **Fire today:** start it by delivering heat (the CLAUDE.md "Starting a fire" row); the heat source does this for the wading room. The fire code does not read water, so crates burn in the pool as on a dry floor (issue #219, milestone "Water, fire, ice v2"; accepted for the studio).
+- **Shots** added to `tools/look_shots.toml`: `still_pool_flashlight`, `flooding_corridor`, `wade_by_firelight`. The existing `steam_over_pool` stays. Units in a shot stand still; no shot needs a unit walking (Erik, 2026-11-20). `wade_by_firelight` shows the marine standing in the wading room's water by the stove's light.
+- **Gate:** the level loads, the airtight lint passes, the three shots render; a property test that the corridor's water is still moving at the `flooding_corridor` shot's frame (flow speed above a floor), since a shot of still water proves nothing about W1; the match plays headless through `tools/run_match.py` to a result.
 
 ### W1. A fine surface that flows
 
@@ -142,7 +143,21 @@ the project instructions only when the code exists):
 | Water flow detail | W1 | THE fine water surface: one ripple texture carried by the simulated flow; a new surface detail is a term here, never a second wave source |
 | Water foam | W2 | THE foam: one amount image made, carried and lost per frame; a new cause of foam is a source term with its gain, never a second foam layer; picture state only |
 
-## 8. Sources
+## 8. Rulings with Erik, 2026-11-20
+
+- The studio as section W0 describes it: room sizes as given; the dam break instead of a running source; a heat source for steady fire; the marine and the zombie fight; units stand still in shots.
+- **Units in water:** units stand on the floor and must stand out of the water by the right amount for their height. Today the water is drawn before the units, so a unit is drawn whole on top of it. The waterline (the part below the surface seen through the water, and a foam ring at the surface) joins **W3**.
+- **The octopus** is a simulation creature on the unmerged branches `33-octopus-concept` / `106-p6g-swim-steering`. It is not recreated or brought in for this arc; the pool hall keeps a corner free for it.
+- **Not in this arc:** a water source and drain (Erik builds those); exploding barrels and cargo (#218); water with temperature, water putting out fire, ice, steam, floating, ground depth (milestone "Water, fire, ice v2", #219). Floor heights stay 0.
+- **Tilt** (the water solver's tilt input, and a camera that shows it): may come before this arc or inside it. Open; not in W0.
+- The marks layer (#180) is not built first; W5 waits for it.
+
+## 9. Critique
+
+One critic (Opus) on sections 2 and 3, run while W0 is built. Its verdict is
+written here before W1 starts.
+
+## 10. Sources
 
 As listed in `docs/presentation_graphics_plan_2026-11-15.md` (Vlachos 2010;
 Chentanez and Müller 2010; Ojeda and Susín; Parberry; Wallace 2011) and
