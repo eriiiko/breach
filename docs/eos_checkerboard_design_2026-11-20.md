@@ -626,6 +626,73 @@ CUDA build (`docs/dev_setup.md`'s stubgen line), so `cuda_eos_sl_advect` and
 2. **Is gas diffusion m²/s too?** Settled for this patch: it stays per tile² (identical at 1.0 m either way; one look change at a time). If it should be m²/s, that is its own small patch: `d·dt/dx²` in `trace_diffusion_dd_q` and in the gases stability door, with the shipped values rescaled by 0.111 to keep today's 0.333 m look.
 3. **The render re-fit** of `_WIND_VREF` / `_WIND_VSENS`: its own render-only patch right after U, with the look shots before and after.
 
+### 7.9 As-built (2026-11-20)
+
+**What was built** (branch `217-eos-checkerboard`, after section 7 v2 `f91aac41`):
+
+- `8b56b151` the code: `eos_transport_step_q` (`eos_solver.cpp`, out of line, range-guarded to [0, FP_ONE]) at all six fold sites; `dt_s_q` renamed `dtdx_s_q` in `EOSHostPrestage` and `EnvSub`; `dx` required on both SL test entries; `flux_to_dq`'s header states the coefficient's units and the int32 bound; the bench twin transcribes the fold. One deviation from v2: `cuda_p62_check.py`'s synthetic case `(40, 40, dt 2.0, wind 4)` became `(dt 1.0, wind 8)` (the same 8-tile march), because the new guard refuses dt_s/dx = 2 at dx = 1.0: the L1-4 behaviour change, met in a synthetic test, never in the game.
+- `be1ac33f` `tests/test_transport_in_metres.py` (both legs through the live step).
+- `db612102` the rule line, as the first bullet of `fields-gas.md`'s Trace transport section (a section of its own is refused by `test_claude_rules_paths.py`), with `eos_solver.h` and the three device fold TUs on its `paths:`.
+- `0d2884d7` the eight ship_demo re-pins (category A); `84fc8d37` drag2 leg 4 restated (category B); `35b1e479` the stubs regenerated from the CUDA build (the regen also picks up bindings added since #63's last one).
+
+**The oracles held.** `GOLDEN_AGGREGATE` unchanged on the CPU build
+(`d5d03433...487b`, matches golden). The 1.0 m box pins `_PRE_122_BOX`,
+`_STAGE1_BOX`, `_RE_PIN_1_BOX` (x2) pass unchanged. Before the twin marking,
+on this worktree's CUDA build: `test_cuda_p62_sl_advection` (with the new 1/3 m
+cases), `test_cuda_prestage_parity`, `test_cuda_s8a_residency`,
+`test_cuda_batch_invariance` and `test_cuda_eos_step` green. The energy closure
+is exact: `_quiet_books_bench.py` 1440 ticks EXACT (gas + solid),
+`_sealedbox_bisect_bench.py` 432 ticks EXACT in every variant.
+
+**The property test catches the fold being dropped** (verified, not assumed):
+on the pre-U build the mass leg reads 0.4998 x N*U and the front moves 0.128 m
+at 0.5 m tiles (expected 1.0 and 0.254 m; 1.0 m reads 1.0001 and 0.256 m on
+both builds); a mutant that drops the fold only at `step()`'s own SL backtrace
+fails the SL leg (0.128 m) and passes the mass leg (1.0001).
+
+**The E2E reproduction, before and after** (`tools/wind_drift_probe.py`;
+median over source-free windows of centroid drift / plume-weighted mean u):
+
+| level | before | after |
+|---|---|---|
+| smoke_light_studio (168 ticks) | 0.451 (IQR 0.321-0.972, 125 windows) | **0.924** (IQR 0.699-1.241, 131 windows) |
+| fire_studio, frag at (24,16) tick 24 (120 ticks) | 0.339 (IQR 0.333-0.344, 90) | **0.965** (IQR 0.890-1.029, 90) |
+
+The plume now drifts at about the wind speed, as the ruling says.
+
+**The checkerboard bench `--table`** (information; cb case, amp 0.1 %, 20 s; before / after):
+
+| tile | gap_rms % | corr | cbN % | cbT | Tmin | Tmax | u max | cbT / cbN |
+|---|---|---|---|---|---|---|---|---|
+| 1.000 | 0.577 / 0.577 | -0.76 / -0.76 | -0.346 / -0.346 | -0.39 / -0.39 | -7.97 / -7.97 | 5.99 / 5.99 | 0.228 / 0.228 | 1.13 / 1.13 |
+| 0.500 | 1.804 / 1.962 | -0.91 / -0.76 | -0.975 / -1.193 | -2.10 / -1.31 | -4.98 / -4.82 | 4.67 / 8.83 | 0.488 / 0.369 | 2.15 / 1.10 |
+| 0.333 | 4.024 / 3.985 | -0.91 / -0.73 | -1.753 / -2.347 | -5.99 / -2.81 | -16.39 / -13.25 | 27.93 / 25.60 | 0.736 / 2.114 | 3.42 / 1.20 |
+| 0.250 | 7.159 / 7.188 | -0.92 / -0.66 | -2.727 / -4.019 | -12.01 / -4.72 | -24.97 / -19.14 | 25.23 / 31.94 | 0.811 / 2.399 | 4.40 / 1.17 |
+| 0.333, gamma 1.0001 | 3.875 / 3.994 | -0.94 / -0.72 | -3.737 / -3.259 | -0.00 / -0.00 | | | 0.440 / 2.876 | |
+
+The 1.0 m row is identical (bit identity). The temperature image of the
+density pattern, cbT/cbN, grew like 1/dx before (2.15, 3.42, 4.40) and is now
+the same at every tile size (1.10-1.20), as section 2.6 inferred. The
+checkerboard itself is not cured (gap_rms the same size; cbN grew at 0.333 and
+0.25 m): patch U was never a remedy for it (section 4 (f)).
+
+**Cost** (CPU, ship_demo, 24 + 96 ticks, information): tick 19.23 -> 18.68 ms,
+"7 EOS run_substeps" 15.59 -> 15.04 ms. The flow differs, so it is not a
+like-for-like substep count; within noise of "no cost".
+
+**Reds left red** (the categories of section 7.5; none re-pinned):
+
+- C (Erik-ruled): `test_wind_doorway_e2e.py` x4 (its setup no longer reaches the asserted over-pressure: 1.146 atm vs > 1.3), `test_gen_ship_vents_air.py::test_no_vented_room_leaves_its_pressure_band` (mess room 2.35 % vs the 2 % band).
+- D: `test_drag2_venting_gate.py` leg 2 at k2 = 0.25 XPASSes its strict xfail (ratio 1.2222 < 1.5); k2 = 0.5 / 1.0 stay xfail. `test_eos_checkerboard.py` stays xfail.
+- Not classifiable by section 7.5, left and reported: `test_air_boundary.py::test_ambient_gate2_rail_counts_the_acoustic_overshoot` (at k_drag2 = 0 the T_MAX_PHYS rail fires ~600 times a tick for ~40 ticks, 24668 in all, where the property is a one-time transient; at the shipped k_drag2 it is 48 and the sibling gate passes); `test_grenade_kinds.py::test_e2e_four_cycles_w_throws_each_kind_after_the_wind_up` (door_test: the thrower is KNOCKED_DOWN by his own frag's blast for ~100 ticks and the later throws never happen); `test_fire_feedback.py::test_plume_raises_own_atmosphere_wind_points_outward` (the sealed-room plume's neighbour wind turns inward from about tick 48); `test_wave_push.py::test_a_blast_pushes_the_units_its_wind_reaches_and_nothing_else` (the marine behind the wall is now pushed); `test_unit_schema.py::...[bots]` and `test_unit_store.py::test_identity_ship_demo_every_tick` (the new bots match has no corpse conversion, so their non-vacuity guards fail); `test_cuda_conductor.py::test_the_conductor_replays_the_pinned_matches_to_their_end` (the device conductor, class T, refuses the new 3321-tick bots match at tick 806: an ApplierFault in slot 9e(d) vents, a vent ledger past its proved range; bots_v1 replays equal to its end).
+- On this PC, failing on main too: `test_fire_tuning_level`, `test_larva_studio` (PNG bytes).
+
+**Findings** (for Erik; nothing changed for them in this patch):
+
+1. **Blasts at 0.333 m go numerically wild.** smoke_light_studio's first charge (t 25): before U, density stays 0.18-3.98 x ambient and the sealed room's pressure rises to ~4.9 atm (heat). After U, within 5 ticks one cell holds 49-113 x ambient while others empty to 0, the mean gas temperature goes negative (-94 game degrees), the room's mean pressure falls to 0.19 atm with no wall lost and no mass lost (exact books), and the plume-weighted wind stays near 30 m/s to the end of the run. Raising `N_SUB_MAX` to 24 or 48 tames the first blast but not the second. The same scene at `tile_size_m = 1.0` (the code path patch U leaves bit-identical) shows it too at the third charge (mean T -436, N 10 x), milder. Inference: the blast regime runs the donor-cell transport above Courant 1 at the substep cap against a once-per-tick pressure solve; before U the 1/dx under-transport hid it at 0.333 m. This is the regime section 7.4 called "not new", and it is worse than that; with L1-3's blast dials it belongs to the next session with Erik, before or with the tuning.
+2. The quiet test_arena (`_sealedbox_bisect_bench.py` nofire) now carries winds up to 40.5 m/s (8.6 before), and the 60 s quiet run drifts -4.5 game degrees over the accountable set (-0.41 before), every joule counted.
+3. The ship_demo matches run two to three times longer (G8p 272 -> 730 ticks, the controller pin 1349 -> 3321; the winning team flipped in four of eight pins) and lost their corpse conversion.
+
 ### 7.8 Critique (one critic at a time, verdicts recorded before the next)
 
 | lens | model | verdict | findings (to resolve in v2 of §7) |
