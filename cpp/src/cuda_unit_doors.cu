@@ -86,7 +86,7 @@ void unit_door_uses(const UnitTablesDevice& tables, UnitRecordList& requests, Ob
                                     "for these envs");
     const size_t want = (size_t)n * C_W;
     if (want > g_counts_cap) {
-        cudaStreamSynchronize(tstream());
+        counted_sync(tstream(), "cuda_unit_doors.cu:89");
         if (g_counts) cudaFree(g_counts);
         g_counts = nullptr;
         du_check(cudaMalloc(reinterpret_cast<void**>(&g_counts), want * sizeof(int64_t)),
@@ -100,7 +100,7 @@ void unit_door_uses(const UnitTablesDevice& tables, UnitRecordList& requests, Ob
     du_check(cudaMemcpyAsync(h.data(), g_counts, want * sizeof(int64_t), cudaMemcpyDeviceToHost,
                              tstream()),
              "D2H counts");
-    du_check(cudaStreamSynchronize(tstream()), "sync");
+    du_check(counted_sync(tstream(), "cuda_unit_doors.cu:103"), "sync");
     for (int e = 0; e < n; ++e) {
         if (out.changed) out.changed[e] = h[(size_t)e * C_W + C_CHANGED];
         if (out.faults) out.faults[e] = h[(size_t)e * C_W + C_FAULTS];

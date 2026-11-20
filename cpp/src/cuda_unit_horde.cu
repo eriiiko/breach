@@ -78,7 +78,7 @@ void horde_flood_probe(int n_env, int h, int w, std::uintptr_t tile_ok, const in
         h, w, reinterpret_cast<const uint8_t*>(tile_ok), d_fp, d_seeds, d_n, k_cap,
         reinterpret_cast<int32_t*>(dist), d_pass, d_q);
     hp_check(cudaGetLastError(), "launch");
-    hp_check(cudaStreamSynchronize(tstream()), "sync");
+    hp_check(counted_sync(tstream(), "cuda_unit_horde.cu:81"), "sync");
     cudaFree(d_fp);
     cudaFree(d_n);
     cudaFree(d_seeds);

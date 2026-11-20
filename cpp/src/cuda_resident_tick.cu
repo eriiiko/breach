@@ -22,6 +22,7 @@
 // tests/cuda_batch_invariance_check.py (env i of N == env i alone).
 // ============================================================================
 #include "cuda_resident_tick.h"
+#include "cuda_unit_books.h"   // #29 P7e.4: note_host_sync
 #include "cuda_resident.h"
 #include "cuda_eos_resident.h"
 #include "cuda_batch.cuh"
@@ -95,6 +96,7 @@ void capture_close_segment() {
 
 void tick_sync_point(const char* name) {
     cudaStream_t st = static_cast<cudaStream_t>(tick_stream_handle());
+    note_host_sync(name);   // #29 P7e.4: the conductor's sync count
     if (!g_cap.on) {
         capture_check(cudaStreamSynchronize(st), name);
         return;

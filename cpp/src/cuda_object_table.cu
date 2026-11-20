@@ -78,7 +78,7 @@ ObjectTable::ObjectTable(int n_env, int cap, int width, int live, int n_units, i
 void ObjectTable::append_host(const int64_t* recs, const int64_t* n, int k) {
     if (k < 1) return;
     if (k > src_k_) {    // the host staging grows, never per call
-        cudaStreamSynchronize(tstream());
+        counted_sync(tstream(), "cuda_object_table.cu:81");
         if (d_src_) cudaFree(d_src_);
         d_src_ = nullptr;
         ot_check(cudaMalloc(reinterpret_cast<void**>(&d_src_),
@@ -97,11 +97,11 @@ void ObjectTable::append_host(const int64_t* recs, const int64_t* n, int k) {
              "H2D append counts");
     k_table_append<<<dim3(1, n_env()), 1, 0, tstream()>>>(list_view(*this), d_src_, d_n_, k);
     ot_check(cudaGetLastError(), "append launch");
-    ot_check(cudaStreamSynchronize(tstream()), "append sync");
+    ot_check(counted_sync(tstream(), "cuda_object_table.cu:100"), "append sync");
 }
 
 ObjectTable::~ObjectTable() {
-    cudaStreamSynchronize(tstream());
+    counted_sync(tstream(), "cuda_object_table.cu:104");
     if (d_src_) cudaFree(d_src_);
     if (d_n_) cudaFree(d_n_);
 }

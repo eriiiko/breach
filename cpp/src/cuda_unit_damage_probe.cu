@@ -68,7 +68,7 @@ void unit_damage_probe(UnitStoreDevice& store, const UnitTablesDevice& tables,
         store.counts_dev());
     unit_finish_events(store, ring, counts, "unit_damage_probe");
     cudaMemcpyAsync(out, d_out, n * 2 * sizeof(int64_t), cudaMemcpyDeviceToHost, tstream());
-    cudaStreamSynchronize(tstream());
+    counted_sync(tstream(), "cuda_unit_damage_probe.cu:71");
     cudaFree(d_out);
 }
 

@@ -82,7 +82,7 @@ struct GrowBuf {
     size_t cap = 0;
     int64_t* get(size_t n) {
         if (n > cap) {
-            cudaStreamSynchronize(tstream());
+            counted_sync(tstream(), "cuda_unit_objects.cu:85");
             if (d) cudaFree(d);
             d = nullptr;
             if (cudaMalloc(reinterpret_cast<void**>(&d), n * sizeof(int64_t)) != cudaSuccess)
@@ -484,7 +484,7 @@ void end_counts(int n, const ObjectSlotCounts& out, UnitRecordList* dropped_of) 
     ob_check(cudaMemcpyAsync(h.data(), g_counts.d, h.size() * sizeof(int64_t),
                              cudaMemcpyDeviceToHost, tstream()),
              "D2H counts");
-    ob_check(cudaStreamSynchronize(tstream()), "counts sync");
+    ob_check(counted_sync(tstream(), "cuda_unit_objects.cu:487"), "counts sync");
     for (int e = 0; e < n; ++e) {
         if (out.changed) out.changed[e] = h[(size_t)e * C_W + C_CHANGED];
         if (out.faults) out.faults[e] = h[(size_t)e * C_W + C_FAULTS];

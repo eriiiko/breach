@@ -82,7 +82,7 @@ UnitRecordList::UnitRecordList(int n_env, int n_units, int cap, int width, int r
 }
 
 UnitRecordList::~UnitRecordList() {
-    cudaStreamSynchronize(tstream());
+    counted_sync(tstream(), "cuda_unit_events.cu:85");
     if (d_ring_) cudaFree(d_ring_);
     if (d_count_) cudaFree(d_count_);
     if (d_drop_) cudaFree(d_drop_);
@@ -115,7 +115,7 @@ void UnitRecordList::download(int64_t* recs, int64_t* counts, int64_t* dropped) 
     if (dropped)
         ev_check(cudaMemcpyAsync(dropped, d_drop_, n_env_ * sizeof(unsigned long long),
                                  cudaMemcpyDeviceToHost, tstream()), "D2H dropped");
-    ev_check(cudaStreamSynchronize(tstream()), "list sync");
+    ev_check(counted_sync(tstream(), "cuda_unit_events.cu:118"), "list sync");
 }
 
 void UnitRecordList::upload(const int64_t* recs, const int64_t* counts) {
@@ -124,7 +124,7 @@ void UnitRecordList::upload(const int64_t* recs, const int64_t* counts) {
                              cudaMemcpyHostToDevice, tstream()), "H2D list");
     ev_check(cudaMemcpyAsync(d_count_, counts, (size_t)n_env_ * sizeof(int64_t),
                              cudaMemcpyHostToDevice, tstream()), "H2D count");
-    ev_check(cudaStreamSynchronize(tstream()), "upload sync");
+    ev_check(counted_sync(tstream(), "cuda_unit_events.cu:127"), "upload sync");
 }
 
 UnitEventRing::UnitEventRing(int n_env, int n_units, int e_max)

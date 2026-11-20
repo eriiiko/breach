@@ -75,7 +75,7 @@ struct GrowBuf {
     size_t cap = 0;
     int64_t* get(size_t n) {
         if (n > cap) {
-            cudaStreamSynchronize(tstream());
+            counted_sync(tstream(), "cuda_unit_verbs.cu:78");
             if (d) cudaFree(d);
             d = nullptr;
             if (cudaMalloc(reinterpret_cast<void**>(&d), n * sizeof(int64_t)) != cudaSuccess)

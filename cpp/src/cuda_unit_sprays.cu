@@ -58,7 +58,7 @@ struct Scratch {
     int64_t* get(size_t n) {
         if (n < 1) n = 1;
         if (n > cap) {
-            cudaStreamSynchronize(tstream());
+            counted_sync(tstream(), "cuda_unit_sprays.cu:61");
             if (d) cudaFree(d);
             d = nullptr;
             if (cudaMalloc(reinterpret_cast<void**>(&d), n * sizeof(int64_t)) != cudaSuccess)
@@ -277,7 +277,7 @@ void unit_spray_cone_probe(std::uintptr_t solid, int n_env, int h, int w, const 
                              cudaMemcpyDeviceToHost, tstream()), "probe D2H");
     sp_check(cudaMemcpyAsync(meta, d_meta, nq * 2 * sizeof(int64_t), cudaMemcpyDeviceToHost,
                              tstream()), "probe D2H meta");
-    sp_check(cudaStreamSynchronize(tstream()), "probe sync");
+    sp_check(counted_sync(tstream(), "cuda_unit_sprays.cu:280"), "probe sync");
 }
 
 }  // namespace breach_cuda
