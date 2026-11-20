@@ -114,7 +114,7 @@ stays dark and glossy and dries from the edges. Designed with the marks.
 ## 4. Gates and merging
 
 - Per patch: the affected tests (`tools/affected_tests.py --run`), the render test files, `tests/test_claude_rules_paths.py`, the shot set before and after, the frame cost.
-- The full suite stays the gate before a merge by the project rule. These patches touch no simulation or device file, so no CUDA gate applies.
+- **Erik, 2026-11-20: affected tests per patch, the full suite once at arc close.** Where `tools/affected_tests.py` selects the whole suite only because `config.toml` or a rules/CLAUDE.md file changed, the per-patch set is instead: the water and render test files, the GL checks, `tests/test_claude_rules_paths.py`, the tests that read the changed `config.toml` section, and `affected_tests.py` over the patch's code files. These patches touch no simulation or device file, so no CUDA gate applies.
 - A green patch merges; Erik looks at the shots when he wants to (iron rule, 2026-11-13).
 
 ## 5. For Erik, by eye
