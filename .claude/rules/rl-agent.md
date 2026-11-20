@@ -9,6 +9,12 @@ paths:
   - "tests/_1h_forced.py"
   - "tools/rl_smoke.py"
   - "tools/obs_body_imprint.py"
+  - "src/simulation/device_obs.py"
+  - "cpp/src/cuda_obs.*"
+  - "cpp/src/obs_layout.h"
+  - "tools/gen_obs_layout.py"
+  - "tests/cuda_obs_check.py"
+  - "tests/obs_column_owners.toml"
 ---
 
 # RL agent: the env, the observation, the action, the reward, snapshots
@@ -40,6 +46,13 @@ and who must use it; this file holds the constraints the code cannot say. The
 - The OTHER SIDE OF THE WALL: its builders read the sim through ONE `FullView` per env per decision (`FullView.build`, the one door) and keep THEIR OWN caches, never `TeamKnowledge`'s; pair case (f) holds every `obs` array byte-identical with the full view off, built before or after.
 - Over its entry cap the farthest doors, then zombies, then objects, are dropped, never a marine. Its balance column is `reward_v1.standing`, the reward's one implementation.
 - A new privileged input is a new version of this spec.
+
+## Device observation
+- THE device form of observation spec v1, its masks and the full view (`src/simulation/device_obs.py`, `cpp/src/cuda_obs.*`): built on the card in the device conductor's walk (its last call line) into env-owned CuPy buffers with exactly the served keys, shapes and dtypes (and a `final_` set), handed to torch by DLPack. The host builders stay THE reference; never a second observation, never a host copy between the card and the trainer.
+- Every column and plane has ONE owning P8 patch in `tests/obs_column_owners.toml`; a block lands with its owner rows and its `device_obs.BUILT` entry in the same patch. Each gate compares what its patch and the earlier ones own, as RAW BITS, at every decision tick, and fails on an owned column constant over its corpus. ONE check script, `tests/cuda_obs_check.py`, a part per patch: never a second script.
+- A spec constant reaches a kernel only through the generated `cpp/src/obs_layout.h` (`tools/gen_obs_layout.py`), read from the spec's own tables: never a literal in a kernel, never a kernel argument. The observation's device code is its own TU and headers, never `cpp/src/cuda_unit_lib.cuh`; it writes no synced buffer and adds no host sync to the tick.
+- An env is built on ITS decision ticks (its episode start and the run's decimation, read on the card) and skipped while its ended latch is set.
+- The hand-over's ordering rests on the BLOCKING tick stream and CuPy / torch on the legacy default stream: a change to either is a change to the hand-over, held by the check's handover part.
 
 ## Action spec
 - Masks come from the game's own gates, never a copy of them. Every number comes from its row through `action_tables`, quantized once: never a literal. A new grenade row APPENDS a hand entry; a new verb is a hand-table row with its gate in the same patch.
