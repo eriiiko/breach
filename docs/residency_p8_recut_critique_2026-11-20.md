@@ -109,3 +109,66 @@ Evidence: `cpp/CMakeLists.txt` (lines 263-266) sets `--fmad=false -prec-div=true
 with no work. numpy cannot contract: each ufunc rounds on its own.
 Change: put the obs double arithmetic in its own `.cu` / `.cuh` files, not in
 `cuda_unit_lib.cuh`, so the unit kernels' integer library carries no double code.
+
+---------------------------------------------------------------------------------------------
+
+## Lens 2: the gate and its corpus
+
+**7. BLOCKER: P8.2's "refusal of a level with live cover" refuses corpus (b) and the levels training
+is for.**
+Evidence: `tools/gen_training_rooms.py` places the game's `cover` entity (`cover_crate`, line 164;
+three calls, for example two crates in the room at lines 233-234). Those rooms are the `all_round`
+levels decision 2 calls "what training uses". `line_of_fire.solid_in_way` / `solid_in_way_many`
+(lines 40, 57) apply EVERY live cover through `blocks_segment`. That is the obs list's col 25
+(`lof_solid`) and the full view's lof. `vision.ray_clear` applies only `blocks_los` covers, and a
+crate's default is False (`entities/cover.py` line 67). The device SIM is not wrong on these levels:
+the continuous path passes `cover=None` to the march (`combat.py` around line 1740: "every shipped
+caller"). Only the observation reads cover.
+Change: replace the refusal with a per-env cover table (rectangles + `alive`, staged at episode
+start) and a device `blocks_segment`. The slab test is IEEE (`1.0 / d`, products, compares:
+`cover_system.py` lines 101-120), so it is exact-class; add it to the float list. If a crate's
+`alive` can change on the continuous path, that change rides the table. Refuse by name only a cover
+with `blocks_los = true`, which feeds `VisionState` (or port that too), and only once a level with
+one exists. P8.2 or P8.4 owns this; it must be in a row.
+
+**8. MAJOR: corpora (a) and (b) never exercise the order block, the decoder's columns or the
+zombies. Gates that own those columns pass vacuously.**
+Evidence: `order_intent` has exactly one caller in the bots, `control_bots.issue_team_order`
+(line 1639). It is reached only from `BotCommander` and the door bots. The layered bots of the
+pinned matches issue no order, so vector 84-95, list 47-51, `far_f[9]` (route) and `far_u[4]`
+(place) are constant on (a). Training rooms have no zombies (`gen_training_rooms` docstring line 8),
+so vector 82-83 and list col 33 are constant on (b). `aims` is None on any replayed match
+(`observe_rows(..., aims=None)`), so vector 71-76 and list 28 / 66 are constant on (a), (b) and
+(d). P8.1 ("vector EXACT on (a), (b)"), P8.4 and P8.5 would be green on columns that never left
+their default.
+Change: every gate prints, per column / plane it owns, how many decision-rows held a non-default
+value, and fails when an owned column is constant over the patch's corpus. That is the design's own
+§5.5 rule, "the pre-flight refuses a feature ... with zero exercise", applied to the gates. Corpus
+(c) or a (d) scene is named as the owner of the order, route, place and decoder columns.
+
+**9. MAJOR: corpus (c) cannot be a *recorded* episode. It has to be generated live.**
+Evidence: a `match_replay.Recording` holds the tap's DECODED intents. Replaying it
+(`MatchSession(..., replay=rec)`, the gate shape of `tests/cuda_conductor_check.py::replay_gate`)
+puts the `replay` controller in place of `AgentPolicy`. So the replaying reference has no decisions
+(N, U, 5), no `list_uid` they answered and no decoder slot state (`aimed_uid`, `prev`,
+`throw_aim`). That is exactly what P8.6's gate needs and what the 1h columns read. A stored corpus
+also breaks §5.3 ("Nothing stored: a stored corpus stales weekly").
+Change: define (c) as an in-process `EnvRunner` (v1 actions, the commander on) inside the CUDA
+subprocess, driven by seeded masked-random decisions (`tools/rl_smoke.py`'s drawer). The
+reference's tap intents are latched into the conductor every tick, and the decisions are handed to
+the device decoder in P8.6. Name the temporary run file the test writes (the run file is
+door-checked and must live outside the repo).
+
+**10. MINOR: corpus (a) inside a CUDA subprocess plays its own matches, every patch, and that is
+the suite's cost.**
+Evidence: the CUDA harness rule (never import the CUDA `.pyd` into pytest) puts the gate in a
+subprocess, so the shared `_pinned_matches.watch` cannot serve it. `cuda_conductor_check.
+part_pinned` records then replays each match (3 sims). Measured: ship_demo bots run on the CPU
+reference at about 22 ms per tick (600 ticks in 13.2 s).
+Change: one `tests/cuda_obs_check.py` with a part per patch. It records each pinned match ONCE per
+subprocess and runs all of its parts on that one replay, not a new script per patch.
+
+**11. Not a finding (checked): the observation CAN be built on a replayed bots match.**
+`spawn_match` starts the picture (`Simulation.start_team_picture`), `ObsContext.build(sim, spec,
+n_slots)` needs only the spec, and `observe_rows` takes `aims=None`. The commander (inventory F) is
+not needed on (a) / (b), because orders arrive as recorded intents.
