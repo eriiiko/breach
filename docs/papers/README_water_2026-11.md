@@ -61,7 +61,28 @@ Design: `docs/water_look_design_2026-11-19.md` (sections 2, 9 and 10).
    lost per frame) -- through the plan's section 4
    (`docs/presentation_graphics_plan_2026-11-15.md`); no paper archived.
 
-## Later patches
+## W4: sharp caustics
 
-W4's caustic (Wallace 2011) archives its paper here when it lands, per the
-design's section 10.
+6. **Wallace, E. (2011).** "WebGL Water." Demo and source,
+   madebyevan.com/webgl-water (github.com/evanw/webgl-water, MIT licence);
+   the method is written up in his "Rendering Realtime Caustics in WebGL"
+   (medium.com/@evanwallace/rendering-realtime-caustics-in-webgl-2a99a29a0b2c,
+   which refused an automated fetch on 2026-11-20).
+   **Archived here:** `wallace2011_webgl_water_renderer.js` (his
+   `renderer.js`, 13 KB, fetched 2026-11-20 from the repository's master;
+   the caustics shader is `causticsShader`, the MIT notice is in its header).
+   - What we use: the AREA METHOD. He refracts the light through every
+     vertex of a grid on the water surface, projects it onto the floor and
+     shades each floor triangle by `oldArea / newArea` (the area the light
+     covered before the surface bent it over the area it covers after,
+     from `dFdx` / `dFdy` of the two positions): smaller is brighter. Our
+     form is the analytic limit of that ratio: the Jacobian determinant of
+     the refraction map `x -> x + depth (1 - 1/n) grad h` (Snell to first
+     order in the slope; his `IOR_WATER = 1.333`), `det J = 1 + a tr H +
+     a^2 det H`, with the Hessian of W1's fine surface baked as exact
+     second derivatives, evaluated in GATHER form at the surface point the
+     floor is seen through (no grid is rasterised), signed `min(1/|det|,
+     max) - 1` on the floor's source light. In the code:
+     `renderer/water_surface.py::caustic_det` / `caustic_gain` /
+     `caustic_term`, `hex_surface`, `detail_surface`; `shaders/water.fs`
+     (`hexSurface`, `detailSurface`, `causticDet`, `causticGain`).
