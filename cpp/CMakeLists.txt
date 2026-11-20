@@ -194,6 +194,11 @@ if(BREACH_CUDA)
         # flood's TEST-ONLY probe. Class T, pure integer, on the same
         # target-wide CUDA determinism floor.
         src/cuda_unit_horde.cu      # TEST-ONLY: the flood on given masks
+        # #29 P7e.2: the device sorts and 9b -- the burn-through list ranked
+        # row-major, slot 9b's scan and top-K, slot 6's stamp rows from the
+        # unit store and the refill. Class T, pure integer, on the same
+        # target-wide CUDA determinism floor.
+        src/cuda_unit_sorts.cu
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like

@@ -650,6 +650,15 @@ PYBIND11_MODULE(breach_physics, m) {
           },
           "#29 P4a: how many times each resident tail stage ran (and did "
           "work) in this process.");
+    m.def("resident_burn_list", []() {
+              std::uintptr_t c = 0, l = 0;
+              int n = 0, h = 0, w = 0;
+              breach_cuda::resident_burn_list(&c, &l, &n, &h, &w);
+              return py::make_tuple(c, l, n, h, w);
+          },
+          "#29 P7e.2: (counts, lists, n_env, h, w) -- the device addresses of the last "
+          "resident tick's burn-through list (the fire's (N,) int counter, the (N, h*w) "
+          "int arrival-order lists), for the device sort.");
     m.def("edit_queue_contrib_probe",
           [](py::array_t<int64_t, py::array::c_style | py::array::forcecast> edits,
              py::array_t<int64_t, py::array::c_style | py::array::forcecast> tiles,
@@ -1331,7 +1340,7 @@ PYBIND11_MODULE(breach_physics, m) {
             .def_property_readonly("tiles", [](EditDoor& d) -> UnitRecordList& {
                      return d.tiles(); }, py::return_value_policy::reference_internal);
         m.def("unit_sprays",
-              [](UnitStoreDevice& s, const UnitTablesDevice& t, FieldApplier& a,
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, breach_cuda::FieldApplier& a,
                  UnitRecordList& cells, std::uintptr_t solid, int h, int w, int64_t box_max) {
                   py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env()),
                       drp(s.n_env());
@@ -1556,7 +1565,7 @@ PYBIND11_MODULE(breach_physics, m) {
               py::arg("h"), py::arg("w"), py::arg("q"), py::arg("M"),
               "#29 P7c.2 TEST-ONLY: the blast walk and air read per query (N, K, 3 + 2 M).");
         m.def("unit_melee",
-              [](UnitStoreDevice& s, const UnitTablesDevice& t, FieldApplier& a,
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, breach_cuda::FieldApplier& a,
                  std::uintptr_t tick_row) {
                   py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env()),
                       drp(s.n_env());
@@ -1573,7 +1582,7 @@ PYBIND11_MODULE(breach_physics, m) {
               "dropped records).");
         // #29 P7a.2: slot 4's shooting and slot 2''s rounds (cuda_unit_shooting.cu)
         m.def("unit_shooting",
-              [](UnitStoreDevice& s, const UnitTablesDevice& t, FieldApplier& a,
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, breach_cuda::FieldApplier& a,
                  breach_cuda::ObjectTable& rounds, breach_cuda::ObjectTable& noise,
                  std::uintptr_t tick_row, std::uintptr_t solid,
                  std::uintptr_t material, int h, int w) {
@@ -1597,7 +1606,7 @@ PYBIND11_MODULE(breach_physics, m) {
               "on the device store; returns (coverage, faults, refused, dropped records, "
               "rounds lost, noises lost).");
         m.def("unit_rounds",
-              [](UnitStoreDevice& s, const UnitTablesDevice& t, FieldApplier& a,
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, breach_cuda::FieldApplier& a,
                  breach_cuda::ObjectTable& rounds, std::uintptr_t tick_row, std::uintptr_t solid,
                  std::uintptr_t material, int h, int w, bool compact) {
                   const py::ssize_t n = s.n_env();
@@ -1721,6 +1730,90 @@ PYBIND11_MODULE(breach_physics, m) {
               "#29 P7.0a: slot 9d (combat.apply_temperature_ignition) on (N, h, w) planes "
               "(temperature, material, flammable, wall_hp, solid, is_vacuum, gas, fire, "
               "ignition_armed); fire and armed in place. Returns (coverage, faults, refused).");
+        // #29 P7e.2: the device sorts and 9b (cuda_unit_sorts.cu)
+        m.def("unit_burn_sort",
+              [](UnitStoreDevice& s, breach_cuda::FieldApplier& a, std::uintptr_t counts,
+                 std::uintptr_t lists, int stride, int h, int w) {
+                  py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env());
+                  breach_cuda::UnitKernelCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  breach_cuda::unit_burn_sort(s, a, counts, lists, stride, h, w, c);
+                  return py::make_tuple(cov, flt, ref);
+              }, py::arg("store"), py::arg("applier"), py::arg("counts"), py::arg("lists"),
+              py::arg("stride"), py::arg("h"), py::arg("w"),
+              "#29 P7e.2: slot 9's burn-through list (arrival order on the device) ranked "
+              "row-major into the effect list as DESTROY_WALL records. Returns (coverage, "
+              "faults, refused).");
+        m.def("unit_burst_walls",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, breach_cuda::FieldApplier& a,
+                 py::array_t<uint64_t, py::array::c_style> ptrs, int h, int w) {
+                  if (ptrs.ndim() != 1 || ptrs.shape(0) != 5)
+                      throw std::invalid_argument("unit_burst_walls: ptrs must be (5,) uint64");
+                  const uint64_t* q = ptrs.data();
+                  breach_cuda::BurstScanPlanes p;
+                  p.material = (std::uintptr_t)q[0]; p.solid = (std::uintptr_t)q[1];
+                  p.is_vacuum = (std::uintptr_t)q[2]; p.is_ambient = (std::uintptr_t)q[3];
+                  p.atmosphere = (std::uintptr_t)q[4];
+                  p.h = h; p.w = w;
+                  py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env());
+                  breach_cuda::UnitKernelCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  breach_cuda::unit_burst_walls(s, t, a, p, c);
+                  return py::make_tuple(cov, flt, ref);
+              }, py::arg("store"), py::arg("tables"), py::arg("applier"), py::arg("ptrs"),
+              py::arg("h"), py::arg("w"),
+              "#29 P7e.2: slot 9b's scan (material, solid, is_vacuum, is_ambient, atmosphere) "
+              "and top-K as DESTROY_WALL records. Returns (coverage, faults, refused).");
+        m.def("unit_stamp",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t,
+                 py::array_t<uint64_t, py::array::c_style> scratch, int cap,
+                 py::array_t<uint64_t, py::array::c_style> planes, int h, int w,
+                 bool rows_only) {
+                  if (scratch.ndim() != 1 || scratch.shape(0) != 5 || planes.ndim() != 1 ||
+                      planes.shape(0) != 12)
+                      throw std::invalid_argument("unit_stamp: scratch (5,), planes (12,) uint64");
+                  const uint64_t* q = scratch.data();
+                  breach_cuda::StampScratch sc;
+                  sc.rows = (std::uintptr_t)q[0]; sc.total = (std::uintptr_t)q[1];
+                  sc.ntiles = (std::uintptr_t)q[2]; sc.winner = (std::uintptr_t)q[3];
+                  sc.freed = (std::uintptr_t)q[4]; sc.cap = cap;
+                  py::array_t<int64_t> rcov(s.n_env()), rflt(s.n_env()), rref(s.n_env());
+                  py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env());
+                  breach_cuda::UnitKernelCounts rc, c;
+                  rc.coverage = rcov.mutable_data(); rc.faults = rflt.mutable_data();
+                  rc.refused = rref.mutable_data();
+                  c.coverage = cov.mutable_data(); c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  if (rows_only) {
+                      breach_cuda::unit_stamp_rows(s, t, sc, h, w, rc);
+                      for (int e = 0; e < s.n_env(); ++e) {
+                          cov.mutable_data()[e] = 0; flt.mutable_data()[e] = 0;
+                          ref.mutable_data()[e] = 0;
+                      }
+                  } else {
+                      const uint64_t* r = planes.data();
+                      breach_cuda::StampPlanes p;
+                      p.permeability = (std::uintptr_t)r[0]; p.wave_absorb = (std::uintptr_t)r[1];
+                      p.heat_atten_q = (std::uintptr_t)r[2]; p.light_atten_q = (std::uintptr_t)r[3];
+                      p.obstacles = (std::uintptr_t)r[4]; p.dyn_permeability = (std::uintptr_t)r[5];
+                      p.dyn_wave_absorb = (std::uintptr_t)r[6];
+                      p.dyn_heat_atten_q = (std::uintptr_t)r[7];
+                      p.dyn_light_atten_q = (std::uintptr_t)r[8]; p.solid = (std::uintptr_t)r[9];
+                      p.is_vacuum = (std::uintptr_t)r[10]; p.atmosphere = (std::uintptr_t)r[11];
+                      p.h = h; p.w = w;
+                      breach_cuda::unit_stamp(s, t, sc, p, rc, c);
+                  }
+                  return py::make_tuple(py::make_tuple(rcov, rflt, rref),
+                                        py::make_tuple(cov, flt, ref));
+              }, py::arg("store"), py::arg("tables"), py::arg("scratch"), py::arg("cap"),
+              py::arg("planes"), py::arg("h"), py::arg("w"), py::arg("rows_only"),
+              "#29 P7e.2: slot 6 from the unit store -- the stamp rows (rows_only) or the rows, "
+              "the stamp kernel and the atmosphere refill. Returns ((row counts), (refill "
+              "counts)).");
         m.def("unit_kit_draws_probe",
               [](py::array_t<int64_t, py::array::c_style> keys,
                  py::array_t<int64_t, py::array::c_style> args) {

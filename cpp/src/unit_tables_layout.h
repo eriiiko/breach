@@ -14,8 +14,8 @@
 
 namespace unit_tables {
 
-constexpr const char* UNIT_TABLES_FINGERPRINT = "5ac707e7a6fa43079130b48c1a754b3c33b62916a40bc92f754c94d6f81abac4";
-constexpr int UNIT_TABLES_W = 2851;
+constexpr const char* UNIT_TABLES_FINGERPRINT = "f2661a93fb4e0d9b2e4e90f3d2b9b99c586206c1444377fa4dc4402d43b37d33";
+constexpr int UNIT_TABLES_W = 2871;
 
 // <row>: its first int64 in an env's vector; <row>_W: its width.
 constexpr int UNIT_TAB_IMPULSE_CAP_Q = 0;
@@ -558,6 +558,22 @@ constexpr int UNIT_TAB_ZOMBIE_SHAMBLE_TICKS = 2849;
 constexpr int UNIT_TAB_ZOMBIE_SHAMBLE_TICKS_W = 1;
 constexpr int UNIT_TAB_ZOMBIE_SPRINT_TICKS = 2850;
 constexpr int UNIT_TAB_ZOMBIE_SPRINT_TICKS_W = 1;
+constexpr int UNIT_TAB_BURST_CAP = 2851;
+constexpr int UNIT_TAB_BURST_CAP_W = 1;
+constexpr int UNIT_TAB_BURST_P_AMB_Q = 2852;
+constexpr int UNIT_TAB_BURST_P_AMB_Q_W = 1;
+constexpr int UNIT_TAB_BURST_THRESH_Q = 2853;
+constexpr int UNIT_TAB_BURST_THRESH_Q_W = 11;
+constexpr int UNIT_TAB_STAMP_PERM_BITS = 2864;
+constexpr int UNIT_TAB_STAMP_PERM_BITS_W = 1;
+constexpr int UNIT_TAB_STAMP_WABSORB_BITS = 2865;
+constexpr int UNIT_TAB_STAMP_WABSORB_BITS_W = 1;
+constexpr int UNIT_TAB_STAMP_HEAT_Q = 2866;
+constexpr int UNIT_TAB_STAMP_HEAT_Q_W = 1;
+constexpr int UNIT_TAB_STAMP_LIGHT_Q = 2867;
+constexpr int UNIT_TAB_STAMP_LIGHT_Q_W = 3;
+constexpr int UNIT_TAB_STAMP_OPTICS_DEFAULT = 2870;
+constexpr int UNIT_TAB_STAMP_OPTICS_DEFAULT_W = 1;
 
 // The hooks' indices in the unit's `traits` block (unit_traits.HOOKS order).
 constexpr int UNIT_HOOK_HP = 0;

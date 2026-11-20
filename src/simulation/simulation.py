@@ -2282,15 +2282,9 @@ class Simulation:
         # clusters self-breach in a chain across ticks. Mirrors fire
         # burn-through: scan returns tiles, destroy_wall does the topology edit.
         # Capped per tick so a mistuned threshold can't nuke the whole ship.
-        if getattr(CFG.physics, "burst_enabled", True):
-            cap = int(getattr(CFG.physics, "burst_max_per_tick", 16))
-            for (yy, xx) in self.gmap.find_burst_walls(max_pops=cap):
-                mat = int(self.gmap.material[yy, xx])
-                self.gmap.destroy_wall(yy, xx)
-                if mat in (MAT_DOOR, MAT_DOOR_CLOSED):
-                    self.tick_events.append(DoorDestroyedEvent(pos=(yy, xx)))
-                else:
-                    self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
+        # (A named call since #29 P7e.2, so the slot has a profiler label and
+        # a shadow; the body is unchanged.)
+        self._burst_walls()
 
         # 9c. Unit heat damage (engine/06 §4, proposal §4.2/§6 step 4a). The
         # SECOND consumer of the per-tick `heat` deposit (the C++ heat ->
@@ -2522,6 +2516,20 @@ class Simulation:
                 self.tick_events.append(DoorDestroyedEvent(pos=(yy, xx)))
             else:
                 self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
+
+    def _burst_walls(self) -> None:
+        """Slot 9b: the over-pressure walls (``GameMap.find_burst_walls``,
+        capped per tick) destroyed in the scan's order -- worst differential
+        first, ties in row-major order."""
+        if getattr(CFG.physics, "burst_enabled", True):
+            cap = int(getattr(CFG.physics, "burst_max_per_tick", 16))
+            for (yy, xx) in self.gmap.find_burst_walls(max_pops=cap):
+                mat = int(self.gmap.material[yy, xx])
+                self.gmap.destroy_wall(yy, xx)
+                if mat in (MAT_DOOR, MAT_DOOR_CLOSED):
+                    self.tick_events.append(DoorDestroyedEvent(pos=(yy, xx)))
+                else:
+                    self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
 
     def _clear_tick_buffers(self) -> None:
         """The tick-end clears: the per-tick deposit planes, the deposit

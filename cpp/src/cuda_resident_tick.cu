@@ -391,6 +391,23 @@ void resident_stage_counters(long long out[RESIDENT_STAGE_COUNTERS]) {
     for (int k = 0; k < RESIDENT_STAGE_COUNTERS; ++k) out[k] = g_counts[k];
 }
 
+// #29 P7e.2: where the LAST resident tick's fire left its burn-through list
+// ON THE CARD (the fire's per-env counter in the books arena and the (N, h, w)
+// arrival-order lists): the device sort (cuda_unit_sorts.cu) reads them in
+// place. Nothing is copied; the addresses stay valid until the next tick's
+// fire (or a new batch shape).
+void resident_burn_list(std::uintptr_t* counts, std::uintptr_t* lists, int* n_env, int* h,
+                        int* w) {
+    ResidentTickState& S = g_rt;
+    if (S.n_env < 1 || S.arena.p == nullptr || S.dlist.p == nullptr)
+        throw std::logic_error("resident_burn_list: no resident tick has run");
+    *counts = (std::uintptr_t)(S.arena_dev() + S.L.fire_cnt);
+    *lists = (std::uintptr_t)S.dlist_dev();
+    *n_env = S.n_env;
+    *h = S.h;
+    *w = S.w;
+}
+
 void resident_sync_fleck_plane(const PhysicsEngine& eng, int h, int w) {
     ResidentTickState& S = g_rt;
     const size_t n = (size_t)h * (size_t)w;
