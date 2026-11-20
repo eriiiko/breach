@@ -369,10 +369,13 @@ _RIPPLE_BAND = (0.6, 1.8)
 
 
 def ripple_field(coords: np.ndarray, *, seed: int = RIPPLE_SEED,
-                 cells: int = RIPPLE_CELLS, n_waves: int = RIPPLE_WAVES
-                 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                 cells: int = RIPPLE_CELLS, n_waves: int = RIPPLE_WAVES,
+                 second: bool = False) -> Tuple[np.ndarray, ...]:
     """The fine water surface at ``coords`` (..., 2) = (u, v) in texture
-    units: ``(h, dh/du, dh/dv)``, a sum of ``n_waves`` plane waves.
+    units: ``(h, dh/du, dh/dv)``, a sum of ``n_waves`` plane waves -- and,
+    with ``second=True``, also its second derivatives ``(d2h/du2, d2h/dudv,
+    d2h/dv2)`` (W4's caustic: the analytic derivatives of the same waves,
+    not differences), appended to the tuple.
 
     Each wave has an INTEGER wave vector (so the field is exactly periodic
     with period 1 on both axes, at any coordinate) drawn isotropically with
@@ -398,14 +401,26 @@ def ripple_field(coords: np.ndarray, *, seed: int = RIPPLE_SEED,
     h = np.zeros(u.shape)
     hu = np.zeros(u.shape)
     hv = np.zeros(u.shape)
+    if second:
+        huu = np.zeros(u.shape)
+        huv = np.zeros(u.shape)
+        hvv = np.zeros(u.shape)
     for kx, ky, ph in ks:
         kk = float(kx * kx + ky * ky)
         amp = 1.0 / kk
         arg = 2.0 * np.pi * (kx * u + ky * v) + ph
         c = np.cos(arg)
-        h += amp * np.sin(arg)
+        sn = np.sin(arg)
+        h += amp * sn
         hu += amp * 2.0 * np.pi * kx * c
         hv += amp * 2.0 * np.pi * ky * c
+        if second:
+            a2 = -amp * (2.0 * np.pi) ** 2 * sn
+            huu += a2 * kx * kx
+            huv += a2 * kx * ky
+            hvv += a2 * ky * ky
+    if second:
+        return h, hu, hv, huu, huv, hvv
     return h, hu, hv
 
 
@@ -419,7 +434,8 @@ def bake_ripple_rgba(size: int = 256, *, seed: int = RIPPLE_SEED,
            that IS the RMS slope of the fine surface (a dimensionless number,
            whatever the wavelength).
     B    = the height in the same scaling (texture-period units: a physical
-           height is ``B x strength x period_m``), for W4's caustic.
+           height is ``B x strength x period_m``). The caustic (W4) reads
+           the curvature instead, from :func:`bake_ripple_curvature_rgba`.
     A    = 0.
     Upload as RGBA32F, REPEAT, mipmapped + trilinear (the pass sets that):
     minified, the slopes average toward 0 and the fine surface goes flat
@@ -431,6 +447,35 @@ def bake_ripple_rgba(size: int = 256, *, seed: int = RIPPLE_SEED,
     out[..., 0] = hu / rms
     out[..., 1] = hv / rms
     out[..., 2] = h / rms
+    return out
+
+
+def bake_ripple_curvature_rgba(size: int = 256, *, seed: int = RIPPLE_SEED,
+                               cells: int = RIPPLE_CELLS,
+                               n_waves: int = RIPPLE_WAVES) -> np.ndarray:
+    """The ripple texture's CURVATURE (W4, the caustic) -> (size, size, 4)
+    float32, row = v: the companion image of :func:`bake_ripple_rgba` --
+    the same waves at the same texels, in the SAME scaling (divided by the
+    slope's RMS), so that each channel is exactly the texture-space
+    derivative of the slope channels there:
+
+    R = d2h/du2 = d(R of the slope bake)/du
+    G = d2h/dudv
+    B = d2h/dv2
+    A = 0.
+
+    The five numbers (two slopes, three second derivatives) do not fit one
+    RGBA texel, hence a second image read at the same coordinates with the
+    same sampler (RGBA32F, REPEAT, mipmapped + trilinear: minified, the
+    curvature averages toward flat with the slope)."""
+    xy = _grid_coords_2d(int(size))
+    _h, hu, hv, huu, huv, hvv = ripple_field(xy, seed=seed, cells=cells,
+                                             n_waves=n_waves, second=True)
+    rms = float(np.sqrt(np.mean(hu * hu + hv * hv)))
+    out = np.zeros((size, size, 4), dtype=np.float32)
+    out[..., 0] = huu / rms
+    out[..., 1] = huv / rms
+    out[..., 2] = hvv / rms
     return out
 
 
@@ -509,5 +554,5 @@ __all__ = [
     "worley_domes", "billow_field", "bake_billow_rgba", "bake_billow_3d",
     "FLAME_SEED", "flame_noise_field", "bake_flame_noise_rgba",
     "RIPPLE_SEED", "RIPPLE_CELLS", "RIPPLE_WAVES", "ripple_field",
-    "bake_ripple_rgba",
+    "bake_ripple_rgba", "bake_ripple_curvature_rgba",
 ]

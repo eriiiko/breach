@@ -455,7 +455,7 @@ def _cfg(**over):
     ({"foam_bubble_m": [0.1]}, "foam_bubble_m"),
     ({"foam_bubble_m": [0.1, 0.0]}, "foam_bubble_m"),
     ({"foam_shadow": 1.5}, "foam_shadow"),
-    ({"debug_view": 3}, "debug_view"),
+    ({"debug_view": max(W.DEBUG_VIEWS) + 1}, "debug_view"),
 ])
 def test_the_door_refuses_bad_foam_dials(over, name):
     """Property (critique M6): the one door refuses a foam dial out of its
