@@ -51,6 +51,15 @@ Run:
     <breach-py> tests/_eos_checkerboard_bench.py --case cb --steps --ticks 40
     <breach-py> tests/_eos_checkerboard_bench.py --solve-bias     # step 3 alone
     <breach-py> tests/_eos_checkerboard_bench.py --case warm --seconds 40
+    <breach-py> tests/_eos_checkerboard_bench.py --stability smoke_light_studio --ticks 72
+    <breach-py> tests/_eos_checkerboard_bench.py --stability smoke_light_studio --ticks 768 --tps 192 --every 16
+    <breach-py> tests/_eos_checkerboard_bench.py --arena --seconds 30 --every 24
+    <breach-py> tests/_eos_checkerboard_bench.py --stability fire_studio --detonate 24,16,24 --ticks 120
+
+``--stability`` is the blast-regime trace (section 8 of the design doc): per
+tick on a level's live path, the Courant numbers, N's extremes, the stored P
+against the state pressure, the solve's linearized compression and the
+kick loop's kinetic-energy budget. See ``stability_trace``.
 
 Findings and tables: docs/eos_checkerboard_design_2026-11-20.md.
 """
@@ -643,6 +652,133 @@ def table(case="cb", amp=1e-3, ticks=480, eos=None):
               f"{r['Tmin']:7.2f} {r['Tmax']:7.2f} {r['umax']:7.3f}")
 
 
+# ---------------------------------------------------------------------------
+# --stability: the blast-regime trace (#217 section 8, phase 1)
+# ---------------------------------------------------------------------------
+def _ke_books(n_raw, wx, wy, k_ke):
+    """Sum N*k_ke*|u|^2 in the gas_energy currency (N_raw * dT_Q16): the
+    kick loop's own ke_energy() bracket, in float, over the cells given."""
+    u2 = (wx.astype(np.float64) / Q) ** 2 + (wy.astype(np.float64) / Q) ** 2
+    return float((n_raw.astype(np.float64) * k_ke * u2 * Q).sum())
+
+
+def stability_trace(level, ticks, tile=None, tps=None, eos=None, arena=False,
+                    detonate=None, every=1, npz=None):
+    """Per tick on the LIVE path of a level: the substep count, the tick's
+    Courant numbers, how far N leaves ambient, the mass-weighted temperature,
+    the stored P against the state pressure, the solve's linearized
+    compression and the kinetic-energy budget of the kick loop.
+
+    Columns (fractions of the accountable set's tick-0 thermal energy E0, %):
+      Csub / Ctick  max|u_entry| * dt_s / dx and * dt / dx (a substep's SL
+                    and flux displacement is bounded by max|u_entry|: the SL
+                    sample is a convex combination, the face mean too)
+      eps           gamma * dt * max|div u*| over cells with N >= 5 % N0:
+                    the solve's rhs is p*(1 - eps); above 1 it goes negative
+      kick/drag/clamp/absorb  e_kick_ke_sum, e_drag_heat_sum,
+                    e_clamp_destroyed_sum, e_absorb_export_sum
+      dKEu          the KE change NO counter books (step 1, other slots)
+    ``tps`` (emulation only) runs the whole game at another tick rate, so
+    the EOS's one pressure update per tick happens tps/24 times as often;
+    the marine's turn law refuses high rates, and no unit turns in these
+    scenes, so its check falls back to 0 there. ``arena`` builds the
+    sealed-box scene of tests/_sealedbox_bisect_bench.py (test_arena, no
+    vents, one glass ring, no fire). ``detonate`` = (x, y, tick at 24 tps):
+    a frag through the payload executor, as tools/wind_drift_probe.py."""
+    if tps:
+        CFG.clock.ticks_per_second = tps
+        import simulation.turning as _turning
+        _orig = _turning.turn_accel_q16
+
+        def _turn_accel(cfg):
+            try:
+                return _orig(cfg)
+            except ValueError:
+                return 0
+        _turning.turn_accel_q16 = _turn_accel
+    tps = float(CFG.clock.ticks_per_second)
+    if arena:
+        lvl = load_level("test_arena")
+        lvl = dataclasses.replace(lvl, entities=[
+            e for e in lvl.entities if e.class_name not in ("vent", "duct")])
+    else:
+        lvl = load_level(level)
+    if tile is not None:
+        lvl = dataclasses.replace(lvl, tile_size_m=tile)
+    sim = Simulation(lvl, seed=42, breach_physics=bp, enable_recorder=False)
+    if arena:
+        from _sealedbox_bisect_bench import AQ_BOX
+        from simulation import materials
+        r0, r1, c0, c1 = AQ_BOX
+        sim.gmap.seal_tiles([(r, c) for r in range(r0, r1 + 1)
+                             for c in range(c0, c1 + 1)
+                             if min(r - r0, r1 - r, c - c0, c1 - c) == 0],
+                            materials.MAT_GLASS)
+    sim.set_paused(False)
+    e = sim.physics_runner.eos
+    for k, v in (eos or {}).items():
+        setattr(e, k, type(getattr(e, k))(v))
+    g = sim.gmap
+    dx, dt = float(g.tile_size_m), 1.0 / tps
+    gam = float(e.adiabatic_index)
+    k_ke = gam * (gam - 1.0) * float(e.T_AMB_K) / (2.0 * float(e.c_max) ** 2)
+    t_amb = int(g._gas_energy_t_amb_raw())
+    acct = g._gas_energy_accountable()
+    N0 = float(np.median(g._gas_bulk_n_raw()[acct]))
+    E0 = float(g.gas_energy[acct].astype(np.float64).sum())
+    print(f"# {('arena' if arena else level)} dx {dx} tps {tps:g} cells "
+          f"{int(acct.sum())} N_SUB_MAX {e.N_SUB_MAX} k_drag2 {e.k_drag2:.4g}")
+    print("tick nsub umax Csub Ctick Nmax Nmin Tmw Pmean p*mean eps "
+          "KE% kick% drag% clamp% rail% dKEu% clamps")
+    rows, clamps0 = [], int(e.u_clamp_hits)
+    for t in range(ticks):
+        if detonate and t == int(round(detonate[2] * tps / 24.0)):
+            from simulation.payloads import execute_payload
+            pay = sim.weapons_tables.payload_for_ammo("grenade_frag")
+            execute_payload(g, sim.edit_queue, sim.units, int(detonate[1]),
+                            int(detonate[0]), pay, sim.draws, events=[],
+                            kind="grenade")
+        acct = g._gas_energy_accountable()
+        ke0 = _ke_books(g._gas_bulk_n_raw()[acct], g.wind_x[acct],
+                        g.wind_y[acct], k_ke)
+        umax = float(np.sqrt(((g.wind_x.astype(np.float64) / Q) ** 2
+                              + (g.wind_y.astype(np.float64) / Q) ** 2).max()))
+        if sim.is_paused():
+            sim.set_paused(False)
+        sim.step()
+        acct = g._gas_energy_accountable()
+        n = g._gas_bulk_n_raw()
+        na = n[acct].astype(np.float64)
+        E = g.gas_energy[acct].astype(np.float64)
+        ke1 = _ke_books(n[acct], g.wind_x[acct], g.wind_y[acct], k_ke)
+        kick, drag = float(e.e_kick_ke_sum), float(e.e_drag_heat_sum)
+        clamp = float(e.e_clamp_destroyed_sum)
+        booked = (kick - float(e.e_absorb_export_sum)
+                  - float(e.e_sponge_export_sum) - clamp - drag)
+        ps, dv, nt = e.dbg_mg_inputs()
+        am = acct.ravel() & (nt >= 0.05 * N0)
+        eps = float(np.abs(gam * dt * dv[am].astype(np.float64) / Q).max()) \
+            if am.any() else 0.0
+        nsub = int(e.dbg_last_n_sub)
+        clamps = int(e.u_clamp_hits) - clamps0
+        clamps0 = int(e.u_clamp_hits)
+        r = dict(tick=t, nsub=nsub, umax=umax, csub=umax * dt / (nsub * dx),
+                 ctick=umax * dt / dx, nmax=na.max() / N0, nmin=na.min() / N0,
+                 tmw=(E.sum() / max(na.sum(), 1.0) - t_amb) / Q,
+                 pmean=float(g.atmosphere[acct].astype(np.float64).mean()) / Q,
+                 pstar=E.sum() / Q / Q / float(e.T_AMB_K) / len(E), eps=eps,
+                 ke=100 * ke1 / E0, kick=100 * kick / E0, drag=100 * drag / E0,
+                 clamp=100 * clamp / E0, rail=100 * float(e.e_rail_sum) / E0,
+                 dkeu=100 * ((ke1 - ke0) - booked) / E0, clamps=clamps)
+        rows.append(r)
+        if t % every == 0 or t == ticks - 1:
+            print(" ".join(f"{r[k]:.4g}" if isinstance(r[k], float) else str(r[k])
+                           for k in r))
+    if npz:
+        np.savez(npz, **{k: np.array([r[k] for r in rows]) for k in rows[0]})
+    return rows
+
+
 def parse_eos(items):
     out = {}
     for it in items or []:
@@ -668,7 +804,27 @@ def main(argv=None):
     ap.add_argument("--table", action="store_true",
                     help="the issue's table: the --case seed at 1.0/0.5/0.333/0.25 m "
                          "plus the adiabatic_index=1.0001 control at 0.333 m")
+    ap.add_argument("--stability", default=None, metavar="LEVEL",
+                    help="the blast-regime trace on a level's live path "
+                         "(section 8); with --tps, --arena, --detonate, --npz")
+    ap.add_argument("--tps", type=float, default=None,
+                    help="with --stability: emulate another tick rate")
+    ap.add_argument("--arena", action="store_true",
+                    help="with --stability: the sealed-box test_arena scene")
+    ap.add_argument("--detonate", default=None, metavar="X,Y,TICK",
+                    help="with --stability: a frag at (x, y) on that 24-tps tick")
+    ap.add_argument("--level-tile", type=float, default=None,
+                    help="with --stability: override the level's tile_size_m")
+    ap.add_argument("--npz", default=None, help="with --stability: save rows")
     a = ap.parse_args(argv)
+    if a.stability or a.arena:
+        tps = a.tps or TPS
+        ticks = a.ticks if a.ticks is not None else int(round((a.seconds or 3.0) * tps))
+        det = tuple(float(v) for v in a.detonate.split(",")) if a.detonate else None
+        stability_trace(a.stability, ticks, tile=a.level_tile, tps=a.tps,
+                        eos=parse_eos(a.eos), arena=a.arena, detonate=det,
+                        every=a.every if a.ticks or a.seconds else 1, npz=a.npz)
+        return
     ticks = a.ticks if a.ticks is not None else int(round((a.seconds or 20.0) * TPS))
     if a.table:
         table(a.case, a.amp, ticks, parse_eos(a.eos))
