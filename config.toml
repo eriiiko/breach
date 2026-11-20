@@ -1376,14 +1376,6 @@ camera_mode = "centred"           # how the view follows the possessed marine un
                                   # (renderer/follow_camera.py CAMERA_MODES; "player_up" is the G1p-b
                                   # spike, not built). Refused when it names no mode.
 
-# Water overlay v2 look knobs (water W6b; canon engine/07 §6 — the tasteful
-# placeholder, not the shipped optics pass). RENDER-ONLY and RESTART-BOUND:
-# GameRenderer binds them once at construction (the water_display_max
-# precedent); Ctrl+R re-reads config.toml but does NOT re-bind overlays —
-# restart the game to apply. Erik's eyeball-tuning dials.
-water_ripple_shade = 0.35   # ripple-slope brightness gain: full +/-35% of the tint at slope 0.05 m/tile (fresh splash)
-water_foam_thresh = 0.03    # |grad ripple| (m/tile) above which foam whitens; splash slope ~0.075 foams, settled ~0 never
-water_ambient_base = 0.06   # idle ambient-sine shimmer amplitude on standing water; grows with local ripple energy, cap 0.40
 
 # Diagnostic views (render-only, never read by the sim; Ctrl+R live).
 [debug]
@@ -1421,13 +1413,12 @@ full_speed = "A"
 plant_charge = "X"       # #193: plant the C4 at the feet with the selected timer
 cycle_charge_timer = "5" # #193: step the timer 5 -> 10 -> ... -> 60 -> 5 s
 
-# Water surface OPTICS pass (graphics/water_rendering.md §2/§4/§7 — the shipped
-# GLSL Fresnel/GGX/refraction look, NOT the CPU placeholder above). RENDER-ONLY
-# and RESTART-BOUND: WaterPass binds these once at construction; Ctrl+R re-reads
-# config.toml but does NOT re-push them (the renderer-render-params precedent —
-# restart to apply). Erik's eyeball-tuning dials. The pass is DORMANT-SAFE: with
-# no standing water it outputs alpha 0 (identical render), so these only bite
-# once water is on the floor. v1 CORE only — caustics/foam/CA are a later step.
+# Water surface OPTICS pass (graphics/water_rendering.md §2/§4/§7; the water
+# look arc #97) -- the shipped GLSL Fresnel/GGX/refraction look. RENDER-ONLY.
+# Every key passes ONE refusing door, renderer/water_surface.py::water_settings,
+# read EVERY FRAME (Ctrl+R retunes live; a missing or mistyped key is refused
+# by name). Erik's eyeball-tuning dials. A dry map costs nothing and draws
+# nothing, so these only bite once water is on the floor.
 [graphics.water]
 roughness_base = 0.08       # GGX roughness floor — still puddles glint sharp (alpha = roughness^2)
 roughness_agitation = 0.6   # added roughness per unit local ripple energy — sloshing water shimmers broad
@@ -1461,13 +1452,6 @@ alpha_max = 0.95
 # surface energy) for crispness; 0 = pure surface curvature.
 caustic_strength = 2.5
 caustic_scale = 6.0
-# Foam (port of overlays.py:261-277): white whitecaps where |grad ripple| >
-# foam_threshold + the wet/dry shoreline (high depth gradient). Composited LAST
-# into the base (surface scatter, alpha-bound — NOT additive). foam_intensity
-# scales the whiteness; foam_threshold is the steepness/edge above which foam
-# starts (lower = more foam).
-foam_threshold = 0.02
-foam_intensity = 0.6
 # Chromatic aberration (subtle polish): floor refraction r/g/b sampled at
 # offsets scaled 1 ± ca_amount per channel. Tiny — a barely-there prismatic
 # fringe. 0 = off (single sample).
@@ -1490,8 +1474,28 @@ flow_speed_ref = 1.0           # flow speed (m/s) at which the strength saturate
 flow_max_offset_m = 0.5        # a layer's slide is capped at this (metres)
 flow_edge_depth_m = 0.02       # the flow fades in over the first this-many metres of depth
 flow_phase_noise_m = 3.0       # length (m) of the per-point phase offset (hides the reset pulse)
-agitation_ref = 0.05           # |ripple_v| (m/s) at which the strength saturates
-debug_view = 0                 # 1 = draw (slope x, slope y, strength) instead of the water
+agitation_ref = 0.1            # the RELATIVE agitation (ripple_v against its wet neighbours', m/s) at which
+                               # the fine surface saturates; W2's rough-water foam starts past it. Still rooms'
+                               # frozen residue is <= 0.006 (p99), a blast's crests 0.15-0.33 near the charge
+# --- Foam with a life (water W2, #97; renderer/water_foam.py) ---
+# A foam AMOUNT per cell (picture state: never synced, never read by the sim)
+# made by four sources, carried by the simulated flow and lost by decay, on
+# the sim clock in fixed steps; drawn as a threshold on a bubble texture at
+# two sizes (a sheet where the amount is high, lace as it thins, nothing
+# below). Starting values (W2's builder); Erik tunes by eye on
+# levels/water_studio (shot flooding_corridor).
+foam_cells_per_tile = 4        # foam cells per tile, per axis (1..8; the one number chosen on screen)
+foam_step_s = 0.0208333333     # one foam step (1/48 s on the sim clock), split so a step moves <= 1 cell
+foam_decay_s = 2.5             # the amount e-folds over this (seconds)
+foam_froude = 0.8              # whitewater: Froude number |v| / sqrt(g h) above which water foams
+foam_gain_froude = 3.0         # ... amount per second per unit of Froude excess (the excess capped at 1)
+foam_gain_steep = 0.3          # rough water: per second where W1's drive (flow / flow_speed_ref, |ripple_v| / agitation_ref) is twice full strength (the excess over 1, squared)
+foam_gain_edge = 10.0          # advancing edge: per second where the depth rose by all of itself in one tick (x that share^2)
+foam_gain_wall = 4.0           # fast water along a wall: per second next to the wall at flow_speed_ref (x speed^2)
+foam_bubble_m = [0.05, 0.2]    # the bubbles' two sizes, metres (the lace and its clusters)
+foam_cover = 1.0               # the amount at which the foam is a closed sheet
+foam_shadow = 0.5              # how much a closed sheet darkens the floor beneath it (0..1)
+debug_view = 0                 # 1 = draw (slope x, slope y, strength); 2 = (foam amount, foam cover, 0)
 # --- Heightmap attenuation (alpha-only; graphics/water_rendering.md §2 §8) ---
 # An OPTIONAL per-level floor heightmap ([art.bare] height) attenuates the water
 # ALPHA where raised relief (crates, consoles, debris) rises above the local

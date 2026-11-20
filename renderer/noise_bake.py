@@ -28,6 +28,9 @@ What this module bakes:
   * :func:`bake_ripple_rgba` -- the water's fine surface SLOPES (#97 W1): a
     sum of plane waves with integer wave vectors (exactly periodic), the
     texture the water pass carries along the simulated flow.
+  * :func:`bake_foam_rgba` -- the water FOAM's bubble raft (#97 W2): Worley
+    membranes, rank-equalised to a uniform field the water pass thresholds
+    into lace.
 
 Fixed seeds (``numpy.random.default_rng``, PCG64): byte-identical bakes on
 every run and machine.
@@ -431,7 +434,77 @@ def bake_ripple_rgba(size: int = 256, *, seed: int = RIPPLE_SEED,
     return out
 
 
+# ---------------------------------------------------------------------------
+# The water FOAM bubble texture (water look arc #97, patch W2)
+# ---------------------------------------------------------------------------
+
+FOAM_SEED = 0x97F0                   # "#97 foam"
+# Bubbles per texture period on each axis: the water pass maps one period to
+# FOAM_CELLS x [graphics.water] foam_bubble_m metres.
+FOAM_CELLS = 8
+
+
+def worley_f1_f2(coords: np.ndarray, cells: int, rng: np.random.Generator
+                 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Periodic 2D Worley ``(F1, F2, nearest cell's flat index)`` at
+    ``coords`` (..., 2) texture units, distances in CELL units (one jittered
+    point per cell, the table wrapping modulo ``cells``: exactly periodic
+    with period 1). ``F2 - F1`` is 0 on the wall between two cells and
+    largest at a cell's heart -- the membrane of a bubble raft."""
+    coords = np.asarray(coords, dtype=np.float64)
+    pts = rng.random(size=(cells, cells, 2))
+    p = coords * cells
+    i0 = np.floor(p).astype(np.int64)
+    f1 = np.full(coords.shape[:-1], np.inf)
+    f2 = np.full(coords.shape[:-1], np.inf)
+    near = np.zeros(coords.shape[:-1], np.int64)
+    for oy in (-1, 0, 1):
+        for ox in (-1, 0, 1):
+            cx = i0[..., 0] + ox
+            cy = i0[..., 1] + oy
+            wx, wy = cx % cells, cy % cells
+            fx = cx + pts[wy, wx, 0]
+            fy = cy + pts[wy, wx, 1]
+            d = np.sqrt((fx - p[..., 0]) ** 2 + (fy - p[..., 1]) ** 2)
+            closer = d < f1
+            f2 = np.where(closer, f1, np.minimum(f2, d))
+            near = np.where(closer, wy * cells + wx, near)
+            f1 = np.where(closer, d, f1)
+    return f1, f2, near
+
+
+def bake_foam_rgba(size: int = 256, *, seed: int = FOAM_SEED,
+                   cells: int = FOAM_CELLS) -> np.ndarray:
+    """Bake the foam BUBBLE texture -> (size, size, 4) float32, row = v.
+
+    R = the bubble field ``b`` in [0, 1]: high on the membranes between
+        bubbles (small ``F2 - F1``), low in their hearts, each bubble's
+        depth scaled by its own random factor so whole bubbles open at
+        different amounts -- then RANK-EQUALISED over the texels, so ``b``
+        is UNIFORM on [0, 1]. The water pass thresholds the mean of two
+        lookups (two sizes) of it: a sheet when the threshold is low, lace
+        as it rises, nothing at the top -- and, the mean of two independent
+        uniforms being triangular, the threshold that covers a fraction f
+        is known in closed form (``water_foam.lace_threshold``), so the
+        drawn cover is the amount's, at any size (Parberry's point: foam
+        breaks into lace, it does not fade).
+    G, B, A = 0.
+    Upload as RGBA32F, REPEAT, mipmapped + trilinear."""
+    rng = np.random.default_rng(int(seed))
+    xy = _grid_coords_2d(int(size))
+    f1, f2, near = worley_f1_f2(xy, int(cells), rng)
+    depth = 0.6 + 0.8 * rng.random(int(cells) * int(cells))
+    raw = -(f2 - f1) * depth[near]
+    order = np.argsort(raw, axis=None, kind="stable")
+    ranks = np.empty(order.size, np.float64)
+    ranks[order] = (np.arange(order.size) + 0.5) / order.size
+    out = np.zeros((size, size, 4), dtype=np.float32)
+    out[..., 0] = ranks.reshape(raw.shape)
+    return out
+
+
 __all__ = [
+    "FOAM_SEED", "FOAM_CELLS", "worley_f1_f2", "bake_foam_rgba",
     "BASE_CELLS", "BILLOW_SEED", "perlin", "perlin_fbm", "worley_f1",
     "worley_domes", "billow_field", "bake_billow_rgba", "bake_billow_3d",
     "FLAME_SEED", "flame_noise_field", "bake_flame_noise_rgba",

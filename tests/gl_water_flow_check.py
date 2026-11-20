@@ -214,7 +214,7 @@ def check_twin():
     v = np.stack([bilinear_tiles(fp[..., 0], xt, yt),
                   bilinear_tiles(fp[..., 1], xt, yt)], -1)
     depth = bilinear_tiles(wpk[..., 2], xt, yt)
-    agit = np.abs(bilinear_tiles(wpk[..., 1], xt, yt))
+    agit = bilinear_tiles(wpk[..., 3], xt, yt)    # the relative agitation
     twin = detail_slope(xt * TILE_M, yt * TILE_M, v, depth, agit, wp.frame,
                         bake_ripple_rgba(RIPPLE_SIZE), s)
     gpu = out[..., :2].astype(np.float64)

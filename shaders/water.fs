@@ -16,14 +16,21 @@
 //     the ADVECTION marker below);
 //   - Morten S. Mikkelsen, "Practical Real-Time Hex-Tiling", JCGT 11(3),
 //     2022 (hexSlope: the anti-tiling lookup).
+// WATER W2 (#97): FOAM WITH A LIFE. The foam amount (its own image, stepped
+// by shaders/water_foam.fs; the twin renderer/water_foam.py) is drawn as a
+// THRESHOLD on a bubble raft at two sizes riding the same flow map as the
+// fine surface (water_foam.draw_cover: a sheet, then lace, then nothing --
+// Yingst, Alford & Parberry, "Very Fast Real-Time Ocean Wave Foam Rendering
+// Using Halftoning", GAMEON-NA 2011), OVER the water, lit as the floor is;
+// it darkens the floor beneath it and hides the glint. It replaced the old
+// gradient foam (foam_threshold / foam_intensity, deleted).
 // The light this pass reads gets the smoke's cast shadow and the light curve
 // through lit3d's ONE copy, spliced at the SMOKE_SHADOW marker by
 // renderer/water.py::load_water_fs (raw, without the splices, this file does
 // not compile).
 //
-// This is a SEPARATE pass from lighting.fs (§5): it draws a full-RT quad in
-// the WaterFieldOverlay compose slot, AFTER the lit ship, BEFORE units, and
-// REPLACES the CPU-tinted WaterFieldOverlay placeholder.
+// This is a SEPARATE pass from lighting.fs (§5): it draws over the view x
+// the wet box, AFTER the lit ship, BEFORE the floor haze and the units.
 //
 // DORMANT-SAFE (the hard requirement): the pass outputs a PREMULTIPLIED vec4
 // with alpha = 0 on every DRY tile (water_depth == 0). The world RT composites
@@ -39,7 +46,12 @@
 //                A = light_dir.y (signed). (lighting.fs:101,104)
 //   u_water    - RGBA16F water field (renderer/water.py packing):
 //                R = ripple height (m), G = ripple_v (reserved, unused here),
-//                B = water_depth (m), A = foam/agitation (reserved, unused).
+//                B = water_depth (m), A = the relative agitation (m/s;
+//                water_surface.relative_agitation: ripple_v against its
+//                wet neighbours'), the fine surface's and the foam's.
+//   u_foam     - the foam amount image (W2; foam cells, bilinear), unit 8
+//   u_bubbles  - the bubble bake (noise_bake.bake_foam_rgba, R uniform on
+//                [0, 1]; REPEAT, mipmapped), unit 9
 //
 // Uniforms ([graphics.water] config block, bound in renderer/water.py):
 //   u_roughness_base       GGX roughness floor (still puddles glint sharp)
@@ -62,8 +74,14 @@
 //   u_flow_ph              (crossfade phase, cycle s, drift u, drift v)
 //   u_flow_lim             (max slide m, edge depth m, phase noise m,
 //                           speed ref m/s)
-//   u_agit_ref             |ripple_v| (m/s) at which the strength saturates
-//   u_debug_view           0 = the picture, 1 = (slope x, slope y, k, 1)
+//   u_agit_ref             the relative agitation (m/s; u_water's A) at which
+//                          the strength saturates
+//   u_debug_view           0 = the picture, 1 = (slope x, slope y, k, 1),
+//                          2 = (foam amount, foam cover, 0, 1)
+//   u_foam_on              1 once the foam image exists (W2)
+//   u_foam_a               (small bubble period m, large period m,
+//                           foam_cover, foam_shadow)
+//   u_foam_b               (lace edge, foam albedo, large offset u, v)
 //   u_glint_strength       ADDITIVE GGX-glint HDR multiplier (light off surface)
 //   u_alpha_scale          depth->opacity rate (alpha = clamp(depth*scale,...))
 //   u_alpha_min            shoreline alpha floor   (transparency dial)
@@ -82,6 +100,12 @@ uniform sampler2D u_water;
 // REPEAT, mipmapped + trilinear, on unit 7.
 uniform sampler2D u_flow;
 uniform sampler2D u_ripple;
+// W2: the foam amount (unit 8) and the bubble bake (unit 9).
+uniform sampler2D u_foam;
+uniform sampler2D u_bubbles;
+uniform int   u_foam_on;
+uniform vec4  u_foam_a;
+uniform vec4  u_foam_b;
 // Optional per-pixel floor HEIGHTMAP (greyscale relief, 0..1), sampled in art
 // space (fragTexCoord, like u_diffuse). ADJUSTS THE PER-PIXEL DEPTH the renderer
 // sees: depth = tileDepth - relief*u_height_scale, so raised floor relief makes
@@ -138,11 +162,6 @@ uniform float u_alpha_max;
 //   optional high-frequency procedural detail modulated by surface energy.
 uniform float u_caustic_strength;
 uniform float u_caustic_scale;
-// Foam (§4-foam, port of overlays.py:261-277): white-ish whitecaps where the
-// ripple front is steep (|grad ripple| > threshold) + the wet/dry shoreline
-// (high depth gradient). Composited LAST into the base (surface scatter).
-uniform float u_foam_threshold;
-uniform float u_foam_intensity;
 // Chromatic aberration (subtle polish): the floor refraction r/g/b are sampled
 // at slightly different offsets (scaled 1 ± u_ca_amount per channel). Tiny.
 uniform float u_ca_amount;
@@ -254,25 +273,65 @@ vec2 capSlide(vec2 d, float cap) {
     return ln > cap ? d * (cap / ln) : d;
 }
 
+// THE flow map's two layers at a pixel (water_surface.py::layer_slides): the
+// position in metres, the effective flow, the two slides (m) and the
+// crossfade weight -- the one flow map the fine surface and the foam ride.
+struct FlowLayers { vec2 p_m; vec2 v; vec2 d0; vec2 d1; float w0; };
+
+FlowLayers flowLayers(vec2 world_uv, float tileDepth) {
+    FlowLayers L;
+    L.p_m = world_uv * u_grid_m;
+    L.v = texture(u_flow, world_uv).xy
+        * smoothstep(0.0, u_flow_lim.y, tileDepth);
+    vec3 lay = advLayers(u_flow_ph.x, advPhaseOffset(L.p_m, u_flow_lim.z));
+    L.d0 = capSlide(L.v * (lay.x * u_flow_ph.y), u_flow_lim.x);
+    L.d1 = capSlide(L.v * (lay.y * u_flow_ph.y), u_flow_lim.x);
+    L.w0 = lay.z;
+    return L;
+}
+
 // THE fine surface (water_surface.py::detail_slope): its slope (y south) in
 // .xy and its strength k in .z.
-vec3 detailSlope(vec2 world_uv, float tileDepth, float rippleV) {
+vec3 detailSlope(FlowLayers L, float agit) {
     float P = u_detail.x;
-    vec2 p_m = world_uv * u_grid_m;
-    vec2 v = texture(u_flow, world_uv).xy
-           * smoothstep(0.0, u_flow_lim.y, tileDepth);
-    vec3 lay = advLayers(u_flow_ph.x, advPhaseOffset(p_m, u_flow_lim.z));
-    vec2 d0 = capSlide(v * (lay.x * u_flow_ph.y), u_flow_lim.x);
-    vec2 d1 = capSlide(v * (lay.y * u_flow_ph.y), u_flow_lim.x);
-    vec2 q0 = (p_m - d0) / P - u_flow_ph.zw;
-    vec2 q1 = (p_m - d1) / P - u_flow_ph.zw;
-    vec2 dx = dFdx(p_m) / P;
-    vec2 dy = dFdy(p_m) / P;
-    vec2 n = mix(hexSlope(q1, dx, dy), hexSlope(q0, dx, dy), lay.z);
-    float sat = clamp(max(length(v) / u_flow_lim.w,
-                          abs(rippleV) / u_agit_ref), 0.0, 1.0);
+    vec2 q0 = (L.p_m - L.d0) / P - u_flow_ph.zw;
+    vec2 q1 = (L.p_m - L.d1) / P - u_flow_ph.zw;
+    vec2 dx = dFdx(L.p_m) / P;
+    vec2 dy = dFdy(L.p_m) / P;
+    vec2 n = mix(hexSlope(q1, dx, dy), hexSlope(q0, dx, dy), L.w0);
+    float sat = clamp(max(length(L.v) / u_flow_lim.w,
+                          agit / u_agit_ref), 0.0, 1.0);
     float k = (u_detail.y + (u_detail.z - u_detail.y) * sat) * u_detail.w;
     return vec3(n * k, k);
+}
+
+// --- the foam's draw (W2; water_foam.py::draw_cover) ------------------------
+// The threshold the mean of two uniform bubble reads exceeds with
+// probability f, widened by the lace edge at both ends.
+float laceThreshold(float f) {
+    float q = 1.0 - clamp(f, 0.0, 1.0);
+    float x = q < 0.5 ? sqrt(q * 0.5) : 1.0 - sqrt((1.0 - q) * 0.5);
+    return x * (1.0 + 2.0 * u_foam_b.x) - u_foam_b.x;
+}
+
+float lace(float b, float t) {
+    return smoothstep(0.0, 1.0, (b - (t - u_foam_b.x)) / (2.0 * u_foam_b.x));
+}
+
+// The mean of the bubble raft at its two sizes at p (metres, slid).
+float bubbleAt(vec2 p) {
+    return 0.5 * (texture(u_bubbles, p / u_foam_a.x).r
+                  + texture(u_bubbles, p / u_foam_a.y + u_foam_b.zw).r);
+}
+
+// The drawn foam cover in [0, 1] for the foam amount here.
+float foamCover(FlowLayers L, float amount) {
+    float f = clamp(amount / u_foam_a.z, 0.0, 1.0);
+    float t = laceThreshold(f);
+    vec2 drift = u_flow_ph.zw * u_detail.x;       // the drift in metres
+    float c0 = lace(bubbleAt(L.p_m - L.d0 - drift), t);
+    float c1 = lace(bubbleAt(L.p_m - L.d1 - drift), t);
+    return mix(f, mix(c1, c0, L.w0), u_detail.w);
 }
 
 // The ripple height (R) of the water texture at a world UV.
@@ -336,9 +395,17 @@ void main() {
     float energy = abs(wtex.r) + abs(wtex.g);
 
     // W1: the fine surface that flows (the twin's detail_slope).
-    vec3 detail = detailSlope(world_uv, tileDepth, wtex.g);
+    FlowLayers flayers = flowLayers(world_uv, tileDepth);
+    vec3 detail = detailSlope(flayers, wtex.a);
     if (u_debug_view == 1) {
         finalColor = vec4(detail.xy, detail.z, 1.0);
+        return;
+    }
+    // W2: the foam here (its amount; its drawn cover).
+    float foamAmt = u_foam_on == 1 ? texture(u_foam, world_uv).r : 0.0;
+    float foamC = foamAmt > 0.0 ? foamCover(flayers, foamAmt) : 0.0;
+    if (u_debug_view == 2) {
+        finalColor = vec4(foamAmt, foamC, 0.0, 1.0);
         return;
     }
 
@@ -412,6 +479,14 @@ void main() {
                 * smoke_sh;
     floorL *= lightCurveGain(floorL);
     vec3 floorC = lightCurveAlbedo(floorDiffuse, floorL) * (u_ambient + floorL);
+    // W2: the foam's soft shadow on the floor beneath it (its amount where
+    // the refracted floor point is; water_foam.shadow_factor).
+    float foamShade = 1.0;
+    if (u_foam_on == 1) {
+        foamShade = 1.0 - u_foam_a.w * clamp(
+            texture(u_foam, world_uv + off).r / u_foam_a.z, 0.0, 1.0);
+    }
+    floorC *= foamShade;
 
     // Beer-Lambert depth tint: the floor fades toward the deep-water colour
     // with depth, reading as a true volume rather than a flat blue wash. Uses
@@ -448,7 +523,7 @@ void main() {
     // × lightRGB so caustics only appear under a flashlight/fire (correct —
     // focused light needs light); × strength; ride the floor/base (× alpha
     // below, NOT the surface-additive glint).
-    refr += caustic * u_caustic_strength * lightRGB;
+    refr += caustic * u_caustic_strength * lightRGB * foamShade;
 
     // --- REFLECTION branch (the GGX GLINT — light OFF the surface) -------
     // GGX specular, cheap dot(L,H) form (§2). roughness drives α = roughness²;
@@ -484,37 +559,6 @@ void main() {
     vec3 sheenRGB = u_ambient + lightRGB;
     vec3 base = mix(refr, refr + sheenRGB * F, F);  // ≈ refr + small ambient sheen
 
-    // --- FOAM (port of overlays.py:261-277, composited LAST) ------------
-    // Whitecaps where the ripple front is steep (|grad ripple| over a
-    // threshold) + the wet/dry shoreline (where the water depth gradient is
-    // high — the advancing/receding edge). Both from the ripple + depth this
-    // pass already samples (no new texture). Foam is white-ish SURFACE SCATTER
-    // mixed into the (Fresnel) base before the premultiply — NOT additive
-    // light (it does not ride on top like the glint) and NOT × the floor
-    // (it sits on the surface). It is alpha-bound with the base.
-    // |grad ripple| from the RAW ripple R taps (central difference, per UV):
-    float gxr = (rR - rL) * 0.5;
-    float gyr = (rU - rD) * 0.5;
-    float gradRipple = length(vec2(gxr, gyr));
-    float crestFoam = clamp(gradRipple / max(u_foam_threshold, 1e-6) - 1.0,
-                            0.0, 1.0);
-    // Wet/dry shoreline: high depth gradient = the water edge. The neighbour
-    // depths from the same water texture (B channel).
-    float dL = texture(u_water, world_uv - tx).b;
-    float dR = texture(u_water, world_uv + tx).b;
-    float dD = texture(u_water, world_uv - ty).b;
-    float dU = texture(u_water, world_uv + ty).b;
-    float depthGrad = length(vec2(dR - dL, dU - dD)) * 0.5;
-    float shoreFoam = clamp(depthGrad / max(u_foam_threshold, 1e-6) - 1.0,
-                            0.0, 1.0);
-    float foam = max(crestFoam, shoreFoam) * u_foam_intensity;
-    foam = clamp(foam, 0.0, 1.0);
-    // Composite foam LAST into the base: a white-ish term lerped over the
-    // Fresnel base. lightRGB-aware so foam isn't a flat grey in the dark — it
-    // catches ambient + the source like real froth (kept simple).
-    vec3 foamColor = (u_ambient + lightRGB) * vec3(1.0);
-    base = mix(base, foamColor, foam);
-
     // --- output: PREMULTIPLIED base + ADDITIVE glint ---------------------
     // alpha ramps in over the first ~few cm of depth so the wet/dry shoreline
     // reads as a soft edge rather than a hard step; it never reaches 0 here
@@ -546,8 +590,16 @@ void main() {
         finalColor = vec4(0.0);
         return;
     }
+    // --- W2: the FOAM, over the water (opaque where it covers) -----------
+    // Froth is diffuse surface scatter lit as the floor is (ambient + the
+    // curved source light, the light curve's albedo); where it covers, it
+    // hides the floor, the water's tint and the glint (premultiplied over).
+    float cf = foamC * lapEdge;
+    vec3 foamRGB = lightCurveAlbedo(vec3(u_foam_b.y), lightRGB)
+                 * (u_ambient + lightRGB);
     // Linear HDR out (G0 P1): the world resolve tone-maps and encodes, once,
     // for the water and the floor together -- before G0 the water encoded
     // here but skipped the floor's ACES, so the two disagreed on exposure.
-    finalColor = vec4(base * alpha + glint, alpha);
+    finalColor = vec4((base * alpha + glint) * (1.0 - cf) + foamRGB * cf,
+                      alpha * (1.0 - cf) + cf);
 }
