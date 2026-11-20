@@ -1,4 +1,4 @@
-"""All-systems scenario harness — the playground put through fire, blast,
+"""All-systems scenario harness — the test_arena put through fire, blast,
 water, and decompression in one deterministic run (Erik's spec, 2026-08-27).
 
 Two water tanks, both expected to keep every drop:
@@ -58,7 +58,7 @@ from simulation.payloads import execute_payload, ignite_ring  # noqa: E402
 TPS = 24
 END_TICK = 45 * TPS
 
-# --- Playground geometry (70x100; ASCII survey 2026-08-27). Region slices
+# --- Test arena geometry (70x100; ASCII survey 2026-08-27). Region slices
 # follow the #54 hot-plate bench convention (row, col).
 LAB_IN = np.s_[27:42, 61:77]      # pressure-lab interior — #54 bench R5 verbatim
 LAB_BOX = (26, 42, 60, 77)        # inclusive wall box (r0, r1, c0, c1)
@@ -97,7 +97,7 @@ def main() -> None:
         CFG.materials.glass.burst_threshold = 3.0
         print("[tough-glass] [materials.glass] burst_threshold -> 3.0 "
               "(candidate aquarium-pane row; binds at map construction)")
-    lvl = load_level("playground", levels_dir=str(ROOT / "levels"))
+    lvl = load_level("test_arena", levels_dir=str(ROOT / "levels"))
     lvl = replace(lvl, entities=[e for e in lvl.entities
                                  if e.class_name not in ("vent", "duct")])
     sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False)

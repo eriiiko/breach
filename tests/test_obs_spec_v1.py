@@ -507,19 +507,20 @@ def test_a_record_outlives_its_units_unseen_death(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 def test_a_level_without_a_room_graph_is_refused(tmp_path):
     """Property (spec 7): ``load_levels`` on a ``"v1"`` run naming
-    ``playground`` (no rooms.npy) raises naming the level and the spec; the
+    ``test_arena`` (no rooms.npy) raises naming the level and the spec; the
     same run under ``"crop"`` loads. Breaks if the refusal is missing or on
     the wrong path."""
-    p = _run_v1(tmp_path / "run.toml", levels=["playground"],
+    p = _run_v1(tmp_path / "run.toml", levels=["test_arena"],
                 levels_dir=ROOT / "levels")
     run = rl_env.load_run(p)
-    with pytest.raises(ValueError, match="playground.*room graph.*v1"):
+    with pytest.raises(ValueError, match="test_arena.*room graph.*v1"):
         rl_env.load_levels(run)
     from test_rl_env import _run_toml
     crop = rl_env.load_run(_run_toml(tmp_path / "crop.toml",
-                                     levels=["playground"],
+                                     levels=["test_arena"],
                                      levels_dir=ROOT / "levels"))
-    assert rl_env.load_levels(crop)[0].name.lower() == "playground"
+    assert (rl_env.load_levels(crop)[0].name
+            == level_loader.load("test_arena", str(ROOT / "levels")).name)
 
 
 def test_the_run_file_door_refuses_the_crop_keys_under_v1(tmp_path):

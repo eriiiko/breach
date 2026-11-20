@@ -8,7 +8,7 @@ which the lit unit shader shades the whole body with
 (``[render.unit_shading] body_light = "unit"``).
 Spec: docs/lit_3d_units_tier1_2026-10-27.md §5.
 
-Headless, on the real sweep (playground, one marine, omni lamps), no GL.
+Headless, on the real sweep (test_arena, one marine, omni lamps), no GL.
 Every test's docstring names its property and the change that breaks it.
 
 Run:
@@ -33,14 +33,14 @@ from renderer.unit_shadow import (UnitLight, UnitShadowSettings,  # noqa: E402
                                   shadow_cast)
 
 # The marine's footprint: x 13..15, y 42..44 (where main.py spawns Bravo on
-# the playground; open floor for many tiles around).
+# the test_arena; open floor for many tiles around).
 X0, Y0, FP = 13, 42, 3
 ON = UnitShadowSettings(enabled=True, length=0.75, strength=0.35,
                         min_brightness=0.05, min_directionality=0.2)
 
 
 def _lit_scene(lamps):
-    """The playground, light requested, ONE marine at (X0, Y0) and an omni
+    """The test_arena, light requested, ONE marine at (X0, Y0) and an omni
     lamp (intensity 2.5) at each tile centre in ``lamps``, ticked twice --
     before a standing unit's float position starts to drift below its
     integer (from tick 3), so the stamped footprint is exactly X0..X0+2,
@@ -51,7 +51,7 @@ def _lit_scene(lamps):
     from renderer import frame_lights as fl
     from simulation import Simulation, light_field
     from simulation.unit import Unit
-    sim = Simulation(load_level("playground"), seed=5, breach_physics=bp,
+    sim = Simulation(load_level("test_arena"), seed=5, breach_physics=bp,
                      enable_recorder=False)
     g = sim.gmap
     h, w = g.solid.shape

@@ -305,7 +305,7 @@ def test_sweep_rows_are_still_readable_after_a_whole_simulation_step():
     from simulation import Simulation, fire_fixed
     from simulation.materials import MAT_WOOD
 
-    sim = Simulation(load_level("playground"), seed=1, breach_physics=bp,
+    sim = Simulation(load_level("test_arena"), seed=1, breach_physics=bp,
                      enable_recorder=False)
     g = sim.gmap
     ys, xs = np.where((g.material == MAT_WOOD) & g.thermal_solid)
@@ -364,7 +364,7 @@ def test_a_gas_cell_shows_the_extinction_and_f_the_sweep_actually_uses():
     from _radiation_sweep_harness import R
     from level_loader import load as load_level
     from simulation import Simulation, gas_fixed
-    sim = Simulation(load_level("playground"), seed=1, breach_physics=bp,
+    sim = Simulation(load_level("test_arena"), seed=1, breach_physics=bp,
                      enable_recorder=False)
     g = sim.gmap
     air = g._gas_energy_accountable()

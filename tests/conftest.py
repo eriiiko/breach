@@ -5,8 +5,8 @@ ranges are meter-authored and the shared tables bind a LEVEL'S tile size at
 Simulation construction (``rebuild_tables(tile_size_m=gmap.tile_size_m)``,
 engine/14 door 2). That rebinding is a MODULE-GLOBAL side effect that
 outlives the sim — so a test constructing a Simulation on a 0.333 m/tile
-level (door_test, test_level, playground) would silently leak
-playground-scale ranges into any LATER test that reads ``get_tables()``
+level (door_test, test_level, test_arena) would silently leak
+test_arena-scale ranges into any LATER test that reads ``get_tables()``
 bare (the documented bare convention is the 1.0 m/tile pinned-test world).
 First observed as test_a6_doors (door_test, 0.333) poisoning
 test_ammo_economy's GL-6 airburst position (range cap 40 -> 120 tiles):

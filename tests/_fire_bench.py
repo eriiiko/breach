@@ -2,7 +2,7 @@
 
 Design: ``docs/gas_energy_conservation_design_2026-08-29.md`` §6 "FIRE".
 
-``ignite_ring`` lights the playground's crate stack at (26, 41) and the sim
+``ignite_ring`` lights the test_arena's crate stack at (26, 41) and the sim
 runs 10 s. Two asks, and one deliberately DEFERRED:
 
   (1) THE CLOSURE IDENTITY IS EXACT — measured WITHIN the EOS step. At P-G1a
@@ -68,7 +68,7 @@ def _sum_obj(a):
 
 
 def main() -> None:
-    lvl = load_level("playground", levels_dir=str(ROOT / "levels"))
+    lvl = load_level("test_arena", levels_dir=str(ROOT / "levels"))
     lvl = replace(lvl, entities=[e for e in lvl.entities
                                  if e.class_name not in ("vent", "duct")])
     sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False)

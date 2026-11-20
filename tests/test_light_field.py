@@ -50,15 +50,15 @@ def _pack(view, gain=1.0):
     return out
 
 
-def _lit_playground(ticks=6):
-    """The playground, REALLY lit the way main.py lights it: its own [[light]]
+def _lit_test_arena(ticks=6):
+    """The test_arena, REALLY lit the way main.py lights it: its own [[light]]
     lamps through the one assembly, a flashlight-like cone and a lamp on a
     marine-free floor, a burning wood tile (heat delivered, CLAUDE.md "Starting a
     fire"), a smoke cloud, and an overcast sky -- light requested, ticked."""
     from level_lights import partition_lights
     from renderer import frame_lights as fl
     from simulation.materials import MAT_WOOD
-    level = load_level("playground")
+    level = load_level("test_arena")
     sim = Simulation(level, seed=5, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     h, w = g.solid.shape
@@ -88,7 +88,7 @@ def _lit_playground(ticks=6):
 # 1. §8.5 -- THE EYE IS MONOTONE IN THE RULES FIELD
 # ---------------------------------------------------------------------------
 def test_the_eye_is_a_monotone_function_of_the_rules_field():
-    """PROPERTY (brief 3.1, design 8.5): on a real scene (the playground lit by
+    """PROPERTY (brief 3.1, design 8.5): on a real scene (the test_arena lit by
     its own lamps, a cone, a fire, smoke, a sky), the render's field -- the
     accessor's view packed into the 16F textures exactly as LightingPass packs
     them -- is a MONOTONE non-decreasing function of light_q, per channel: order
@@ -101,7 +101,7 @@ def test_the_eye_is_a_monotone_function_of_the_rules_field():
     channel cross-talk (validated: a 3x3 box blur in pack_light_view turns it
     red).
     """
-    sim = _lit_playground()
+    sim = _lit_test_arena()
     g = sim.gmap
     view = light_field.read_light(g)
     out = _pack(view, gain=float(CFG.render.lighting.sweep_gain))
@@ -135,7 +135,7 @@ def test_the_flux_direction_is_unit_length_or_zero():
     zero-flux case divides by zero, or a sign is flipped in the read (the pack
     negates it for the texture contract, never the accessor).
     """
-    sim = _lit_playground(ticks=3)
+    sim = _lit_test_arena(ticks=3)
     g = sim.gmap
     view = light_field.read_light(g)
     f = g.light_flux_q
@@ -162,7 +162,7 @@ def test_relight_writes_only_the_light_planes():
     writes the temperature or the energy field, or runs a different light law
     than step 2b.
     """
-    sim = _lit_playground(ticks=4)
+    sim = _lit_test_arena(ticks=4)
     g = sim.gmap
     before = {k: v.copy() for k, v in vars(g).items() if isinstance(v, np.ndarray)}
     serial = sim.light_serial

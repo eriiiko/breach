@@ -1,7 +1,7 @@
 """#116 -- a standing unit nobody pushes stays exactly where it stands, and its
 stamped footprint lies under the body the renderer draws.
 
-THE BUG (found by #114's GPU check, 2026-10-27). On a quiet playground the
+THE BUG (found by #114's GPU check, 2026-10-27). On a quiet test_arena the
 pressure field jitters a few Q16 counts across a standing marine's 3x3
 footprint; the (since retired) ``exchange.apply_wave_push`` turned each
 count into a ~3e-6 tile/tick nudge, so from tick 3 the float position crept
@@ -38,19 +38,19 @@ for _p in (ROOT, ROOT / "src", ROOT / "tests", ROOT / "cpp" / "build" / "Release
 bp = pytest.importorskip("breach_physics")
 
 
-def _playground_marines():
+def _test_arena_marines():
     from config import CFG
     from level_loader import load as load_level
     from simulation import Simulation
     from simulation.unit import Unit
-    level = load_level("playground", levels_dir=str(ROOT / "levels"))
+    level = load_level("test_arena", levels_dir=str(ROOT / "levels"))
     sim = Simulation(level, seed=1, breach_physics=bp, enable_recorder=False)
     # The marines main.py spawns (zombies walk on their own -- not "standing").
     for s in level.spawns:
         if s.team == 0:
             sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
                               footprint=s.footprint))
-    assert sim.units, "playground lost its marine spawns"
+    assert sim.units, "test_arena lost its marine spawns"
     sim.set_paused(False)
     # Stay inside one round: the round-end teardown rounds positions, which
     # would hide a drift rather than show its absence.
@@ -73,7 +73,7 @@ def _drawn_tiles(u):
 
 
 def test_standing_units_keep_exact_position_and_tile_for_a_round():
-    sim, n_ticks = _playground_marines()
+    sim, n_ticks = _test_arena_marines()
     start = {u.id: (u.x, u.y, u.tile_x, u.tile_y) for u in sim.units}
     for t in range(n_ticks):
         if sim.is_paused():          # phase boundary: keep the clock running
@@ -86,7 +86,7 @@ def test_standing_units_keep_exact_position_and_tile_for_a_round():
 
 
 def test_stamp_covers_exactly_the_drawn_tiles():
-    sim, n_ticks = _playground_marines()
+    sim, n_ticks = _test_arena_marines()
     g = sim.gmap
     for t in range(n_ticks):
         if sim.is_paused():

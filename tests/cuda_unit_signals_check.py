@@ -654,7 +654,7 @@ def _random_planes(rng, base):
 
 def _sample_maps():
     sims = [SignalScene(0).sim, AirlockDriver().sim]
-    for name in ("ship_demo", "playground"):
+    for name in ("ship_demo", "test_arena"):
         from simulation import Simulation
         sims.append(Simulation(level_loader.load(name, str(_ROOT / "levels")), seed=1,
                                breach_physics=bp, enable_recorder=False))

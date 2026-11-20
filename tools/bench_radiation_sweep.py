@@ -402,8 +402,8 @@ def _batched_rows(args, tbl, t_amb_q, rng):
     return rows
 
 
-def _playground_planes():
-    """The PLAYGROUND's own planes, as the live step_tail hands them to the
+def _test_arena_planes():
+    """The TEST_ARENA's own planes, as the live step_tail hands them to the
     sweep: a wood tile heated to the 1263-game plateau and lit (CLAUDE.md
     "Starting a fire"), a marine stamped beside it, a few ticks run with light
     requested so the smoke, the plume and the stamps are the game's. Returns a
@@ -412,7 +412,7 @@ def _playground_planes():
     from simulation import Simulation, fire_fixed
     from simulation.materials import MAT_WOOD
     from simulation.unit import Unit
-    sim = Simulation(load_level("playground"), seed=1, breach_physics=bp,
+    sim = Simulation(load_level("test_arena"), seed=1, breach_physics=bp,
                      enable_recorder=False)
     g = sim.gmap
     ys, xs = np.where((g.material == MAT_WOOD) & g.thermal_solid)
@@ -455,11 +455,11 @@ def _synthetic_planes(h, w, rng):
 def _light_rows(args, tbl, t_amb_q, rng):
     """P6a (design §10's gate; the brief's timing STOP): the sweep's ms per
     tick with the light channels OFF and ON, CPU and (with --cuda) the CUDA
-    per-call path, on the playground's own planes and on 128x256. Every light
+    per-call path, on the test_arena's own planes and on 128x256. Every light
     run is checked bit for bit CPU vs GPU, and heat with light on against heat
     with light off, before it is timed."""
     cur = _currency()
-    rows = [("playground", _playground_planes())]
+    rows = [("test_arena", _test_arena_planes())]
     rows.append(("128x256", _synthetic_planes(128, 256, rng)))
     print(f"radiation sweep, light OFF vs ON (P6a), shear heat + step light, S16, "
           f"{args.iters} iterations per point"
@@ -527,7 +527,7 @@ def _light_rows(args, tbl, t_amb_q, rng):
             line += f" {g_off * 1e3:8.2f} {g_on * 1e3:8.2f} {n_off:11d} {n_on:10d}"
         print(line)
     budget = 41.67
-    print(f"  the brief's STOP: CPU heat + light on the playground must stay under "
+    print(f"  the brief's STOP: CPU heat + light on the test_arena must stay under "
           f"{budget / 2:.2f} ms (half the {budget} ms tick)")
 
 
@@ -542,7 +542,7 @@ def main(argv=None):
                          "everywhere -- its cost where it engages")
     ap.add_argument("--light", action="store_true",
                     help="P6a: the sweep with the light channels OFF vs ON, on the "
-                         "playground's own planes and on 128x256 (with --cuda: the "
+                         "test_arena's own planes and on 128x256 (with --cuda: the "
                          "per-call GPU path too)")
     ap.add_argument("--envs", default=None,
                     help="#29, with --cuda: the BATCHED launch core over N "

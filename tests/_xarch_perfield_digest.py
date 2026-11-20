@@ -138,7 +138,7 @@ UNIT_FIELD_LABEL = "__unit_state__"
 #   3. THIS ARC: mg_cycles 2 -> 8 (docs/pressure_arc_root_cause_2026-08-17.md).
 #      The MG V-cycle schedule was frozen at C=2 on 16^2/160^2 scenarios for
 #      300 ticks; at map scale C=2 leaves ~0.28 atm of residual per tick, which
-#      IS the storm (playground: P_max 103.2 atm, negative P_min, n_sub pinned
+#      IS the storm (test_arena: P_max 103.2 atm, negative P_min, n_sub pinned
 #      at the cap). C=8 converges (C=8 and C=16 agree to 0.3%), zeroes every
 #      rail counter, and is 18% FASTER per tick because a converged solve
 #      collapses n_sub 8 -> 1. Every pressure-coupled field therefore moves.
@@ -387,7 +387,7 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # under-read a slightly warm cell's emission by more than a live bucket's ~7
 # counts, so a dark thin panel (radiation temperature E°⁻¹(Phi) = 0) could be
 # pinned at the top of bucket 1, ~8 game, for 235 consecutive ticks on the
-# playground at 180 s, where the old ceiling held it at T_before. That rounding
+# test_arena at 180 s, where the old ceiling held it at T_before. That rounding
 # artifact is issue #78, fixed there -- not here, and not in this value.
 #
 # REPRODUCED: the harness was run twice on this build, identical both times.

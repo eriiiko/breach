@@ -1,7 +1,7 @@
 """Issue #54 repro harness — sealed-room heating under sustained forcing.
 
 A 5x5 patch mid-arena held at +600 game-deg, headless, NO vents (stripped
-in-memory), NO fires, NO player: 30 s later the playground's closed rooms
+in-memory), NO fires, NO player: 30 s later the test_arena's closed rooms
 heat by ~+75..+105 game-deg while the arena (which CONTAINS the heat
 source) cools below ambient and drains pressure, with 10-33 m/s winds.
 Found 2026-08-25 via #48's feel patch; forcing-generic (fires and vents
@@ -44,7 +44,7 @@ import breach_physics as bp  # noqa: E402
 from level_loader import load as load_level  # noqa: E402
 from simulation import Simulation  # noqa: E402
 
-# Playground region boxes (row, col slices) — see the #54 evidence table.
+# Test arena region boxes (row, col slices) — see the #54 evidence table.
 R5 = np.s_[27:42, 61:77]      # mid-inner room (doored)
 R6 = np.s_[27:42, 83:96]      # mid-far room (doored, NO vent ever)
 R8 = np.s_[49:66, 83:96]      # bottom-far room (sealed)
@@ -55,7 +55,7 @@ TICKS = 720                   # 30 s at 24 tps
 
 
 def main() -> None:
-    lvl = load_level("playground", levels_dir=str(ROOT / "levels"))
+    lvl = load_level("test_arena", levels_dir=str(ROOT / "levels"))
     # Strip vents/ducts so the harness isolates #54 from #48 regardless of
     # whether the level currently carries the vent layout.
     lvl = replace(lvl, entities=[e for e in lvl.entities

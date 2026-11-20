@@ -436,7 +436,7 @@ def test_the_engine_reads_the_per_tile_fuel_rate_not_the_global():
     it and silently falls back to the scalar.
     """
     from level_loader import load as _load_level
-    g = GameMap(_load_level("playground"))
+    g = GameMap(_load_level("test_arena"))
     tbl = MaterialTable.from_config()
     assert g.fuel_per_o2_plane.dtype == np.int32
     assert g.fuel_per_o2_plane.shape == g.material.shape
@@ -445,7 +445,7 @@ def test_the_engine_reads_the_per_tile_fuel_rate_not_the_global():
     # non-vacuous: the shipped level carries at least two distinct rates
     assert len(np.unique(g.fuel_per_o2_plane)) >= 2
     ys, xs = np.where(g.material == MAT_FURNITURE)
-    assert len(ys), "playground is expected to carry furniture"
+    assert len(ys), "test_arena is expected to carry furniture"
     y, x = int(ys[0]), int(xs[0])
     assert int(g.fuel_per_o2_plane[y, x]) == int(tbl.fuel_per_o2_q16[MAT_FURNITURE])
     g.material[y, x] = MAT_AIR

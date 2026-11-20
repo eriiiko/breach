@@ -113,20 +113,20 @@ def test_no_shadow_when_off_dark_or_directionless_and_never_above_strength():
     assert shadow_cast(one_sided, ON).alpha > 0.0
 
 
-def _lit_playground_with_a_lamp_left_of_a_unit():
-    """The playground with light requested and ONE omni lamp four tiles to the
+def _lit_test_arena_with_a_lamp_left_of_a_unit():
+    """The test_arena with light requested and ONE omni lamp four tiles to the
     left of a marine's footprint, ticked a few times."""
     import breach_physics as bp
     from level_loader import load as load_level
     from level_lights import LightSpec
     from renderer import frame_lights as fl
     from simulation import Simulation
-    level = load_level("playground")
+    level = load_level("test_arena")
     sim = Simulation(level, seed=5, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     h, w = g.solid.shape
     from simulation.unit import Unit
-    # A marine where main.py spawns one on the playground (open floor), the
+    # A marine where main.py spawns one on the test_arena (open floor), the
     # lamp on the open floor four tiles to his left.
     sim.add_unit(Unit("M1", x=13, y=42, team=0))
     unit = sim.units[-1]
@@ -159,7 +159,7 @@ def test_reading_the_light_for_shadows_changes_nothing():
     irradiance (the lamp's read would not be one-sided, or not to the right).
     """
     from simulation import light_field
-    sim, unit = _lit_playground_with_a_lamp_left_of_a_unit()
+    sim, unit = _lit_test_arena_with_a_lamp_left_of_a_unit()
     g = sim.gmap
     arrays = {k: v.copy() for k, v in vars(g).items() if isinstance(v, np.ndarray)}
     # #29 P3a: a unit is slotted (no __dict__): its state is its set slots.

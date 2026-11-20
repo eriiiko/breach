@@ -13,11 +13,11 @@ planes included), the engine's light books and its light-stream telemetry,
 per tick, tol 0 -- on the normal per-call tick, on the resident tick, and on
 ``relight()``.
 
-Scene: the playground level with its own three emergency lamps (the level's
+Scene: the test_arena level with its own three emergency lamps (the level's
 ``[[light]]`` entities, through the real assembly ``renderer.frame_lights.
 frame_light_specs`` -> ``cone_rows``, the same seam the game uses -- P6d
-brief §3, "the playground with its lamps"), a burning wood tile (test_
-radiation_sweep_shadow_wiring.py's live scene, ``_burning_playground``,
+brief §3, "the test_arena with its lamps"), a burning wood tile (test_
+radiation_sweep_shadow_wiring.py's live scene, ``_burning_test_arena``,
 reused from cuda_radiation_sweep_check.py per the Benches canonical-system
 rule), and a smoke puff around the fire (the SHIPPED [gases.smoke] heat_absorb
 / light_absorb columns -- P5c/P6a's live smoke term, so both the heat and the
@@ -52,21 +52,21 @@ def _fail(msg: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# the scene: the playground, its lamps, the fire, a smoke puff -- shear
+# the scene: the test_arena, its lamps, the fire, a smoke puff -- shear
 # ---------------------------------------------------------------------------
-def _lit_smoky_playground():
-    """The playground with a burning wood tile, its own three level lamps
+def _lit_smoky_test_arena():
+    """The test_arena with a burning wood tile, its own three level lamps
     (via the real frame_lights assembly), a smoke puff around the fire (the
     shipped smoke absorption/glow columns), and light REQUESTED with the
     transport set to SHEAR (P6d's config setting, poked directly here --
     PhysicsRunner's config binding itself is gate G5, a separate pure-Python
     door test)."""
-    from cuda_radiation_sweep_check import _burning_playground
+    from cuda_radiation_sweep_check import _burning_test_arena
     from renderer import frame_lights as fl
     from simulation import gas_fixed
     from simulation.gases import SMOKE
 
-    sim, pick = _burning_playground()
+    sim, pick = _burning_test_arena()
     g = sim.gmap
     y0, x0 = pick
     air = (~g.thermal_solid) & (~g.solid) & (~g.is_vacuum)
@@ -80,7 +80,7 @@ def _lit_smoky_playground():
                                   sim_time_per_tick=1.0 / 24.0).specs
     cones = fl.cone_rows(specs, w, h, int(bp.L_FINE_BITS))
     if cones.shape[0] == 0:
-        raise AssertionError("the playground's lamp entities produced no cone "
+        raise AssertionError("the test_arena's lamp entities produced no cone "
                              "rows -- the scene would light through the fire "
                              "alone, not 'with its lamps'")
     from config import CFG
@@ -128,8 +128,8 @@ def _compare(tag, t, s_cpu, s_gpu, fields=None) -> int:
 
 def _run(tag, n_ticks, gpu_on, gpu_off, fields=None) -> None:
     fails_before = len(_FAILS)
-    s_cpu, pick = _lit_smoky_playground()
-    s_gpu, _ = _lit_smoky_playground()
+    s_cpu, pick = _lit_smoky_test_arena()
+    s_gpu, _ = _lit_smoky_test_arena()
     if _compare(tag, "init", s_cpu, s_gpu, fields):
         return
     lit, calls = 0, 0
@@ -206,8 +206,8 @@ def part3_relight() -> None:
             getattr(bp, name)(False)
         bp.set_radiation_backend(bool(on))
 
-    s_cpu, pick = _lit_smoky_playground()
-    s_gpu, _ = _lit_smoky_playground()
+    s_cpu, pick = _lit_smoky_test_arena()
+    s_gpu, _ = _lit_smoky_test_arena()
     # a few ticks first, same idiom as G2a, so relight runs on a non-trivial
     # (already-lit, already-hot) state rather than the freshly-loaded one
     for _ in range(3):

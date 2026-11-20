@@ -1,6 +1,6 @@
 """P10 — ``levels/wego_test`` loads and delivers what the HUMAN-TEST needs.
 
-Erik's kickoff ruling 3: a dedicated level, with playground and
+Erik's kickoff ruling 3: a dedicated level, with test_arena and
 planetside_demo left exactly as they are. These pin that the level actually
 exercises the arc — cover in both flavours, a closed door to breach, and two
 sides far enough apart that round one is a planning round — so a green suite
@@ -149,9 +149,9 @@ def test_a_full_round_of_simulation_runs_clean(level):
     assert any(u.alive for u in sim.units if u.team == 0)
 
 
-def test_playground_and_planetside_are_untouched():
+def test_arena_and_planetside_are_untouched():
     """Erik's ruling 3: the new level exists precisely so these do not change."""
-    for name in ("playground", "planetside_demo"):
+    for name in ("test_arena", "planetside_demo"):
         lvl = load_level(name)
         assert not [e for e in (lvl.entities or [])
                     if e.class_name == "cover"], \

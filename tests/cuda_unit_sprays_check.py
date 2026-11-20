@@ -16,7 +16,7 @@ PART TABLES -- every P7a.3 table row equals an independent read of the sim's
 own weapon / ammo rows, its gas table, combat's source ids and FIELD_POLICY.
 
 PART CONE -- the cone (``cuda_unit_spray.cuh``'s decide / emit, the TEST-ONLY
-probe) on synthetic cones over four real maps (ship_demo, playground,
+probe) on synthetic cones over four real maps (ship_demo, test_arena,
 my_ship, test_level): apexes everywhere (walls included), aims over the
 whole circle and on the axes, ranges 0 .. 60, half-angles from 0 to just
 under 90 degrees, the nozzle square of side 0 .. 5 near the apex; the tile
@@ -595,7 +595,7 @@ def table_reference(sim) -> dict:
 
 
 def part_tables():
-    sims = [SprayDriver().sim, _sight_sim("playground", 0)]
+    sims = [SprayDriver().sim, _sight_sim("test_arena", 0)]
     n = 0
     for e, sim in enumerate(sims):
         got = unit_tables.values(sim)
@@ -617,7 +617,7 @@ def part_tables():
 # ---------------------------------------------------------------------------
 # PART CONE (the TEST-ONLY probe)
 # ---------------------------------------------------------------------------
-CONE_MAPS = ("ship_demo", "playground", "my_ship", "test_level")
+CONE_MAPS = ("ship_demo", "test_arena", "my_ship", "test_level")
 
 
 def _sight_sim(name, k):

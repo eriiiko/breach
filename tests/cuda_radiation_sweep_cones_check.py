@@ -266,7 +266,7 @@ def part3_batch():
 
 def part4_live():
     print("PART C4 — the live conductor with cones + sky, light REQUESTED, backend flipping")
-    from cuda_radiation_sweep_check import _ALL_BACKENDS, _burning_playground
+    from cuda_radiation_sweep_check import _ALL_BACKENDS, _burning_test_arena
     from simulation import physics_runner
 
     def only_radiation(on):
@@ -275,8 +275,8 @@ def part4_live():
             getattr(bp, name)(False)
         bp.set_radiation_backend(bool(on))
 
-    s_cpu, pick = _burning_playground()
-    s_gpu, _ = _burning_playground()
+    s_cpu, pick = _burning_test_arena()
+    s_gpu, _ = _burning_test_arena()
     h, w = s_cpu.gmap.solid.shape
     rng = random.Random(67)
     sky = np.asarray(random_sky(rng, 16, "sun"), dtype=np.int64) + (1 << 30)

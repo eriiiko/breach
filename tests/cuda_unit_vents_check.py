@@ -24,7 +24,7 @@ PART KIT -- ``floordiv_q`` (negative, zero, positive operands of both signs)
 and ``muldiv_floor_q`` (products past 2^64, refusals) on the device against
 Python's ``//``.
 PART PROBE -- ``inject_gas_n_vec`` on real maps with real gas (ship_demo,
-playground, fire_smoke_studio, test_level, both vent-scene boundaries) and on
+test_arena, fire_smoke_studio, test_level, both vent-scene boundaries) and on
 synthetic states: random vectors and temperatures (both sides of every
 floor), each rail, accountable and non-accountable targets, a bulk-free
 result, a zero vector, the trace saturation, every refusal (bounds, overflow;
@@ -36,7 +36,7 @@ tables, every plane, the books and the write set equal; the tables' IDENTITY
 and entity rows every tick; a CENSUS of the sweep's branches, each required,
 the unreachable ones named; the hooked match equal to an unhooked twin; the
 ledgers' growth printed.
-PART LEVELS -- ship_demo's bots match (its duct runs), playground,
+PART LEVELS -- ship_demo's bots match (its duct runs), test_arena,
 fire_smoke_studio, airlock_demo (no duct: the sweep gated off).
 PART REFUSAL -- each ledger family one past its proved range (both sides of
 a signed one): refused by name, nothing of the duct written; at the bound:
@@ -769,7 +769,7 @@ def part_probe():
     seen = Counter()
     rng = np.random.default_rng(6205)
     n = 0
-    for name in ("ship_demo", "playground", "fire_smoke_studio", "test_level"):
+    for name in ("ship_demo", "test_arena", "fire_smoke_studio", "test_level"):
         n += _probe_map(name, LevelDriver(name).sim, seen, rng)
     n += _probe_map("vent scene", VentScene(0).sim, seen, rng, ticks=5)
     n += _probe_map("vent scene (planetside)", VentScene(1).sim, seen, rng, ticks=5)
@@ -1129,7 +1129,7 @@ def part_levels():
                          n_units=max(1, len(d.sim.units)), slots=[SLOT_VENTS])
     if not acts[SLOT_VENTS.key]:
         fail("levels: ship_demo's duct never moved gas (vacuous)")
-    for name in ("playground", "fire_smoke_studio", "airlock_demo"):
+    for name in ("test_arena", "fire_smoke_studio", "airlock_demo"):
         d = LevelDriver(name, seed=1)
         acts, n = run_shadow(f"level {name} ({len(d.sim._ducts)} ducts, "
                              f"{len(d.sim._vents)} vents)", [d], LEVEL_TICKS,

@@ -217,14 +217,14 @@ def test_formation_offsets_depend_on_the_room_shape_only(w, h):
         formation_cells(SpawnRoom(0, 0, 0, w, h, 1), cap + 1)
 
 
-def test_playground_match_spawns_symmetric_and_disjoint():
-    """Property: on the playground, the two marine rooms (equal shape) put
+def test_arena_match_spawns_symmetric_and_disjoint():
+    """Property: on the test_arena, the two marine rooms (equal shape) put
     every slot at the same offset from its room, every unit stands inside
     its room, and no two footprints overlap. Breaks if a room is moved or
     resized asymmetrically, or spawn_match ignores the placement rule."""
     import breach_physics as bp
     from simulation import Simulation
-    lvl = level_loader.load("playground")
+    lvl = level_loader.load("test_arena")
     rooms = {r.team: r for r in lvl.spawn_rooms}
     assert rooms[0].w == rooms[1].w and rooms[0].h == rooms[1].h
     full = MatchTeam(n=rooms[0].max_per_team, loadout="rifleman",
@@ -366,11 +366,11 @@ def test_match_and_rooms_round_trip(tmp_path):
 
 
 def test_spawn_rooms_leave_the_authored_spawns_alone():
-    """Property: the playground's [[spawn]] squad and horde are what they
+    """Property: the test_arena's [[spawn]] squad and horde are what they
     were before spawn rooms existed (the game is unchanged), and the zombie
     room is the glass pen the horde already stands in. Breaks if writing the
     rooms rewrote or reordered the [[spawn]] block."""
-    lvl = level_loader.load("playground")
+    lvl = level_loader.load("test_arena")
     assert [(s.name, s.team, s.x, s.y) for s in lvl.spawns[:4]] == [
         ("Alpha", 0, 8.0, 42.0), ("Bravo", 0, 13.0, 42.0),
         ("Cobra", 0, 8.0, 48.0), ("Delta", 0, 13.0, 48.0)]
@@ -403,7 +403,7 @@ def test_controller_registry():
 # ---------------------------------------------------------------------------
 _CLI = r"""
 import runpy, sys
-sys.argv = ["run_match.py", "--level", "playground", "--ticks-per-report",
+sys.argv = ["run_match.py", "--level", "test_arena", "--ticks-per-report",
             "720"]
 try:
     runpy.run_path("tools/run_match.py", run_name="__main__")
@@ -419,12 +419,12 @@ sys.exit(rc)
 """
 
 
-def test_run_match_cli_on_the_playground():
-    """Property: `tools/run_match.py --level playground` runs a full match
+def test_run_match_cli_on_the_test_arena():
+    """Property: `tools/run_match.py --level test_arena` runs a full match
     to a result headless and exits 0, printing the result, the ticks, the
     living slots and the digests, without importing the renderer or raylib.
     Breaks if the runner needs a window, requests light through the
-    renderer, or the playground's match config stops loading."""
+    renderer, or the test_arena's match config stops loading."""
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     proc = subprocess.run([sys.executable, "-c", _CLI], cwd=str(ROOT),
