@@ -63,6 +63,7 @@ SHADERS_DIR = Path(__file__).resolve().parent.parent / "shaders"
 # samplers from unit 5 up).
 _UNIT_SMOKE, _UNIT_FLOW, _UNIT_RIPPLE = 5, 6, 7
 RIPPLE_SIZE = 256
+_UNSET = object()
 
 
 def load_water_fs() -> str:
@@ -136,6 +137,7 @@ class WaterPass:
         self.shader = core.load_shader_from_source(
             str(SHADERS_DIR / "lighting.vs"), load_water_fs())
         self._locs: dict = {}
+        self._curve_sent = _UNSET
 
         self._has_height = False
         self._height_tex = None
@@ -368,7 +370,11 @@ class WaterPass:
                                                     float(self.h)),
                                       (0.0, 0.0, 0.0, 0.0),
                                       (1.0, 0.0, 0.0, 0.0))
-        set_light_curve_uniforms(self.shader, light_curve)
+        # the curve's 256-float LUT is re-sent only when the lighting pass
+        # re-baked it (a new tuple), not every frame
+        if light_curve is not self._curve_sent:
+            set_light_curve_uniforms(self.shader, light_curve)
+            self._curve_sent = light_curve
         self._set_f("u_light_gain", light_gain)
 
         sx, sy, sw, sh = art_src_and_uv_rect(
