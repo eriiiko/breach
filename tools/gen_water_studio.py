@@ -58,7 +58,8 @@ flooded room). Room sizes are Erik's, in metres (2026-11-20). Four rooms:
     in). The match ends when the bot is turned (team 1 wins) or at the clock.
 
 A ``[[spawn]]`` marine ("Wader") stands in the wading room's water by the
-stove: the single-player path (``main.py --level water_studio``) and the
+stove, and a second ("Corridor") in the dry corridor, where the flood
+reaches him: the single-player path (``main.py --level water_studio``) and the
 look shots (``tools/lighting_demo.py`` spawns ``[[spawn]]`` rows only). A
 match never reads ``[[spawn]]``.
 
@@ -168,6 +169,12 @@ STOVE_RADIUS = 0
 # The [[spawn]] marine for the single-player path and the look shots: in the
 # water, south-east of the stove, two tiles clear of the fuel pile.
 WADER = ("Wader", 51, 10)
+# A second [[spawn]] marine standing in the dry corridor (Erik, 2026-11-20:
+# "one marine standing in the flooded corridor, so we can see the
+# interaction"): 11 tiles down from the gate, outside the dam charge's
+# 3-tile reach, so the flood front has reached and passed him by the
+# flooding_corridor shot's frame.
+WADER_CORRIDOR = ("Corridor", 26, 33)
 
 # --- the match ---------------------------------------------------------------
 # (team, x, y, w, h, max_per_team): one 3 x 3 formation cell each.
@@ -225,7 +232,7 @@ def build_tilemap() -> np.ndarray:
         assert tm[y, x] == MAT_AIR, f"charge at ({x}, {y}) is not on floor"
     assert (tm[OCTOPUS_CORNER[1]:OCTOPUS_CORNER[3] + 1,
                OCTOPUS_CORNER[0]:OCTOPUS_CORNER[2] + 1] == MAT_AIR).all()
-    for (n, x, y) in (WADER,):
+    for (n, x, y) in (WADER, WADER_CORRIDOR):
         assert (tm[y:y + 3, x:x + 3] == MAT_AIR).all(), f"{n} is not on floor"
     for (_t, x, y, w, h, _m) in SPAWN_ROOMS:
         assert (tm[y:y + h, x:x + w] == MAT_AIR).all(), "spawn room off floor"
@@ -273,8 +280,8 @@ def build_entities() -> list:
 
 
 def build_spawns() -> list:
-    n, x, y = WADER
-    return [SpawnEntry(name=n, team=0, x=x, y=y, footprint=3)]
+    return [SpawnEntry(name=n, team=0, x=x, y=y, footprint=3)
+            for (n, x, y) in (WADER, WADER_CORRIDOR)]
 
 
 def build_spawn_rooms() -> list:

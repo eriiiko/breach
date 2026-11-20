@@ -838,7 +838,7 @@ zoom = 30.0
 lamps = true
 beacon = false
 light_gain = "game"
-note = "the dam 2.5 s after its gate was blown (3 s): the tank's 1.20 m of water running the 5 x 50 corridor, its front about a third of the way down (tests/test_water_studio.py holds that it is still moving here). W1: the surface streams, no tile grid; W2: foam at the front and along the walls."
+note = "the dam 2.5 s after its gate was blown (3 s): the tank's 1.20 m of water running the 5 x 50 corridor, its front about a third of the way down (tests/test_water_studio.py holds that it is still moving here). W1: the surface streams, no tile grid; W2: foam at the front and along the walls; the Corridor marine (a [[spawn]] row) stands in the front."
 
 [[shot]]
 name = "wade_by_firelight"
