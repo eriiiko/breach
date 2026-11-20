@@ -170,14 +170,14 @@ def main() -> None:
             ignite_ring(g, sim.edit_queue, *CRATE, 2.5, 1.0)
         if t == BLAST1_TICK:
             execute_payload(g, sim.edit_queue, sim.units, *BLAST1,
-                            payloads["frag_standard"], sim.rng, events=events)
+                            payloads["frag_standard"], sim.draws, events=events)
         if t == BLAST2_TICK:
             execute_payload(g, sim.edit_queue, sim.units, *BLAST2,
-                            payloads["frag_standard"], sim.rng, events=events)
+                            payloads["frag_standard"], sim.draws, events=events)
         if t == BREACH_TICK:
             fire_at_breach = fire_last_tick >= t - TPS
             execute_payload(g, sim.edit_queue, sim.units, *BREACH,
-                            payloads["breach_focus"], sim.rng, events=events,
+                            payloads["breach_focus"], sim.draws, events=events,
                             kind="door_explosive")
         sim.set_paused(False)
         sim.step()

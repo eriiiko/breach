@@ -2,6 +2,8 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <array>
+#include <cstring>   // arc #63 P3: std::memcpy (the swarm death rows)
+#include <string>
 #include "atmosphere_solver.h"
 #include "fire_simulation.h"
 #include "temperature_solver.h"
@@ -14,6 +16,16 @@
 #include "sky_exchange.h"    // sky-exchange: planetside volumetric O2 replenishment (per-tick host pass)
 #include "fixed_point.h"   // the Q16.16 kit (quantize, make_recip, the trig kit, ...)
 #include "arm_chain_solver.h"  // #106 P6c: the arm chain solver (stateless, buffer contract)
+#include "horde_field.h"   // #183 G9p: the horde's distance field (host reference)
+#include "sight_lines.h"   // #195 1c: has_los's walk for many tiles (host call)
+#include "philox32.h"      // #29 P3b: the vendored Philox-4x32-10 (KAT / twin gate)
+#include "swarm_larva.h"   // arc #63 P3: the swarm step (registry, constants, branch names)
+#include "swarm_tables_layout.h"  // arc #63 P3: the swarm kernels' table offsets + fingerprint
+
+// #29 P1b: the build id, defined in the GENERATED TU <build dir>/generated/
+// build_id.cpp that cpp/gen_build_id.cmake writes at BUILD time (git HEAD's
+// SHA, "-dirty" appended for a modified tracked file, "unknown" without git).
+const char* breach_build_id();
 #ifdef BREACH_HAS_CUDA
 #include "cuda_hello.h"        // CUDA-S0: hello-world map kernel + device info
 #include "cuda_spike.h"        // CUDA-S8a: residency spike (raw device pointer in)
@@ -29,6 +41,14 @@
 #include "cuda_eos_resident.h" // S8a Path A: resident EOS telemetry + build parity
 #include "cuda_combustion.h"   // EOS P6.9b: GPU two-gather combustion + backend flag
 #include "cuda_radiation_sweep.h"  // ray-engine-v2 P4: the sweep's CUDA twin + backend flag
+#include "cuda_resident_tick.h"    // #29 P4a: the resident tick's drivers (stage counters)
+#include "cuda_unit_store.h"       // #29 P6.1: the device unit store (Class T)
+#include "cuda_unit_kernels.h"     // #29 P6.2: the unit slot kernels (Class T)
+#include "cuda_applier.h"          // #29 P6.4b: the per-env serial applier (Class T)
+#include "cuda_object_table.h"
+#include "cuda_unit_books.h"       // #29 P7e.4: the conductor's one books read     // #29 P7.0b: the device object tables (Class T)
+#include "cuda_edit_door.h"        // #29 P7a.3: the device edit door (Class T)
+#include "cuda_edit_flush.h"       // #29 P7e.3: the edit door, step (c) (Class T)
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -55,6 +75,195 @@ static std::tuple<const T*, int, int> get_2d_const(const py::array_t<T, Flags>& 
     return {a.data(0, 0),
             static_cast<int>(a.shape(0)),
             static_cast<int>(a.shape(1))};
+}
+
+// #29 P4a: the resident tick's device fields from GameMap.device_ptrs() (a
+// dict name -> int address; an absent name is 0, the drivers' "not given").
+static ResidentFields resident_fields_from(const py::dict& dev, int h, int w,
+                                           int n_gases, int acc_depth, int n_env = 1) {
+    ResidentFields f;
+    f.h = h; f.w = w; f.n_gases = n_gases; f.acc_depth = acc_depth;
+    f.n_env = n_env;   // #29 P5: the batch (the addresses are env 0's)
+    auto get = [&](const char* name) -> std::uintptr_t {
+        return dev.contains(name) ? dev[name].cast<std::uintptr_t>() : 0;
+    };
+    f.atmosphere = get("atmosphere"); f.wave_p = get("wave_p");
+    f.wind_x = get("wind_x"); f.wind_y = get("wind_y");
+    f.temperature = get("temperature"); f.heat = get("heat");
+    f.fire = get("fire"); f.wall_hp = get("wall_hp");
+    f.water_depth = get("water_depth"); f.gas = get("gas");
+    f.gas_energy = get("gas_energy"); f.dem_acc = get("dem_acc");
+    f.rad_net_sweep = get("rad_net_sweep"); f.rad_flux_sweep = get("rad_flux_sweep");
+    f.rad_amb_sweep = get("rad_amb_sweep"); f.rad_fluence = get("rad_fluence");
+    f.light_q = get("light_q"); f.light_flux_q = get("light_flux_q");
+    f.light_glow = get("light_glow");
+    f.solid = get("solid"); f.is_vacuum = get("is_vacuum");
+    f.is_ambient = get("is_ambient"); f.flammable = get("flammable");
+    f.thermal_solid = get("thermal_solid"); f.heat_inv_shift = get("heat_inv_shift");
+    f.face_shift = get("face_shift"); f.dyn_permeability = get("dyn_permeability");
+    f.heat_atten_q = get("heat_atten_q"); f.dyn_heat_atten_q = get("dyn_heat_atten_q");
+    f.light_atten_q = get("light_atten_q"); f.dyn_light_atten_q = get("dyn_light_atten_q");
+    f.fuel_recip = get("fuel_recip"); f.fire_T_ext_plane = get("fire_T_ext_plane");
+    f.fuel_per_o2_plane = get("fuel_per_o2_plane"); f.material = get("material");
+    f.water_before = get("water_before");
+    f.permeability = get("permeability"); f.wave_absorb = get("wave_absorb");
+    f.obstacles = get("obstacles"); f.dyn_wave_absorb = get("dyn_wave_absorb");
+    f.flow_vx = get("flow_vx"); f.flow_vy = get("flow_vy");
+    f.floor_height = get("floor_height");
+    f.sponge_sigma = get("sponge_sigma"); f.sponge_udamp = get("sponge_udamp");
+    // #29 P7c.2: the device-taken source (0: upload). #29 P7e.1: its own key,
+    // since the resident set holds the PENDING plane under "div_source".
+    f.div_source = get("div_source_taken");
+    return f;
+}
+
+// #29 P5: the batch's engines from Python (None -> empty: the engine method
+// itself is the batch of one).
+static PhysicsEngine::ResidentEngineList resident_engines_from(const py::object& engines) {
+    PhysicsEngine::ResidentEngineList out;
+    if (engines.is_none()) return out;
+    for (py::handle h : engines) out.push_back(h.cast<PhysicsEngine*>());
+    return out;
+}
+
+// ---- arc #63 P3 (docs/swarm_P3_impl.md §10): the swarm bindings' ARGUMENT
+// DISCIPLINE -- every array argument is checked for its exact dtype, C order
+// and shape (and writability when the law writes it) BEFORE anything runs,
+// and a mismatch raises TypeError / ValueError. Never forcecast: a converted
+// IN/OUT column would be a temporary copy whose writes are lost. The law is
+// reached only through out-of-line entries in strict TUs (this TU is
+// /fp:fast and never calls an FP_HD law function inline).
+static void* swarm_arr(const py::handle& o, const std::string& what, const py::dtype& dt,
+                       const std::vector<py::ssize_t>& shape, bool writable) {
+    if (!py::isinstance<py::array>(o))
+        throw py::type_error(what + ": must be a numpy array");
+    py::array a = py::reinterpret_borrow<py::array>(o);
+    if (!a.dtype().equal(dt))
+        throw py::type_error(what + ": dtype must be " + std::string(py::str(dt)) + ", got " +
+                             std::string(py::str(a.dtype())));
+    if (!(a.flags() & py::array::c_style))
+        throw py::value_error(what + ": must be C-contiguous");
+    if (a.ndim() != (py::ssize_t)shape.size())
+        throw py::value_error(what + ": expected " + std::to_string(shape.size()) +
+                              " dimensions, got " + std::to_string(a.ndim()));
+    for (size_t i = 0; i < shape.size(); ++i) {
+        if (shape[i] >= 0 && a.shape((py::ssize_t)i) != shape[i])
+            throw py::value_error(what + ": axis " + std::to_string(i) + " must be " +
+                                  std::to_string(shape[i]) + ", got " +
+                                  std::to_string(a.shape((py::ssize_t)i)));
+    }
+    if (writable && !a.writeable()) throw py::value_error(what + ": must be writeable");
+    return writable ? a.mutable_data() : const_cast<void*>(a.data());
+}
+
+static py::ssize_t swarm_dim(const py::handle& o, const std::string& what, int axis, int ndim) {
+    if (!py::isinstance<py::array>(o)) throw py::type_error(what + ": must be a numpy array");
+    py::array a = py::reinterpret_borrow<py::array>(o);
+    if (a.ndim() != ndim)
+        throw py::value_error(what + ": expected " + std::to_string(ndim) + " dimensions");
+    return a.shape(axis);
+}
+
+static const py::dtype& swarm_col_dtype(int c) {
+    static const py::dtype i32 = py::dtype::of<int32_t>();
+    static const py::dtype u32 = py::dtype::of<uint32_t>();
+    static const py::dtype u8 = py::dtype::of<uint8_t>();
+    return c == 5 ? u32 : (c == 8 ? u8 : i32);   // swarm.ROSTER: dist_walked, valid
+}
+
+static const char* const SWARM_COL_NAMES[swarm::N_COLUMNS] = {
+    "pos_x", "pos_y", "heading", "hp", "ai_state", "dist_walked", "unit_id", "faction",
+    "valid"};
+
+static swarm::StoreView swarm_store_from(const py::sequence& cols, py::ssize_t n_env,
+                                         py::ssize_t max_units, const std::string& who) {
+    if ((int)py::len(cols) != swarm::N_COLUMNS)
+        throw py::value_error(who + ": columns must be the 9 ROSTER columns in order");
+    void* p[swarm::N_COLUMNS];
+    for (int c = 0; c < swarm::N_COLUMNS; ++c)
+        p[c] = swarm_arr(cols[c], who + " column " + SWARM_COL_NAMES[c], swarm_col_dtype(c),
+                         {n_env, max_units}, true);
+    swarm::StoreView st;
+    st.pos_x = static_cast<int32_t*>(p[0]);
+    st.pos_y = static_cast<int32_t*>(p[1]);
+    st.heading = static_cast<int32_t*>(p[2]);
+    st.hp = static_cast<int32_t*>(p[3]);
+    st.ai_state = static_cast<int32_t*>(p[4]);
+    st.dist_walked = static_cast<uint32_t*>(p[5]);
+    st.unit_id = static_cast<int32_t*>(p[6]);
+    st.faction = static_cast<int32_t*>(p[7]);
+    st.valid = static_cast<uint8_t*>(p[8]);
+    return st;
+}
+
+static const int32_t* swarm_hw_from(const py::handle& o, py::ssize_t n_env, int max_units,
+                                    const std::string& who) {
+    const int32_t* hw = static_cast<const int32_t*>(
+        swarm_arr(o, who + " high_water", py::dtype::of<int32_t>(), {n_env}, false));
+    for (py::ssize_t e = 0; e < n_env; ++e) {
+        if (hw[e] < 0 || hw[e] > max_units)
+            throw py::value_error(who + ": high_water[" + std::to_string(e) + "] = " +
+                                  std::to_string(hw[e]) + " outside [0, max_units]");
+    }
+    return hw;
+}
+
+static int swarm_law_from(const std::string& species) {
+    const int law = swarm::species_law_index(species.c_str());
+    if (law < 0) throw py::value_error("unknown swarm species '" + species + "'");
+    return law;
+}
+
+// One direct law call's inputs (swarm_species_step and its CUDA twins).
+struct SwarmDirect {
+    swarm::LawIO L;
+    std::vector<uint32_t> launch;
+    int law = -1;
+};
+
+static SwarmDirect swarm_direct_from(const std::string& species, const py::sequence& columns,
+                                     const py::object& high_water, const py::object& temperature,
+                                     const py::object& solid, const py::object& env,
+                                     const py::object& tables, const py::object& death_rec,
+                                     const std::string& who) {
+    SwarmDirect d;
+    d.law = swarm_law_from(species);
+    if ((int)py::len(columns) != swarm::N_COLUMNS)
+        throw py::value_error(who + ": columns must be the 9 ROSTER columns in order");
+    const py::ssize_t n_env = swarm_dim(columns[0], who + " column pos_x", 0, 2);
+    const py::ssize_t max_units = swarm_dim(columns[0], who + " column pos_x", 1, 2);
+    const py::ssize_t h = swarm_dim(temperature, who + " temperature", 1, 3);
+    const py::ssize_t w = swarm_dim(temperature, who + " temperature", 2, 3);
+    const int tw = swarm::SPECIES_LAWS[d.law].table_width;
+    d.L.io.st = swarm_store_from(columns, n_env, max_units, who);
+    const int32_t* hw = swarm_hw_from(high_water, n_env, (int)max_units, who);
+    d.L.io.T = static_cast<const int32_t*>(swarm_arr(temperature, who + " temperature",
+        py::dtype::of<int32_t>(), {n_env, h, w}, false));
+    d.L.io.solid = static_cast<const bool*>(swarm_arr(solid, who + " solid",
+        py::dtype::of<bool>(), {n_env, h, w}, false));
+    const uint32_t* ev = static_cast<const uint32_t*>(swarm_arr(env, who + " env",
+        py::dtype::of<uint32_t>(), {n_env, swarm::ENV_WORDS}, false));
+    d.L.io.tables = static_cast<const int64_t*>(swarm_arr(tables, who + " tables",
+        py::dtype::of<int64_t>(), {n_env, tw}, false));
+    d.L.io.death = static_cast<int32_t*>(swarm_arr(death_rec, who + " death_rec",
+        py::dtype::of<int32_t>(), {n_env, max_units, swarm::DEATH_WORDS}, true));
+    d.launch.assign((size_t)n_env * swarm::LAUNCH_FIXED_WORDS, 0u);
+    swarm::compose_launch(ev, hw, (int)n_env, d.launch.data());
+    d.L.io.max_units = (int)max_units;
+    d.L.io.h = (int)h;
+    d.L.io.w = (int)w;
+    d.L.io.launch = d.launch.data();
+    d.L.io.table_width = tw;
+    d.L.n_env = (int)n_env;
+    d.L.launch_host = d.launch.data();
+    return d;
+}
+
+static py::array_t<int32_t> swarm_rows_array(const std::vector<int32_t>& rows) {
+    const py::ssize_t n = (py::ssize_t)(rows.size() / swarm::ROW_WORDS);
+    py::array_t<int32_t> out(std::vector<py::ssize_t>{n, (py::ssize_t)swarm::ROW_WORDS});
+    if (n > 0) std::memcpy(out.mutable_data(), rows.data(), rows.size() * sizeof(int32_t));
+    return out;
 }
 
 // Helper: extract raw pointer + (h, w) from a 3D (h, w, 3) numpy array.
@@ -547,6 +756,15 @@ static void bind_arm_chain(py::module_& m) {
 PYBIND11_MODULE(breach_physics, m) {
     m.doc() = "Breach physics engine -- C++ accelerated simulation";
 
+    // #29 P1b (residency design §6): the compiled module's provenance -- the
+    // commit it was BUILT from, generated at build time so an incremental
+    // build cannot go stale. rl_env.require_snapshot and tools/cuda_green.py
+    // compare it with HEAD; match_replay.build_id() stays THE describe helper.
+    m.def("build_id", []() { return std::string(breach_build_id()); },
+          "git HEAD's SHA this module was built from (+ '-dirty' when a "
+          "tracked file differed; 'unknown' without git). Generated at build "
+          "time (cpp/gen_build_id.cmake).");
+
     // CUDA-S0: advertise whether this .pyd was built with the GPU backend, and
     // expose the hello-world map kernel + device info. HAS_CUDA lets the
     // bit-identity harness skip the GPU leg gracefully on a CPU-only build.
@@ -611,6 +829,1367 @@ PYBIND11_MODULE(breach_physics, m) {
     // TEST-ONLY device-MG-build parity probe (gate PART 1c).
     m.def("eos_resident_calls", &breach_cuda::eos_resident_calls,
           "S8a Path A: how many ticks ran the fully resident EOS chain.");
+    // #29 P4a: the resident tick's per-stage counters (the gates' "the stage
+    // ran on the device" evidence; cuda_resident_tick.h has the slot map).
+    m.def("resident_stage_counters", []() {
+              long long c[breach_cuda::RESIDENT_STAGE_COUNTERS] = {0};
+              breach_cuda::resident_stage_counters(c);
+              py::dict d;
+              const char* names[breach_cuda::RESIDENT_STAGE_COUNTERS] = {
+                  "water_tail", "water_tail_active", "combustion", "fire",
+                  "fire_gate_open", "sweep", "sweep_light", "temperature",
+                  "books_downloads", "water_tail_boil", "water_tail_evac",
+                  "stamp", "eos", "trace_tail", "edit_queue", "edit_queue_tiles",
+                  "swarm", "swarm_present"};   // arc #63 P3: [16], [17]
+              for (int k = 0; k < breach_cuda::RESIDENT_STAGE_COUNTERS; ++k)
+                  d[names[k]] = c[k];
+              return d;
+          },
+          "#29 P4a: how many times each resident tail stage ran (and did "
+          "work) in this process.");
+    m.def("resident_burn_list", []() {
+              std::uintptr_t c = 0, l = 0;
+              int n = 0, h = 0, w = 0;
+              breach_cuda::resident_burn_list(&c, &l, &n, &h, &w);
+              return py::make_tuple(c, l, n, h, w);
+          },
+          "#29 P7e.2: (counts, lists, n_env, h, w) -- the device addresses of the last "
+          "resident tick's burn-through list (the fire's (N,) int counter, the (N, h*w) "
+          "int arrival-order lists), for the device sort.");
+    m.def("edit_queue_contrib_probe",
+          [](py::array_t<int64_t, py::array::c_style | py::array::forcecast> edits,
+             py::array_t<int64_t, py::array::c_style | py::array::forcecast> tiles,
+             py::array_t<int64_t, py::array::c_style | py::array::forcecast> env,
+             uint32_t salt) {
+              if (edits.ndim() != 2 || edits.shape(1) != breach_cuda::EDQ_EDIT_COLS ||
+                  tiles.ndim() != 2 || tiles.shape(1) != breach_cuda::EDQ_TILE_COLS ||
+                  env.ndim() != 2 || env.shape(1) != breach_cuda::EDQ_ENV_COLS)
+                  throw std::invalid_argument(
+                      "edit_queue_contrib_probe: edits (E, 16), tiles (T, 4), env (N, 4)");
+              const int n_e = (int)edits.shape(0), n_t = (int)tiles.shape(0);
+              const int n_v = (int)env.shape(0);
+              auto t = tiles.unchecked<2>();
+              for (int k = 0; k < n_t; ++k) {
+                  if (t(k, 0) < 0 || t(k, 0) >= n_e)
+                      throw std::invalid_argument("edit_queue_contrib_probe: bad edit row");
+                  const int64_t env_k = edits.at(t(k, 0), 0);
+                  if (env_k < 0 || env_k >= n_v)
+                      throw std::invalid_argument("edit_queue_contrib_probe: bad env");
+              }
+              py::array_t<int64_t> out(n_t);
+              breach_cuda::edit_queue_contrib_probe(edits.data(), n_e, tiles.data(), n_t,
+                                                    env.data(), n_v, salt,
+                                                    out.mutable_data());
+              return out;
+          },
+          py::arg("edits"), py::arg("tiles"), py::arg("env"), py::arg("salt"),
+          "#29 P4c TEST-ONLY: the device edit queue's per-tile contribution "
+          "kernel (the noise and the rounding) on host arrays.");
+    m.def("resident_ignition_probe",
+          [](py::array_t<int8_t, py::array::c_style | py::array::forcecast> material,
+             py::array_t<int32_t, py::array::c_style | py::array::forcecast> table) {
+              py::array_t<int32_t> out(material.size());
+              breach_cuda::resident_ignition_probe(
+                  material.data(), (int)material.size(), table.data(),
+                  (int)table.size(), out.mutable_data());
+              out.resize(std::vector<py::ssize_t>(material.shape(),
+                                                  material.shape() + material.ndim()));
+              return out;
+          },
+          py::arg("material"), py::arg("table"),
+          "#29 P4a TEST-ONLY: the resident ignition-plane gather on host arrays.");
+
+    // #29 P5: the batched engine's probes. The counted max(n_sub) reads; the
+    // tick stream's address (CuPy's ExternalStream, a bench's events); the
+    // TEST-ONLY device-vs-host pre-stage parity (design §5.1's first check);
+    // the TEST-ONLY capture-mode probe (begin / end / abort).
+    m.def("eos_nsub_reads", &breach_cuda::eos_nsub_reads,
+          "#29 P5: how many max(n_sub) reads the resident EOS made (one per tick).");
+    m.def("tick_stream_ptr", []() {
+              return reinterpret_cast<std::uintptr_t>(breach_cuda::tick_stream_handle());
+          },
+          "#29 P5: the address of THE tick stream (cudaStream_t) every resident "
+          "launch core runs on.");
+    m.def("eos_prestage_parity",
+          [](const EOSSolver& solver,
+             py::array_t<int32_t, py::array::c_style | py::array::forcecast> atmosphere,
+             py::array_t<int32_t, py::array::c_style | py::array::forcecast> wind_x,
+             py::array_t<int32_t, py::array::c_style | py::array::forcecast> wind_y,
+             py::array_t<int32_t, py::array::c_style | py::array::forcecast> temperature,
+             py::array_t<int32_t, py::array::c_style | py::array::forcecast> gas,
+             py::array_t<bool, py::array::c_style | py::array::forcecast> gas_conservative,
+             py::array_t<bool, py::array::c_style | py::array::forcecast> solid,
+             py::array_t<bool, py::array::c_style | py::array::forcecast> is_vacuum,
+             py::array_t<bool, py::array::c_style | py::array::forcecast> thermal_solid,
+             py::array_t<float, py::array::c_style | py::array::forcecast> dyn_permeability,
+             py::array_t<float, py::array::c_style | py::array::forcecast> dyn_wave_absorb,
+             float dt) {
+              if (atmosphere.ndim() != 2 || gas.ndim() != 3)
+                  throw std::invalid_argument("eos_prestage_parity: planes (h, w), gas (g, h, w)");
+              const int h = (int)atmosphere.shape(0), w = (int)atmosphere.shape(1);
+              std::string report;
+              const long long bad = breach_cuda::eos_prestage_parity(
+                  solver, atmosphere.data(), wind_x.data(), wind_y.data(),
+                  temperature.data(), gas.data(), gas_conservative.data(),
+                  (int)gas.shape(0), solid.data(), is_vacuum.data(),
+                  thermal_solid.data(), dyn_permeability.data(),
+                  dyn_wave_absorb.data(), h, w, dt, &report);
+              return py::make_tuple(bad, report);
+          },
+          py::arg("solver"), py::arg("atmosphere"), py::arg("wind_x"), py::arg("wind_y"),
+          py::arg("temperature"), py::arg("gas"), py::arg("gas_conservative"),
+          py::arg("solid"), py::arg("is_vacuum"), py::arg("thermal_solid"),
+          py::arg("dyn_permeability"), py::arg("dyn_wave_absorb"), py::arg("dt"),
+          "#29 P5 TEST-ONLY: the device pre-stage vs the host pre-stage at N = 1 "
+          "-- returns (mismatch count, report); 0 == bit-identical.");
+    m.def("resident_capture_begin", &breach_cuda::resident_capture_begin,
+          "#29 P5 TEST-ONLY: begin capturing the tick stream (global mode).");
+    m.def("resident_capture_end", []() {
+              const breach_cuda::CaptureSummary c = breach_cuda::resident_capture_end();
+              py::dict d;
+              d["segments"] = c.segments;
+              d["nodes"] = c.nodes;
+              py::list pts;
+              for (const auto& p : c.sync_points) pts.append(p);
+              d["sync_points"] = pts;
+              return d;
+          },
+          "#29 P5 TEST-ONLY: end the capture; returns {segments, nodes, sync_points}.");
+    m.def("resident_capture_abort", &breach_cuda::resident_capture_abort,
+          "#29 P5 TEST-ONLY: end a capture a failed tick left open.");
+
+    // #29 P6.1: THE DEVICE UNIT STORE (cuda_unit_store.h; Class T -- the
+    // played tick never calls it). One (N, U, W) int64 buffer allocated at
+    // construction, copied on the tick stream through pinned staging, and the
+    // pilot kernel (slot 1c, exposure decay). The Python driver is
+    // simulation.unit_store.DeviceStore, which checks unit_store_layout()
+    // against the schema before it builds one.
+    m.def("unit_store_layout", []() {
+              py::dict d;
+              d["width"] = breach_cuda::unit_store_width();
+              d["fingerprint"] = std::string(breach_cuda::unit_store_fingerprint());
+              d["valid"] = breach_cuda::unit_store_valid_col();
+              d["exposure"] = breach_cuda::unit_store_exposure_col();
+              d["exposure_width"] = breach_cuda::unit_store_exposure_width();
+              d["tables_width"] = breach_cuda::unit_tables_width();
+              d["tables_fingerprint"] = std::string(breach_cuda::unit_tables_fingerprint());
+              return d;
+          },
+          "#29 P6.1 / P6.2: the compiled unit store and tables layouts "
+          "(unit_store_layout.h, unit_tables_layout.h): "
+          "{width, fingerprint, valid, exposure, exposure_width}.");
+    py::class_<breach_cuda::UnitStoreDevice>(m, "UnitStoreBuffer",
+            "#29 P6.1: the (N, U, W) int64 device unit store (Class T).")
+        .def(py::init<int, int, int>(), py::arg("n_env"), py::arg("n_units"),
+             py::arg("width"))
+        .def_property_readonly("shape", [](const breach_cuda::UnitStoreDevice& s) {
+            return py::make_tuple(s.n_env(), s.n_units(), s.width());
+        })
+        .def_property_readonly("ptr", &breach_cuda::UnitStoreDevice::device_ptr)
+        .def("upload", [](breach_cuda::UnitStoreDevice& s,
+                          py::array_t<int64_t, py::array::c_style> rows) {
+                 if (rows.ndim() != 3 || rows.shape(0) != s.n_env() ||
+                     rows.shape(1) != s.n_units() || rows.shape(2) != s.width())
+                     throw std::invalid_argument(
+                         "UnitStoreBuffer.upload: rows must be (n_env, n_units, width) "
+                         "C-contiguous int64");
+                 s.upload(rows.data());
+             }, py::arg("rows"),
+             "Copy (N, U, W) int64 rows into the device store (tick stream).")
+        .def("download", [](breach_cuda::UnitStoreDevice& s) {
+                 py::array_t<int64_t> out({(py::ssize_t)s.n_env(),
+                                           (py::ssize_t)s.n_units(),
+                                           (py::ssize_t)s.width()});
+                 s.download(out.mutable_data());
+                 return out;
+             },
+             "The device store as a fresh (N, U, W) int64 array.")
+        ;
+    // #29 P6.2: THE DEVICE TABLES (cuda_unit_store.h; Class T): one (N, T)
+    // int64 buffer, an env's vector the rows of simulation.unit_tables,
+    // uploaded when the store is built.
+    py::class_<breach_cuda::UnitTablesDevice>(m, "UnitTablesBuffer",
+            "#29 P6.2: the (N, T) int64 device tables of the unit kernels (Class T).")
+        .def(py::init<int, int>(), py::arg("n_env"), py::arg("width"))
+        .def_property_readonly("shape", [](const breach_cuda::UnitTablesDevice& t) {
+            return py::make_tuple(t.n_env(), t.width());
+        })
+        .def("upload", [](breach_cuda::UnitTablesDevice& t,
+                          py::array_t<int64_t, py::array::c_style> rows) {
+                 if (rows.ndim() != 2 || rows.shape(0) != t.n_env() ||
+                     rows.shape(1) != t.width())
+                     throw std::invalid_argument(
+                         "UnitTablesBuffer.upload: rows must be (n_env, width) "
+                         "C-contiguous int64");
+                 t.upload(rows.data());
+             }, py::arg("rows"))
+        .def("download", [](breach_cuda::UnitTablesDevice& t) {
+                 py::array_t<int64_t> out({(py::ssize_t)t.n_env(), (py::ssize_t)t.width()});
+                 t.download(out.mutable_data());
+                 return out;
+             });
+    // #29 P6.2: THE UNIT SLOT KERNELS (cuda_unit_kernels.h; Class T), one
+    // free function per slot over (store, tables[, inputs]); each returns the
+    // per-env counts (coverage, faults, refused) as three (N,) int64 arrays.
+    // The Python face is simulation.unit_kernels (which refuses faults).
+    {
+        using breach_cuda::UnitStoreDevice;
+        using breach_cuda::UnitTablesDevice;
+        using breach_cuda::UnitKernelCounts;
+        struct Cnt {
+            py::array_t<int64_t> cov, flt, ref;
+            explicit Cnt(int n) : cov(n), flt(n), ref(n) {}
+            UnitKernelCounts view() {
+                UnitKernelCounts c;
+                c.coverage = cov.mutable_data();
+                c.faults = flt.mutable_data();
+                c.refused = ref.mutable_data();
+                return c;
+            }
+            py::tuple out() { return py::make_tuple(cov, flt, ref); }
+        };
+        m.def("unit_exposure_decay",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t) {
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_exposure_decay(s, t, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"),
+              "#29 P6.2: slot 1c (exposure.decay_units) on the device store.");
+        m.def("unit_integrate_turn",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t) {
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_integrate_turn(s, t, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"),
+              "#29 P6.2: slot 1a (unit_impulse.integrate_all) on the device store.");
+        m.def("unit_wind_impulse",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, std::uintptr_t gas,
+                 std::uintptr_t wind_x, std::uintptr_t wind_y, std::uintptr_t solid,
+                 int n_gases, int h, int w) {
+                  breach_cuda::UnitFieldPlanes p;
+                  p.gas = gas; p.wind_x = wind_x; p.wind_y = wind_y; p.solid = solid;
+                  p.n_gases = n_gases; p.h = h; p.w = w;
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_wind_impulse(s, t, p, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"), py::arg("gas"), py::arg("wind_x"),
+              py::arg("wind_y"), py::arg("solid"), py::arg("n_gases"), py::arg("h"),
+              py::arg("w"),
+              "#29 P6.2: slot 9c2 (exchange.apply_wind_force) on the device store; the "
+              "planes are device pointers to (N, ...) arrays in the resident dtypes.");
+        m.def("unit_apply_orders",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t,
+                 py::array_t<int64_t, py::array::c_style> req) {
+                  if (req.ndim() != 3 || req.shape(0) != s.n_env() || req.shape(2) != 5 ||
+                      req.shape(1) < 1)
+                      throw std::invalid_argument(
+                          "unit_apply_orders: requests must be (n_env, n_req >= 1, 5) int64");
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_apply_orders(s, t, req.data(), (int)req.shape(1), c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"), py::arg("requests"),
+              "#29 P6.2: slot 1b' (unit_orders.apply_requests) on the device store.");
+        m.def("unit_expire_orders",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, std::uintptr_t tick_row) {
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_expire_orders(s, t, tick_row, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"), py::arg("tick_row"),
+              "#29 P6.2: slot 10' (unit_orders.expire) on the device store.");
+        m.def("unit_convert_zombies",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t) {
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_convert_zombies(s, t, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"),
+              "#29 P6.2: slot 10's ruleset tail (convert_marines_to_zombies) on the "
+              "device store.");
+        m.def("unit_lib_probe",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, int op, int64_t a0,
+                 int64_t a1, int64_t a2, int64_t a3) {
+                  py::array_t<int64_t> out({(py::ssize_t)s.n_env(), (py::ssize_t)s.n_units(),
+                                            (py::ssize_t)breach_cuda::UNIT_LIB_PROBE_K});
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_lib_probe(s, t, op, a0, a1, a2, a3, out.mutable_data(),
+                                              c.view());
+                  return py::make_tuple(out, c.cov, c.flt, c.ref);
+              }, py::arg("store"), py::arg("tables"), py::arg("op"), py::arg("a0") = 0,
+              py::arg("a1") = 0, py::arg("a2") = 0, py::arg("a3") = 0,
+              "#29 P6.2 TEST-ONLY: the device unit library on the store's rows.");
+        // #29 P6.2m: slot 3, movement (cuda_unit_movement.cu).
+        m.def("unit_movement",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, std::uintptr_t material,
+                 int h, int w) {
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_movement(s, t, material, h, w, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"), py::arg("material"), py::arg("h"),
+              py::arg("w"),
+              "#29 P6.2m: slot 3 (Simulation._update_player_movement, the continuous "
+              "path) on the device store; `material` is a device pointer to the (N, h, w) "
+              "int8 GameMap.material planes.");
+        m.def("unit_movement_probe",
+              [](int op, py::array_t<int64_t, py::array::c_style> args,
+                 py::array_t<int8_t, py::array::c_style> material,
+                 py::array_t<int64_t, py::array::c_style> mobility) {
+                  if (args.ndim() != 2 || args.shape(1) != breach_cuda::UNIT_MOVEMENT_PROBE_ARGS)
+                      throw std::invalid_argument("unit_movement_probe: args must be (n, 6) int64");
+                  if (material.ndim() != 2 || mobility.ndim() != 1)
+                      throw std::invalid_argument(
+                          "unit_movement_probe: material (h, w) int8, mobility (n_mat,) int64");
+                  const int n = (int)args.shape(0);
+                  py::array_t<int64_t> out({(py::ssize_t)n,
+                                            (py::ssize_t)breach_cuda::UNIT_MOVEMENT_PROBE_OUT});
+                  breach_cuda::unit_movement_probe(
+                      op, args.data(), n, material.data(), (int)material.shape(0),
+                      (int)material.shape(1), mobility.data(), (int)mobility.shape(0),
+                      out.mutable_data());
+                  return out;
+              }, py::arg("op"), py::arg("args"), py::arg("material"), py::arg("mobility"),
+              "#29 P6.2m TEST-ONLY: the walk's library functions on synthetic rows.");
+    }
+
+    // #29 P6.3: THE EVENT RING (cuda_unit_events.h; Class T) and the slots
+    // that hurt over the device damage pipeline (cuda_unit_kernels.h): 2b,
+    // 9c, 9c3. Each slot returns (coverage, faults, refused, dropped) as four
+    // (N,) int64 arrays; the Python face is simulation.unit_kernels (which
+    // refuses faults and dropped events), the ring's simulation.unit_events.
+    {
+        using breach_cuda::UnitStoreDevice;
+        using breach_cuda::UnitTablesDevice;
+        using breach_cuda::UnitEventRing;
+        using breach_cuda::UnitDamageCounts;
+        m.def("unit_events_layout", []() {
+                  py::dict d;
+                  d["width"] = breach_cuda::unit_events_width();
+                  d["row_cap"] = breach_cuda::unit_events_row_cap();
+                  d["fingerprint"] = std::string(breach_cuda::unit_events_fingerprint());
+                  return d;
+              },
+              "#29 P6.3: the compiled event ring layout (unit_events_layout.h): "
+              "{width, row_cap, fingerprint}.");
+        py::class_<UnitEventRing>(m, "UnitEventRingBuffer",
+                "#29 P6.3: the per-env device event ring (N, E_max, F) int64 (Class T).")
+            .def(py::init<int, int, int>(), py::arg("n_env"), py::arg("n_units"),
+                 py::arg("e_max"))
+            .def_property_readonly("shape", [](const UnitEventRing& r) {
+                return py::make_tuple(r.n_env(), r.e_max(), breach_cuda::unit_events_width());
+            })
+            .def("begin", &UnitEventRing::begin, "Empty every env's ring (tick stream).")
+            .def("download", [](UnitEventRing& r) {
+                     py::array_t<int64_t> recs({(py::ssize_t)r.n_env(), (py::ssize_t)r.e_max(),
+                                                (py::ssize_t)breach_cuda::unit_events_width()});
+                     py::array_t<int64_t> cnt(r.n_env()), drp(r.n_env());
+                     r.download(recs.mutable_data(), cnt.mutable_data(), drp.mutable_data());
+                     return py::make_tuple(recs, cnt, drp);
+                 },
+                 "(records (N, E_max, F), counts (N,), dropped (N,)) int64.");
+        struct Cnt4 {
+            py::array_t<int64_t> cov, flt, ref, drp;
+            explicit Cnt4(int n) : cov(n), flt(n), ref(n), drp(n) {}
+            UnitDamageCounts view() {
+                UnitDamageCounts c;
+                c.coverage = cov.mutable_data();
+                c.faults = flt.mutable_data();
+                c.refused = ref.mutable_data();
+                c.dropped = drp.mutable_data();
+                return c;
+            }
+            py::tuple out() { return py::make_tuple(cov, flt, ref, drp); }
+        };
+        m.def("unit_status_tick",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring) {
+                  Cnt4 c(s.n_env());
+                  breach_cuda::unit_status_tick(s, t, ring, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"), py::arg("ring"),
+              "#29 P6.3: slot 2b (status.tick_statuses) on the device store.");
+        m.def("unit_heat_damage",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
+                 std::uintptr_t heat, std::uintptr_t rad_flux,
+                 std::uintptr_t atmosphere, std::uintptr_t temperature,
+                 std::uintptr_t solid, int h, int w, py::object claims) {
+                  breach_cuda::UnitRecordList* cl =
+                      claims.is_none() ? nullptr : claims.cast<breach_cuda::UnitRecordList*>();
+                  breach_cuda::UnitDamagePlanes p;
+                  p.heat = heat; p.rad_flux = rad_flux; p.h = h; p.w = w;
+                  p.atmosphere = atmosphere; p.temperature = temperature; p.solid = solid;
+                  Cnt4 c(s.n_env());
+                  breach_cuda::unit_heat_damage(s, t, ring, p, cl, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"), py::arg("ring"), py::arg("heat"),
+              py::arg("rad_flux"), py::arg("atmosphere"), py::arg("temperature"),
+              py::arg("solid"), py::arg("h"), py::arg("w"), py::arg("claims"),
+              "#29 P6.3: slot 9c (exchange.apply_environmental_damage; #215: with the "
+              "body temperature's air read) on the device store.");
+        m.def("unit_gas_rows",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
+                 std::uintptr_t gas, int n_gases, int h, int w, py::object claims,
+                 std::uintptr_t bite, std::uintptr_t count) {
+                  breach_cuda::UnitRecordList* cl =
+                      claims.is_none() ? nullptr : claims.cast<breach_cuda::UnitRecordList*>();
+                  breach_cuda::UnitDamagePlanes p;
+                  p.gas = gas; p.n_gases = n_gases; p.h = h; p.w = w;
+                  p.bite = bite;
+                  p.count = count;
+                  Cnt4 c(s.n_env());
+                  breach_cuda::unit_gas_rows(s, t, ring, p, cl, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"), py::arg("ring"), py::arg("gas"),
+              py::arg("n_gases"), py::arg("h"), py::arg("w"), py::arg("claims"),
+              py::arg("bite"), py::arg("count"),
+              "#29 P6.3: slot 9c3 (apply_teargas_blind, apply_poison_dose, arc #63 P5a's "
+              "apply_bite_dose, P5b's apply_corpse_infestation, poison.tick) on the device "
+              "store.");
+        m.def("unit_damage_probe",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
+                 py::array_t<int64_t, py::array::c_style> packets) {
+                  if (packets.ndim() != 3 || packets.shape(0) != s.n_env() ||
+                      packets.shape(1) != s.n_units() ||
+                      packets.shape(2) != breach_cuda::UNIT_DAMAGE_PROBE_W)
+                      throw std::invalid_argument(
+                          "unit_damage_probe: packets must be (n_env, n_units, 10) int64");
+                  py::array_t<int64_t> out({(py::ssize_t)s.n_env(), (py::ssize_t)s.n_units(),
+                                            (py::ssize_t)2});
+                  Cnt4 c(s.n_env());
+                  breach_cuda::unit_damage_probe(s, t, ring, packets.data(), out.mutable_data(),
+                                                 c.view());
+                  return py::make_tuple(out, c.cov, c.flt, c.ref, c.drp);
+              }, py::arg("store"), py::arg("tables"), py::arg("ring"), py::arg("packets"),
+              "#29 P6.3 TEST-ONLY: the device apply_packet on the store's rows.");
+    }
+
+    // #29 P6.4a: THE RECORD LIST (cuda_unit_events.h: the event ring's own
+    // class at any width) as slot 1b's REQUEST LIST, slot 1b's hand verbs and
+    // the done kernel (cuda_unit_kernels.h; Class T). The Python faces are
+    // simulation.unit_requests (the list) and simulation.unit_kernels.
+    {
+        using breach_cuda::UnitStoreDevice;
+        using breach_cuda::UnitTablesDevice;
+        using breach_cuda::UnitRecordList;
+        using breach_cuda::UnitDamageCounts;
+        m.def("unit_requests_layout", []() {
+                  py::dict d;
+                  d["width"] = breach_cuda::unit_requests_width();
+                  d["row_cap"] = breach_cuda::unit_requests_row_cap();
+                  d["fingerprint"] = std::string(breach_cuda::unit_requests_fingerprint());
+                  return d;
+              },
+              "#29 P6.4a: the compiled request list layout (unit_requests_layout.h): "
+              "{width, row_cap, fingerprint}.");
+        py::class_<UnitRecordList>(m, "UnitRecordListBuffer",
+                "#29 P6.4a: a per-env device record list (N, cap, width) int64 with "
+                "per-row staging (Class T): slot 1b's request list.")
+            .def(py::init<int, int, int, int, int>(), py::arg("n_env"), py::arg("n_units"),
+                 py::arg("cap"), py::arg("width"), py::arg("row_cap"))
+            .def_property_readonly("shape", [](const UnitRecordList& r) {
+                return py::make_tuple(r.n_env(), r.cap(), r.width());
+            })
+            .def("begin", [](UnitRecordList& r) { r.begin(); },
+                 "Empty every env's list (tick stream).")
+            .def("download", [](UnitRecordList& r) {
+                     py::array_t<int64_t> recs({(py::ssize_t)r.n_env(), (py::ssize_t)r.cap(),
+                                                (py::ssize_t)r.width()});
+                     py::array_t<int64_t> cnt(r.n_env()), drp(r.n_env());
+                     r.download(recs.mutable_data(), cnt.mutable_data(), drp.mutable_data());
+                     return py::make_tuple(recs, cnt, drp);
+                 },
+                 "(records (N, cap, width), counts (N,), dropped (N,)) int64.")
+            .def("upload", [](UnitRecordList& r, py::array_t<int64_t, py::array::c_style> recs,
+                              py::array_t<int64_t, py::array::c_style> counts) {
+                     if (recs.ndim() != 3 || recs.shape(0) != r.n_env() ||
+                         recs.shape(1) != r.cap() || recs.shape(2) != r.width() ||
+                         counts.ndim() != 1 || counts.shape(0) != r.n_env())
+                         throw std::invalid_argument(
+                             "UnitRecordListBuffer.upload: recs (n_env, cap, width) and counts "
+                             "(n_env,) int64");
+                     for (int e = 0; e < r.n_env(); ++e)
+                         if (counts.at(e) < 0 || counts.at(e) > r.cap())
+                             throw std::invalid_argument(
+                                 "UnitRecordListBuffer.upload: a count outside 0 .. cap");
+                     r.upload(recs.data(), counts.data());
+                 }, py::arg("recs"), py::arg("counts"),
+                 "#29 P7a.3: set every env's list and count; dropped and staging to 0.")
+            .def("counts", [](UnitRecordList& r) {
+                     py::array_t<int64_t> cnt(r.n_env()), drp(r.n_env());
+                     r.download(nullptr, cnt.mutable_data(), drp.mutable_data());
+                     return py::make_tuple(cnt, drp);
+                 },
+                 "#29 P7a.3: (counts (N,), dropped (N,)) int64 alone (no record copy).");
+        m.def("unit_verbs",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitRecordList& req,
+                 std::uintptr_t tick_row,
+                 py::array_t<int64_t, py::array::c_style> spans,
+                 py::array_t<int64_t, py::array::c_style> live, std::uintptr_t flight, int fh,
+                 int fw) {
+                  if (live.ndim() != 1 || live.shape(0) != s.n_env())
+                      throw std::invalid_argument("unit_verbs: live must be (n_env,)");
+                  if (spans.ndim() != 3 || spans.shape(0) != s.n_env() || spans.shape(2) != 3 ||
+                      spans.shape(1) < 1)
+                      throw std::invalid_argument(
+                          "unit_verbs: spans must be (n_env, n_spans >= 1, 3) int64");
+                  py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env()),
+                      drp(s.n_env());
+                  UnitDamageCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  c.dropped = drp.mutable_data();
+                  breach_cuda::unit_verbs(s, t, req, tick_row, spans.data(),
+                                          (int)spans.shape(1), live.data(), flight, fh, fw, c);
+                  return py::make_tuple(cov, flt, ref, drp);
+              }, py::arg("store"), py::arg("tables"), py::arg("requests"), py::arg("tick_row"),
+              py::arg("spans"), py::arg("live"), py::arg("flight"), py::arg("h"), py::arg("w"),
+              "#29 P6.4a: slot 1b (Simulation._consume_direct_intents) on the device store; "
+              "returns (coverage, faults, refused plants, dropped requests).");
+        // #29 P7e.4: THE CONDUCTOR'S ONE BOOKS READ and the host-sync count
+        // (cuda_unit_books.h; Class T).
+        m.def("conductor_label", [](const std::string& s) { breach_cuda::books_set_label(s); },
+              py::arg("label"), "#29 P7e.4: the conductor's current call line.");
+        m.def("conductor_books_begin",
+              [](std::size_t cap) { breach_cuda::books_defer_begin(cap); }, py::arg("cap"),
+              "#29 P7e.4: open the deferral (every unit-side count copied D2D into one arena).");
+        m.def("conductor_books_deferring", []() { return breach_cuda::books_deferring(); });
+        m.def("conductor_books_end", []() {
+                  std::vector<breach_cuda::DeferEntry> ents;
+                  std::vector<int64_t> w = breach_cuda::books_defer_end(ents);
+                  py::array_t<int64_t> words((py::ssize_t)w.size());
+                  if (!w.empty()) std::memcpy(words.mutable_data(), w.data(), w.size() * 8);
+                  py::list rows;
+                  for (const auto& e : ents)
+                      rows.append(py::make_tuple(e.label, e.kind, (long long)e.offset,
+                                                 (long long)e.n));
+                  return py::make_tuple(words, rows);
+              }, "#29 P7e.4: THE ONE READ: (words, [(label, kind, offset, n)]).");
+        m.def("host_sync_log_begin", []() { breach_cuda::host_sync_log_begin(); });
+        m.def("host_sync_log_end", []() { return breach_cuda::host_sync_log_end(); });
+        m.def("unit_verbs_tables",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitRecordList& req,
+                 std::uintptr_t tick_row, breach_cuda::ObjectTable& doors,
+                 breach_cuda::ObjectTable& door_tiles, breach_cuda::ObjectTable& charges,
+                 std::uintptr_t flight, int fh, int fw) {
+                  py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env()),
+                      drp(s.n_env());
+                  UnitDamageCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  c.dropped = drp.mutable_data();
+                  breach_cuda::unit_verbs_tables(s, t, req, tick_row, doors, door_tiles, charges,
+                                                 flight, fh, fw, c);
+                  return py::make_tuple(cov, flt, ref, drp);
+              }, py::arg("store"), py::arg("tables"), py::arg("requests"), py::arg("tick_row"),
+              py::arg("doors"), py::arg("door_tiles"), py::arg("charges"), py::arg("flight"),
+              py::arg("h"), py::arg("w"),
+              "#29 P7e.4: slot 1b with the door spans and the live charges built on the "
+              "device from the tables (the device conductor's form).");
+        m.def("unit_match_done",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, std::uintptr_t tick_row) {
+                  py::array_t<int64_t> out({(py::ssize_t)s.n_env(),
+                                            (py::ssize_t)breach_cuda::UNIT_DONE_W});
+                  breach_cuda::unit_match_done(s, t, tick_row, out.mutable_data());
+                  return out;
+              }, py::arg("store"), py::arg("tables"), py::arg("tick_row"),
+              "#29 P6.4a: the done kernel (MatchRules.is_terminal / result) -> (N, 4) "
+              "int64: terminal, outcome (0 none, 1 win, 2 draw), winner team, living teams.");
+        m.def("unit_verbs_probe",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, int64_t kind, int64_t tick,
+                 int64_t base) {
+                  py::array_t<int64_t> out({(py::ssize_t)s.n_env(), (py::ssize_t)s.n_units(),
+                                            (py::ssize_t)breach_cuda::UNIT_VERBS_PROBE_K});
+                  breach_cuda::unit_verbs_probe(s, t, kind, tick, base, out.mutable_data());
+                  return out;
+              }, py::arg("store"), py::arg("tables"), py::arg("kind"), py::arg("tick"),
+              py::arg("base"),
+              "#29 P6.4a TEST-ONLY: the hand verbs' gates on the store's rows.");
+    }
+
+    // #29 P7.0b: THE OBJECT TABLES (cuda_object_table.h; Class T): a table
+    // IS a record list (registered as a UnitRecordListBuffer, so a kernel
+    // appending to it takes it), with the upload, the ordered host append and
+    // the stable compaction. The Python face is simulation.object_tables.
+    {
+        using breach_cuda::ObjectTable;
+        using breach_cuda::UnitRecordList;
+        m.def("object_tables_layout", []() {
+                  py::dict d;
+                  d["fingerprint"] = std::string(breach_cuda::object_tables_fingerprint());
+                  return d;
+              },
+              "#29 P7.0b: the compiled object tables layout (object_tables_layout.h): "
+              "{fingerprint}.");
+        py::class_<ObjectTable, UnitRecordList>(m, "ObjectTableBuffer",
+                "#29 P7.0b: a per-env device object table (N, cap, width) int64 with "
+                "counts and overflow counts (Class T).")
+            .def(py::init<int, int, int, int, int, int>(), py::arg("n_env"), py::arg("cap"),
+                 py::arg("width"), py::arg("live"), py::arg("n_units") = 1,
+                 py::arg("row_cap") = 1)
+            .def_property_readonly("live", &ObjectTable::live_col)
+            .def("upload", [](ObjectTable& t, py::array_t<int64_t, py::array::c_style> rows,
+                              py::array_t<int64_t, py::array::c_style> counts) {
+                     if (rows.ndim() != 3 || rows.shape(0) != t.n_env() ||
+                         rows.shape(1) != t.cap() || rows.shape(2) != t.width() ||
+                         counts.ndim() != 1 || counts.shape(0) != t.n_env())
+                         throw std::invalid_argument(
+                             "ObjectTableBuffer.upload: rows (n_env, cap, width) and counts "
+                             "(n_env,) int64");
+                     for (int e = 0; e < t.n_env(); ++e)
+                         if (counts.at(e) < 0 || counts.at(e) > t.cap())
+                             throw std::invalid_argument(
+                                 "ObjectTableBuffer.upload: a count outside 0 .. cap");
+                     t.upload(rows.data(), counts.data());
+                 }, py::arg("rows"), py::arg("counts"),
+                 "Set every env's rows and count; the overflow counts back to 0.")
+            .def("append", [](ObjectTable& t, py::array_t<int64_t, py::array::c_style> recs,
+                              py::array_t<int64_t, py::array::c_style> n) {
+                     if (recs.ndim() != 3 || recs.shape(0) != t.n_env() ||
+                         recs.shape(2) != t.width() || n.ndim() != 1 ||
+                         n.shape(0) != t.n_env())
+                         throw std::invalid_argument(
+                             "ObjectTableBuffer.append: recs (n_env, k, width) and n (n_env,) "
+                             "int64");
+                     const int k = (int)recs.shape(1);
+                     for (int e = 0; e < t.n_env(); ++e)
+                         if (n.at(e) < 0 || n.at(e) > k)
+                             throw std::invalid_argument(
+                                 "ObjectTableBuffer.append: a count outside 0 .. k");
+                     t.append_host(recs.data(), n.data(), k);
+                 }, py::arg("recs"), py::arg("n"),
+                 "Append each env's first n[e] records in order (past cap: counted).")
+            .def("compact", [](ObjectTable& t) { t.compact(); },
+                 "The stable compaction of every env (rows whose live column is 0 dropped).");
+    }
+
+    // #29 P7b: THE GRENADES AND THE PLANTED CHARGES on their object tables
+    // (cuda_unit_kernels.h, cuda_unit_objects.cu; Class T). Each returns
+    // (changed, faults, refused, dropped effect records) per env; the Python
+    // face is simulation.unit_kernels (table_appends / grenades /
+    // charges_tick / prune_grenades).
+    {
+        using breach_cuda::FieldApplier;
+        using breach_cuda::ObjectTable;
+        using breach_cuda::ObjectSlotCounts;
+        using breach_cuda::UnitRecordList;
+        using breach_cuda::UnitTablesDevice;
+        auto counts = [](int n, ObjectSlotCounts& c) {
+            py::array_t<int64_t> ch(n), fl(n), rf(n), dr(n);
+            c.changed = ch.mutable_data();
+            c.faults = fl.mutable_data();
+            c.refused = rf.mutable_data();
+            c.dropped = dr.mutable_data();
+            return py::make_tuple(ch, fl, rf, dr);
+        };
+        m.def("unit_table_appends",
+              [counts](const UnitTablesDevice& t, UnitRecordList& req, ObjectTable& gr,
+                       ObjectTable& ch) {
+                  ObjectSlotCounts c;
+                  py::tuple out = counts(t.n_env(), c);
+                  breach_cuda::unit_table_appends(t, req, gr, ch, c);
+                  return out;
+              }, py::arg("tables"), py::arg("requests"), py::arg("grenades"), py::arg("charges"),
+              "#29 P7b: slot 1b's THROW requests appended to the grenade table, its "
+              "accepted plants to the charge table, in request-list order.");
+        m.def("unit_grenades",
+              [counts](const UnitTablesDevice& t, ObjectTable& gr, FieldApplier& a,
+                       std::uintptr_t tick_row, std::uintptr_t solid, int h, int w) {
+                  ObjectSlotCounts c;
+                  py::tuple out = counts(t.n_env(), c);
+                  breach_cuda::unit_grenades(t, gr, a.list(), tick_row, solid, h, w, c);
+                  return out;
+              }, py::arg("tables"), py::arg("grenades"), py::arg("effects"), py::arg("tick_row"),
+              py::arg("solid"), py::arg("h"), py::arg("w"),
+              "#29 P7b: slot 2's grenades -- the flight (#215: the wall walk and the "
+              "bounces over the device (N, h, w) solid plane), the fuse-outs as PAYLOAD "
+              "records.");
+        m.def("unit_charges_tick",
+              [counts](const UnitTablesDevice& t, ObjectTable& ch, FieldApplier& a,
+                       std::uintptr_t tick_row) {
+                  ObjectSlotCounts c;
+                  py::tuple out = counts(t.n_env(), c);
+                  breach_cuda::unit_charges_tick(t, ch, a.list(), tick_row, c);
+                  return out;
+              }, py::arg("tables"), py::arg("charges"), py::arg("effects"), py::arg("tick_row"),
+              "#29 P7b: charges.tick -- the due charges as PAYLOAD records, then the prune.");
+        m.def("unit_flight_plane",
+              [counts](const UnitTablesDevice& t, std::uintptr_t solid, std::uintptr_t material,
+                       std::uintptr_t out_plane, int h, int w) {
+                  ObjectSlotCounts c;
+                  py::tuple out = counts(t.n_env(), c);
+                  breach_cuda::unit_flight_plane(t, solid, material, out_plane, h, w, c);
+                  return out;
+              }, py::arg("tables"), py::arg("solid"), py::arg("material"), py::arg("out"),
+              py::arg("h"), py::arg("w"),
+              "#29 P7e.1: THE FLIGHT PLANE on the device (combat.flight_plane): out (N, h, w) "
+              "bool = solid | mat_blocks_thrown[material]; returns (changed, faults, refused, "
+              "dropped).");
+        m.def("unit_door_uses",
+              [counts](const UnitTablesDevice& t, UnitRecordList& req, ObjectTable& doors) {
+                  ObjectSlotCounts c;
+                  py::tuple out = counts(t.n_env(), c);
+                  breach_cuda::unit_door_uses(t, req, doors, c);
+                  return out;
+              }, py::arg("tables"), py::arg("requests"), py::arg("doors"),
+              "#29 P6b.1: slot 1b's USE requests flip the door table's want_open, in "
+              "request-list order; returns (changed, faults, refused, dropped).");
+    }
+
+    // #29 P7a.3: SLOT 4b (the sprays), THE CELL BUFFER and THE CLAIMS LIST
+    // (record lists: UnitRecordListBuffer), THE DEVICE EDIT DOOR
+    // (cuda_edit_door.h), the cone's TEST-ONLY probe (cuda_unit_kernels.h;
+    // Class T). The Python faces: simulation.unit_kernels (sprays,
+    // spray_cone_probe), simulation.attack_lists, simulation.edit_door.
+    {
+        using breach_cuda::EditDoor;
+        using breach_cuda::FieldApplier;
+        using breach_cuda::UnitRecordList;
+        using breach_cuda::UnitStoreDevice;
+        using breach_cuda::UnitTablesDevice;
+        m.def("edit_door_layout", []() {
+                  py::dict d;
+                  d["edit_cols"] = breach_cuda::EDIT_DOOR_COLS;
+                  d["packed_cols"] = breach_cuda::EDQ_EDIT_COLS;
+                  d["tile_cols"] = breach_cuda::EDQ_TILE_COLS;
+                  d["src_col"] = breach_cuda::EDIT_DOOR_SRC;
+                  d["region_col"] = breach_cuda::EDIT_DOOR_REGION;
+                  d["arg_col"] = breach_cuda::EDIT_DOOR_ARG;            // #29 P7c.1
+                  return d;
+              },
+              "#29 P7a.3: the compiled edit door rows: {edit_cols, packed_cols, tile_cols, "
+              "src_col, region_col}.");
+        py::class_<EditDoor>(m, "EditDoorBuffer",
+                "#29 P7a.3: the device edit door's per-env EDIT and TILE rows and seq "
+                "counters (Class T).")
+            .def(py::init<int, int, int>(), py::arg("n_env"), py::arg("edit_cap"),
+                 py::arg("tile_cap"))
+            .def("begin", [](EditDoor& d) { d.begin(); },
+                 "The 6b flush's reset: every env's rows empty, its seq 0.")
+            .def("reset_env", [](EditDoor& d, int e) { d.reset_env(e); }, py::arg("env"),
+                 "#29 P7e.3: env e's reset alone: its rows empty, its seq 0.")
+            .def("set_seq", [](EditDoor& d, py::array_t<int64_t, py::array::c_style> seq) {
+                     if (seq.ndim() != 1 || seq.shape(0) != d.n_env())
+                         throw std::invalid_argument("EditDoorBuffer.set_seq: (n_env,) int64");
+                     d.set_seq(seq.data());
+                 }, py::arg("seq"))
+            .def("seq", [](EditDoor& d) {
+                     py::array_t<int64_t> out(d.n_env());
+                     d.download_seq(out.mutable_data());
+                     return out;
+                 })
+            .def_property_readonly("edits", [](EditDoor& d) -> UnitRecordList& {
+                     return d.edits(); }, py::return_value_policy::reference_internal)
+            .def_property_readonly("tiles", [](EditDoor& d) -> UnitRecordList& {
+                     return d.tiles(); }, py::return_value_policy::reference_internal);
+        // #29 P7e.3: the edit door, step (c) -- slot 6b's flush from the device
+        // door (cuda_edit_flush.h; face simulation.edit_door.DeviceEditFlush).
+        {
+            using breach_cuda::EditFlush;
+            auto planes_of = [](py::array_t<uint64_t, py::array::c_style> p) {
+                if (p.ndim() != 1 || p.shape(0) != 10)
+                    throw std::invalid_argument("edit flush: planes must be (10,) uint64");
+                std::array<std::uintptr_t, 10> a{};
+                for (int k = 0; k < 10; ++k) a[k] = (std::uintptr_t)p.data()[k];
+                return a;
+            };
+            m.def("edit_flush_layout", []() {
+                      py::dict d;
+                      d["slots"] = (int)breach_cuda::EDQ_SLOTS;
+                      d["fail"] = (int)breach_cuda::EDQ_B_FAIL;
+                      d["n_codes"] = (int)breach_cuda::EF_N_CODES;
+                      d["door_overflow"] = (int)breach_cuda::EF_DOOR_OVERFLOW;
+                      d["field"] = (int)breach_cuda::EF_FIELD;
+                      d["water_depth"] = (int)breach_cuda::EF_WATER_DEPTH;
+                      d["gas_slice"] = (int)breach_cuda::EF_GAS_SLICE;
+                      d["conservative"] = (int)breach_cuda::EF_CONSERVATIVE;
+                      d["mode"] = (int)breach_cuda::EF_MODE;
+                      d["den"] = (int)breach_cuda::EF_DEN;
+                      d["noise_low"] = (int)breach_cuda::EF_NOISE_LOW;
+                      d["key"] = (int)breach_cuda::EF_KEY;
+                      d["tile"] = (int)breach_cuda::EF_TILE;
+                      d["product"] = (int)breach_cuda::EF_PRODUCT;
+                      d["contrib"] = (int)breach_cuda::EF_CONTRIB;
+                      return d;
+                  }, "#29 P7e.3: the flush's books width and its fault codes by name.");
+            py::class_<EditFlush>(m, "EditFlushBuffer",
+                    "#29 P7e.3: slot 6b's flush buffers built on the device from the edit "
+                    "door (Class T).")
+                .def(py::init<int, int, int>(), py::arg("n_env"), py::arg("edit_cap"),
+                     py::arg("tile_cap"))
+                .def("run", [planes_of](EditFlush& f, EditDoor& door, const UnitTablesDevice& t,
+                                        std::uintptr_t tick_row,
+                                        py::array_t<uint64_t, py::array::c_style> planes,
+                                        int h, int w, int n_gases, int o2, int n2,
+                                        uint32_t salt) {
+                         const auto p = planes_of(planes);
+                         f.run(door, t, tick_row, p.data(), h, w, n_gases, o2, n2, salt);
+                     }, py::arg("door"), py::arg("tables"), py::arg("tick_row"),
+                     py::arg("planes"), py::arg("h"), py::arg("w"), py::arg("n_gases"),
+                     py::arg("o2_idx"), py::arg("n2_idx"), py::arg("salt"),
+                     "Build from the door, K1 / K2, the door's reset. Downloads nothing.")
+                .def("run_host_pack", [planes_of](EditFlush& f,
+                                                  py::array_t<int64_t, py::array::c_style> buf,
+                                                  int n_edits, int n_tiles,
+                                                  py::array_t<uint64_t, py::array::c_style> planes,
+                                                  int h, int w, int n_gases, int o2, int n2,
+                                                  uint32_t salt) {
+                         if (buf.ndim() != 1)
+                             throw std::invalid_argument("edit flush: buf must be 1-D int64");
+                         const auto p = planes_of(planes);
+                         f.run_host_pack(buf.data(), n_edits, n_tiles, p.data(), h, w, n_gases,
+                                         o2, n2, salt);
+                     }, py::arg("buf"), py::arg("n_edits"), py::arg("n_tiles"),
+                     py::arg("planes"), py::arg("h"), py::arg("w"), py::arg("n_gases"),
+                     py::arg("o2_idx"), py::arg("n2_idx"), py::arg("salt"),
+                     "THE GATE'S REFERENCE: K1 / K2 fed from a host pack (_edit_buffer).")
+                .def("books", [](EditFlush& f) {
+                         py::array_t<int64_t> b({f.n_env(), (int)breach_cuda::EDQ_SLOTS});
+                         py::array_t<uint64_t> fl(f.n_env());
+                         f.download_books(b.mutable_data(), fl.mutable_data());
+                         return py::make_tuple(b, fl);
+                     }, "THE ONE READ: (books (N, EDQ_SLOTS), fault words (N,), ~0 none).")
+                .def("rows", [](EditFlush& f) {
+                         const int N = f.n_env();
+                         py::array_t<int64_t> e({N * f.edit_cap() + 1,
+                                                 (int)breach_cuda::EDQ_EDIT_COLS});
+                         py::array_t<int64_t> t({N * f.tile_cap(),
+                                                 (int)breach_cuda::EDQ_TILE_COLS});
+                         py::array_t<int64_t> o(N + 1);
+                         py::array_t<int64_t> v({N, (int)breach_cuda::EDQ_ENV_COLS});
+                         f.download_rows(e.mutable_data(), t.mutable_data(), o.mutable_data(),
+                                         v.mutable_data());
+                         return py::make_tuple(e, t, o, v);
+                     }, "The gate's download: (edits, tiles, env offsets, env scalars).")
+                .def_property_readonly("n_env", &EditFlush::n_env)
+                .def_property_readonly("edit_cap", &EditFlush::edit_cap)
+                .def_property_readonly("tile_cap", &EditFlush::tile_cap);
+            m.def("edit_door_append_probe",
+                  [](EditDoor& door, int env, py::array_t<int64_t, py::array::c_style> edits,
+                     py::array_t<int64_t, py::array::c_style> tiles) {
+                      if (edits.ndim() != 2 || edits.shape(1) != breach_cuda::EDIT_DOOR_COLS ||
+                          tiles.ndim() != 2 || tiles.shape(1) != breach_cuda::EDQ_TILE_COLS)
+                          throw std::invalid_argument(
+                              "edit_door_append_probe: edits (E, EDIT_DOOR_COLS), tiles (T, 4)");
+                      return breach_cuda::edit_door_append_probe(
+                          door, env, edits.data(), (int)edits.shape(0), tiles.data(),
+                          (int)tiles.shape(0));
+                  }, py::arg("door"), py::arg("env"), py::arg("edits"), py::arg("tiles"),
+                  "TEST-ONLY (#29 P7e.3): append host rows to an env of the door as a "
+                  "producer would (keys must continue its seq). False: nothing written.");
+        }
+        m.def("unit_sprays",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, breach_cuda::FieldApplier& a,
+                 UnitRecordList& cells, std::uintptr_t solid, int h, int w, int64_t box_max) {
+                  py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env()),
+                      drp(s.n_env());
+                  breach_cuda::UnitDamageCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  c.dropped = drp.mutable_data();
+                  breach_cuda::unit_sprays(s, t, a, cells, solid, h, w, box_max, c);
+                  return py::make_tuple(cov, flt, ref, drp);
+              }, py::arg("store"), py::arg("tables"), py::arg("effects"), py::arg("cells"),
+              py::arg("solid"), py::arg("h"), py::arg("w"), py::arg("box_max"),
+              "#29 P7a.3: slot 4b (combat.process_sprays) on the device store; returns "
+              "(coverage, faults, refused WEGO bursts, dropped records + cells).");
+        m.def("unit_spray_cone_probe",
+              [](std::uintptr_t solid, int n_env, int h, int w,
+                 py::array_t<int64_t, py::array::c_style> args, int64_t box_max, int max_out) {
+                  if (args.ndim() != 3 || args.shape(0) != n_env || args.shape(2) != 8)
+                      throw std::invalid_argument(
+                          "unit_spray_cone_probe: args must be (n_env, n_rows, 8) int64");
+                  const int n_rows = (int)args.shape(1);
+                  py::array_t<int64_t> out({(py::ssize_t)n_env, (py::ssize_t)n_rows,
+                                            (py::ssize_t)max_out, (py::ssize_t)3});
+                  py::array_t<int64_t> meta({(py::ssize_t)n_env, (py::ssize_t)n_rows,
+                                             (py::ssize_t)2});
+                  breach_cuda::unit_spray_cone_probe(solid, n_env, h, w, args.data(), n_rows,
+                                                     box_max, max_out, out.mutable_data(),
+                                                     meta.mutable_data());
+                  return py::make_tuple(out, meta);
+              }, py::arg("solid"), py::arg("n_env"), py::arg("h"), py::arg("w"),
+              py::arg("args"), py::arg("box_max"), py::arg("max_out"),
+              "#29 P7a.3 TEST-ONLY: combat.spray_cone_tiles' device form on synthetic cones.");
+    }
+
+    // #29 P6.4b: THE PER-ENV SERIAL APPLIER and THE TICK-END CLEARS
+    // (cuda_applier.h; Class T). The planes are device addresses of the
+    // (N, ...) arrays in applier_layout.h's order; the Python face is
+    // simulation.unit_kernels (apply_effects / tick_end_clears), the list's
+    // simulation.applier.DeviceApplier.
+    {
+        using breach_cuda::FieldApplier;
+        using breach_cuda::UnitTablesDevice;
+        using breach_cuda::UnitStoreDevice;
+        using breach_cuda::UnitEventRing;
+        using UnitRecordListT = breach_cuda::UnitRecordList;
+        m.def("applier_layout", []() {
+                  py::dict d;
+                  d["fingerprint"] = std::string(breach_cuda::applier_fingerprint());
+                  d["f"] = applier::APPLIER_F;
+                  d["n_books"] = applier::APPLIER_N_BOOKS;
+                  d["n_planes"] = applier::APPLIER_N_PLANES;
+                  d["n_clears"] = applier::APPLIER_N_CLEARS;
+                  return d;
+              },
+              "#29 P6.4b: the compiled applier layout (applier_layout.h).");
+        py::class_<FieldApplier>(m, "FieldApplierBuffer",
+                "#29 P6.4b / P7a.1: the per-env EFFECT LIST (N, cap, F) -- a record list "
+                "with per-row staging for an n_units-row store -- and book channels (Class T).")
+            .def(py::init<int, int, int, int>(), py::arg("n_env"), py::arg("cap"),
+                 py::arg("n_units") = 1, py::arg("row_cap") = applier::APPLIER_ROW_CAP)
+            .def_property_readonly("shape", [](FieldApplier& a) {
+                return py::make_tuple(a.n_env(), a.cap(), applier::APPLIER_F);
+            })
+            .def("begin", [](FieldApplier& a) { a.begin(); },
+                 "Empty every env's list (tick stream).")
+            .def("download", [](FieldApplier& a) {
+                     UnitRecordListT& l = a.list();
+                     py::array_t<int64_t> recs({(py::ssize_t)l.n_env(), (py::ssize_t)l.cap(),
+                                                (py::ssize_t)l.width()});
+                     py::array_t<int64_t> cnt(l.n_env()), drp(l.n_env());
+                     l.download(recs.mutable_data(), cnt.mutable_data(), drp.mutable_data());
+                     return py::make_tuple(recs, cnt, drp);
+                 },
+                 "(records (N, cap, F), counts (N,), dropped (N,)) int64.")
+            .def("stage", [](FieldApplier& a, py::array_t<int64_t, py::array::c_style> recs,
+                             py::array_t<int64_t, py::array::c_style> counts) {
+                     if (recs.ndim() != 3 || recs.shape(0) != a.n_env() ||
+                         recs.shape(1) != a.cap() || recs.shape(2) != applier::APPLIER_F ||
+                         counts.ndim() != 1 || counts.shape(0) != a.n_env())
+                         throw std::invalid_argument(
+                             "FieldApplierBuffer.stage: recs (n_env, cap, F), counts (n_env,)");
+                     a.stage(recs.data(), counts.data());
+                 }, py::arg("recs"), py::arg("counts"));
+        m.def("applier_run",
+              [](FieldApplier& a, UnitStoreDevice& s, const UnitTablesDevice& t,
+                 py::array_t<uint64_t, py::array::c_style> ptrs, int n_gases, int h, int w,
+                 int stage, py::object ring, py::object cells, py::object door,
+                 py::object claims, py::object noise, py::object blast_log,
+                 py::object door_table, py::object door_tiles, py::object duct_table,
+                 py::object vent_table, py::object source_table, py::object source_tiles,
+                 std::uintptr_t source_out, py::object signal_tables, std::uintptr_t tick_row,
+                 py::object timed_table, py::object heat_table, py::object horde) {
+                  if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
+                      throw std::invalid_argument("applier_run: ptrs must be (N_PLANES,) uint64");
+                  // #29 P6b.1: the DOORS stage's door table and tile table
+                  breach_cuda::ObjectTable* dp =
+                      door_table.is_none() ? nullptr : door_table.cast<breach_cuda::ObjectTable*>();
+                  breach_cuda::ObjectTable* tp =
+                      door_tiles.is_none() ? nullptr : door_tiles.cast<breach_cuda::ObjectTable*>();
+                  breach_cuda::ApplierPlanes p;
+                  for (int k = 0; k < applier::APPLIER_N_PLANES; ++k)
+                      p.ptr[k] = (std::uintptr_t)ptrs.data()[k];
+                  p.n_gases = n_gases; p.h = h; p.w = w;
+                  UnitEventRing* rp = ring.is_none() ? nullptr : ring.cast<UnitEventRing*>();
+                  py::array_t<int64_t> books({(py::ssize_t)a.n_env(),
+                                              (py::ssize_t)applier::APPLIER_N_BOOKS});
+                  py::array_t<int64_t> cov(a.n_env()), drp(a.n_env());
+                  breach_cuda::ApplierOut o;
+                  o.books = books.mutable_data();
+                  o.coverage = cov.mutable_data();
+                  o.ring_dropped = drp.mutable_data();
+                  breach_cuda::ApplierLists L;      // #29 P7a.3: the walk's lists
+                  L.cells = cells.is_none() ? nullptr : cells.cast<breach_cuda::UnitRecordList*>();
+                  L.door = door.is_none() ? nullptr : door.cast<breach_cuda::EditDoor*>();
+                  L.claims = claims.is_none() ? nullptr
+                                              : claims.cast<breach_cuda::UnitRecordList*>();
+                  // #29 P7c.1: the noise list and the blast log
+                  L.noise = noise.is_none() ? nullptr
+                                            : noise.cast<breach_cuda::UnitRecordList*>();
+                  L.blast_log = blast_log.is_none()
+                                    ? nullptr
+                                    : blast_log.cast<breach_cuda::UnitRecordList*>();
+                  L.door_table = dp;                // #29 P6b.1: the DOORS stage
+                  L.door_tiles = tp;
+                  // #29 P6b.2: the VENTS stage
+                  L.duct_table = duct_table.is_none()
+                                     ? nullptr : duct_table.cast<breach_cuda::ObjectTable*>();
+                  L.vent_table = vent_table.is_none()
+                                     ? nullptr : vent_table.cast<breach_cuda::ObjectTable*>();
+                  // #29 P7c.2: the blast-source tables and the SOURCES hand-out
+                  L.source_table = source_table.is_none()
+                                       ? nullptr : source_table.cast<breach_cuda::ObjectTable*>();
+                  L.source_tiles = source_tiles.is_none()
+                                       ? nullptr : source_tiles.cast<breach_cuda::ObjectTable*>();
+                  L.source_out = source_out;
+                  // #29 P6b.3: the signal tables, (signal, sensor, sensor_tile, node,
+                  // node_in, pump, pump_in, door_drive), each an ObjectTableBuffer or
+                  // None (#29 P7e.1: the EMIT stage's tick is the tick row's)
+                  if (!signal_tables.is_none()) {
+                      py::sequence seq = signal_tables.cast<py::sequence>();
+                      if (py::len(seq) != 8)
+                          throw std::invalid_argument("applier_run: signal_tables holds 8 tables");
+                      breach_cuda::ObjectTable** dst[8] = {
+                          &L.signal_table, &L.sensor_table, &L.sensor_tiles, &L.node_table,
+                          &L.node_ins, &L.pump_table, &L.pump_ins, &L.door_drives};
+                      for (int k = 0; k < 8; ++k) {
+                          py::object o2 = seq[k];
+                          *dst[k] = o2.is_none() ? nullptr : o2.cast<breach_cuda::ObjectTable*>();
+                      }
+                  }
+                  L.tick_row = tick_row;            // #29 P7e.1: 0 = none
+                  // #29 P7d: the HORDE stage's reach, (hdr, keys, dist, masks, pass,
+                  // flags, queues, live, latch, fcap) as ten uint64
+                  if (!horde.is_none()) {
+                      auto hz = horde.cast<py::array_t<uint64_t, py::array::c_style |
+                                                                   py::array::forcecast>>();
+                      if (hz.ndim() != 1 || hz.shape(0) != 10)
+                          throw std::invalid_argument("applier_run: horde must be 10 uint64 "
+                                                      "(9 device addresses, fcap)");
+                      const uint64_t* q = hz.data();
+                      L.horde.hdr = q[0]; L.horde.keys = q[1]; L.horde.dist = q[2];
+                      L.horde.masks = q[3]; L.horde.pass = q[4]; L.horde.flags = q[5];
+                      L.horde.queues = q[6]; L.horde.live = q[7]; L.horde.latch = q[8];
+                      L.horde.fcap = (int)q[9];
+                  }
+                  // #29 P6b.4: the TIMED_CHARGES / HEAT_SOURCES stages' tables
+                  L.timed_table = timed_table.is_none()
+                                      ? nullptr : timed_table.cast<breach_cuda::ObjectTable*>();
+                  L.heat_table = heat_table.is_none()
+                                     ? nullptr : heat_table.cast<breach_cuda::ObjectTable*>();
+                  breach_cuda::applier_run(a, s, t, p, stage, rp, o, &L);
+                  return py::make_tuple(books, cov, drp);
+              }, py::arg("applier"), py::arg("store"), py::arg("tables"), py::arg("ptrs"),
+              py::arg("n_gases"), py::arg("h"), py::arg("w"), py::arg("stage"),
+              py::arg("ring") = py::none(), py::arg("cells") = py::none(),
+              py::arg("door") = py::none(), py::arg("claims") = py::none(),
+              py::arg("noise") = py::none(), py::arg("blast_log") = py::none(),
+              py::arg("door_table") = py::none(), py::arg("door_tiles") = py::none(),
+              py::arg("duct_table") = py::none(), py::arg("vent_table") = py::none(),
+              py::arg("source_table") = py::none(), py::arg("source_tiles") = py::none(),
+              py::arg("source_out") = (std::uintptr_t)0,
+              py::arg("signal_tables") = py::none(), py::arg("tick_row") = (std::uintptr_t)0,
+              py::arg("timed_table") = py::none(), py::arg("heat_table") = py::none(),
+              py::arg("horde") = py::none(),
+              "#29 P6.4b / P7a.1: the per-env serial applier over the effect lists in a "
+              "stage (applier_layout.h's APPLIER_STAGE_*); returns (books (N, N_BOOKS), "
+              "coverage (N,): the rows the walk changed, ring_dropped (N,)) int64.");
+        m.def("horde_flood_probe",
+              [](int n_env, int h, int w, std::uintptr_t tile_ok,
+                 py::array_t<int64_t, py::array::c_style | py::array::forcecast> fp,
+                 py::array_t<int64_t, py::array::c_style | py::array::forcecast> seeds,
+                 py::array_t<int64_t, py::array::c_style | py::array::forcecast> n_seeds,
+                 std::uintptr_t dist) {
+                  if (fp.ndim() != 1 || fp.shape(0) != n_env || n_seeds.ndim() != 1 ||
+                      n_seeds.shape(0) != n_env || seeds.ndim() != 3 ||
+                      seeds.shape(0) != n_env || seeds.shape(2) != 2)
+                      throw std::invalid_argument("horde_flood_probe: fp (N,), seeds (N, k, 2), "
+                                                  "n_seeds (N,)");
+                  breach_cuda::horde_flood_probe(n_env, h, w, tile_ok, fp.data(), seeds.data(),
+                                                 n_seeds.data(), (int)seeds.shape(1), dist);
+              },
+              "#29 P7d, TEST-ONLY: the HORDE stage's flood (one block per env) on device "
+              "masks tile_ok (N, h, w) uint8 into dist (N, h, w) int32 (device addresses).");
+        m.def("applier_blast_probe",
+              [](FieldApplier& a, const UnitTablesDevice& t,
+                 py::array_t<uint64_t, py::array::c_style> ptrs, int n_gases, int h, int w,
+                 py::array_t<int64_t, py::array::c_style> q, int M) {
+                  if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
+                      throw std::invalid_argument("applier_blast_probe: ptrs must be (N_PLANES,)");
+                  if (q.ndim() != 3 || q.shape(0) != a.n_env() || q.shape(2) != 7)
+                      throw std::invalid_argument("applier_blast_probe: q must be (N, K, 7)");
+                  breach_cuda::ApplierPlanes p;
+                  for (int k = 0; k < applier::APPLIER_N_PLANES; ++k)
+                      p.ptr[k] = (std::uintptr_t)ptrs.data()[k];
+                  p.n_gases = n_gases; p.h = h; p.w = w;
+                  const int K = (int)q.shape(1);
+                  py::array_t<int64_t> out({(py::ssize_t)a.n_env(), (py::ssize_t)K,
+                                            (py::ssize_t)(3 + 2 * M)});
+                  breach_cuda::blast_probe(a, t, p, q.data(), K, M, out.mutable_data());
+                  return out;
+              }, py::arg("applier"), py::arg("tables"), py::arg("ptrs"), py::arg("n_gases"),
+              py::arg("h"), py::arg("w"), py::arg("q"), py::arg("M"),
+              "#29 P7c.2 TEST-ONLY: the blast walk and air read per query (N, K, 3 + 2 M).");
+        m.def("unit_melee",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, breach_cuda::FieldApplier& a,
+                 std::uintptr_t tick_row) {
+                  py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env()),
+                      drp(s.n_env());
+                  breach_cuda::UnitDamageCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  c.dropped = drp.mutable_data();
+                  breach_cuda::unit_melee(s, t, a, tick_row, c);
+                  return py::make_tuple(cov, flt, ref, drp);
+              }, py::arg("store"), py::arg("tables"), py::arg("effects"), py::arg("tick_row"),
+              "#29 P7a.1: slot 4a (combat.process_melee_intents) on the device store, its "
+              "blows appended to the effect list; returns (coverage, faults, refused, "
+              "dropped records).");
+        // #29 P7a.2: slot 4's shooting and slot 2''s rounds (cuda_unit_shooting.cu)
+        m.def("unit_shooting",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, breach_cuda::FieldApplier& a,
+                 breach_cuda::ObjectTable& rounds, breach_cuda::ObjectTable& noise,
+                 std::uintptr_t tick_row, std::uintptr_t solid,
+                 std::uintptr_t material, int h, int w) {
+                  const py::ssize_t n = s.n_env();
+                  py::array_t<int64_t> cov(n), flt(n), ref(n), drp(n), rl(n), nl(n);
+                  breach_cuda::UnitShootCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  c.dropped = drp.mutable_data();
+                  c.rounds_lost = rl.mutable_data();
+                  c.noise_lost = nl.mutable_data();
+                  breach_cuda::ShootPlanes p;
+                  p.solid = solid; p.material = material; p.h = h; p.w = w;
+                  breach_cuda::unit_shooting(s, t, a, rounds, noise, tick_row, p, c);
+                  return py::make_tuple(cov, flt, ref, drp, rl, nl);
+              }, py::arg("store"), py::arg("tables"), py::arg("effects"), py::arg("rounds"),
+              py::arg("noise"), py::arg("tick_row"), py::arg("solid"),
+              py::arg("material"), py::arg("h"), py::arg("w"),
+              "#29 P7a.2: slot 4's shooting (combat.process_shooting, the continuous path) "
+              "on the device store; returns (coverage, faults, refused, dropped records, "
+              "rounds lost, noises lost).");
+        m.def("unit_rounds",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, breach_cuda::FieldApplier& a,
+                 breach_cuda::ObjectTable& rounds, std::uintptr_t tick_row, std::uintptr_t solid,
+                 std::uintptr_t material, int h, int w, bool compact) {
+                  const py::ssize_t n = s.n_env();
+                  py::array_t<int64_t> cov(n), flt(n), ref(n), drp(n), rl(n);
+                  breach_cuda::UnitShootCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  c.dropped = drp.mutable_data();
+                  c.rounds_lost = rl.mutable_data();
+                  breach_cuda::ShootPlanes p;
+                  p.solid = solid; p.material = material; p.h = h; p.w = w;
+                  breach_cuda::unit_rounds(s, t, a, rounds, tick_row, p, compact, c);
+                  return py::make_tuple(cov, flt, ref, drp, rl);
+              }, py::arg("store"), py::arg("tables"), py::arg("effects"), py::arg("rounds"),
+              py::arg("tick_row"), py::arg("solid"), py::arg("material"),
+              py::arg("h"), py::arg("w"), py::arg("compact") = true,
+              "#29 P7a.2: slot 2''s march (Simulation._march_rounds) over the round table; "
+              "returns (coverage, faults, refused, dropped records, rounds lost).");
+        m.def("tick_end_clears",
+              [](int n_env, int h, int w, py::array_t<uint64_t, py::array::c_style> ptrs,
+                 std::uintptr_t active) {
+                  if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_CLEARS)
+                      throw std::invalid_argument("tick_end_clears: ptrs must be (N_CLEARS,)");
+                  std::uintptr_t p[applier::APPLIER_N_CLEARS];
+                  for (int k = 0; k < applier::APPLIER_N_CLEARS; ++k)
+                      p[k] = (std::uintptr_t)ptrs.data()[k];
+                  breach_cuda::tick_end_clears(n_env, h, w, p, active);
+              }, py::arg("n_env"), py::arg("h"), py::arg("w"), py::arg("ptrs"),
+              py::arg("active"),
+              "#29 P6.4b: the tick-end clears on the (N, h, w) planes (tick stream).");
+        m.def("topology_probe_tile_changed",
+              [](FieldApplier& a, const UnitTablesDevice& t,
+                 py::array_t<uint64_t, py::array::c_style> ptrs, int n_gases, int h, int w) {
+                  if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
+                      throw std::invalid_argument(
+                          "topology_probe_tile_changed: ptrs must be (N_PLANES,) uint64");
+                  breach_cuda::ApplierPlanes p;
+                  for (int k = 0; k < applier::APPLIER_N_PLANES; ++k)
+                      p.ptr[k] = (std::uintptr_t)ptrs.data()[k];
+                  p.n_gases = n_gases; p.h = h; p.w = w;
+                  py::array_t<int64_t> books({(py::ssize_t)a.n_env(),
+                                              (py::ssize_t)applier::APPLIER_N_BOOKS});
+                  breach_cuda::topology_probe_tile_changed(a, t, p, books.mutable_data());
+                  return books;
+              }, py::arg("applier"), py::arg("tables"), py::arg("ptrs"), py::arg("n_gases"),
+              py::arg("h"), py::arg("w"),
+              "#29 P6.4b TEST-ONLY: material = m; on_tile_changed, per staged record.");
+        // #29 P6b.1 TEST-ONLY: the seam's seal / unseal / can_seal, the gas-N
+        // primitives and _aperture_blocked (cuda_topology_probe.cu).
+        m.def("topology_probe_seam",
+              [](const UnitTablesDevice& t, py::array_t<uint64_t, py::array::c_style> ptrs,
+                 int n_gases, int h, int w, py::array_t<int64_t, py::array::c_style> ops,
+                 py::array_t<int64_t, py::array::c_style> n_ops,
+                 py::array_t<int64_t, py::array::c_style> tiles) {
+                  if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
+                      throw std::invalid_argument("topology_probe_seam: ptrs must be (N_PLANES,)");
+                  const int n = t.n_env();
+                  if (ops.ndim() != 3 || ops.shape(0) != n || ops.shape(2) != 16 ||
+                      n_ops.ndim() != 1 || n_ops.shape(0) != n || tiles.ndim() != 3 ||
+                      tiles.shape(0) != n || tiles.shape(2) != 2)
+                      throw std::invalid_argument(
+                          "topology_probe_seam: ops (N, K, 16), n_ops (N,), tiles (N, T, 2)");
+                  for (int e = 0; e < n; ++e)
+                      if (n_ops.data()[e] < 0 || n_ops.data()[e] > ops.shape(1))
+                          throw std::invalid_argument("topology_probe_seam: n_ops outside 0..K");
+                  breach_cuda::ApplierPlanes p;
+                  for (int k = 0; k < applier::APPLIER_N_PLANES; ++k)
+                      p.ptr[k] = (std::uintptr_t)ptrs.data()[k];
+                  p.n_gases = n_gases; p.h = h; p.w = w;
+                  const int k_cap = (int)ops.shape(1), t_cap = (int)tiles.shape(1);
+                  py::array_t<int64_t> res({(py::ssize_t)n, (py::ssize_t)k_cap, (py::ssize_t)9});
+                  py::array_t<int64_t> books({(py::ssize_t)n,
+                                              (py::ssize_t)applier::APPLIER_N_BOOKS});
+                  breach_cuda::topology_probe_seam(t, p, ops.data(), n_ops.data(), k_cap,
+                                                   tiles.data(), t_cap, res.mutable_data(),
+                                                   books.mutable_data());
+                  return py::make_tuple(res, books);
+              }, py::arg("tables"), py::arg("ptrs"), py::arg("n_gases"), py::arg("h"),
+              py::arg("w"), py::arg("ops"), py::arg("n_ops"), py::arg("tiles"),
+              "#29 P6b.1 TEST-ONLY: seal / unseal / can_seal / inject / extract / transfer "
+              "/ _aperture_blocked / inject_gas_n_vec / floordiv_q / muldiv_floor_q per op; "
+              "returns (results (N, K, 9), books).");
+    }
+
+    // #29 P7.0a: slot 9d (cuda_unit_ignition.cu) and the kit's TEST-ONLY probes
+    // (cuda_unit_kit_probe.cu: the device draws, sight, the falloffs); Class T.
+    // The Python faces are simulation.unit_kernels (ignition, kit_*_probe) and
+    // simulation.unit_draws (the draws vocabulary's fingerprint).
+    {
+        using breach_cuda::UnitStoreDevice;
+        using breach_cuda::UnitTablesDevice;
+        m.def("unit_draws_layout", []() {
+                  py::dict d;
+                  d["fingerprint"] = std::string(breach_cuda::unit_draws_fingerprint());
+                  return d;
+              },
+              "#29 P7.0a: the compiled draws vocabulary (unit_draws_layout.h): {fingerprint}.");
+        m.def("unit_ignition",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t,
+                 py::array_t<uint64_t, py::array::c_style> ptrs, int n_gases, int h, int w) {
+                  if (ptrs.ndim() != 1 || ptrs.shape(0) != 9)
+                      throw std::invalid_argument("unit_ignition: ptrs must be (9,) uint64");
+                  const uint64_t* q = ptrs.data();
+                  breach_cuda::IgnitionPlanes p;
+                  p.temperature = (std::uintptr_t)q[0]; p.material = (std::uintptr_t)q[1];
+                  p.flammable = (std::uintptr_t)q[2]; p.wall_hp = (std::uintptr_t)q[3];
+                  p.solid = (std::uintptr_t)q[4]; p.is_vacuum = (std::uintptr_t)q[5];
+                  p.gas = (std::uintptr_t)q[6]; p.fire = (std::uintptr_t)q[7];
+                  p.armed = (std::uintptr_t)q[8];
+                  p.n_gases = n_gases; p.h = h; p.w = w;
+                  py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env());
+                  breach_cuda::UnitKernelCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  breach_cuda::unit_ignition(s, t, p, c);
+                  return py::make_tuple(cov, flt, ref);
+              }, py::arg("store"), py::arg("tables"), py::arg("ptrs"), py::arg("n_gases"),
+              py::arg("h"), py::arg("w"),
+              "#29 P7.0a: slot 9d (combat.apply_temperature_ignition) on (N, h, w) planes "
+              "(temperature, material, flammable, wall_hp, solid, is_vacuum, gas, fire, "
+              "ignition_armed); fire and armed in place. Returns (coverage, faults, refused).");
+        // #29 P7e.2: the device sorts and 9b (cuda_unit_sorts.cu)
+        m.def("unit_burn_sort",
+              [](UnitStoreDevice& s, breach_cuda::FieldApplier& a, std::uintptr_t counts,
+                 std::uintptr_t lists, int stride, int h, int w) {
+                  py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env());
+                  breach_cuda::UnitKernelCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  breach_cuda::unit_burn_sort(s, a, counts, lists, stride, h, w, c);
+                  return py::make_tuple(cov, flt, ref);
+              }, py::arg("store"), py::arg("applier"), py::arg("counts"), py::arg("lists"),
+              py::arg("stride"), py::arg("h"), py::arg("w"),
+              "#29 P7e.2: slot 9's burn-through list (arrival order on the device) ranked "
+              "row-major into the effect list as DESTROY_WALL records. Returns (coverage, "
+              "faults, refused).");
+        m.def("unit_burst_walls",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, breach_cuda::FieldApplier& a,
+                 py::array_t<uint64_t, py::array::c_style> ptrs, int h, int w) {
+                  if (ptrs.ndim() != 1 || ptrs.shape(0) != 5)
+                      throw std::invalid_argument("unit_burst_walls: ptrs must be (5,) uint64");
+                  const uint64_t* q = ptrs.data();
+                  breach_cuda::BurstScanPlanes p;
+                  p.material = (std::uintptr_t)q[0]; p.solid = (std::uintptr_t)q[1];
+                  p.is_vacuum = (std::uintptr_t)q[2]; p.is_ambient = (std::uintptr_t)q[3];
+                  p.atmosphere = (std::uintptr_t)q[4];
+                  p.h = h; p.w = w;
+                  py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env());
+                  breach_cuda::UnitKernelCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  breach_cuda::unit_burst_walls(s, t, a, p, c);
+                  return py::make_tuple(cov, flt, ref);
+              }, py::arg("store"), py::arg("tables"), py::arg("applier"), py::arg("ptrs"),
+              py::arg("h"), py::arg("w"),
+              "#29 P7e.2: slot 9b's scan (material, solid, is_vacuum, is_ambient, atmosphere) "
+              "and top-K as DESTROY_WALL records. Returns (coverage, faults, refused).");
+        m.def("unit_stamp",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t,
+                 py::array_t<uint64_t, py::array::c_style> scratch, int cap,
+                 py::array_t<uint64_t, py::array::c_style> planes, int h, int w,
+                 bool rows_only) {
+                  if (scratch.ndim() != 1 || scratch.shape(0) != 5 || planes.ndim() != 1 ||
+                      planes.shape(0) != 12)
+                      throw std::invalid_argument("unit_stamp: scratch (5,), planes (12,) uint64");
+                  const uint64_t* q = scratch.data();
+                  breach_cuda::StampScratch sc;
+                  sc.rows = (std::uintptr_t)q[0]; sc.total = (std::uintptr_t)q[1];
+                  sc.ntiles = (std::uintptr_t)q[2]; sc.winner = (std::uintptr_t)q[3];
+                  sc.freed = (std::uintptr_t)q[4]; sc.cap = cap;
+                  py::array_t<int64_t> rcov(s.n_env()), rflt(s.n_env()), rref(s.n_env());
+                  py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env());
+                  breach_cuda::UnitKernelCounts rc, c;
+                  rc.coverage = rcov.mutable_data(); rc.faults = rflt.mutable_data();
+                  rc.refused = rref.mutable_data();
+                  c.coverage = cov.mutable_data(); c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  if (rows_only) {
+                      breach_cuda::unit_stamp_rows(s, t, sc, h, w, rc);
+                      for (int e = 0; e < s.n_env(); ++e) {
+                          cov.mutable_data()[e] = 0; flt.mutable_data()[e] = 0;
+                          ref.mutable_data()[e] = 0;
+                      }
+                  } else {
+                      const uint64_t* r = planes.data();
+                      breach_cuda::StampPlanes p;
+                      p.permeability = (std::uintptr_t)r[0]; p.wave_absorb = (std::uintptr_t)r[1];
+                      p.heat_atten_q = (std::uintptr_t)r[2]; p.light_atten_q = (std::uintptr_t)r[3];
+                      p.obstacles = (std::uintptr_t)r[4]; p.dyn_permeability = (std::uintptr_t)r[5];
+                      p.dyn_wave_absorb = (std::uintptr_t)r[6];
+                      p.dyn_heat_atten_q = (std::uintptr_t)r[7];
+                      p.dyn_light_atten_q = (std::uintptr_t)r[8]; p.solid = (std::uintptr_t)r[9];
+                      p.is_vacuum = (std::uintptr_t)r[10]; p.atmosphere = (std::uintptr_t)r[11];
+                      p.h = h; p.w = w;
+                      breach_cuda::unit_stamp(s, t, sc, p, rc, c);
+                  }
+                  return py::make_tuple(py::make_tuple(rcov, rflt, rref),
+                                        py::make_tuple(cov, flt, ref));
+              }, py::arg("store"), py::arg("tables"), py::arg("scratch"), py::arg("cap"),
+              py::arg("planes"), py::arg("h"), py::arg("w"), py::arg("rows_only"),
+              "#29 P7e.2: slot 6 from the unit store -- the stamp rows (rows_only) or the rows, "
+              "the stamp kernel and the atmosphere refill. Returns ((row counts), (refill "
+              "counts)).");
+        m.def("unit_kit_draws_probe",
+              [](py::array_t<int64_t, py::array::c_style> keys,
+                 py::array_t<int64_t, py::array::c_style> args) {
+                  if (keys.ndim() != 2 || keys.shape(1) != 3 || args.ndim() != 3 ||
+                      args.shape(0) != keys.shape(0) ||
+                      args.shape(2) != breach_cuda::UNIT_KIT_DRAW_ARGS)
+                      throw std::invalid_argument(
+                          "unit_kit_draws_probe: keys (N, 3), args (N, R, 6) int64");
+                  const int n = (int)args.shape(0), r = (int)args.shape(1);
+                  py::array_t<int64_t> out({(py::ssize_t)n, (py::ssize_t)r,
+                                            (py::ssize_t)breach_cuda::UNIT_KIT_DRAW_OUT});
+                  breach_cuda::unit_kit_draws_probe(keys.data(), n, args.data(), r,
+                                                    out.mutable_data());
+                  return out;
+              }, py::arg("keys"), py::arg("args"),
+              "#29 P7.0a TEST-ONLY: the device draws on synthetic (key, salt, id, index).");
+        m.def("unit_kit_sight_probe",
+              [](std::uintptr_t solid, std::uintptr_t screen, int n_env, int h, int w,
+                 py::array_t<int64_t, py::array::c_style> pairs) {
+                  if (pairs.ndim() != 3 || pairs.shape(0) != n_env || pairs.shape(2) != 4)
+                      throw std::invalid_argument("unit_kit_sight_probe: pairs (N, R, 4) int64");
+                  const int r = (int)pairs.shape(1);
+                  py::array_t<int64_t> out({(py::ssize_t)n_env, (py::ssize_t)r, (py::ssize_t)3});
+                  breach_cuda::unit_kit_sight_probe(solid, screen, n_env, h, w, pairs.data(), r,
+                                                    out.mutable_data());
+                  return out;
+              }, py::arg("solid"), py::arg("screen"), py::arg("n_env"), py::arg("h"),
+              py::arg("w"), py::arg("pairs"),
+              "#29 P7.0a TEST-ONLY: the device has_los (both forms) on random pairs.");
+        m.def("unit_kit_falloff_probe",
+              [](py::array_t<int64_t, py::array::c_style> args) {
+                  if (args.ndim() != 2 || args.shape(1) != 3)
+                      throw std::invalid_argument("unit_kit_falloff_probe: args (n, 3) int64");
+                  const int n = (int)args.shape(0);
+                  py::array_t<int64_t> out({(py::ssize_t)n, (py::ssize_t)2});
+                  breach_cuda::unit_kit_falloff_probe(args.data(), n, out.mutable_data());
+                  return out;
+              }, py::arg("args"),
+              "#29 P7.0a TEST-ONLY: falloff_floor_q / falloff_round_q on the device.");
+    }
 
     m.def("eos_mg_build_parity",
           [](const EOSSolver& solver,
@@ -881,6 +2460,37 @@ PYBIND11_MODULE(breach_physics, m) {
     // The launch core's per-env counter block layout (cuda_resident.h), so a
     // caller of cuda_radiation_sweep_resident reads the slots by name from
     // the ONE definition rather than re-typing indices.
+    // #29 P4c: the device edit queue's tables (cuda_resident.h), so the host
+    // pack (field_edit.pack_for_device) and the runner's books fold read the
+    // ONE definition: the field ordinals (refused by the pack unless equal to
+    // FIELD_POLICY's lexicographic ranks) and the books' slots.
+    {
+        py::dict fo;
+        fo["atmosphere"] = (int)breach_cuda::EDQ_F_ATMOSPHERE;
+        fo["fire"] = (int)breach_cuda::EDQ_F_FIRE;
+        fo["gas"] = (int)breach_cuda::EDQ_F_GAS;
+        fo["gas_energy"] = (int)breach_cuda::EDQ_F_GAS_ENERGY;
+        fo["heat"] = (int)breach_cuda::EDQ_F_HEAT;
+        fo["smoke"] = (int)breach_cuda::EDQ_F_SMOKE;
+        fo["water_depth"] = (int)breach_cuda::EDQ_F_WATER_DEPTH;
+        fo["wave_source"] = (int)breach_cuda::EDQ_F_WAVE_SOURCE;
+        m.attr("EDIT_FIELD_ORDINALS") = fo;
+        py::dict bs;
+        bs["dep"] = (int)breach_cuda::EDQ_B_DEP;
+        bs["clip"] = (int)breach_cuda::EDQ_B_CLIP;
+        bs["gas_max"] = breach_cuda::EDQ_GAS_MAX;
+        bs["ge_field_edit"] = (int)breach_cuda::EDQ_B_GE_FE;
+        bs["ge_field_edit_wave"] = (int)breach_cuda::EDQ_B_GE_WAVE;
+        bs["ge_field_edit_atm"] = (int)breach_cuda::EDQ_B_GE_ATM;
+        bs["noise"] = (int)breach_cuda::EDQ_B_NOISE;
+        bs["fail"] = (int)breach_cuda::EDQ_B_FAIL;
+        bs["tiles"] = (int)breach_cuda::EDQ_B_TILES;
+        bs["slots"] = (int)breach_cuda::EDQ_SLOTS;
+        bs["edit_cols"] = breach_cuda::EDQ_EDIT_COLS;
+        bs["tile_cols"] = breach_cuda::EDQ_TILE_COLS;
+        bs["env_cols"] = breach_cuda::EDQ_ENV_COLS;
+        m.attr("EDIT_QUEUE_LAYOUT") = bs;
+    }
     m.attr("RADIATION_SWEEP_CNT_SLOTS") = breach_cuda::RADIATION_SWEEP_CNT_SLOTS;
     m.attr("RS_SLOT_BAD_EXTINCTION")    = breach_cuda::RS_SLOT_BAD_EXTINCTION;
     m.attr("RS_SLOT_BAD_AMBIENT")       = breach_cuda::RS_SLOT_BAD_AMBIENT;
@@ -1412,7 +3022,17 @@ PYBIND11_MODULE(breach_physics, m) {
              int32_t p_ext_q, int32_t p_full_q,
              // #88 P2: the EOSSolver whose per-gas trace books the soot mint
              // writes (the CPU CombustionSolver.step's `eos=` twin). OPTIONAL.
-             py::object eos) -> py::tuple {
+             py::object eos,
+             // #71 (residency arc #29 P2): THE GAS ENERGY SEAM — the CPU
+             // step's gas_energy / is_ambient / t_amb_q, same meaning, same
+             // None defaults (None == the pre-#54 T-form deposit).
+             py::object gas_energy, py::object is_ambient, int32_t t_amb_q,
+             // #71: the CombustionSolver whose members RECEIVE this call's
+             // books (heat_floor_hits, t_max_phys_hits, e_deposit_drop_sum and
+             // every e_comb_* channel, ADDED as the CPU step adds them), so the
+             // closure identity reads one set of counters whichever backend
+             // ran. OPTIONAL; the returned tuple is unchanged either way.
+             py::object combustion) -> py::tuple {
               auto gv = gas.mutable_unchecked<3>();
               int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
               const int n_gases = static_cast<int>(gv.shape(0));
@@ -1484,8 +3104,25 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto av = atm_arr.unchecked<2>();
                   atm_ptr = av.data(0, 0);
               }
+              // #71: the conserved field + the ring mask (the CPU binding's
+              // nullable idiom, verbatim).
+              int64_t* gen_ptr = nullptr;
+              py::array_t<int64_t> gen_arr;
+              if (!gas_energy.is_none()) {
+                  gen_arr = gas_energy.cast<py::array_t<int64_t>>();
+                  auto ga = gen_arr.mutable_unchecked<2>();
+                  gen_ptr = ga.mutable_data(0, 0);
+              }
+              const bool* amb_ptr = nullptr;
+              py::array_t<bool> amb_arr;
+              if (!is_ambient.is_none()) {
+                  amb_arr = is_ambient.cast<py::array_t<bool>>();
+                  auto aa = amb_arr.unchecked<2>();
+                  amb_ptr = aa.data(0, 0);
+              }
               int64_t heat_floor_hits = 0, t_max_phys_hits = 0;
               int64_t e_deposit_drop_sum = 0;   // P-E2b
+              int64_t e_books[breach_cuda::COMB_E_BOOKS] = {};   // #71
               int64_t* t_mint = nullptr; int64_t* t_clip = nullptr; int64_t* t_neg = nullptr;
               if (!eos.is_none() && black_smoke_idx >= 0 && black_smoke_idx < n_gases) {
                   const EOSSolver& es = eos.cast<const EOSSolver&>();
@@ -1505,7 +3142,25 @@ PYBIND11_MODULE(breach_physics, m) {
                   tsol, hshift, heat_ptr, H_BED_M, H_BED_SHIFT, dacc_ptr,
                   draw_r, perm_ptr, max_claimants,
                   fire_T_ext, fire_T_span, hotf_cap, tep, fpo,
-                  atm_ptr, p_ext_q, p_full_q, t_mint, t_clip, t_neg);
+                  atm_ptr, p_ext_q, p_full_q, t_mint, t_clip, t_neg,
+                  gen_ptr, amb_ptr, t_amb_q, e_books);
+              if (!combustion.is_none()) {
+                  // The CPU step's own `+=` into its mutable members, in the
+                  // order of breach_cuda::combustion_step's e_books.
+                  const CombustionSolver& cs = combustion.cast<const CombustionSolver&>();
+                  cs.heat_floor_hits    += heat_floor_hits;
+                  cs.t_max_phys_hits    += t_max_phys_hits;
+                  cs.e_deposit_drop_sum += e_deposit_drop_sum;
+                  cs.e_comb_draw_sum       += e_books[0];
+                  cs.e_comb_mint_sum       += e_books[1];
+                  cs.e_comb_deliver_sum    += e_books[2];
+                  cs.e_soot_shed_sum       += e_books[3];
+                  cs.e_ts_products_sum     += e_books[4];
+                  cs.e_comb_export_sum     += e_books[5];
+                  cs.e_comb_heat_sum       += e_books[6];
+                  cs.e_comb_rail_sum       += e_books[7];
+                  cs.e_comb_solid_heat_sum += e_books[8];
+              }
               return py::make_tuple(heat_floor_hits, t_max_phys_hits,
                                     e_deposit_drop_sum);
           },
@@ -1541,6 +3196,10 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("p_ext_q") = 0,
           py::arg("p_full_q") = 0,
           py::arg("eos") = py::none(),   // #88 P2: the soot mint's trace books
+          py::arg("gas_energy") = py::none(),   // #71: arc #54 (None = pre-#54)
+          py::arg("is_ambient") = py::none(),   // #71: the accountable set's ring
+          py::arg("t_amb_q") = 0,               // #71: T_AMB_K raw
+          py::arg("combustion") = py::none(),   // #71: the solver booked into
           "P6.9b isolated: run ONE GPU combustion step (the two-gather "
           "reformulation, continuous-O2 proportional demand) in place on the "
           "three gas planes + temperature + wall_hp (bit-identical to "
@@ -1893,6 +3552,206 @@ PYBIND11_MODULE(breach_physics, m) {
     // (smoke_cliff_count — the integer smoke-CFL substep-count helper — is
     //  DELETED with the n_smoke kit, smoke transport v2, #12.)
 
+    // arc #63 P1 (docs/architecture/engine/17_swarm_units.md §3): expose the
+    // vendored Philox-4x32-10 (cpp/src/philox32.h) so tests/test_philox32_*.py
+    // can verify the SHIPPED C++ header bit-identical to the pure-Python twin
+    // (src/simulation/philox32.py) and to Random123's published KAT vectors
+    // (tests/data/philox4x32_10_kat.txt). Brought to main by #29 P3b (the
+    // match draws are Philox on the Python twin; the device draws of P4c /
+    // P7a compile this header): no C++ sim call site draws yet.
+    m.def("philox32_4x32_10",
+          [](uint32_t ctr0, uint32_t ctr1, uint32_t ctr2, uint32_t ctr3,
+             uint32_t key0, uint32_t key1) {
+              const uint32_t ctr[4] = {ctr0, ctr1, ctr2, ctr3};
+              const uint32_t key[2] = {key0, key1};
+              uint32_t out[4];
+              philox32_4x32_10(ctr, key, out);
+              return std::make_tuple(out[0], out[1], out[2], out[3]);
+          },
+          py::arg("ctr0"), py::arg("ctr1"), py::arg("ctr2"), py::arg("ctr3"),
+          py::arg("key0"), py::arg("key1"),
+          "philox32 (arc #63 P1): the vendored Philox-4x32-10 block function -- "
+          "out = F(ctr[4], key[2]), 10 rounds, integer-only (cpp/src/philox32.h).");
+
+    // Vectorised: ctr (n, 4) uint32, key (n, 2) uint32 -> out (n, 4) uint32.
+    // A thin loop over the same scalar block function above -- no separate
+    // algorithm -- so a large cross-language sweep (test c) runs in one call
+    // instead of n Python<->C++ round trips.
+    m.def("philox32_4x32_10_np",
+          [](py::array_t<uint32_t> ctr, py::array_t<uint32_t> key) {
+              auto c = ctr.unchecked<2>();
+              auto k = key.unchecked<2>();
+              if (c.shape(1) != 4 || k.shape(1) != 2 || c.shape(0) != k.shape(0)) {
+                  throw std::invalid_argument(
+                      "philox32_4x32_10_np: expected ctr (n, 4) and key (n, 2) "
+                      "with matching n");
+              }
+              const py::ssize_t n = c.shape(0);
+              py::array_t<uint32_t> out(std::vector<py::ssize_t>{n, 4});
+              auto o = out.mutable_unchecked<2>();
+              for (py::ssize_t i = 0; i < n; ++i) {
+                  const uint32_t cc[4] = {c(i, 0), c(i, 1), c(i, 2), c(i, 3)};
+                  const uint32_t kk[2] = {k(i, 0), k(i, 1)};
+                  uint32_t oo[4];
+                  philox32_4x32_10(cc, kk, oo);
+                  o(i, 0) = oo[0]; o(i, 1) = oo[1]; o(i, 2) = oo[2]; o(i, 3) = oo[3];
+              }
+              return out;
+          },
+          py::arg("ctr"), py::arg("key"),
+          "philox32 (arc #63 P1): vectorised philox32_4x32_10 over (n,4) ctr / "
+          "(n,2) key uint32 arrays -> (n,4) uint32 out. Bulk-sweep path only, "
+          "same block function as philox32_4x32_10.");
+
+    m.def("philox32_uniform_q16",
+          [](uint32_t w) { return philox32_uniform_q16(w); }, py::arg("w"),
+          "philox32 (arc #63 P1): w >> 16 -- Q16.16 uniform in [0, 1).");
+    m.def("philox32_angle_q16",
+          [](uint32_t w) { return philox32_angle_q16(w); }, py::arg("w"),
+          "philox32 (arc #63 P1): (w * TWO_PI_Q16) >> 32 -- Q16.16 angle in [0, 2*pi).");
+    m.def("philox32_below",
+          [](uint32_t w, uint32_t n) { return philox32_below(w, n); },
+          py::arg("w"), py::arg("n"),
+          "philox32 (arc #63 P1): (w * n) >> 32 -- Lemire multiply-shift integer "
+          "in [0, n), never % or float.");
+    m.attr("PHILOX32_TWO_PI_Q16") = PHILOX32_TWO_PI_Q16;
+
+    // ---- arc #63 P3 (docs/swarm_P3_impl.md §10): the swarm step ----------
+    // The law is reached through the registry's out-of-line entries (strict
+    // TUs and .cu); the argument discipline is swarm_arr's (above).
+    {
+        py::dict c;
+        c["AI_DEAD"] = swarm::AI_DEAD; c["AI_RUN"] = swarm::AI_RUN;
+        c["AI_EAT"] = swarm::AI_EAT; c["AI_COMA"] = swarm::AI_COMA;
+        c["FIRST_UNIT_ID"] = swarm::FIRST_UNIT_ID;
+        c["PI_Q16"] = swarm::PI_Q16;
+        c["HEADING_PERIOD_Q16"] = swarm::HEADING_PERIOD_Q16;
+        c["N_COLUMNS"] = swarm::N_COLUMNS;
+        c["ENV_TICK"] = (int)swarm::ENV_TICK; c["ENV_SEED_LO"] = (int)swarm::ENV_SEED_LO;
+        c["ENV_SEED_HI"] = (int)swarm::ENV_SEED_HI; c["ENV_WORDS"] = (int)swarm::ENV_WORDS;
+        c["LAUNCH_TICK"] = (int)swarm::LAUNCH_TICK; c["LAUNCH_SEED_LO"] = (int)swarm::LAUNCH_SEED_LO;
+        c["LAUNCH_SEED_HI"] = (int)swarm::LAUNCH_SEED_HI; c["LAUNCH_HW"] = (int)swarm::LAUNCH_HW;
+        c["LAUNCH_FIXED_WORDS"] = (int)swarm::LAUNCH_FIXED_WORDS;
+        c["DEATH_UNIT_ID"] = (int)swarm::DEATH_UNIT_ID; c["DEATH_POS_X"] = (int)swarm::DEATH_POS_X;
+        c["DEATH_POS_Y"] = (int)swarm::DEATH_POS_Y; c["DEATH_HEADING"] = (int)swarm::DEATH_HEADING;
+        c["DEATH_WORDS"] = (int)swarm::DEATH_WORDS;
+        c["ROW_SPECIES"] = (int)swarm::ROW_SPECIES; c["ROW_ENV"] = (int)swarm::ROW_ENV;
+        c["ROW_SLOT"] = (int)swarm::ROW_SLOT; c["ROW_UNIT_ID"] = (int)swarm::ROW_UNIT_ID;
+        c["ROW_POS_X"] = (int)swarm::ROW_POS_X; c["ROW_POS_Y"] = (int)swarm::ROW_POS_Y;
+        c["ROW_HEADING"] = (int)swarm::ROW_HEADING; c["ROW_WORDS"] = (int)swarm::ROW_WORDS;
+        c["SWEEP_DIST_Q16"] = swarm::SWEEP_DIST_Q16;
+        c["SWARM_CNT_SLOTS"] = (int)swarm::SWARM_CNT_SLOTS;
+        py::dict sizes;
+        sizes["pos_x"] = (int)sizeof(swarm::pos_x_t); sizes["pos_y"] = (int)sizeof(swarm::pos_y_t);
+        sizes["heading"] = (int)sizeof(swarm::heading_t); sizes["hp"] = (int)sizeof(swarm::hp_t);
+        sizes["ai_state"] = (int)sizeof(swarm::ai_state_t);
+        sizes["dist_walked"] = (int)sizeof(swarm::dist_walked_t);
+        sizes["unit_id"] = (int)sizeof(swarm::unit_id_t); sizes["faction"] = (int)sizeof(swarm::faction_t);
+        sizes["valid"] = (int)sizeof(swarm::valid_t);
+        c["ROSTER_SIZES"] = sizes;
+        m.attr("SWARM_CONSTANTS") = c;
+        py::list laws;
+        for (int i = 0; i < swarm::N_SPECIES_LAWS; ++i) {
+            py::dict d;
+            d["name"] = swarm::SPECIES_LAWS[i].name;
+            d["table_width"] = swarm::SPECIES_LAWS[i].table_width;
+            d["field"] = swarm::SPECIES_LAWS[i].field;
+            d["field_reduction"] = swarm::SPECIES_LAWS[i].field_reduction;
+            py::list br;
+            for (int k = 0; k < swarm::SPECIES_LAWS[i].n_branches; ++k)
+                br.append(swarm::SPECIES_LAWS[i].branch_names[k]);
+            d["branches"] = py::tuple(br);
+            laws.append(d);
+        }
+        m.attr("SWARM_SPECIES_LAWS") = laws;
+        m.attr("SWARM_TABLES_FINGERPRINT") = swarm_tables::SWARM_TABLES_FINGERPRINT;
+        py::list lb;
+        for (int k = 0; k < swarm::LARVA_BR_COUNT; ++k) lb.append(swarm::SWARM_LARVA_BRANCH_NAMES[k]);
+        m.attr("SWARM_LARVA_BRANCHES") = py::tuple(lb);
+    }
+    m.def("swarm_species_step",
+          [](const std::string& species, py::sequence columns, py::object high_water,
+             py::object temperature, py::object solid, py::object env, py::object tables,
+             py::object death_rec) {
+              SwarmDirect d = swarm_direct_from(species, columns, high_water, temperature,
+                                                solid, env, tables, death_rec,
+                                                "swarm_species_step");
+              return swarm::run_cpu(d.law, d.L);
+          },
+          py::arg("species"), py::arg("columns"), py::arg("high_water"),
+          py::arg("temperature"), py::arg("solid"), py::arg("env"), py::arg("tables"),
+          py::arg("death_rec"),
+          "arc #63 P3: the species law's CPU entry (THE reference) on caller arrays: "
+          "columns = the 9 ROSTER columns (n_env, max_units) in place; high_water "
+          "(n_env,) int32; temperature (n_env, h, w) int32; solid (n_env, h, w) bool; "
+          "env (n_env, ENV_WORDS) uint32; tables (n_env, T_sp) int64; death_rec "
+          "(n_env, max_units, DEATH_WORDS) int32 (only [0, hw[e]) written). Returns "
+          "the death count.");
+    m.def("swarm_larva_felt_T",
+          [](py::object T, int32_t x_q, int32_t y_q) {
+              const py::ssize_t h = swarm_dim(T, "swarm_larva_felt_T T", 0, 2);
+              const py::ssize_t w = swarm_dim(T, "swarm_larva_felt_T T", 1, 2);
+              const int32_t* t = static_cast<const int32_t*>(swarm_arr(
+                  T, "swarm_larva_felt_T T", py::dtype::of<int32_t>(), {h, w}, false));
+              return swarm::felt_tile_host(t, (int)h, (int)w, x_q, y_q);
+          },
+          py::arg("T"), py::arg("x_q"), py::arg("y_q"),
+          "arc #63 P3: the larva's RAW reader (ruling 11): T[y >> 16, x >> 16]; "
+          "ValueError outside the grid.");
+    m.def("swarm_wrap_heading_q16",
+          [](int64_t h) { return swarm::wrap_heading_q16_host(h); }, py::arg("h"),
+          "arc #63 P3: the C++ twin of swarm_fixed.wrap_heading_q16 (int64 in).");
+    m.def("swarm_cpu_calls", &swarm::swarm_cpu_calls,
+          "arc #63 P3: how many CPU swarm law calls with work ran in this process.");
+    m.def("swarm_branch_tally",
+          [](bool reset, const std::string& species) {
+              const int law = swarm_law_from(species);
+              const swarm::SpeciesLaw& sl = swarm::SPECIES_LAWS[law];
+              py::dict d;
+              for (int k = 0; k < sl.n_branches; ++k) {
+                  d[sl.branch_names[k]] = (unsigned long long)sl.tally[k];
+                  if (reset) sl.tally[k] = 0;
+              }
+              return d;
+          },
+          py::arg("reset") = false, py::arg("species") = "larva",
+          "arc #63 P3 (v4.7 G-d): the CPU loop's per-branch counts of the species "
+          "law (the counts BEFORE the reset when reset=True). The device never counts.");
+#ifdef BREACH_HAS_CUDA
+    m.def("set_swarm_backend", &swarm::set_swarm_backend, py::arg("use_cuda"),
+          "arc #63 P3: run the host-path swarm step on the per-call CUDA wrapper.");
+    m.def("get_swarm_backend", &swarm::get_swarm_backend);
+    m.def("swarm_cuda_calls", &swarm::swarm_cuda_calls,
+          "arc #63 P3: how many per-call CUDA swarm law calls with work ran.");
+    m.def("cuda_swarm_species_step",
+          [](const std::string& species, py::sequence columns, py::object high_water,
+             py::object temperature, py::object solid, py::object env, py::object tables,
+             py::object death_rec) {
+              SwarmDirect d = swarm_direct_from(species, columns, high_water, temperature,
+                                                solid, env, tables, death_rec,
+                                                "cuda_swarm_species_step");
+              return swarm::run_cuda_percall(d.law, d.L);
+          },
+          py::arg("species"), py::arg("columns"), py::arg("high_water"),
+          py::arg("temperature"), py::arg("solid"), py::arg("env"), py::arg("tables"),
+          py::arg("death_rec"),
+          "arc #63 P3: swarm_species_step on the per-call CUDA wrapper.");
+    m.def("cuda_swarm_resident_probe",
+          [](const std::string& species, py::sequence columns, py::object high_water,
+             py::object temperature, py::object solid, py::object env, py::object tables,
+             py::object death_rec) {
+              SwarmDirect d = swarm_direct_from(species, columns, high_water, temperature,
+                                                solid, env, tables, death_rec,
+                                                "cuda_swarm_resident_probe");
+              return swarm::resident_probe(d.law, d.L);
+          },
+          py::arg("species"), py::arg("columns"), py::arg("high_water"),
+          py::arg("temperature"), py::arg("solid"), py::arg("env"), py::arg("tables"),
+          py::arg("death_rec"),
+          "arc #63 P3 TEST-ONLY (v4.7 G-b): the RESIDENT launch core on device copies "
+          "of the caller's arrays, padding included, copied back whole.");
+#endif
+
     // EOS refactor P1 (docs/eos_refactor_design.md §2.2): expose
     // bulk_flux_transport directly (not just via PhysicsEngine::run_substeps)
     // so tests can drive it with a hand-crafted wind field / permeability
@@ -1980,6 +3839,85 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("a"),
           "Q2-LIFT: pure-integer cos on Q16.16 radians (output Q16.16 in "
           "[-65536, 65536]; accuracy pinned for |a| <= 4*pi, any int32 defined).");
+
+    // G5p-a2 (the unit impulse law): the kit's roundings and its integer
+    // root, exposed so the Python law (src/simulation/unit_impulse.py, via
+    // unit_fixed) is GATED against them (tests/test_unit_impulse_twins.py,
+    // gate G15) -- the device port of slot 1a / 3 runs these, not Python's.
+    m.def("fp_div_trunc",
+          [](int64_t n, int64_t d) { return fixedpoint::div_trunc_q(n, d); },
+          py::arg("n"), py::arg("d"),
+          "fixed_point.h div_trunc_q: n / d rounded toward zero (C's /).");
+    m.def("fp_shr_trunc",
+          [](int64_t n, int k) { return fixedpoint::shr_trunc_q(n, k); },
+          py::arg("n"), py::arg("k"),
+          "fixed_point.h shr_trunc_q: n / 2^k rounded toward zero.");
+    m.def("fp_effort_step",
+          [](int64_t d) { return fixedpoint::effort_step_q(d); },
+          py::arg("d"),
+          "fixed_point.h effort_step_q: d / 8 rounded away from zero.");
+    m.def("fp_sqrt_q16",
+          [](int64_t x) { return fixedpoint::sqrt_q16(x); },
+          py::arg("x"),
+          "fixed_point.h sqrt_q16: floor(sqrt(x)) of an int64, fixed 32 "
+          "trips (clamped at INT32_MAX).");
+    // #29 P6.2: the device unit kernels' kit twins (unit_fixed.isqrt /
+    // isqrt_ceil / div_round / mul_q16_round), gated by
+    // tests/test_unit_impulse_twins.py.
+    m.def("fp_isqrt",
+          [](int64_t n) { return fixedpoint::isqrt_q(n); },
+          py::arg("n"),
+          "fixed_point.h isqrt_q: floor(sqrt(n)) of an int64, exact (0 for n <= 0).");
+    m.def("fp_isqrt_u64",
+          [](uint64_t n) { return fixedpoint::isqrt_u64_q(n); },
+          py::arg("n"),
+          "fixed_point.h isqrt_u64_q: floor(sqrt(n)) of any uint64, exact.");
+    m.def("fp_isqrt_ceil",
+          [](int64_t n) { return fixedpoint::isqrt_ceil_q(n); },
+          py::arg("n"),
+          "fixed_point.h isqrt_ceil_q: ceil(sqrt(n)) of an int64.");
+    m.def("fp_div_round",
+          [](int64_t n, int64_t d) { return fixedpoint::div_round_q(n, d); },
+          py::arg("n"), py::arg("d"),
+          "fixed_point.h div_round_q: n / d rounded half away from zero.");
+    m.def("fp_mul_q16_round",
+          [](int64_t a, int64_t b) { return fixedpoint::mul_q16_round_q(a, b); },
+          py::arg("a"), py::arg("b"),
+          "fixed_point.h mul_q16_round_q: a * b / 65536 rounded half away "
+          "from zero (128-bit product).");
+    // #29 P6.2m: movement.half_up's twin (the slot-3 kernel's rounding),
+    // gated by tests/test_unit_impulse_twins.py.
+    m.def("fp_half_up",
+          [](int64_t num, int64_t den) { return fixedpoint::half_up_q(num, den); },
+          py::arg("num"), py::arg("den"),
+          "fixed_point.h half_up_q: (num + den // 2) // den, floor divisions, den > 0.");
+    // #29 P6.4a: unit_fixed.isqrt past uint64 (the shove's lever term),
+    // gated by tests/test_unit_impulse_twins.py.
+    m.def("fp_isqrt_u128",
+          [](uint64_t hi, uint64_t lo) { return fixedpoint::isqrt_u128_q(hi, lo); },
+          py::arg("hi"), py::arg("lo"),
+          "fixed_point.h isqrt_u128_q: floor(sqrt(hi * 2^64 + lo)), exact.");
+    // #29 P7.0a: unit_fixed.falloff_floor / falloff_round (-1 outside the
+    // proved range), gated by tests/test_unit_kit_twins.py.
+    m.def("fp_falloff_floor",
+          [](int64_t v, int64_t d2, int64_t r2) { return fixedpoint::falloff_floor_q(v, d2, r2); },
+          py::arg("v"), py::arg("d2"), py::arg("r2"),
+          "fixed_point.h falloff_floor_q: floor(v (1 - sqrt(d2 / r2))), -1 refused.");
+    // #29 P6b.2: the vent sweep's floor division and floor product, gated by
+    // tests/test_unit_kit_twins.py.
+    m.def("fp_floordiv",
+          [](int64_t n, int64_t d) { return fixedpoint::floordiv_q(n, d); },
+          py::arg("n"), py::arg("d"),
+          "fixed_point.h floordiv_q: n // d (Python's floor), d != 0.");
+    m.def("fp_muldiv_floor",
+          [](int64_t a, int64_t b, int64_t c) { return fixedpoint::muldiv_floor_q(a, b, c); },
+          py::arg("a"), py::arg("b"), py::arg("c"),
+          "fixed_point.h muldiv_floor_q: (a * b) // c for a, b >= 0, c > 0 (128-bit), "
+          "-1 refused.");
+    m.def("fp_falloff_round",
+          [](int64_t v, int64_t d2, int64_t r2) { return fixedpoint::falloff_round_q(v, d2, r2); },
+          py::arg("v"), py::arg("d2"), py::arg("r2"),
+          "fixed_point.h falloff_round_q: v (1 - sqrt(d2 / r2)) half up, -1 refused.");
 
     // FUEL-FRACTION AXIS (2026-07-30): the load-time reciprocal bake itself,
     // exposed so Python can be GATED against it rather than trusted to
@@ -2889,11 +4827,11 @@ PYBIND11_MODULE(breach_physics, m) {
                      throw py::value_error("cone_emission: n_ordinates must be 16 or 12");
                  if (center_q < 0 || center_q >= CONE_TURN || spread_q < 0 ||
                      spread_q > CONE_TURN || rgb[0] < 0 || rgb[1] < 0 || rgb[2] < 0 ||
-                     rgb[0] > LIGHT_CONE_BUDGET || rgb[1] > LIGHT_CONE_BUDGET ||
-                     rgb[2] > LIGHT_CONE_BUDGET)
+                     rgb[0] > LIGHT_CONE_ROW_MAX || rgb[1] > LIGHT_CONE_ROW_MAX ||
+                     rgb[2] > LIGHT_CONE_ROW_MAX)
                      throw py::value_error("cone_emission: outside the cone door "
                                            "(center in [0, 65536), spread in [0, 65536], "
-                                           "0 <= rgb <= 2^44)");
+                                           "0 <= rgb <= 2^48)");
                  py::array_t<int64_t> out({(py::ssize_t)n_ordinates, (py::ssize_t)3});
                  RadiationSweep::cone_emission(rgb.data(), center_q, spread_q, n_ordinates,
                                                out.mutable_data());
@@ -2907,6 +4845,8 @@ PYBIND11_MODULE(breach_physics, m) {
              [](py::object) { return CONE_TURN; })
         .def_property_readonly_static("LIGHT_CONE_BUDGET",
              [](py::object) { return LIGHT_CONE_BUDGET; })
+        .def_property_readonly_static("LIGHT_CONE_ROW_MAX",
+             [](py::object) { return LIGHT_CONE_ROW_MAX; })
         .def_property_readonly_static("LIGHT_SKY_MAX",
              [](py::object) { return LIGHT_SKY_MAX; })
         // G3 F4b: the emission-multiplier door's bound (Q16, 2·ONE)
@@ -3308,6 +5248,13 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("e_wall_work_probe_sum", &EOSSolver::e_wall_work_probe_sum)
         .def_readonly("e_energy_floor_sum",    &EOSSolver::e_energy_floor_sum)
         .def_readonly("e_rail_sum",            &EOSSolver::e_rail_sum)
+        .def("set_div_source",
+             [](EOSSolver& s, py::object plane) {
+                 if (plane.is_none()) { s.div_source.clear(); return; }
+                 auto a = plane.cast<py::array_t<int32_t, py::array::c_style | py::array::forcecast>>();
+                 s.div_source.assign(a.data(), a.data() + a.size());
+             },
+             "#31: this tick's (h,w) int32 Q16 1/s divergence source, or None.")
         .def_readonly("e_retire_sum",          &EOSSolver::e_retire_sum)
         .def_readonly("rad_clip_hits",         &EOSSolver::rad_clip_hits)
         .def_readonly("p_face_floor_hits",     &EOSSolver::p_face_floor_hits)
@@ -4037,6 +5984,101 @@ PYBIND11_MODULE(breach_physics, m) {
     // moves in here in S4.
     py::class_<PhysicsEngine>(m, "PhysicsEngine")
         .def(py::init<>())
+        // #183 G9p (residency P3d, design §4.9): THE HORDE FIELD's host
+        // reference -- an integer BFS over the footprint-passable anchor grid
+        // (horde_field.h). A host call in both modules (the device kernel is
+        // residency P7d). `tile_ok` (h, w) uint8, `seeds` (n, 2) int32 rows
+        // (y, x), `out` (h, w) int32, overwritten; returns the cells reached.
+        // Stateless: it reads nothing of the engine.
+        .def("horde_field",
+             [](const PhysicsEngine&,
+                py::array_t<uint8_t, py::array::c_style> tile_ok, int fp,
+                py::array_t<int32_t, py::array::c_style> seeds,
+                py::array_t<int32_t, py::array::c_style> out) {
+                 auto [ok, h, w] = get_2d_const(tile_ok);
+                 auto [dst, h2, w2] = get_2d(out);
+                 if (h != h2 || w != w2)
+                     throw std::invalid_argument(
+                         "horde_field: tile_ok and out differ in shape");
+                 if (fp < 1)
+                     throw std::invalid_argument("horde_field: fp must be >= 1");
+                 if (seeds.ndim() != 2 || seeds.shape(1) != 2)
+                     throw std::invalid_argument(
+                         "horde_field: seeds must be an (n, 2) int32 array");
+                 const int n_seeds = static_cast<int>(seeds.shape(0));
+                 const int32_t* sp = n_seeds > 0 ? seeds.data() : nullptr;
+                 int64_t reached;
+                 {
+                     py::gil_scoped_release release;
+                     reached = horde::flood(ok, h, w, fp, sp, n_seeds, dst);
+                 }
+                 return reached;
+             },
+             py::arg("tile_ok"), py::arg("fp"), py::arg("seeds"),
+             py::arg("out"))
+        // #195 1c: SIGHT FOR MANY TILES (sight_lines.h) -- GameMap.has_los's
+        // walk, step for step, over many lines. A host call in both modules,
+        // stateless like horde_field: `solid` / `screen` (h, w) uint8
+        // (nonzero = blocks; `screen` ignored when `physical`), the
+        // vision.py wrappers add cover that blocks sight. `sight_rays`:
+        // `pairs` (n, 4) int32 rows (y0, x0, y1, x1), `out` (n,) uint8.
+        .def("sight_rays",
+             [](const PhysicsEngine&,
+                py::array_t<uint8_t, py::array::c_style> solid,
+                py::array_t<uint8_t, py::array::c_style> screen, bool physical,
+                py::array_t<int32_t, py::array::c_style> pairs,
+                py::array_t<uint8_t, py::array::c_style> out) {
+                 auto [sol, h, w] = get_2d_const(solid);
+                 auto [scr, h2, w2] = get_2d_const(screen);
+                 if (h != h2 || w != w2)
+                     throw std::invalid_argument(
+                         "sight_rays: solid and screen differ in shape");
+                 if (pairs.ndim() != 2 || pairs.shape(1) != 4)
+                     throw std::invalid_argument(
+                         "sight_rays: pairs must be an (n, 4) int32 array");
+                 const int64_t n = pairs.shape(0);
+                 if (out.ndim() != 1 || out.shape(0) != n)
+                     throw std::invalid_argument(
+                         "sight_rays: out must be an (n,) uint8 array");
+                 const int32_t* pp = n > 0 ? pairs.data() : nullptr;
+                 uint8_t* dst = n > 0 ? out.mutable_data() : nullptr;
+                 {
+                     py::gil_scoped_release release;
+                     sight::rays(sol, scr, h, w, physical, pp, n, dst);
+                 }
+             },
+             py::arg("solid"), py::arg("screen"), py::arg("physical"),
+             py::arg("pairs"), py::arg("out"))
+        // `sight_window`: one tile (y, x) against the wh x ww rectangle at
+        // (wy, wx) (may reach outside the map); `out` (wh, ww) uint8. FROM
+        // the tile to each rectangle tile, or (to_window) FROM each rectangle
+        // tile to the tile -- the walk is not symmetric.
+        .def("sight_window",
+             [](const PhysicsEngine&,
+                py::array_t<uint8_t, py::array::c_style> solid,
+                py::array_t<uint8_t, py::array::c_style> screen, bool physical,
+                int y, int x, int wy, int wx, bool to_window,
+                py::array_t<uint8_t, py::array::c_style> out) {
+                 auto [sol, h, w] = get_2d_const(solid);
+                 auto [scr, h2, w2] = get_2d_const(screen);
+                 if (h != h2 || w != w2)
+                     throw std::invalid_argument(
+                         "sight_window: solid and screen differ in shape");
+                 if (out.ndim() != 2)
+                     throw std::invalid_argument(
+                         "sight_window: out must be a (wh, ww) uint8 array");
+                 const int wh = static_cast<int>(out.shape(0));
+                 const int ww = static_cast<int>(out.shape(1));
+                 uint8_t* dst = (wh > 0 && ww > 0) ? out.mutable_data() : nullptr;
+                 {
+                     py::gil_scoped_release release;
+                     sight::window(sol, scr, h, w, physical, y, x, wy, wx, wh,
+                                   ww, to_window, dst);
+                 }
+             },
+             py::arg("solid"), py::arg("screen"), py::arg("physical"),
+             py::arg("y"), py::arg("x"), py::arg("wy"), py::arg("wx"),
+             py::arg("to_window"), py::arg("out"))
         // arc #54 §2.7 (gas-energy conservation): energy that left the
         // accountable set through the W3 water-displacement evacuation
         // (shares into vacuum / the ambient ring / thermal solids). int64,
@@ -4093,6 +6135,10 @@ PYBIND11_MODULE(breach_physics, m) {
         // §2.4), bound ONCE by PhysicsRunner from [light] transport. Default
         // RadiationSweep.STEP; heat's own transport is not exposed here -- it
         // stays TRANSPORT_SHEAR, a run_sweep_ literal.
+        // #29 P4a: the headless flag (physics_engine.h): the W6a ripple is
+        // skipped on every path. Set by the headless runners only.
+        .def_readwrite("headless", &PhysicsEngine::headless,
+                       "#29 P4a: skip the render-only W6a ripple (headless runs).")
         .def_readwrite("light_transport", &PhysicsEngine::light_transport,
             "P6d: the light group's transport at the one sweep invocation "
             "(run_sweep_, both step_tail and relight(), both backends) -- "
@@ -4108,6 +6154,67 @@ PYBIND11_MODULE(breach_physics, m) {
         // `temperature` is the one numpy array, extracted both const (the fire
         // read) and mutable (the temperature-solver write). Returns the (y, x)
         // burn-through list exactly as FireSimulation.step does.
+        // arc #63 P3 (docs/swarm_P3_impl.md §4.4, §10): THE SWARM STEP on the
+        // host path, the last stage of slot 7 (swarm.engine_args builds the
+        // arguments). packs: one per registry species, in registry order.
+        .def("step_swarm", [](const PhysicsEngine& self, py::sequence packs,
+                              py::object temperature, py::object solid, py::object env,
+                              py::dict host_dirty, py::object bite, py::object count) {
+            if ((int)py::len(packs) != swarm::N_SPECIES_LAWS)
+                throw py::value_error("step_swarm: one pack per swarm species, registry order");
+            const py::ssize_t h = swarm_dim(temperature, "step_swarm temperature", 1, 3);
+            const py::ssize_t w = swarm_dim(temperature, "step_swarm temperature", 2, 3);
+            const py::ssize_t n_env = swarm_dim(temperature, "step_swarm temperature", 0, 3);
+            const int32_t* T = static_cast<const int32_t*>(swarm_arr(temperature,
+                "step_swarm temperature", py::dtype::of<int32_t>(), {n_env, h, w}, false));
+            const bool* sol = static_cast<const bool*>(swarm_arr(solid, "step_swarm solid",
+                py::dtype::of<bool>(), {n_env, h, w}, false));
+            const uint32_t* ev = static_cast<const uint32_t*>(swarm_arr(env, "step_swarm env",
+                py::dtype::of<uint32_t>(), {n_env, swarm::ENV_WORDS}, false));
+            // arc #63 P5a: the bite plane (n_env, h, w) int32, written in place.
+            int32_t* bt = static_cast<int32_t*>(swarm_arr(bite, "step_swarm bite",
+                py::dtype::of<int32_t>(), {n_env, h, w}, true));
+            // arc #63 P5b: the count plane (n_env, h, w) int32, written in place.
+            int32_t* ct = static_cast<int32_t*>(swarm_arr(count, "step_swarm count",
+                py::dtype::of<int32_t>(), {n_env, h, w}, true));
+            std::vector<swarm::SpeciesStep> steps((size_t)swarm::N_SPECIES_LAWS);
+            std::vector<uint8_t> dirty((size_t)swarm::N_SPECIES_LAWS, 0);
+            for (int i = 0; i < swarm::N_SPECIES_LAWS; ++i) {
+                py::handle pk = packs[i];
+                const std::string name = py::str(pk.attr("species"));
+                const std::string who = "step_swarm pack '" + name + "'";
+                if (name != swarm::SPECIES_LAWS[i].name)
+                    throw py::value_error("step_swarm: pack " + std::to_string(i) + " is '" +
+                                          name + "', the registry's is '" +
+                                          swarm::SPECIES_LAWS[i].name + "'");
+                py::sequence cols = pk.attr("columns");
+                if ((int)py::len(cols) != swarm::N_COLUMNS)
+                    throw py::value_error(who + ": 9 ROSTER columns");
+                const py::ssize_t mu = swarm_dim(cols[0], who + " column pos_x", 1, 2);
+                swarm::SpeciesStep& sp = steps[(size_t)i];
+                sp.law = i;
+                sp.st = swarm_store_from(cols, n_env, mu, who);
+                sp.max_units = (int)mu;
+                sp.hw = swarm_hw_from(pk.attr("high_water"), n_env, (int)mu, who);
+                sp.table_width = swarm::SPECIES_LAWS[i].table_width;
+                sp.tables = static_cast<const int64_t*>(swarm_arr(pk.attr("tables"),
+                    who + " tables", py::dtype::of<int64_t>(), {n_env, sp.table_width}, false));
+                if (!host_dirty.contains(name.c_str()))
+                    throw py::value_error("step_swarm: host_dirty has no '" + name + "'");
+                dirty[(size_t)i] = py::bool_(host_dirty[name.c_str()]) ? 1 : 0;
+                sp.host_dirty = &dirty[(size_t)i];
+            }
+            std::vector<int32_t> rows = self.step_swarm(steps, T, sol, (int)h, (int)w, ev,
+                                                        (int)n_env, bt, ct);
+            for (int i = 0; i < swarm::N_SPECIES_LAWS; ++i)
+                host_dirty[swarm::SPECIES_LAWS[i].name] = py::bool_(dirty[(size_t)i] != 0);
+            return swarm_rows_array(rows);
+        }, py::arg("packs"), py::arg("temperature"), py::arg("solid"), py::arg("env"),
+           py::arg("host_dirty"), py::arg("bite"), py::arg("count"),
+           "arc #63 P3: the host-path swarm step (P5a / P5b: rebuilds the bite and count planes); "
+           "returns the death rows "
+           "(n, ROW_WORDS) int32 in (species, env, slot) order ((0, ROW_WORDS) when "
+           "dormant), and sets host_dirty[sp] after a launch.")
         .def("step_tail", [](const PhysicsEngine& self,
                              // ripple group
                              py::array_t<float> ripple,
@@ -4586,128 +6693,74 @@ PYBIND11_MODULE(breach_physics, m) {
            // every existing direct caller keeps its exact meaning; the live
            // runner always passes GameMap.thermal_solid.
            py::arg("thermal_solid") = py::none())
-        // --- S8a Path A: the fully device-resident EOS stage ----------------
-        // Host mirrors feed the shared pre-stage (all reductions consume
-        // tick-entry state == the authoritative mirror) + telemetry; device
-        // pointers are CuPy .data.ptr uintptr_t (0 == nullptr for the ambient
-        // statics). Bound on every build — the method throws without CUDA.
-        .def("run_substeps_resident", [](PhysicsEngine& self,
-                                py::array_t<int32_t> p_prev,
-                                py::array_t<int32_t> atmosphere,
-                                py::array_t<int32_t> wind_x,
-                                py::array_t<int32_t> wind_y,
-                                py::array_t<int32_t> temperature,
-                                py::array_t<bool>  solid,
-                                py::array_t<bool>  is_vacuum,
-                                py::array_t<float> dyn_permeability,
-                                py::array_t<float> dyn_wave_absorb,
-                                py::array_t<int32_t> gas,
-                                py::array_t<bool> gas_conservative,
-                                float sim_time,
-                                py::object is_ambient,
-                                py::object n_amb,
-                                int32_t p_amb,
-                                std::uintptr_t d_atmosphere,
-                                std::uintptr_t d_wave_p,
-                                std::uintptr_t d_wind_x,
-                                std::uintptr_t d_wind_y,
-                                std::uintptr_t d_temperature,
-                                std::uintptr_t d_gas,
-                                std::uintptr_t d_solid,
-                                std::uintptr_t d_is_vacuum,
-                                std::uintptr_t d_dyn_permeability,
-                                std::uintptr_t d_is_ambient,
-                                std::uintptr_t d_sponge_sigma,
-                                std::uintptr_t d_sponge_udamp,
-                                // THERMAL-MASS AXIS, P-EOS: the mirror + the
-                                // device copy of the per-medium THERMAL mask.
-                                py::object thermal_solid,
-                                std::uintptr_t d_thermal_solid,
-                                std::uintptr_t d_gas_energy) {
-            auto [pp, h, w]    = get_2d(p_prev);
-            auto [atm, h4, w4] = get_2d_const(atmosphere);
-            auto [wx, h5, w5]  = get_2d_const(wind_x);
-            auto [wy, h6, w6]  = get_2d_const(wind_y);
-            auto [temp, h6b, w6b] = get_2d_const(temperature);
-            auto [sol, h8, w8] = get_2d_const(solid);
-            auto [vac, h9, w9] = get_2d_const(is_vacuum);
-            auto [perm, h10, w10] = get_2d_const(dyn_permeability);
-            auto [wabs, h11, w11] = get_2d_const(dyn_wave_absorb);
-            auto gv = gas.unchecked<3>();
-            const int32_t* gas_ptr = gv.data(0, 0, 0);
-            const int n_gases = static_cast<int>(gv.shape(0));
+        // --- #29 P5: THE BATCHED RESIDENT TICK ------------------------------
+        // Slot 7 of an (N, h, w) batch on the persistent device fields
+        // (physics_engine.h, cuda_resident_tick.h). `dev` is the batch's
+        // device_ptrs() (env 0's addresses — the envs contiguous) plus the
+        // runner's `water_before`; `n_env` the batch size; `engines` the N
+        // envs' engines (this engine first; None = this alone, N = 1 — the
+        // played game). The scalars and tables are the host path's. Bound on
+        // every build — the methods throw without CUDA.
+        .def("step_water_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w, py::array_t<bool> gas_conservative,
+                int steam_idx, float sim_time,
+                double ceiling_h, double flood_eps, double ratio_cap,
+                double boil_rate, double boil_p_thresh, double steam_yield,
+                bool ambient, int32_t t_amb_raw, int n_sub, float wdt,
+                float tilt_x, float tilt_y, py::object active, int n_env,
+                py::object engines) {
             auto gc = gas_conservative.unchecked<1>();
-            const bool* gcons = gc.data(0);
-            const bool* amb = nullptr;
-            py::array_t<bool> amb_arr;
-            if (!is_ambient.is_none()) {
-                amb_arr = is_ambient.cast<py::array_t<bool>>();
-                auto aa = amb_arr.unchecked<2>();
-                amb = aa.data(0, 0);
+            ResidentFields f = resident_fields_from(dev, h, w, (int)gc.shape(0), 0, n_env);
+            ResidentTickArgs a;
+            a.sim_time = sim_time; a.t_amb_q = t_amb_raw; a.ambient = ambient;
+            a.gas_conservative = gc.data(0); a.steam_idx = steam_idx;
+            a.ceiling_h = ceiling_h; a.flood_eps = flood_eps; a.ratio_cap = ratio_cap;
+            a.boil_rate = boil_rate; a.boil_p_thresh = boil_p_thresh;
+            a.steam_yield = steam_yield;
+            a.water_n_sub = n_sub; a.water_wdt = wdt; a.tilt_x = tilt_x; a.tilt_y = tilt_y;
+            py::array_t<uint8_t, py::array::c_style | py::array::forcecast> act;
+            if (!active.is_none()) {
+                act = active.cast<py::array_t<uint8_t,
+                    py::array::c_style | py::array::forcecast>>();
+                if (act.size() != n_env)
+                    throw std::invalid_argument("step_water_resident: active must be (n_env,)");
+                a.water_active = act.data();
             }
-            const int32_t* namb = nullptr;
-            py::array_t<int32_t> namb_arr;
+            self.step_water_resident(f, a, resident_engines_from(engines));
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("gas_conservative"),
+           py::arg("steam_idx"), py::arg("sim_time"), py::arg("ceiling_h"),
+           py::arg("flood_eps"), py::arg("ratio_cap"), py::arg("boil_rate"),
+           py::arg("boil_p_thresh"), py::arg("steam_yield"), py::arg("ambient"),
+           py::arg("t_amb_raw"), py::arg("n_sub"), py::arg("wdt"),
+           py::arg("tilt_x"), py::arg("tilt_y"), py::arg("active") = py::none(),
+           py::arg("n_env") = 1, py::arg("engines") = py::none())
+        .def("run_substeps_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w, py::array_t<bool> gas_conservative,
+                float sim_time, bool ambient, py::object n_amb, int32_t p_amb,
+                int n_env, py::object engines) {
+            auto gc = gas_conservative.unchecked<1>();
+            ResidentFields f = resident_fields_from(dev, h, w, (int)gc.shape(0), 0, n_env);
+            ResidentTickArgs a;
+            a.sim_time = sim_time; a.ambient = ambient; a.gas_conservative = gc.data(0);
+            py::array_t<int32_t, py::array::c_style | py::array::forcecast> namb_arr;
             if (!n_amb.is_none()) {
-                namb_arr = n_amb.cast<py::array_t<int32_t>>();
-                auto na = namb_arr.unchecked<1>();
-                namb = na.data(0);
+                namb_arr = n_amb.cast<py::array_t<int32_t,
+                    py::array::c_style | py::array::forcecast>>();
+                a.n_amb = namb_arr.data();
             }
-            // THERMAL-MASS AXIS, P-EOS: nullable mirror extraction (BC idiom).
-            const bool* tsol = nullptr;
-            py::array_t<bool> tsol_arr;
-            if (!thermal_solid.is_none()) {
-                tsol_arr = thermal_solid.cast<py::array_t<bool>>();
-                auto ta = tsol_arr.unchecked<2>();
-                tsol = ta.data(0, 0);
-            }
-            self.run_substeps_resident(
-                pp, atm, wx, wy, temp,
-                sol, vac, perm, wabs,
-                gas_ptr, n_gases, gcons,
-                h, w, sim_time,
-                amb, namb, p_amb,
-                d_atmosphere, d_wave_p, d_wind_x, d_wind_y,
-                d_temperature, d_gas, d_solid, d_is_vacuum,
-                d_dyn_permeability, d_is_ambient,
-                d_sponge_sigma, d_sponge_udamp,
-                tsol, d_thermal_solid, d_gas_energy);
-        }, py::arg("p_prev"), py::arg("atmosphere"),
-           py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
-           py::arg("solid"), py::arg("is_vacuum"),
-           py::arg("dyn_permeability"), py::arg("dyn_wave_absorb"),
-           py::arg("gas"), py::arg("gas_conservative"),
-           py::arg("sim_time"),
-           py::arg("is_ambient") = py::none(),
-           py::arg("n_amb") = py::none(),
-           py::arg("p_amb") = 0,
-           py::arg("d_atmosphere") = 0, py::arg("d_wave_p") = 0,
-           py::arg("d_wind_x") = 0, py::arg("d_wind_y") = 0,
-           py::arg("d_temperature") = 0, py::arg("d_gas") = 0,
-           py::arg("d_solid") = 0, py::arg("d_is_vacuum") = 0,
-           py::arg("d_dyn_permeability") = 0,
-           py::arg("d_is_ambient") = 0,
-           py::arg("d_sponge_sigma") = 0, py::arg("d_sponge_udamp") = 0,
-           // THERMAL-MASS AXIS, P-EOS: default None/0 -> the pre-patch path.
-           py::arg("thermal_solid") = py::none(),
-           py::arg("d_thermal_solid") = 0,
-           // arc #54 §2.2 (P-G2): the conserved gas energy field's device ptr.
-           py::arg("d_gas_energy") = 0)
-        // Smoke transport v2 (#12, P2b): the resident trace TAIL (stranded
-        // zeroing -> Jacobi diffusion -> ceil decay) on the persistent device
-        // gas planes, booked into this engine's EOSSolver books exactly as the
-        // CPU tail in run_substeps books them. Host (n_gases,) columns +
-        // CuPy .data.ptr device pointers. Bound on every build — throws
-        // without CUDA.
-        .def("run_trace_tail_resident", [](PhysicsEngine& self,
-                                py::array_t<bool> gas_conservative,
-                                py::array_t<float> gas_diffusion,
-                                py::array_t<float> gas_decay,
-                                int h, int w, float sim_time,
-                                std::uintptr_t d_gas,
-                                std::uintptr_t d_solid,
-                                std::uintptr_t d_is_vacuum,
-                                std::uintptr_t d_is_ambient,
-                                std::uintptr_t d_dyn_permeability) {
+            a.p_amb = p_amb;
+            if (ambient && a.n_amb == nullptr)
+                throw std::invalid_argument("run_substeps_resident: ambient needs n_amb");
+            return self.run_substeps_resident(f, a, resident_engines_from(engines));
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("gas_conservative"),
+           py::arg("sim_time"), py::arg("ambient") = false,
+           py::arg("n_amb") = py::none(), py::arg("p_amb") = 0,
+           py::arg("n_env") = 1, py::arg("engines") = py::none(),
+           "#29 P5: the EOS stage over the batch; returns max(n_sub).")
+        .def("run_trace_tail_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w, py::array_t<bool> gas_conservative,
+                py::array_t<float> gas_diffusion, py::array_t<float> gas_decay,
+                float sim_time, bool ambient, int n_env, py::object engines) {
             auto gc = gas_conservative.unchecked<1>();
             auto gd = gas_diffusion.unchecked<1>();
             auto gdc = gas_decay.unchecked<1>();
@@ -4716,15 +6769,231 @@ PYBIND11_MODULE(breach_physics, m) {
                 throw std::invalid_argument(
                     "run_trace_tail_resident: gas_conservative / gas_diffusion / "
                     "gas_decay must all be (n_gases,)");
-            self.run_trace_tail_resident(
-                n_gases, gc.data(0), gd.data(0), gdc.data(0),
-                h, w, sim_time, d_gas, d_solid, d_is_vacuum,
-                d_is_ambient, d_dyn_permeability);
-        }, py::arg("gas_conservative"), py::arg("gas_diffusion"),
-           py::arg("gas_decay"), py::arg("h"), py::arg("w"),
-           py::arg("sim_time"), py::arg("d_gas"), py::arg("d_solid"),
-           py::arg("d_is_vacuum"), py::arg("d_is_ambient"),
-           py::arg("d_dyn_permeability"))
+            ResidentFields f = resident_fields_from(dev, h, w, n_gases, 0, n_env);
+            ResidentTickArgs a;
+            a.sim_time = sim_time; a.ambient = ambient; a.gas_conservative = gc.data(0);
+            a.gas_diffusion = gd.data(0); a.gas_decay = gdc.data(0);
+            self.run_trace_tail_resident(f, a, resident_engines_from(engines));
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("gas_conservative"),
+           py::arg("gas_diffusion"), py::arg("gas_decay"), py::arg("sim_time"),
+           py::arg("ambient") = false, py::arg("n_env") = 1,
+           py::arg("engines") = py::none())
+        .def("run_combustion_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w, int n_gases, int acc_depth,
+                int o2_idx, int inert_n2_idx, int black_smoke_idx, int draw_r,
+                float sim_time, py::array_t<int32_t> ignition_table,
+                bool ambient, int32_t t_amb_q, int n_env, py::object engines) {
+            auto it = ignition_table.unchecked<1>();
+            ResidentFields f = resident_fields_from(dev, h, w, n_gases, acc_depth, n_env);
+            ResidentTickArgs a;
+            a.sim_time = sim_time; a.t_amb_q = t_amb_q; a.ambient = ambient;
+            a.o2_idx = o2_idx; a.inert_n2_idx = inert_n2_idx;
+            a.black_smoke_idx = black_smoke_idx; a.draw_r = draw_r;
+            a.ignition_table = it.data(0); a.n_materials = (int)it.shape(0);
+            self.run_combustion_resident(f, a, resident_engines_from(engines));
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("n_gases"),
+           py::arg("acc_depth"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
+           py::arg("black_smoke_idx"), py::arg("draw_r"), py::arg("sim_time"),
+           py::arg("ignition_table"), py::arg("ambient"), py::arg("t_amb_q"),
+           py::arg("n_env") = 1, py::arg("engines") = py::none())
+        // --- #29 P4b: slot 6's stamp on the device --------------------------
+        .def("stamp_units_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w,
+                py::array_t<int32_t, py::array::c_style | py::array::forcecast> rows,
+                int n_env, py::object engines) {
+            if (rows.ndim() != 2 || rows.shape(1) != 9)   // breach_cuda::STAMP_ROW_COLS
+                throw std::invalid_argument(
+                    "stamp_units_resident: rows must be (n, 9) int32 "
+                    "[env, y, x, perm bits, wabsorb bits, heat_q, l0, l1, l2]");
+            ResidentFields f = resident_fields_from(dev, h, w, 0, 0, n_env);
+            self.stamp_units_resident(f, rows.data(), (int)rows.shape(0),
+                                      resident_engines_from(engines));
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("rows"),
+           py::arg("n_env") = 1, py::arg("engines") = py::none(),
+           "#29 P4b: the five stamp outputs on the resident planes from the "
+           "host stamps' rows (cuda_stamp.cu); #29 P5: every env's rows, the "
+           "env column the batch index.")
+        // --- #29 P4c: slot 6b's FieldEdit flush on the device ----------------
+        .def("apply_edits_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w, int n_gases,
+                py::array_t<int64_t, py::array::c_style | py::array::forcecast> buf,
+                int n_edits, int n_tiles, uint32_t salt, int o2_idx, int n2_idx,
+                int n_env, py::object engines) {
+            const py::ssize_t need = (py::ssize_t)(n_env + 1) + (py::ssize_t)n_env * 4 +
+                                     (py::ssize_t)n_edits * 16 + (py::ssize_t)n_tiles * 4;
+            if (buf.ndim() != 1 || buf.shape(0) != need || n_edits < 0 || n_tiles < 0)
+                throw std::invalid_argument(
+                    "apply_edits_resident: buf must be the 1-D int64 record buffer "
+                    "[offsets (N+1)][env (N,4)][edits (E,16)][tiles (T,4)]");
+            ResidentFields f = resident_fields_from(dev, h, w, n_gases, 0, n_env);
+            self.apply_edits_resident(f, buf.data(), n_edits, n_tiles, salt, o2_idx,
+                                      n2_idx, resident_engines_from(engines));
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("n_gases"),
+           py::arg("buf"), py::arg("n_edits"), py::arg("n_tiles"), py::arg("salt"),
+           py::arg("o2_idx"), py::arg("n2_idx"), py::arg("n_env") = 1,
+           py::arg("engines") = py::none(),
+           "#29 P4c: the device edit queue -- every env's packed FieldEdit "
+           "records (field_edit.pack_for_device) applied on the resident planes "
+           "(cuda_edit_queue.cu); the books fold into edit_queue_books at "
+           "step_tail_resident.")
+        .def_property_readonly("edit_queue_books", [](const PhysicsEngine& self) {
+            return std::vector<int64_t>(self.edit_queue_books);
+        }, "#29 P4c: the device edit queue's books of the last tick it ran "
+           "(EDIT_QUEUE_LAYOUT slots).")
+        .def("upload_light_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w, int n_gases,
+                py::array_t<int32_t> gas_light_absorb_q16,
+                py::array_t<int32_t> gas_light_glow_q16,
+                py::object light_cones, py::object light_sky,
+                py::object light_emit_mult) {
+            ResidentFields f = resident_fields_from(dev, h, w, n_gases, 0);
+            ResidentTickArgs a;
+            auto la = gas_light_absorb_q16.unchecked<2>();
+            auto lg = gas_light_glow_q16.unchecked<2>();
+            a.gas_light_absorb_q16 = la.data(0, 0);
+            a.gas_light_glow_q16 = lg.data(0, 0);
+            py::array_t<int64_t, py::array::c_style | py::array::forcecast> cones_arr,
+                sky_arr, em_arr;
+            if (!light_cones.is_none()) {
+                cones_arr = light_cones.cast<py::array_t<int64_t,
+                    py::array::c_style | py::array::forcecast>>();
+                a.light_cones = cones_arr.data();
+                a.n_light_cones = (int)(cones_arr.ndim() == 2 ? cones_arr.shape(0) : 0);
+            }
+            if (!light_sky.is_none()) {
+                sky_arr = light_sky.cast<py::array_t<int64_t,
+                    py::array::c_style | py::array::forcecast>>();
+                a.light_sky = sky_arr.data();
+            }
+            if (!light_emit_mult.is_none()) {
+                em_arr = light_emit_mult.cast<py::array_t<int64_t,
+                    py::array::c_style | py::array::forcecast>>();
+                a.light_emit_mult = em_arr.data();
+                a.n_light_emit_mult = (int)(em_arr.ndim() == 2 ? em_arr.shape(0) : 0);
+            }
+            self.upload_light_resident(f, a);
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("n_gases"),
+           py::arg("gas_light_absorb_q16"), py::arg("gas_light_glow_q16"),
+           py::arg("light_cones") = py::none(), py::arg("light_sky") = py::none(),
+           py::arg("light_emit_mult") = py::none())
+        .def("step_tail_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w, py::array_t<bool> gas_conservative,
+                int o2_idx, float sim_time, bool ambient, int32_t t_amb_q,
+                int32_t k_leak_q, int64_t rad_amb_vacuum_q,
+                py::array_t<int32_t> gas_heat_absorb_q16,
+                py::array_t<int32_t> gas_light_absorb_q16,
+                py::array_t<int32_t> gas_light_glow_q16,
+                int n_env, py::object engines, py::object swarm_args) {
+            auto gc = gas_conservative.unchecked<1>();
+            auto ha = gas_heat_absorb_q16.unchecked<1>();
+            auto la = gas_light_absorb_q16.unchecked<2>();
+            auto lg = gas_light_glow_q16.unchecked<2>();
+            const int n_gases = (int)gc.shape(0);
+            if (ha.shape(0) != n_gases || la.shape(0) != n_gases || lg.shape(0) != n_gases)
+                throw std::invalid_argument(
+                    "step_tail_resident: the gas tables must all be (n_gases, ...)");
+            ResidentFields f = resident_fields_from(dev, h, w, n_gases, 0, n_env);
+            ResidentTickArgs a;
+            a.sim_time = sim_time; a.t_amb_q = t_amb_q; a.ambient = ambient;
+            a.gas_conservative = gc.data(0); a.o2_idx = o2_idx;
+            a.k_leak_q = k_leak_q; a.rad_amb_vacuum_q = rad_amb_vacuum_q;
+            a.gas_heat_absorb_q16 = ha.data(0);
+            a.gas_light_absorb_q16 = la.data(0, 0);
+            a.gas_light_glow_q16 = lg.data(0, 0);
+            if (swarm_args.is_none())
+                return py::object(py::cast(self.step_tail_resident(
+                    f, a, resident_engines_from(engines))));
+            // arc #63 P3 (§4.4): the swarm block -- every registry species'
+            // resident pack (device column addresses, host hw and rows) and
+            // the (N, ENV_WORDS) env words; the stage itself decides dormancy.
+            py::dict sw = swarm_args.cast<py::dict>();
+            py::sequence packs = sw["packs"];
+            if ((int)py::len(packs) != swarm::N_SPECIES_LAWS)
+                throw py::value_error("step_tail_resident swarm: one pack per species");
+            const py::ssize_t N = n_env;
+            std::vector<swarm::ResidentSpecies> sps((size_t)swarm::N_SPECIES_LAWS);
+            for (int i = 0; i < swarm::N_SPECIES_LAWS; ++i) {
+                py::handle pk = packs[i];
+                const std::string name = py::str(pk.attr("species"));
+                const std::string who = "step_tail_resident swarm pack '" + name + "'";
+                if (name != swarm::SPECIES_LAWS[i].name)
+                    throw py::value_error(who + ": registry order");
+                py::sequence ptrs = pk.attr("ptrs");
+                if ((int)py::len(ptrs) != swarm::N_COLUMNS)
+                    throw py::value_error(who + ": 9 column addresses");
+                std::uintptr_t pp[swarm::N_COLUMNS];
+                for (int c = 0; c < swarm::N_COLUMNS; ++c) pp[c] = ptrs[c].cast<std::uintptr_t>();
+                swarm::ResidentSpecies& r = sps[(size_t)i];
+                r.law = i;
+                r.st.pos_x = reinterpret_cast<int32_t*>(pp[0]);
+                r.st.pos_y = reinterpret_cast<int32_t*>(pp[1]);
+                r.st.heading = reinterpret_cast<int32_t*>(pp[2]);
+                r.st.hp = reinterpret_cast<int32_t*>(pp[3]);
+                r.st.ai_state = reinterpret_cast<int32_t*>(pp[4]);
+                r.st.dist_walked = reinterpret_cast<uint32_t*>(pp[5]);
+                r.st.unit_id = reinterpret_cast<int32_t*>(pp[6]);
+                r.st.faction = reinterpret_cast<int32_t*>(pp[7]);
+                r.st.valid = reinterpret_cast<uint8_t*>(pp[8]);
+                r.max_units = pk.attr("max_units").cast<int>();
+                r.hw = swarm_hw_from(pk.attr("high_water"), N, r.max_units, who);
+                r.table_width = swarm::SPECIES_LAWS[i].table_width;
+                r.tables = static_cast<const int64_t*>(swarm_arr(pk.attr("tables"),
+                    who + " tables", py::dtype::of<int64_t>(), {N, r.table_width}, false));
+            }
+            a.swarm_env = static_cast<const uint32_t*>(swarm_arr(sw["env"],
+                "step_tail_resident swarm env", py::dtype::of<uint32_t>(),
+                {N, swarm::ENV_WORDS}, false));
+            a.swarm_species = sps.data();
+            a.n_swarm_species = (int)sps.size();
+            // arc #63 P5a: the device bite plane's address (the batch's buffer).
+            a.swarm_bite = sw["bite"].cast<std::uintptr_t>();
+            if (a.swarm_bite == 0)
+                throw py::value_error("step_tail_resident swarm: the bite plane's address is required");
+            // arc #63 P5b: the device count plane's address (the batch's buffer).
+            a.swarm_count = sw["count"].cast<std::uintptr_t>();
+            if (a.swarm_count == 0)
+                throw py::value_error("step_tail_resident swarm: the count plane's address is required");
+            std::vector<std::vector<int32_t>> rows;
+            a.swarm_rows = &rows;
+            auto destroyed = self.step_tail_resident(f, a, resident_engines_from(engines));
+            py::list per_env;
+            for (py::ssize_t e = 0; e < N; ++e)
+                per_env.append(swarm_rows_array(
+                    (size_t)e < rows.size() ? rows[(size_t)e] : std::vector<int32_t>()));
+            return py::object(py::make_tuple(py::cast(destroyed), per_env));
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("gas_conservative"),
+           py::arg("o2_idx"), py::arg("sim_time"), py::arg("ambient"),
+           py::arg("t_amb_q"), py::arg("k_leak_q"), py::arg("rad_amb_vacuum_q"),
+           py::arg("gas_heat_absorb_q16"), py::arg("gas_light_absorb_q16"),
+           py::arg("gas_light_glow_q16"), py::arg("n_env") = 1,
+           py::arg("engines") = py::none(), py::arg("swarm") = py::none(),
+           "#29 P5: the tail + the ONE books D2H; returns each env's "
+           "burn-through list (a list of N lists, row-major). arc #63 P3: with "
+           "swarm= (swarm.engine_args(..., resident=True)) the swarm stage runs "
+           "last and the return is (burn-through lists, per-env death rows).")
+        .def("sync_resident_fleck_plane", &PhysicsEngine::sync_resident_fleck_plane,
+             py::arg("h"), py::arg("w"),
+             "#29 P4a: copy the last resident sweep's Fleck plane into "
+             "engine.radiation (on demand; never per tick).")
+        .def("step_ripple", [](const PhysicsEngine& self,
+                py::array_t<float> ripple, py::array_t<float> ripple_v,
+                py::array_t<int32_t> water_depth, py::array_t<int32_t> atmosphere,
+                py::array_t<int32_t> p_prev, py::array_t<bool> solid,
+                float sim_time) {
+            auto [r, h, w] = get_2d(ripple);
+            auto [rv, h2, w2] = get_2d(ripple_v);
+            auto [wd, h3, w3] = get_2d_const(water_depth);
+            auto [atm, h4, w4] = get_2d_const(atmosphere);
+            auto [pp, h5, w5] = get_2d_const(p_prev);
+            auto [sol, h6, w6] = get_2d_const(solid);
+            (void)h2; (void)w2; (void)h3; (void)w3; (void)h4; (void)w4;
+            (void)h5; (void)w5; (void)h6; (void)w6;
+            self.step_ripple(r, rv, wd, atm, pp, sol, h, w, sim_time);
+        }, py::arg("ripple"), py::arg("ripple_v"), py::arg("water_depth"),
+           py::arg("atmosphere"), py::arg("p_prev"), py::arg("solid"),
+           py::arg("sim_time"),
+           "#29 P4a: the W6a ripple (the guard + WaterSolver.step_ripple), "
+           "step_tail's step 1 as its own entry.")
         // --- Patch 1 S4c: the water-layer array arithmetic ------------------
         // step_water moves the array-op body of PhysicsRunner._step_water into
         // C++ (substep loop + W5 flash-boil + W3 displacement/seal + the final

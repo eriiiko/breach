@@ -292,15 +292,22 @@ class GLDirect:
     def __init__(self):
         import ctypes
         self.ctypes = ctypes
-        gl = ctypes.WinDLL("opengl32")
-        get = gl.wglGetProcAddress
+        if hasattr(ctypes, "WinDLL"):
+            gl = ctypes.WinDLL("opengl32")
+            get = gl.wglGetProcAddress
+            functype = ctypes.WINFUNCTYPE
+        else:
+            # Linux (#29 P10): GLFW's own libGL (GLX), glXGetProcAddressARB.
+            gl = ctypes.CDLL("libGL.so.1")
+            get = gl.glXGetProcAddressARB
+            functype = ctypes.CFUNCTYPE
         get.restype = ctypes.c_void_p
         get.argtypes = [ctypes.c_char_p]
 
         def fn(name, *argtypes, restype=None):
             addr = get(name.encode("ascii"))
             if addr:
-                return ctypes.WINFUNCTYPE(restype, *argtypes)(addr)
+                return functype(restype, *argtypes)(addr)
             f = getattr(gl, name, None)          # GL 1.1: exported directly
             if f is None:
                 raise RuntimeError(f"{name} unavailable (no GL context?)")
@@ -315,6 +322,8 @@ class GLDirect:
         self.ActiveTexture = fn("glActiveTexture", u)
         self.BindTexture = fn("glBindTexture", u, u)
         self.DrawArrays = fn("glDrawArrays", u, i, i)
+        # GL 3.1: one template drawn k times (the larvae's bodies, arc #63)
+        self.DrawArraysInstanced = fn("glDrawArraysInstanced", u, i, i, i)
         self.Viewport = fn("glViewport", i, i, i, i)
         self.Scissor = fn("glScissor", i, i, i, i)
         self.Enable = fn("glEnable", u)
@@ -328,6 +337,7 @@ class GLDirect:
         self.Uniform1i = fn("glUniform1i", i, i)
         self.Uniform1f = fn("glUniform1f", i, f32)
         self.Uniform2f = fn("glUniform2f", i, f32, f32)
+        self.Uniform3f = fn("glUniform3f", i, f32, f32, f32)
         self.Uniform1fv = fn("glUniform1fv", i, i, pf)
         self.Uniform4fv = fn("glUniform4fv", i, i, pf)
         # queries (the bench timer, tools/gl_timer.py)

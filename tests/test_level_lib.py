@@ -75,7 +75,7 @@ def _write_png(path: Path, w: int = 8, h: int = 6) -> None:
 
 
 PREFIX = ("# hand comment stays\n"
-          'version = "2"\nname = "T"\ntilemap = "tilemap.csv"\n'
+          'version = "3"\nname = "T"\ntilemap = "tilemap.csv"\n'
           'tile_size_m = 0.333\ndiffuse = "diffuse.png"\n\n')
 SUFFIX = ('[art.bare]\n# baked by the P2 baker\n'
           'diffuse = "diffuse.png"\n\n'
@@ -175,7 +175,7 @@ def test_empty_block_removes_family_and_absent_family_untouched(tmp_path):
 def test_crlf_preserved(tmp_path):
     d = _mini_level(tmp_path)
     toml = d / "level.toml"
-    toml.write_bytes(b'version = "2"\r\nname = "T"\r\n')
+    toml.write_bytes(b'version = "3"\r\nname = "T"\r\n')
     write_managed_blocks(
         toml, {"spawn": lambda nl: format_spawn_lines(
             [SpawnEntry("A", 0, 1.0, 2.0)], nl)})

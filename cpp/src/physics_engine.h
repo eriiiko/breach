@@ -28,6 +28,96 @@
 #include "combustion.h"       // EOS refactor P4: combustion on real O2
 #include "emissive_table.h"   // ray-engine-v2: THE E° table, one owner
 #include "radiation_sweep.h"  // ray-engine-v2: the radiation sweep (LIVE since T5b)
+#include "swarm.h"            // arc #63 P3: the swarm step (step_swarm, the resident swarm block)
+
+// ---- #29 P4a: THE RESIDENT TICK'S DEVICE FIELDS -----------------------------
+// The raw device addresses of GameMap's resident CuPy buffers (uintptr_t so
+// this header stays CUDA-free; 0 == absent), as the resident drivers read
+// them (cuda_resident_tick.h). Built by the binding from GameMap.device_ptrs()
+// (+ the runner's device `before` plane), with the grid and the two depths.
+struct ResidentFields {
+    std::uintptr_t atmosphere = 0, wave_p = 0, wind_x = 0, wind_y = 0,
+        temperature = 0, heat = 0, fire = 0, wall_hp = 0, water_depth = 0,
+        gas = 0, gas_energy = 0, dem_acc = 0,
+        rad_net_sweep = 0, rad_flux_sweep = 0, rad_amb_sweep = 0, rad_fluence = 0,
+        light_q = 0, light_flux_q = 0, light_glow = 0,
+        solid = 0, is_vacuum = 0, is_ambient = 0, flammable = 0,
+        thermal_solid = 0, heat_inv_shift = 0, face_shift = 0,
+        dyn_permeability = 0, heat_atten_q = 0, dyn_heat_atten_q = 0,
+        light_atten_q = 0, dyn_light_atten_q = 0,
+        fuel_recip = 0, fire_T_ext_plane = 0, fuel_per_o2_plane = 0,
+        material = 0, water_before = 0,
+        // #29 P4b: the stamp kernel's static inputs and its two outputs no
+        // other device stage reads (the other three are named above).
+        permeability = 0, wave_absorb = 0, obstacles = 0, dyn_wave_absorb = 0,
+        // #29 P5: the water substeps' planes and the ambient sponge statics
+        // (the EOS stage), so every slot-7 stage reads one struct.
+        flow_vx = 0, flow_vy = 0, floor_height = 0,
+        sponge_sigma = 0, sponge_udamp = 0,
+        // #29 P7c.2: the blast's divergence source ON THE DEVICE -- the (N, h,
+        // w) int32 plane the applier's SOURCES stage handed out (the device
+        // take_source_plane). Given, the EOS stage reads every env's source
+        // from it (a device-to-device copy) and NOT from its engine's
+        // eos.div_source; 0 (the played tick) = the host upload, unchanged.
+        div_source = 0;
+    int h = 0, w = 0, n_gases = 0;
+    // #29 P5: the batch's env count — every address above is the batch's
+    // (N, ...) buffer (env 0's, the envs contiguous). 1 = the played game.
+    int n_env = 1;
+    int acc_depth = 0;   // dem_acc's declared depth (max_claimants)
+};
+
+// The host scalars and tables the resident drivers read — the SAME values the
+// host path hands step_water_tail / CombustionSolver.step / step_tail.
+struct ResidentTickArgs {
+    float sim_time = 0.0f;
+    int32_t t_amb_q = 0;                    // T_AMB_K raw (the seam's offset)
+    bool ambient = false;                   // an ambient map (the ring is live)
+    const bool* gas_conservative = nullptr; // (n_gases,)
+    // the water tail
+    int steam_idx = 0;
+    double ceiling_h = 0.0, flood_eps = 0.0, ratio_cap = 1.0;
+    double boil_rate = 0.0, boil_p_thresh = 0.0, steam_yield = 0.0;
+    // combustion
+    int o2_idx = 0, inert_n2_idx = 0, black_smoke_idx = 0, draw_r = 1;
+    const int32_t* ignition_table = nullptr;   // (n_materials,) int32
+    int n_materials = 0;
+    // the tail (fire, the sweep, temperature)
+    int32_t k_leak_q = 0;
+    int64_t rad_amb_vacuum_q = -1;
+    const int32_t* gas_heat_absorb_q16 = nullptr;    // (n_gases,)
+    const int32_t* gas_light_absorb_q16 = nullptr;   // (n_gases, 3)
+    const int32_t* gas_light_glow_q16 = nullptr;     // (n_gases, 3)
+    // the light inputs (read only while light is requested)
+    const int64_t* light_cones = nullptr;
+    int n_light_cones = 0;
+    const int64_t* light_sky = nullptr;
+    const int64_t* light_emit_mult = nullptr;
+    int n_light_emit_mult = 0;
+    // #29 P5: the water substeps (the host path's step_water arguments) and
+    // the per-env live mask ((N,) uint8; nullptr = every env).
+    int water_n_sub = 0;
+    float water_wdt = 0.0f, tilt_x = 0.0f, tilt_y = 0.0f;
+    const uint8_t* water_active = nullptr;
+    // #29 P5: the EOS stage (the ring's per-gas reservoir and P_amb, ambient
+    // maps only) and the trace tail's per-gas columns.
+    const int32_t* n_amb = nullptr;
+    int32_t p_amb = 0;
+    const float* gas_diffusion = nullptr;   // (n_gases,)
+    const float* gas_decay = nullptr;       // (n_gases,)
+    // arc #63 P3 (docs/swarm_P3_impl.md §4.4): the swarm stage, the LAST of
+    // the tail (resident_swarm, before the books D2H). nullptr: no swarm
+    // block (nothing runs). `swarm_rows` (out): per env, the compacted death
+    // rows (flat, swarm::ROW_WORDS each) of this tick.
+    const swarm::ResidentSpecies* swarm_species = nullptr;
+    int n_swarm_species = 0;
+    const uint32_t* swarm_env = nullptr;    // (N, swarm::ENV_WORDS)
+    // arc #63 P5a: the device bite plane (N, h, w) int32 the stage rebuilds.
+    std::uintptr_t swarm_bite = 0;
+    // arc #63 P5b: the device count plane (N, h, w) int32, likewise.
+    std::uintptr_t swarm_count = 0;
+    std::vector<std::vector<int32_t>>* swarm_rows = nullptr;
+};
 
 class PhysicsEngine {
 public:
@@ -75,6 +165,13 @@ public:
     // a literal at run_sweep_'s two RadiationSweep::run / radiation_sweep_
     // step call sites; that choice is not this patch's to make configurable.
     int                light_transport = RadiationSweep::TRANSPORT_STEP;
+    // #29 P4a: HEADLESS — set by the headless runners (tools/run_match.py's
+    // MatchSession, rl_env), never by main.py. The W6a ripple is render-only
+    // (ripple / ripple_v feed nothing back and are outside the digest), so a
+    // headless engine skips it on every path: step_tail does not call
+    // step_ripple, and the resident tick neither runs it nor downloads
+    // water_depth for it. Default false: every windowed run is unmoved.
+    bool               headless = false;
 
     // (wave_p_f_ / atm_f_ DELETED — audit Patch A / A9, 2026-08-04. Both float
     // scratch buffers were DECLARED HERE AND NEVER USED: repo-wide grep found
@@ -151,6 +248,23 @@ public:
     // EOS refactor P4 (design §6): `o2_idx` is NEW — step_tail slices the O2
     // plane out of `gas` and hands it to FireSimulation::step as the real
     // O2-gate input (n_o2), replacing the atmosphere/P proxy.
+    // arc #63 P3 (docs/swarm_P3_impl.md §4.4): THE SWARM STEP on the host
+    // path, the last stage of slot 7 -- forwards to swarm::step_all (the
+    // shared swarm TU): dormancy (nothing present: no launch, no scratch
+    // growth), per present species the CPU loop or the per-call CUDA wrapper
+    // (set_swarm_backend), its host-dirty flag set, and the death rows
+    // compacted in (species, env, slot) order, returned flat (ROW_WORDS each).
+    // The resident path's swarm stage is resident_swarm inside resident_tail.
+    std::vector<int32_t> step_swarm(const std::vector<swarm::SpeciesStep>& packs,
+                                    const int32_t* T, const bool* solid, int h, int w,
+                                    const uint32_t* env, int n_env,
+                                    int32_t* bite,           // arc #63 P5a: (n_env, h, w)
+                                    int32_t* count) const;   // arc #63 P5b: (n_env, h, w)
+    mutable swarm::StepScratch swarm_scratch_;
+    // Telemetry (never in the energy closure: larvae write no field): the
+    // deaths the resident swarm stage folded into this env.
+    mutable int64_t swarm_deaths_sum = 0;
+
     std::vector<std::pair<int, int>> step_tail(
         // ripple group
         float* ripple, float* ripple_v,
@@ -495,67 +609,67 @@ public:
         // path -> byte-identical to before this patch.
         const bool* thermal_solid = nullptr);
 
-    // --- S8a Path A: the fully device-resident EOS stage -----------------
-    // (docs/cuda_s8a_path_a_impl_2026-07-21.md §3.1.) The resident sibling of
-    // run_substeps' EOS dispatch: host mirrors feed the shared pre-stage (all
-    // reductions — tick-entry state) + telemetry; the device pointers are the
-    // persistent CuPy resident fields (uintptr_t so this header stays
-    // CUDA-free; 0 == nullptr for the ambient statics). The trace planes ride
-    // stages 3b/3c inside it (smoke transport v2); the once-per-tick trace TAIL
-    // is run_trace_tail_resident below, which the runner calls next. Declared on every
-    // build; the body THROWS on a non-CUDA build, and on a CUDA build throws
-    // unless eos_step_backend_is_cuda() (no CPU fallback for device
-    // pointers). Bit-identity gate: tests/cuda_s8a_check.py PART 1a/1b/1c.
-    void run_substeps_resident(
-        int32_t* p_prev,
-        const int32_t* atmosphere,
-        const int32_t* wind_x, const int32_t* wind_y,
-        const int32_t* temperature,
-        const bool* solid, const bool* is_vacuum,
-        const float* dyn_permeability, const float* dyn_wave_absorb,
-        const int32_t* gas, int n_gases, const bool* gas_conservative,
-        int h, int w, float sim_time,
-        const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
-        std::uintptr_t d_atmosphere, std::uintptr_t d_wave_p,
-        std::uintptr_t d_wind_x, std::uintptr_t d_wind_y,
-        std::uintptr_t d_temperature, std::uintptr_t d_gas_base,
-        std::uintptr_t d_solid, std::uintptr_t d_is_vacuum,
-        std::uintptr_t d_dyn_permeability,
-        std::uintptr_t d_is_ambient,
-        std::uintptr_t d_sponge_sigma, std::uintptr_t d_sponge_udamp,
-        // THERMAL-MASS AXIS, P-EOS: the mask on the MIRROR (for the shared host
-        // occlusion predicate — all pre-stage reductions read the mirror) plus
-        // its DEVICE copy (what the SL/compression kernels read). 0/nullptr ->
-        // the legacy path. The device copy MUST ride the per-tick from_host
-        // upload: unlike the sponge grids this mask is not static.
-        const bool* thermal_solid = nullptr,
-        std::uintptr_t d_thermal_solid = 0,
-        // arc #54 §2.2 (P-G2): the conserved gas energy field's PERSISTENT
-        // device buffer (GameMap's resident `gas_energy`, (h,w) int64). No
-        // host-mirror parameter is needed here — nothing in the resident
-        // pre-stage reduces over it (unlike thermal_solid's cap2 fold); the
-        // caller's from_host/to_host round-trips the mirror around this call.
-        std::uintptr_t d_gas_energy = 0);
+    // --- #29 P5: THE BATCHED RESIDENT TICK (cuda_resident_tick.h has the whole
+    // contract; docs/residency_batching_design_2026-11-07.md §4.2) ------------
+    // Slot 7 of N homogeneous envs on their (N, h, w) device buffers (f.n_env
+    // = N, the addresses env 0's), in the CPU tick's order: the water stage
+    // (substeps + W5 / W3, masked per env), the EOS stage (the device pre-stage,
+    // both masked substep loops to the batch's max n_sub, MG per env, kick,
+    // store, energy flux; returns max(n_sub), the one counted per-tick host
+    // read), the trace tail, combustion, [the sky bracket, ambient N = 1 only:
+    // the runner's], then the tail (bulk sum, fire, the sweep, temperature),
+    // which ends with the ONE books D2H and folds env e's books into engs[e],
+    // returning each env's burn-through list (row-major). `engs` is the batch's
+    // N engines (this engine == engs[0], the config); empty = {this} (N = 1,
+    // the played `--cuda --resident` game — the same code path). The light
+    // inputs (upload_light_resident) are N = 1 only (render state, until #81).
+    // Declared on every build; the bodies throw on a non-CUDA build. Gates:
+    // tests/cuda_s8a_check.py (N = 1 == CPU, tol 0) and
+    // tests/cuda_batch_invariance_check.py (env i of N == env i alone).
+    using ResidentEngineList = std::vector<const PhysicsEngine*>;
+    void step_water_resident(const ResidentFields& f, const ResidentTickArgs& a,
+                             const ResidentEngineList& engs = {}) const;
+    int run_substeps_resident(const ResidentFields& f, const ResidentTickArgs& a,
+                              const ResidentEngineList& engs = {}) const;
+    void run_trace_tail_resident(const ResidentFields& f, const ResidentTickArgs& a,
+                                 const ResidentEngineList& engs = {}) const;
+    void run_combustion_resident(const ResidentFields& f, const ResidentTickArgs& a,
+                                 const ResidentEngineList& engs = {}) const;
+    void upload_light_resident(const ResidentFields& f,
+                               const ResidentTickArgs& a) const;
+    // #29 P4b: slot 6's stamp on the device -- the five stamp outputs
+    // (obstacles, dyn_permeability, dyn_wave_absorb, dyn_heat_atten_q,
+    // dyn_light_atten_q) rebuilt from `rows`, an (n_rows, 9) int32 matrix
+    // [env, y, x, perm bits, wabsorb bits, heat_q, l0, l1, l2] the hosts'
+    // stamps built (cuda_resident.h STAMP_ROW_COLS; env = the batch index).
+    void stamp_units_resident(const ResidentFields& f, const int32_t* rows,
+                              int n_rows, const ResidentEngineList& engs = {}) const;
+    // #29 P4c: slot 6b's FieldEdit flush on the device (the device edit queue,
+    // cuda_edit_queue.cu) from every env's packed records -- `buf` the one
+    // int64 buffer of cuda_resident_tick.h's resident_edits. Its books fold
+    // into each env's `edit_queue_books` at step_tail_resident.
+    void apply_edits_resident(const ResidentFields& f, const int64_t* buf,
+                              int n_edits, int n_tiles, uint32_t salt,
+                              int o2_idx, int n2_idx,
+                              const ResidentEngineList& engs = {}) const;
+    std::vector<std::vector<std::pair<int, int>>> step_tail_resident(
+        const ResidentFields& f, const ResidentTickArgs& a,
+        const ResidentEngineList& engs = {}) const;
+    // The last resident sweep's Fleck plane into this->radiation, ON DEMAND
+    // (gates and tools; the resident tick never downloads it per tick).
+    void sync_resident_fleck_plane(int h, int w) const;
 
-    // --- Smoke transport v2 (#12, design §5 "Resident", P2b): the resident
-    // path's once-per-tick TRACE TAIL. The device twin of the tail
-    // run_substeps runs on the host after the EOS dispatch (stranded zeroing
-    // -> Jacobi diffusion -> ceil decay, trace_tail in bulk_transport.h), on
-    // the persistent device fields, booked into the SAME EOSSolver books the
-    // CPU tail writes (vent -> boundary_flux_'s trace slots, sink, decay;
-    // ADDED to what run_substeps_resident's stages 3b/3c stored this tick).
-    // The runner calls it right after run_substeps_resident (where the
-    // deleted trace_smoke_resident stood). Declared on every build; the body
-    // THROWS on a non-CUDA build. Gate: tests/cuda_trace_smoke_check.py
-    // (V6-resident).
-    void run_trace_tail_resident(
-        int n_gases, const bool* gas_conservative,
-        const float* gas_diffusion, const float* gas_decay,
-        int h, int w, float sim_time,
-        std::uintptr_t d_gas_base,
-        std::uintptr_t d_solid, std::uintptr_t d_is_vacuum,
-        std::uintptr_t d_is_ambient,          // 0 on a space map
-        std::uintptr_t d_dyn_permeability);
+    // --- #29 P4a: the W6a ripple, step_tail's step 1 as its own entry -------
+    // The dormancy guard (skip unless water_depth or ripple is non-zero
+    // anywhere) and the WaterSolver::step_ripple call, moved VERBATIM out of
+    // step_tail, which now calls this unless `headless`. The resident tick
+    // calls it on the host mirror after its exit download (ripple is
+    // render-only: nothing in the tick reads it, so its place after the fire
+    // and temperature passes changes no other field).
+    void step_ripple(float* ripple, float* ripple_v,
+                     const int32_t* water_depth, const int32_t* atmosphere,
+                     const int32_t* p_prev, const bool* solid,
+                     int h, int w, float sim_time) const;
 
     // --- Patch 1 S4c: the water-layer ARRAY ARITHMETIC -------------------
     // Moves the array-op core of PhysicsRunner._step_water into C++ — the part
@@ -683,6 +797,10 @@ public:
     // solids). PER-CALL reset, the EOSSolver counter idiom; int64, in the
     // gas_energy Q32 currency.
     mutable int64_t e_water_evac_export_sum = 0;
+    // #29 P4c: the device edit queue's books of the LAST tick it ran
+    // (cuda_resident.h EDQ_SLOTS, ASSIGNED at the books fold): the runner adds
+    // them into the map's trace books, gas-energy channels and draw count.
+    mutable std::vector<int64_t> edit_queue_books;
 
     // --- stamp_units: the per-tick dynamic-field rebuild --------------------
     // Moves GameMap.stamp_units' FIELD REBUILD (gamemap.py:485-589) into C++ —

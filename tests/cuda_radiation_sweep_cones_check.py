@@ -60,6 +60,8 @@ def random_cones(rng, h, w, n):
         cq, sq = beams[i % len(beams)]
         y, x = (rng.randrange(h), rng.randrange(w)) if i != 1 else (out[0][0], out[0][1])
         out.append((y, x, tuple(rng.randrange(1 << 39) for _ in range(3)), cq, sq))
+    # #173: omni light well past one ordinate's budget, which the door allows
+    out.append((rng.randrange(h), rng.randrange(w), (8 << 44,) * 3, 0, TURN))
     return out
 
 

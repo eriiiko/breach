@@ -69,8 +69,9 @@ _IN = {
     # `out`; EQUALIZE waits on at_far, REPRESSURIZE on at_near.
     "at_far": (2, "out"), "at_near": (3, "out"),
 }
-_OUT = ("inner_close", "inner_open_cmd", "outer_close", "outer_open_cmd",
-        "pump_inject", "pump_extract", "busy")
+# Every declared command signal (a LOGIC_NODE's SIGNALS all get a slot) --
+# read off the registry so a new signal (#133's near_pump_*) cannot drift.
+_OUT = tuple(sig.name for sig in REGISTRY["airlock_controller"].SIGNALS)
 _CTRL_ORD = 4
 
 

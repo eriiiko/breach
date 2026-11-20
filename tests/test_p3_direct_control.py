@@ -34,7 +34,7 @@ from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation
 from simulation.ruleset import ContinuousRealtime, TwoPhaseWEGO
 from simulation.unit import Unit
-from simulation.orders import ORDER_MOVE_ATTACK, ORDER_SPRINT
+from simulation.orders import ORDER_MOVE_ATTACK
 from simulation.movement import FootprintSamples, default_speed
 from simulation.simulation import _ticks_per_tile
 from simulation.intents import FP_ONE, dequantize
@@ -76,22 +76,29 @@ def _continuous_sim(level) -> Simulation:
 def test_move_dir_steps_by_mobility_scaled_amount():
     """A live MOVE_DIR moves the unit by exactly the mobility-scaled per-tick
     distance the WEGO cadence math yields (1 / default_speed tiles), and along
-    the fixed-point direction only."""
+    the fixed-point direction only. (G5p-a2: on the Q16 grid -- that speed
+    rounded half up once to Q16 tiles, ``half_up(ONE^2, cost)`` counts.)"""
     sim = _continuous_sim(_open_arena())
     uid = sim.add_unit(Unit("M1", x=6, y=6, team=0))
     u = sim.get_unit(uid)
+    # G5p-a1: a walker holding no aim turns to its travel with inertia; this
+    # test is about the step's size, so the unit already faces +X.
+    from simulation.turning import place
+    place(u, 0)
     x0, y0 = u.x, u.y
     fp = u.footprint
 
     # Expected per-tick advance, computed through the SAME predicates the
-    # movement branch reuses: base order cadence -> area-average mobility.
-    base = _ticks_per_tile(ORDER_MOVE_ATTACK)
+    # movement branch reuses: the [speeds] walk (Q16 ticks per tile, G1p-c)
+    # -> area-average mobility. The unit faces its move, so theta is 0.
+    base = sim.speed_table.walk_cost_q
     samples = FootprintSamples(
         mobility=sim.gmap.footprint_mobility(u.tile_y, u.tile_x, fp))
     tick_cost = default_speed(samples, base)
-    expected_step = dequantize(FP_ONE) * (1.0 / tick_cost)   # +X unit vector
+    from simulation.movement import half_up
+    expected_step = half_up(FP_ONE * FP_ONE, tick_cost) / FP_ONE  # +X, Q16
 
-    sim.set_move_dir(uid, FP_ONE, 0, ORDER_MOVE_ATTACK)     # pure +X
+    sim.set_move_dir(uid, FP_ONE, 0, 0)     # pure +X, throttle 0 (walk)
     sim.step()
 
     assert u.x == x0 + expected_step        # exact (deterministic)
@@ -108,7 +115,7 @@ def test_move_dir_blocked_by_impassable_footprint_like_astar():
     u = sim.get_unit(uid)
     fp = u.footprint
 
-    sim.set_move_dir(uid, FP_ONE, 0, ORDER_SPRINT)          # drive +X fast
+    sim.set_move_dir(uid, FP_ONE, 0, FP_ONE)     # drive +X, full throttle
     for _ in range(400):
         sim.step()
 
@@ -275,6 +282,47 @@ def test_quantize_is_deterministic_and_fixed_point():
             == quantize_stick_direction(0.31, -0.77))
 
 
+def test_quantize_point_aim_is_the_stick_seam_plus_the_reach():
+    """G1p, the MOUSE: the aim at a point is the stick seam's unit vector of
+    the offset (direction only: any distance gives the same vector), its
+    reach the distance in Q16.16 tiles, deterministic ints; a point inside
+    the deadzone names nothing. Breaks if the mouse path quantizes another
+    way than the stick, or the reach is not the distance to the cursor."""
+    from control_source import quantize_point_aim
+    from simulation.unit_fixed import quantize_scalar
+    ox, oy = 10.5, 20.5
+    assert quantize_point_aim(ox, oy, ox + 4.0, oy, 0.25) == (
+        FP_ONE, 0, 4 * FP_ONE)
+    assert quantize_point_aim(ox, oy, ox, oy - 7.5, 0.25) == (
+        0, -FP_ONE, quantize_scalar(7.5))
+    dx, dy, reach = quantize_point_aim(ox, oy, ox + 3.0, oy + 4.0, 0.25)
+    assert (dx, dy) == quantize_stick_direction(3.0, 4.0, 0.0)[:2]
+    assert reach == 5 * FP_ONE
+    far = quantize_point_aim(ox, oy, ox + 30.0, oy + 40.0, 0.25)
+    assert far[:2] == (dx, dy) and far[2] == 50 * FP_ONE
+    assert quantize_point_aim(ox, oy, ox + 0.1, oy - 0.1, 0.25) == (0, 0, 0)
+    a = quantize_point_aim(1.25, 2.5, 7.31, -0.77, 0.25)
+    assert a == quantize_point_aim(1.25, 2.5, 7.31, -0.77, 0.25)
+    assert all(isinstance(v, int) for v in a)
+
+
+def test_stick_throttle_spans_walk_to_sprint_over_the_deflection():
+    """G1p, the PAD's throttle: the deflection just past the deadzone is 0
+    (the walk), full deflection ONE (the sprint), monotone between, a Q16
+    int. Breaks if a light push sprints, a full push walks, or a float
+    reaches the sim."""
+    from control_source import stick_throttle_q
+    dz = 0.2
+    assert stick_throttle_q(0, dz) == 0
+    assert stick_throttle_q(quantize_stick_direction(0.2, 0.0, 0.0)[2], dz) \
+        == 0
+    assert stick_throttle_q(FP_ONE, dz) == FP_ONE
+    vals = [stick_throttle_q(quantize_stick_direction(m / 100, 0.0, 0.0)[2],
+                             dz) for m in range(0, 101)]
+    assert all(b >= a for a, b in zip(vals, vals[1:]))
+    assert all(isinstance(v, int) and 0 <= v <= FP_ONE for v in vals)
+
+
 # ===========================================================================
 # D. Bit-reproducibility of a scripted intent stream (new-path substitute
 #    for a golden — there is no strong oracle for direct-control behavior)
@@ -294,11 +342,11 @@ def _scripted_trajectory():
         if mmag == 0:
             sim.clear_move_dir(uid)
         else:
-            sim.set_move_dir(uid, mdx, mdy, ORDER_MOVE_ATTACK)
+            sim.set_move_dir(uid, mdx, mdy, 0)
         sim.set_aim(uid, mdx, mdy)
         sim.set_trigger(uid, t % 4 == 0)
         if t == 10:
-            sim.throw_grenade_intent(uid, FP_ONE, 0, 2.0)
+            sim.throw_grenade_intent(uid, FP_ONE, 0, 48)     # 2 s
         if t == 20:
             sim.use_intent(uid)
         sim.step()

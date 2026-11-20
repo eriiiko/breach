@@ -598,6 +598,13 @@ def flashlight_cones(sim, team: int | None = None, mode: str = "team",
     ``mode``. During PLANNING the flashlight aims toward the cursor, which is
     what makes it a planning affordance rather than decoration.
 
+    GAMEPLAY PACK G7p: a unit whose flashlight bit is OFF
+    (``Unit.flashlight_on``, ``Simulation.set_flashlight``) has no cone, in
+    every mode. Direct control asks for ``mode="selected"`` with the
+    possessed unit (its one light); a watched match asks for ``mode="all"``:
+    every living non-zombie unit of ANY team, ``team`` ignored (a zombie
+    carries no flashlight).
+
     **Render-only in v1.** These cones must not reach the sim: the moment
     lights affect gameplay (zombies drawn to light, vision limited to lit
     areas) they cross into a stealth system, which is a deliberate decision
@@ -608,7 +615,12 @@ def flashlight_cones(sim, team: int | None = None, mode: str = "team",
     half = float(CFG.onephase.vision_cone_half_deg)
     out = []
     for u in sim.units:
-        if u.team != team or not u.alive:
+        if not u.alive or not getattr(u, "flashlight_on", True):
+            continue
+        if mode == "all":
+            if u.is_zombie:
+                continue
+        elif u.team != team:
             continue
         # `selected_unit_id or -1` would be a bug here: unit id 0 is falsy.
         if mode == "selected" and (selected_unit_id is None
@@ -628,6 +640,24 @@ def flashlight_cones(sim, team: int | None = None, mode: str = "team",
             y=float(u.center_tile_y()), facing=facing, half_deg=half,
             range_tiles=25.0))
     return out
+
+
+def carried_flashlight_cones(sim, possessed_id=None, watching: bool = False,
+                             ) -> list:
+    """The flashlight cones of a game with no onephase planning (gameplay
+    pack G7p): DIRECT CONTROL lights its possessed unit only
+    (``possessed_id``, :func:`flashlight_cones` mode "selected"), a WATCHED
+    MATCH (``watching``: a replay or ``--control match``) every living marine
+    of any team (mode "all"), anything else nothing. Each follows the unit's
+    own bit (``Unit.flashlight_on``): a unit with its light off has no cone.
+    The SAME cones :func:`renderer.frame_lights.flashlight_specs` turns into
+    the one assembly's specs. Render-only, like :func:`flashlight_cones`."""
+    if possessed_id is not None:
+        return flashlight_cones(sim, mode="selected",
+                                selected_unit_id=possessed_id)
+    if watching:
+        return flashlight_cones(sim, mode="all")
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -713,7 +743,190 @@ def ds3_menu(sim, unit, page_index: int = 0) -> MenuModel:
     return model
 
 
+# ---------------------------------------------------------------------------
+# The side panel's game-state block (G2p) -- what the HUD says, as data
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class PanelLine:
+    """One line of the side panel: its text, font size, colour and the
+    vertical advance after it. ``draw_panel`` renders them and decides
+    nothing."""
+    text: str
+    size: int = 14
+    color: tuple | None = None       # None = the draw default
+    advance: int = 18
+
+
+def ammo_text(unit, tick: int, weapons):
+    """The magazine readout of ``unit`` -- ``"Ammo: 17/30   spare 2"``, with
+    ``"RELOADING"`` while the stall runs and ``"DRY"`` with an empty magazine
+    and no spare -- or ``None`` for a unit whose weapon tracks no magazine.
+    ``spare`` is ``inf`` when the loadout does not count magazines. Reads the
+    unit, mutates nothing (``combat.mag_status``); ``weapons`` is the sim's
+    ``weapons_tables.weapons.by_name``."""
+    from simulation.combat import mag_status
+    weapon = weapons.get(getattr(unit, "weapon_id", ""))
+    if weapon is None:
+        return None
+    status = mag_status(unit, weapon, int(tick))
+    if status is None:
+        return None
+    rounds, spares, reloading = status
+    spare = "inf" if spares is None else str(spares)
+    text = f"Ammo: {rounds}/{int(weapon.mag_size)}   spare {spare}"
+    if reloading:
+        text += "   RELOADING"
+    elif rounds <= 0:
+        text += "   DRY"
+    return text
+
+
+def grenade_text(rows, counts, selected=None) -> str:
+    """The grenade line's text (G3p, pure): each hand-grenade row the unit
+    carries with its count (``frag 2  smoke 1  flash 1``, the row name
+    without its ``grenade_`` prefix), the SELECTED kind in brackets
+    (``[frag 2]``; shown even at 0), ``none`` when it carries none and
+    nothing is selected. ``rows`` are the row names in kind order, ``counts``
+    the unit's block."""
+    parts = []
+    for k, (row, n) in enumerate(zip(rows, counts)):
+        name = row[len("grenade_"):] if row.startswith("grenade_") else row
+        if k == selected:
+            parts.append(f"[{name} {n}]")
+        elif n > 0:
+            parts.append(f"{name} {n}")
+    return "  ".join(parts) if parts else "none"
+
+
+def charge_text(unit, timer_s=None) -> str:
+    """The side panel's planted-charge line (#193, pure): the count the unit
+    carries, and with a plant timer (the direct control's) the keys and the
+    timer -- ``"C4 (X): 1   timer 10 s (5)"``; without one
+    ``"Charges: 1"``."""
+    n = int(getattr(unit, "has_explosive", 0))
+    if timer_s is None:
+        return f"Charges: {n}"
+    return f"C4 (X): {n}   timer {int(timer_s)} s (5)"
+
+
+def poison_text(unit):
+    """The poison line of ``unit`` (#29 PX, pure): its blood level in units
+    and the hit points still to come from all the poison it holds (depot and
+    blood, before mitigation) -- ``"Poison: blood 0.42 u   to come 7.3 HP"``
+    -- or ``None`` while it holds none. Reads the unit through the law's own
+    reads (``poison.holds`` / ``pending_harm_q``), mutates nothing."""
+    from simulation import poison
+    if not poison.holds(unit):
+        return None
+    blood = int(unit.poison_x1) / 65536.0
+    to_come = poison.pending_harm_q(unit) / 65536.0
+    return f"Poison: blood {blood:.2f} u   to come {to_come:.1f} HP"
+
+
+def body_text(unit) -> str:
+    """The body line of ``unit`` (#215, pure): its body temperature, its
+    stress and the heart rate read off it -- ``"Body 34.2 C  stress 12.0
+    heart 72 bpm"`` -- through the laws' own reads (``stress.heart_rate_q``:
+    derived, never stored); mutates nothing."""
+    from simulation import stress
+    body = int(unit.body_temp_q) / 65536.0
+    pts = int(unit.stress_q) / float(stress.LEVEL_ONE)
+    hr = stress.heart_rate_q(unit) / 65536.0
+    return f"Body {body:.1f} C  stress {pts:.1f}  heart {hr:.0f} bpm"
+
+
+def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
+                      current_mode=None, grenade_kind=None,
+                      charge_timer_s=None) -> list:
+    """The side panel's game-state block as :class:`PanelLine` rows: the run
+    state, then the selected unit's summary. A turn-based ruleset shows its
+    round / phase / tick-in-round, planning phase, AP and queued orders;
+    under ``ContinuousRealtime`` (direct control, a watched match) none of
+    that exists, so the panel shows the tick, the unit's hit points, its
+    weapon and its MAGAZINE (rounds in the gun, spare magazines) instead.
+    ``grenade_kind`` (G3p) is the direct control's selected grenade kind (an
+    index of the hand-grenade rows) for the grenade line, None = none
+    selected. ``charge_timer_s`` (#193) is the direct control's plant timer
+    in seconds: with it the charge line names the charge, the keys and the
+    timer; None (no direct control) shows the bare count."""
+    from simulation.ruleset import ContinuousRealtime
+    continuous = isinstance(sim.ruleset, ContinuousRealtime)
+    paused = sim.is_paused()
+    lines = []
+    if continuous:
+        lines.append(PanelLine("PAUSED" if paused else "EXECUTING", 16,
+                               (255, 220, 120, 255) if paused
+                               else (120, 255, 120, 255), 22))
+        lines.append(PanelLine(f"Tick {sim.get_tick()}", 13,
+                               (180, 180, 200, 255), 18))
+    else:
+        lines.append(PanelLine(
+            "PAUSED — planning" if paused else "EXECUTING", 16,
+            (255, 220, 120, 255) if paused else (120, 255, 120, 255), 22))
+        lines.append(PanelLine(f"Round {getattr(sim, 'turn_number', 1)}   "
+                               f"Phase {sim.get_phase() + 1}/2", 14, None, 18))
+        lines.append(PanelLine(f"Tick {sim.get_tick()} / "
+                               f"{sim._ticks_per_round}", 13,
+                               (180, 180, 200, 255), 18))
+    n_events = len(getattr(sim, "tick_events", []))
+    lines.append(PanelLine(f"Tick events: {n_events}", 12,
+                           (150, 150, 180, 255), 18))
+    if paused and not continuous:
+        lines.append(PanelLine(f"Planning phase {planning_phase + 1}", 12,
+                               (200, 200, 120, 255), 16))
+    lines.append(PanelLine("", 12, None, 6))
+
+    if selected_unit is not None and getattr(selected_unit, "alive", False):
+        from simulation import unit_traits
+        lines.append(PanelLine(f"Selected: {selected_unit.name}", 14,
+                               (120, 220, 255, 255), 18))
+        weapon_id = getattr(selected_unit, "weapon_id", "")
+        if weapon_id:
+            lines.append(PanelLine(f"Weapon: {weapon_id}  (N cycles)", 13,
+                                   (255, 200, 120, 255), 16))
+        lines.append(PanelLine(
+            f"HP: {int(selected_unit.current_hp)}/"
+            f"{int(unit_traits.max_hp_q(selected_unit) / unit_traits.ONE)}",
+            13, None, 16))
+        poisoned = poison_text(selected_unit)
+        if poisoned is not None:
+            lines.append(PanelLine(poisoned, 13, (170, 230, 90, 255), 16))
+        if hasattr(selected_unit, "body_temp_q"):
+            lines.append(PanelLine(body_text(selected_unit), 12,
+                                   (255, 190, 160, 255), 16))
+        if continuous:
+            ammo = ammo_text(selected_unit, sim.get_tick(),
+                             sim.weapons_tables.weapons.by_name)
+            if ammo is not None:
+                lines.append(PanelLine(ammo, 14, (255, 230, 150, 255), 18))
+        else:
+            lines.append(PanelLine(
+                f"AP: {selected_unit.ap[0]}, {selected_unit.ap[1]}",
+                13, None, 16))
+        rows = sim.weapons_tables.hand_grenade_rows
+        # Two lines: the kinds with the selection, then the charges (one line
+        # is wider than the panel).
+        lines.append(PanelLine(
+            f"Grenades{' (4)' if continuous else ''}: "
+            f"{grenade_text(rows, selected_unit.grenade_counts, grenade_kind)}",
+            12, None, 16))
+        lines.append(PanelLine(charge_text(selected_unit, charge_timer_s),
+                               12, None, 18))
+        if not continuous:
+            lines.append(PanelLine(
+                f"Queued orders: {len(selected_unit.orders)}", 12,
+                (180, 180, 180, 255), 18))
+    if current_mode is not None and not continuous:
+        from simulation.orders import ORDER_NAMES
+        lines.append(PanelLine(
+            f"Mode: {ORDER_NAMES.get(current_mode, str(current_mode))}", 13,
+            (255, 200, 120, 255), 22))
+    return lines
+
+
 __all__ = [
+    "PanelLine", "ammo_text", "charge_text", "grenade_text", "poison_text",
+    "panel_state_lines",
     "DEFAULT_HOTBAR", "DS3_PAGES", "FlashlightCone", "HotbarSlot", "Hologram",
     "ActionMarker", "FireLine", "MenuModel", "MenuRow", "PathViz",
     "PlanOverlay", "PlanningClock", "RoundEndGhost", "TargetMarker",

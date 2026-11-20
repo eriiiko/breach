@@ -11,10 +11,16 @@ Two jobs:
 
 2. **Run GPU checks in an ISOLATED subprocess.** A single Python process can
    import ``breach_physics`` only once, and the rest of the suite imports the CPU
-   build. So a GPU test must run in its own interpreter (the anaconda 3.11 that
-   matches the cp311 ``.pyd``) with sys.path pointed at ``cpp/build_cuda`` — never
+   build. So a GPU test must run in its own interpreter (the `data` env that
+   matches the cp312 ``.pyd``) with sys.path pointed at ``cpp/build_cuda`` — never
    importing the CUDA module into the pytest process itself. ``run_cuda_script``
    does exactly that; the X-ARCH digest runner reuses the same pattern.
+
+Linux (#29 P10): the module is ``breach_physics*.so`` (built by
+``cpp/build_linux.sh``), its CUDA runtime is found through the RPATH CMake
+writes into it (no ``add_dll_directory`` exists or is needed), and the
+interpreter that owns it is the one running this harness (the env
+``build_linux.sh`` built against) unless ``BREACH_CUDA_PYTHON`` says otherwise.
 """
 from __future__ import annotations
 
@@ -26,38 +32,64 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CUDA_BUILD_DIR = ROOT / "cpp" / "build_cuda"
 # The interpreter that owns the .pyd — it MUST match the .pyd's cpXXX ABI. The
-# default is the Work Desktop's anaconda 3.11 (cp311); override with the env var
+# default is the desktops' anaconda `data` env (cp312); override with the env var
 # BREACH_CUDA_PYTHON on any machine whose CUDA build was produced by a different
-# interpreter (e.g. the Lenovo/Ada, where the `data` miniconda env is cp312). The
-# X-ARCH digest runner reuses this same interpreter.
+# interpreter. The X-ARCH digest runner reuses this same interpreter.
 # P6.2: when the anaconda default does not exist on this machine (the Lenovo has
 # only miniconda), fall back to the Lenovo `data` env (cp312 — matches its
 # build_cuda_lenovo.bat build) so the now-ACTIVE per-kernel gates run without a
 # per-shell env var. BREACH_CUDA_PYTHON still overrides everything.
-_CUDA_PYTHON_DEFAULT = r"C:\Users\steen\anaconda3\python.exe"
-if not Path(_CUDA_PYTHON_DEFAULT).exists():
-    _CUDA_PYTHON_DEFAULT = r"C:\Users\steen\miniconda3\envs\data\python.exe"
+WINDOWS = sys.platform == "win32"
+if WINDOWS:
+    _CUDA_PYTHON_DEFAULT = r"C:\Users\steen\anaconda3\envs\data\python.exe"
+    if not Path(_CUDA_PYTHON_DEFAULT).exists():
+        _CUDA_PYTHON_DEFAULT = r"C:\Users\steen\miniconda3\envs\data\python.exe"
+else:
+    # Linux (#29 P10): one env per box, the one build_linux.sh built against
+    # -- the suite's own interpreter.
+    _CUDA_PYTHON_DEFAULT = sys.executable
 CUDA_PYTHON = Path(os.environ.get("BREACH_CUDA_PYTHON", _CUDA_PYTHON_DEFAULT))
+# The compiled module's file pattern: a .pyd on Windows, a .so elsewhere.
+MODULE_GLOB = "breach_physics*.pyd" if WINDOWS else "breach_physics*.so"
 
 
 def cuda_pyd() -> Path | None:
     """The built CUDA module, or None if the GPU build has not been produced."""
-    hits = list(CUDA_BUILD_DIR.glob("breach_physics*.pyd"))
+    hits = list(CUDA_BUILD_DIR.glob(MODULE_GLOB))
     return hits[0] if hits else None
 
 
 def cuda_dll_dir() -> Path | None:
-    """The CUDA runtime ``bin`` dir holding cudart64_*.dll, from CUDA_PATH or the
-    pinned v12.4 install. None if not found."""
+    """The CUDA runtime's library dir: on Windows the ``bin`` dir holding
+    cudart64_*.dll (CUDA_PATH or the pinned v12.4 install); on Linux the
+    toolkit's ``lib64`` holding libcudart.so* (CUDA_PATH / CUDA_HOME or
+    /usr/local/cuda). None if not found."""
     cands = []
-    cp = os.environ.get("CUDA_PATH")
-    if cp:
-        cands.append(Path(cp) / "bin")
-    cands.append(Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin"))
+    if WINDOWS:
+        cp = os.environ.get("CUDA_PATH")
+        if cp:
+            cands.append(Path(cp) / "bin")
+        cands.append(Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin"))
+        pattern = "cudart64_*.dll"
+    else:
+        for var in ("CUDA_PATH", "CUDA_HOME"):
+            if os.environ.get(var):
+                cands.append(Path(os.environ[var]) / "lib64")
+        cands.append(Path("/usr/local/cuda/lib64"))
+        pattern = "libcudart.so*"
     for c in cands:
-        if c.is_dir() and list(c.glob("cudart64_*.dll")):
+        if c.is_dir() and list(c.glob(pattern)):
             return c
     return None
+
+
+def register_cuda_runtime(dll_dir: Path | None = None) -> None:
+    """Make the CUDA runtime loadable for the extension imported next: on
+    Windows ``os.add_dll_directory`` (Python >= 3.8 ignores PATH for an
+    extension's DLLs); on Linux nothing -- the module's RPATH finds it."""
+    dll_dir = cuda_dll_dir() if dll_dir is None else dll_dir
+    if WINDOWS and dll_dir is not None:
+        os.add_dll_directory(str(dll_dir))
 
 
 # EOS P6 GPU migration — COMPLETE (closed 2026-07-11, branch eos-p6-close).
@@ -92,9 +124,10 @@ def cuda_available(kernel: str | None = None) -> bool:
 # `import breach_physics` resolves to the GPU build.
 def _bootstrap() -> str:
     dll = cuda_dll_dir()
+    register = f"os.add_dll_directory(r'{dll}')\n" if WINDOWS else ""
     return (
         "import os, sys\n"
-        f"os.add_dll_directory(r'{dll}')\n"
+        + register +
         f"sys.path.insert(0, r'{CUDA_BUILD_DIR}')\n"
         f"sys.path.insert(0, r'{ROOT / 'src'}')\n"
         f"sys.path.insert(0, r'{ROOT}')\n"
@@ -103,7 +136,7 @@ def _bootstrap() -> str:
 
 
 def run_cuda_script(body: str, timeout: float = 120.0) -> subprocess.CompletedProcess:
-    """Run ``body`` in a fresh anaconda-3.11 interpreter with the CUDA build
+    """Run ``body`` in a fresh `data` interpreter with the CUDA build
     importable. Returns the CompletedProcess (caller asserts on returncode/stdout)."""
     script = _bootstrap() + body
     return subprocess.run(

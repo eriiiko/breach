@@ -30,7 +30,6 @@ import math
 
 from control_source import ControlSource, quantize_stick_direction
 from simulation.factions import CREATURE_TEAM
-from simulation.orders import ORDER_MOVE_ATTACK
 
 
 def hunt_speed_q16(unit) -> int:
@@ -67,7 +66,7 @@ class CreatureControl(ControlSource):
                 sim.clear_move_dir(u.id)
                 continue
             qx, qy, _ = quantize_stick_direction(dx / n, dy / n, deadzone=0.0)
-            sim.set_move_dir(u.id, qx, qy, ORDER_MOVE_ATTACK, speed_q=hunt_speed_q16(u))
+            sim.set_move_dir(u.id, qx, qy, hunt_speed_q16(u))
 
     @staticmethod
     def _nearest_seen(sim, u, vision, is_creature):

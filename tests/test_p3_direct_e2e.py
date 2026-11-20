@@ -78,7 +78,17 @@ def _dummy_enemy(sim, x, y):
 
 
 def _aim_east(sim, uid):
+    """Aim +X (facing 0, east) and let the unit TURN there before the caller
+    pulls the trigger: since G1p a facing turns at the turn-rate cap (a
+    spawned unit faces north, a quarter turn away), and these tests are about
+    where a shot goes along the facing, not about the turn."""
     sim.set_aim(uid, FP_ONE, 0)     # +X unit vector -> facing 0 (east)
+    u = sim.get_unit(uid)
+    for _ in range(64):
+        if u.facing == 0.0:
+            return
+        sim.step()
+    raise AssertionError(f"the unit never turned east (facing {u.facing})")
 
 
 # ===========================================================================
@@ -123,19 +133,24 @@ def _digest(sim):
 def _scripted_run():
     sim = _sim(_open_arena(20, 20))
     uid = sim.add_unit(Unit("M1", x=8, y=8, team=0))
+    # G5p-a1: the facing turns with inertia, and the scripted aim sweeps at
+    # 0.25 rad a tick (just under the top speed), so a unit starting north
+    # would chase it the whole run; it stands facing the stream's first aim
+    # (east, at the enemy), which is what makes the stream deal damage.
+    from simulation.turning import place
+    place(sim.get_unit(uid), 0)
     _dummy_enemy(sim, x=13, y=8)
     # The pre-run state first, so "the stream dealt damage" compares against
     # the spawn HP, not against the state after the first tick's shots (#119:
     # at full, non-zombie damage the whole effect lands on tick 0).
     trace = [_digest(sim)]
-    from simulation.orders import ORDER_MOVE_ATTACK
     for t in range(50):
         ax, ay = np.cos(t * 0.25), np.sin(t * 0.25)
         mdx, mdy, mmag = quantize_stick_direction(float(ax), float(ay))
         if mmag == 0:
             sim.clear_move_dir(uid)
         else:
-            sim.set_move_dir(uid, mdx, mdy, ORDER_MOVE_ATTACK)
+            sim.set_move_dir(uid, mdx, mdy, 0)  # throttle 0: the walk
         sim.set_aim(uid, mdx, mdy)
         sim.set_trigger(uid, t % 3 == 0)
         sim.step()
@@ -228,12 +243,15 @@ def test_directional_spray_cone_follows_facing():
 
 
 def test_directional_grenade_still_throws():
-    """THROW is consumed by the rewritten _consume_direct_intents unchanged."""
+    """THROW is consumed by the rewritten _consume_direct_intents: the verb
+    starts the wind-up (G3p) and the grenade is in flight once it is over."""
     sim = _sim(_open_arena(20, 20))
     uid = sim.add_unit(Unit("M1", x=8, y=9, team=0))
     n0 = len(sim.projectiles)
-    sim.throw_grenade_intent(uid, FP_ONE, 0, 2.0)   # lob east
-    sim.step()
+    sim.throw_grenade_intent(uid, FP_ONE, 0, 48)    # lob east, fuse 2 s
+    windup = sim.weapons_tables.weapons.by_name["hand_grenade"]         .throw_windup_ticks
+    for _ in range(windup + 1):
+        sim.step()
     assert len(sim.projectiles) == n0 + 1
 
 

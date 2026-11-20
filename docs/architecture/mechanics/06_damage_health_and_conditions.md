@@ -109,6 +109,10 @@ Unit logic consults the *composed* flags, never individual statuses.
 reduced by poison resistance, burning by heat resistance. Composition falls
 out; it is never coded per-status.
 
+> **2026-10-31 (#140):** the knockdown now triggers on the wind's dynamic pressure `q = ½ρv²`
+> (`wind_q_fall_pa × stability²`, `exchange.apply_wind_knockdown`), not `Δv`; the ring signature
+> below is MEASURED under the new law (`tools/wind_load_probe.py grenade`), not preserved.
+
 **Knockdown physics note:** because `KNOCKED_DOWN` triggers on *velocity
 change* (`Δv = J/mass`, ∇p-derived) while lethality comes from *overpressure
 damage*, the knockdown radius of an explosion is naturally **larger** than

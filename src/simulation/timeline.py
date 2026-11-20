@@ -50,7 +50,7 @@ from config import CFG
 from simulation import charges, engagement
 from simulation.action_registry import ActionDef
 from simulation.combat import Projectile, mag_gate, mag_spend, _dispatch_trigger
-from simulation.movement import FootprintSamples, default_speed
+from simulation.movement import default_speed, footprint_samples
 from simulation.orders import (
     ORDER_AMBUSH, ORDER_DETONATE, ORDER_EXPLOSIVE, ORDER_GRENADE, ORDER_HOLD,
     ORDER_MARK, ORDER_MOVE, ORDER_MOVE_SHOOT, ORDER_OVERWATCH, ORDER_SHOOT,
@@ -58,7 +58,9 @@ from simulation.orders import (
 )
 from simulation.status import composed_flags
 from simulation.weapons import FIRE_ORDER_ARCHETYPES
+from simulation import turning as _turning
 from simulation import unit_fixed
+from simulation.unit_schema import MAG_UNBOUND
 
 try:
     from pathfinding import astar
@@ -152,8 +154,15 @@ def tile_cadence(gmap, unit, fy, fx, order_type, reversing) -> int:
     the weapon table's meter->tile derivation.
     """
     base = base_ticks_per_tile(gmap)
-    samples = FootprintSamples(
-        mobility=gmap.footprint_mobility(fy, fx, unit.footprint))
+    from simulation import unit_impulse
+    from simulation import unit_traits
+    samples = footprint_samples(
+        gmap, fy, fx, unit.footprint,
+        effort_scale_q16=unit_impulse.effort_scale_q16(
+            unit_impulse.table_for(gmap), unit),   # G5p-a2, at compile time
+        # #29 U1: onephase's base is the FULL speed (v1's Move folds the
+        # old Sprint in): the SPRINT hook
+        speed_hook_q16=unit_traits.hook(unit, unit_traits.SPRINT))
     terrain = default_speed(samples, base)
     pct = speed_pct(order_type, reversing)
     if pct >= 1.0:
@@ -173,7 +182,10 @@ def spread_deg_for(weapon, order_type, reversing=False, overwatch=False,
     snap cone first — a blinded marine does not get to aim, whatever the
     situation multiplier says.
     """
-    base = float(weapon.spread_deg if can_aim else weapon.spread_snap_deg)
+    from simulation.unit_traits import cone_deg_of
+    # #29 U1: the class cone's ONE selection; the shooter's SPREAD hook
+    # enters at the draw (combat.fire_burst / fire_beam -> unit_traits.cone_q16)
+    base = float(cone_deg_of(weapon, can_aim))
     if order_type == ORDER_MOVE_SHOOT:
         base *= float(CFG.onephase.spread_reverse_mult if reversing
                       else CFG.onephase.spread_move_shoot_mult)
@@ -544,7 +556,9 @@ def _advance_movement(sim, unit) -> None:
         # schedule after it does not shift.
         return
     unit.face_towards(nx, ny)
-    unit.x, unit.y = nx, ny
+    # #29 P3c: the compiled path's interpolated position, quantized ONCE at
+    # the float door (its (st + 1) / step_ticks fractions are off the grid).
+    unit.set_pos(nx, ny)
 
 
 def occupied_by_unit(sim, unit, nx: float, ny: float) -> bool:
@@ -762,10 +776,10 @@ def _fire_at(sim, unit, target, *, order_type=ORDER_SHOOT, reversing=False,
     # (§9). ``sim.cover`` is passed even when empty — it is the LIST, not its
     # contents, that selects the model.
     _dispatch_trigger(sim.gmap, sim.units, unit, ux, uy, tx, ty, sim.tick,
-                      sim.shots, sim.real_time, sim.rng, sim.tick_events,
+                      sim.shots, sim.real_time, sim.draws, sim.tick_events,
                       sim.bullets, weapon, spread, sim.edit_queue,
                       cover=sim.cover, facing_defense=True)
-    mag_spend(unit, weapon, sim.tick)
+    mag_spend(unit, weapon, sim.tick, events=sim.tick_events)
     unit.last_fire_tick = sim.tick
     return True
 
@@ -818,7 +832,7 @@ def swap_weapon(sim, unit, step) -> None:
         return
     unit.active_slot = 1 - int(getattr(unit, "active_slot", 0))
     unit.weapon_id = loadout[unit.active_slot]
-    unit.current_mag = None
+    unit.current_mag = MAG_UNBOUND
     unit.reload_done_tick = -1
     unit.spray_ticks_left = 0
     unit.spray_order = None
@@ -846,7 +860,9 @@ def set_overwatch(sim, unit, step) -> None:
                    float(half)))
     unit.overwatch_facing = facing
     unit.overwatch_half_deg = half
-    unit.facing = facing
+    # The overwatch bearing is the facing TARGET (G5p-a1: the turning law
+    # turns the unit there; nothing writes a facing directly).
+    _turning.set_target(unit, unit_fixed.quantize_scalar(facing))
 
 
 def throw_grenade(sim, unit, step) -> None:

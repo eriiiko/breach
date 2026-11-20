@@ -213,6 +213,11 @@ void main() {
     // ring of equal lamps lights every side alike and the top most.
     float ndotl_iso = max(0.0, (N.y * u_light_z / sqrt(1.0 + u_light_z * u_light_z)
                                 + u_wrap) / (1.0 + u_wrap));
+    // G5: one curve factor on the body's whole light, so its two parts keep
+    // their share (lit3d's block; off = exactly 1).
+    float curve_k = lightCurveGain(light_dir_rgb + light_iso_rgb);
+    light_dir_rgb *= curve_k;
+    light_iso_rgb *= curve_k;
     vec3 light_rgb = light_dir_rgb + light_iso_rgb;   // all of it, x exposure
 
     vec4 albedo_gloss = texture(texture0, fragTexCoord);
@@ -220,6 +225,7 @@ void main() {
     float gloss = albedo_gloss.a;  // #33: the bake's gloss mask (0 matte .. 1 glossiest)
     if (u_srgb_decode == 1) albedo = srgb_to_linear(albedo);  // else double-dark
     albedo *= colDiffuse.rgb;                                  // draw colour
+    albedo = lightCurveAlbedo(albedo, light_rgb);
 
     vec3 lit = albedo * (u_ambient + light_dir_rgb * ndotl
                          + light_iso_rgb * ndotl_iso);

@@ -544,8 +544,12 @@ FP_HD inline int32_t trace_add_sat(int32_t s, int64_t add, int64_t* clip,
 // cannot be represented is SEEN, never wrapped. The double -> int64 conversion
 // is range-checked (an out-of-range double -> int is UB): a value at or beyond
 // int64 saturates to the int64 limit. A NaN amount has no meaning and lands as
-// 0. Host only (the one float in this block).
-inline int64_t quantize_trace(double v) {
+// 0. The one float in this block. FP_HD since #29 P4a: the device water tail
+// (cuda_water_tail.cu) prices the W5 steam puff through THIS function, not a
+// copy -- one exact power-of-two multiply, one add, one truncating cast, the
+// same IEEE double operations on the host's /fp:strict and the device's
+// --fmad=false (a contracted v*2^k + 0.5 rounds the same: the product is exact).
+FP_HD inline int64_t quantize_trace(double v) {
     const double scaled = v * (double)((int64_t)1 << TRACE_SHIFT);
     if (!(scaled == scaled)) return 0;                       // NaN
     const double r = (scaled >= 0.0) ? (scaled + 0.5) : (scaled - 0.5);
@@ -792,6 +796,246 @@ FP_HD inline int64_t floordiv_q(int64_t n, int64_t d) {
     int64_t q = n / d;
     if (((n % d) != 0) && ((n ^ d) < 0)) --q;
     return q;
+}
+
+// ---- the unit impulse law's roundings (gameplay pack G5p-a2) ---------------
+//
+// The law (src/simulation/unit_impulse.py, design §13 / critique B M2) names
+// its rounding at every signed division; these are the C twins of
+// `unit_fixed.div_trunc` / `shr_trunc` / `effort_step`, held equal by
+// tests/test_unit_impulse_twins.py (gate G15) through the fp_* bindings.
+// Its magnitudes are `sqrt_q16` (below), the twin of `unit_fixed.isqrt`.
+//
+// div_trunc_q: n / d rounded toward ZERO -- C's own `/`, named so the device
+// port reads the rounding off the call. d != 0 (the callers divide by a mass,
+// an inertia or a vector length, all >= 1).
+FP_HD inline int64_t div_trunc_q(int64_t n, int64_t d) {
+    return n / d;
+}
+
+// shr_trunc_q: n / 2^k rounded toward ZERO (sign-symmetric: a mirrored input
+// gives the mirrored output to the count). `>>` alone floors a negative.
+FP_HD inline int64_t shr_trunc_q(int64_t n, int k) {
+    return n >= 0 ? (n >> k) : -((-n) >> k);
+}
+
+// effort_step_q: one step of the effort low-pass toward its input, d / 8
+// rounded AWAY from zero -- never 0 for d != 0 and never past d, so the
+// filter reaches its input exactly (critique A, B2).
+FP_HD inline int64_t effort_step_q(int64_t d) {
+    return d >= 0 ? ((d + 7) >> 3) : -(((-d) + 7) >> 3);
+}
+
+// ---- the unit kernels' kit twins (#29 P6.2) ---------------------------------
+//
+// The C twins of `unit_fixed.isqrt` / `isqrt_ceil` / `div_round` /
+// `mul_q16_round` that the device unit kernels (cuda_unit_lib.cuh and the slot
+// TUs) need, held equal to Python by tests/test_unit_impulse_twins.py through
+// the fp_* bindings. Kit code only: a rounding or a root, never a law.
+//
+// umul64_wide: the full 128-bit product of two uint64 as (hi, lo). Three
+// branches, as mul128_shr above: the device's __umul64hi, a host __int128,
+// MSVC's _umul128.
+#if defined(__CUDA_ARCH__)
+FP_HD inline void umul64_wide(uint64_t a, uint64_t b, uint64_t* hi, uint64_t* lo) {
+    *lo = (uint64_t)((unsigned long long)a * (unsigned long long)b);
+    *hi = (uint64_t)__umul64hi((unsigned long long)a, (unsigned long long)b);
+}
+#elif defined(__SIZEOF_INT128__)
+FP_HD inline void umul64_wide(uint64_t a, uint64_t b, uint64_t* hi, uint64_t* lo) {
+    const unsigned __int128 p = (unsigned __int128)a * (unsigned __int128)b;
+    *lo = (uint64_t)p;
+    *hi = (uint64_t)(p >> 64);
+}
+#elif defined(_MSC_VER)
+} // namespace fixedpoint
+#include <intrin.h>
+namespace fixedpoint {
+FP_HD inline void umul64_wide(uint64_t a, uint64_t b, uint64_t* hi, uint64_t* lo) {
+    unsigned long long h;
+    *lo = (uint64_t)_umul128((unsigned long long)a, (unsigned long long)b, &h);
+    *hi = (uint64_t)h;
+}
+#endif
+
+// isqrt_u64_q: floor(sqrt(x)) of ANY uint64, exact (the digit recurrence of
+// sqrt_q16 below, 32 fixed trips, with no int32 clamp: the root of a uint64
+// is below 2^32). The twin of unit_fixed.isqrt for every radicand < 2^64.
+FP_HD inline uint64_t isqrt_u64_q(uint64_t x) {
+    uint64_t res = 0;
+    uint64_t bit = (uint64_t)1 << 62;
+    for (int k = 0; k < 32; ++k) {
+        const uint64_t t = res + bit;
+        res >>= 1;
+        if (x >= t) {
+            x -= t;
+            res += bit;
+        }
+        bit >>= 2;
+    }
+    return res;
+}
+
+// isqrt_u128_q (#29 P6.4a): floor(sqrt(hi * 2^64 + lo)) of ANY 128-bit
+// radicand, exact -- the root (below 2^64) built bit by bit from the top, each
+// trial squared in 128 bits (umul64_wide). The twin of unit_fixed.isqrt past
+// uint64 (the shove's lever term squares an impulse of up to 2^35).
+FP_HD inline uint64_t isqrt_u128_q(uint64_t hi, uint64_t lo) {
+    uint64_t r = 0;
+    for (int b = 63; b >= 0; --b) {
+        const uint64_t t = r | ((uint64_t)1 << b);
+        uint64_t ph, pl;
+        umul64_wide(t, t, &ph, &pl);
+        if (ph < hi || (ph == hi && pl <= lo)) r = t;
+    }
+    return r;
+}
+
+// isqrt_q: unit_fixed.isqrt of an int64 (a negative radicand is 0, as Python's
+// guard makes it).
+FP_HD inline int64_t isqrt_q(int64_t n) {
+    return n > 0 ? (int64_t)isqrt_u64_q((uint64_t)n) : 0;
+}
+
+// isqrt_ceil_q: unit_fixed.isqrt_ceil -- the floor root, plus one unless it
+// is exact.
+FP_HD inline int64_t isqrt_ceil_q(int64_t n) {
+    const int64_t r = isqrt_q(n);
+    return (r * r < n) ? r + 1 : r;
+}
+
+// div_round_q: unit_fixed.div_round -- n / d rounded half AWAY from zero,
+// d != 0. floor((2|n| + d) / 2d) == q + (2r >= d) with q, r the quotient and
+// remainder of |n| / d, so the form below is exact for every int64 n
+// (INT64_MIN included: the magnitude is taken in uint64) and d != 0.
+FP_HD inline int64_t div_round_q(int64_t n, int64_t d) {
+    // The signs are combined, never negated in int64 (INT64_MIN has no
+    // int64 negation); the magnitudes are uint64.
+    const bool neg = (n < 0) != (d < 0);
+    const uint64_t an = n < 0 ? (uint64_t)0 - (uint64_t)n : (uint64_t)n;
+    const uint64_t ud = d < 0 ? (uint64_t)0 - (uint64_t)d : (uint64_t)d;
+    uint64_t q = an / ud;
+    const uint64_t r = an % ud;
+    if (r >= ud - r) ++q;              // 2r >= d without overflow
+    return neg ? (int64_t)((uint64_t)0 - q) : (int64_t)q;
+}
+
+// mul_q16_round_q: unit_fixed.mul_q16_round -- a * b / 65536 rounded half
+// away from zero, the product formed in 128 bits so it is exact whenever the
+// RESULT fits int64 (the hook accessors' contract, unit_traits: every
+// class value x HOOK_MAX is far below 2^63).
+FP_HD inline int64_t mul_q16_round_q(int64_t a, int64_t b) {
+    const bool neg = (a < 0) != (b < 0);
+    const uint64_t ua = a < 0 ? (uint64_t)0 - (uint64_t)a : (uint64_t)a;
+    const uint64_t ub = b < 0 ? (uint64_t)0 - (uint64_t)b : (uint64_t)b;
+    uint64_t hi, lo;
+    umul64_wide(ua, ub, &hi, &lo);
+    const uint64_t lo2 = lo + 32768u;   // + half of 2^16, with the carry
+    if (lo2 < lo) ++hi;
+    const uint64_t q = (hi << 48) | (lo2 >> 16);
+    return neg ? (int64_t)((uint64_t)0 - q) : (int64_t)q;
+}
+
+// ---- the linear falloffs (#29 P7.0a, residency design 4.4c P7.0) ------------
+//
+// The C twins of `unit_fixed.falloff_floor` / `falloff_round`, EXACT, held
+// equal to Python by tests/test_unit_kit_twins.py (bp.fp_falloff_*) and on the
+// device by tests/cuda_unit_kit_check.py (cuda_unit_kit_probe.cu). The
+// numerator v^2 d2 (x 4 for the round) is formed in 128 bits and divided by r2
+// in 128 / 64 bits, so the PROVED RANGE is every v < 2^31 and 0 <= d2 < r2 <
+// 2^63 (the quotient is then below 4 v^2 < 2^64); outside it a twin returns
+// FALLOFF_REFUSED (-1; a real result is >= 0) and a device caller FAULTS.
+// v <= 0 or d2 >= r2 is 0, as in Python, for any operands.
+constexpr int64_t FALLOFF_REFUSED = -1;
+constexpr int64_t FALLOFF_V_MAX = 2147483647LL;     // 2^31 - 1
+
+// ceil((hi * 2^64 + lo) / d) for d > 0 and hi < d (the quotient fits uint64):
+// restoring long division, one quotient bit a trip.
+FP_HD inline uint64_t udiv128_ceil_q(uint64_t hi, uint64_t lo, uint64_t d) {
+    uint64_t q = 0, r = hi;
+    for (int i = 63; i >= 0; --i) {
+        const bool top = (r >> 63) != 0;        // the shifted remainder is >= 2^64 > d
+        r = (r << 1) | ((lo >> i) & 1u);
+        q <<= 1;
+        if (top || r >= d) {
+            r -= d;
+            q |= 1u;
+        }
+    }
+    return q + (r != 0 ? 1u : 0u);
+}
+
+// unit_fixed._sqrt_ratio_ceil(a * d2, r2) with a < 2^64: isqrt_ceil(ceil(a d2 / r2)).
+FP_HD inline uint64_t falloff_root_ceil_q(uint64_t a, int64_t d2, int64_t r2) {
+    uint64_t hi, lo;
+    umul64_wide(a, (uint64_t)d2, &hi, &lo);
+    const uint64_t n = udiv128_ceil_q(hi, lo, (uint64_t)r2);
+    uint64_t r = isqrt_u64_q(n);
+    if (r * r < n) ++r;                         // r < 2^32: r * r < 2^64
+    return r;
+}
+
+// unit_fixed.falloff_floor: floor(v (1 - sqrt(d2 / r2))), 0 past the radius.
+FP_HD inline int64_t falloff_floor_q(int64_t v, int64_t d2, int64_t r2) {
+    if (v <= 0 || d2 >= r2) return 0;
+    if (d2 < 0 || v > FALLOFF_V_MAX) return FALLOFF_REFUSED;
+    return v - (int64_t)falloff_root_ceil_q((uint64_t)v * (uint64_t)v, d2, r2);
+}
+
+// unit_fixed.falloff_round: v (1 - sqrt(d2 / r2)) rounded half up, 0 past
+// the radius: v - m // 2, m = isqrt_ceil(ceil(4 v^2 d2 / r2)).
+FP_HD inline int64_t falloff_round_q(int64_t v, int64_t d2, int64_t r2) {
+    if (v <= 0 || d2 >= r2) return 0;
+    if (d2 < 0 || v > FALLOFF_V_MAX) return FALLOFF_REFUSED;
+    const uint64_t m = falloff_root_ceil_q(4u * (uint64_t)v * (uint64_t)v, d2, r2);
+    return v - (int64_t)(m / 2u);
+}
+
+// ---- the vent ledgers' floor products (#29 P6b.2) ----------------------------
+//
+// muldiv_floor_q: floor(a * b / c) -- Python's `(a * b) // c` -- for a, b >= 0
+// and c > 0, EXACT: the product formed in 128 bits (umul64_wide) and divided in
+// 128 / 64 bits (udiv128_floor_q, restoring), so the PROVED RANGE is every
+// operand triple whose quotient is below 2^63 (the vent sweep's callers hand
+// b <= c, so the quotient is <= a). Outside it (a negative operand, c <= 0, a
+// quotient >= 2^63) MULDIV_REFUSED (-1; a real result is >= 0) and a device
+// caller FAULTS. Its Python twin is the expression itself; held equal by
+// tests/test_unit_kit_twins.py (bp.fp_muldiv_floor) and, on the device, by
+// tests/cuda_unit_vents_check.py (part KIT). The sweep's signed divisions
+// (`e_plenum // n_bulk`) go through floordiv_q above, never C's `/`.
+constexpr int64_t MULDIV_REFUSED = -1;
+
+// floor((hi * 2^64 + lo) / d) for d > 0 and hi < d (the quotient fits uint64).
+FP_HD inline uint64_t udiv128_floor_q(uint64_t hi, uint64_t lo, uint64_t d) {
+    uint64_t q = 0, r = hi;
+    for (int i = 63; i >= 0; --i) {
+        const bool top = (r >> 63) != 0;        // the shifted remainder is >= 2^64 > d
+        r = (r << 1) | ((lo >> i) & 1u);
+        q <<= 1;
+        if (top || r >= d) {
+            r -= d;
+            q |= 1u;
+        }
+    }
+    return q;
+}
+
+FP_HD inline int64_t muldiv_floor_q(int64_t a, int64_t b, int64_t c) {
+    if (a < 0 || b < 0 || c <= 0) return MULDIV_REFUSED;
+    uint64_t hi, lo;
+    umul64_wide((uint64_t)a, (uint64_t)b, &hi, &lo);
+    if (hi >= (uint64_t)c) return MULDIV_REFUSED;          // the quotient >= 2^64
+    const uint64_t q = udiv128_floor_q(hi, lo, (uint64_t)c);
+    if (q > (uint64_t)INT64_MAX) return MULDIV_REFUSED;
+    return (int64_t)q;
+}
+
+// half_up_q (#29 P6.2m): movement.half_up -- (num + den // 2) // den with
+// Python's FLOOR divisions, den > 0 (the movement-cadence rounding the speed
+// reduction and the direction rule use; mobility design §3). The caller keeps
+// num + den / 2 inside int64 (the slot-3 kernel's proved ranges).
+FP_HD inline int64_t half_up_q(int64_t num, int64_t den) {
+    return floordiv_q(num + floordiv_q(den, 2), den);
 }
 
 // ---- fixed-point ceil-divide (the substep-count cliff) --------------------

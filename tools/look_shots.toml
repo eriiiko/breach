@@ -31,7 +31,7 @@
 #                              "game" = [render.lighting] master_gain
 #   hide = ["heat", ...]       switch layers off to isolate the rest
 #                              (heat / smoke / water / flame; G3 F3;
-#                              embers / shimmer; G3 F4a)
+#                              embers / shimmer; G3 F4a; shock; G4 P2)
 #   fire_debug = N             open the flame VFX debug view N (G3 F2:
 #                              1 sources, 2 flame R, 3 T_vfx, 4 u, 5 p)
 #
@@ -604,6 +604,202 @@ flashlight = { pos = [17.5, 40.5], intensity = 2.5, spread = 6.283 }
 light_gain = "game"
 note = "#114: marine Bravo, omni lamp NORTH-EAST of his footprint (diagonal, one tile gap on both axes)."
 
+# --- #31: the blast comparison levels, whole map (first shot at tick 48) -----
+
+[[shot]]
+name = "blast_quad_t52"
+level = "blast_quad"
+frames = 52
+light_gain = "game"
+
+[[shot]]
+name = "blast_quad_t60"
+level = "blast_quad"
+frames = 60
+light_gain = "game"
+
+[[shot]]
+name = "blast_quad_t112"
+level = "blast_quad"
+frames = 112
+light_gain = "game"
+
+[[shot]]
+name = "blast_div_t52"
+level = "blast_div"
+frames = 52
+light_gain = "game"
+
+[[shot]]
+name = "blast_div_t60"
+level = "blast_div"
+frames = 60
+light_gain = "game"
+
+[[shot]]
+name = "blast_div_t84"
+level = "blast_div"
+frames = 84
+light_gain = "game"
+
+[[shot]]
+name = "blast_div_t112"
+level = "blast_div"
+frames = 112
+light_gain = "game"
+
+[[shot]]
+name = "blast_smoke_t60"
+level = "blast_smoke"
+frames = 60
+light_gain = "game"
+
+[[shot]]
+name = "blast_smoke_t84"
+level = "blast_smoke"
+frames = 84
+light_gain = "game"
+
+[[shot]]
+name = "blast_smoke_t112"
+level = "blast_smoke"
+frames = 112
+light_gain = "game"
+
+[[shot]]
+name = "blast_final_t50"
+level = "blast_final"
+frames = 50
+light_gain = "game"
+note = "tick +2: the shock ring mid-room on the frag and the C4"
+
+[[shot]]
+name = "blast_final_t50_frag"
+level = "blast_final"
+frames = 50
+center = [22.5, 19.5]
+zoom = 40.0
+light_gain = "game"
+note = "G4 P2 close-up, tick +2: the frag's shock ring at a zoom where [render.shockwave] is at full strength (the fit-the-map shots sit near 14 px/tile, under zoom_zero)"
+
+[[shot]]
+name = "blast_final_t50_c4"
+level = "blast_final"
+frames = 50
+center = [53.5, 44.5]
+zoom = 40.0
+light_gain = "game"
+note = "G4 P2 close-up, tick +2: the C4's shock ring at a zoom where [render.shockwave] is at full strength (the fit-the-map shots sit near 14 px/tile, under zoom_zero)"
+
+[[shot]]
+name = "blast_final_t52_frag"
+level = "blast_final"
+frames = 52
+center = [22.5, 19.5]
+zoom = 40.0
+light_gain = "game"
+note = "G4 P2 close-up, tick +4: the frag's shock ring at a zoom where [render.shockwave] is at full strength (the fit-the-map shots sit near 14 px/tile, under zoom_zero)"
+
+[[shot]]
+name = "blast_final_t52_c4"
+level = "blast_final"
+frames = 52
+center = [53.5, 44.5]
+zoom = 40.0
+light_gain = "game"
+note = "G4 P2 close-up, tick +4: the C4's shock ring at a zoom where [render.shockwave] is at full strength (the fit-the-map shots sit near 14 px/tile, under zoom_zero)"
+
+[[shot]]
+name = "blast_final_t52"
+level = "blast_final"
+frames = 52
+light_gain = "game"
+note = "the real rows, tick 4 of the first volley: frag, breach on wood, magazine, C4."
+
+[[shot]]
+name = "blast_final_t60"
+level = "blast_final"
+frames = 60
+light_gain = "game"
+
+[[shot]]
+name = "blast_final_t84"
+level = "blast_final"
+frames = 84
+light_gain = "game"
+note = "does the fuel burn: NW crates one tile off, SW crates three tiles off."
+
+[[shot]]
+name = "blast_final_t168"
+level = "blast_final"
+frames = 168
+light_gain = "game"
+note = "5 s after the volley: the hanging smoke and the fires, before the second one at tick 240."
+
+[[shot]]
+name = "blast_final_t60_frag"
+level = "blast_final"
+frames = 60
+center = [22.5, 19.5]
+zoom = 40.0
+light_gain = "game"
+note = "G4 P4 close-up, tick +12: the frag's debris landed on the floor"
+
+[[shot]]
+name = "blast_final_t84_frag"
+level = "blast_final"
+frames = 84
+center = [22.5, 19.5]
+zoom = 40.0
+light_gain = "game"
+note = "G4 P4 close-up, tick +36: the frag's debris lying, beginning to fade"
+
+[[shot]]
+name = "flashbang_t50"
+level = "flashbang_studio"
+frames = 50
+light_gain = "game"
+note = "G4 P5, tick +2 (flash age 1 tick, ~96 % of 800): the clean room's flash on the floor; the east room's soot column absorbs it and casts its shadow"
+
+[[shot]]
+name = "flashbang_t52"
+level = "flashbang_studio"
+frames = 52
+light_gain = "game"
+note = "G4 P5, tick +4 (~88 %): the same flash a little dimmer -- the e-fold is 1.5 s"
+
+[[shot]]
+name = "flashbang_t60"
+level = "flashbang_studio"
+frames = 60
+light_gain = "game"
+note = "G4 P5, tick +12 (~73 %): the flashbang still lights both rooms; the soot column's shadow is the comparison"
+
+# --- arc #63: the larvae's bodies (renderer/larva_bodies.py) -------------
+[[shot]]
+name = "larva_nursery"
+level = "larva_studio"
+frames = 48
+center = [13.0, 17.5]
+zoom = 64.0
+light_gain = "game"
+note = "arc #63 larva bodies: the west brood two seconds in, under its lamp at (13.5, 12.5) and in the dark below it -- pale segmented grubs, darker heads, crawlers wriggling, the comatose none"
+
+[[shot]]
+name = "larva_closeup"
+level = "larva_studio"
+frames = 48
+center = [13.0, 13.0]
+zoom = 200.0
+light_gain = "game"
+note = "arc #63 larva bodies: a handful of larvae under the lamp at 200 px a tile -- the segments, the gloss, the head end"
+
+[[shot]]
+name = "larva_studio_wide"
+level = "larva_studio"
+frames = 48
+light_gain = "game"
+note = "arc #63 larva bodies: the whole studio fitted -- the two broods read as a crawling mass at game zoom"
 # --- #106 P7: the simulated octopus, posed from its chain -------------------
 # levels/octopus_tank (tools/gen_octopus_tank.py): the octopus at rest in the
 # middle of the flooded room, facing the squad (west), its arms straight and

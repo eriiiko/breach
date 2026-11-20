@@ -43,7 +43,7 @@ import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import load as load_level  # noqa: E402
 from simulation.gamemap import GameMap  # noqa: E402
-from simulation.materials import MAT_DOOR  # noqa: E402
+from simulation.materials import MAT_DOOR, MAT_DOOR_CLOSED  # noqa: E402
 from simulation.physics_runner import PhysicsRunner  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 
@@ -160,7 +160,9 @@ def test_unit_stamp_never_raises_solid_permeability():
     movement, solid to flow) must leave the door flow-sealed (perm 0) while
     its air tiles get the partial body permeability."""
     g = GameMap(load_level("unhcr_vessel"))
-    doors = np.argwhere(g.material == MAT_DOOR)
+    # #215: unhcr_vessel's doors are closed door entities (MAT_DOOR_CLOSED,
+    # the painted MAT_DOOR is retired); the stamp must keep either flow-sealed.
+    doors = np.argwhere(np.isin(g.material, (MAT_DOOR, MAT_DOOR_CLOSED)))
     assert len(doors) > 0, "unhcr_vessel should contain door tiles"
     # Pick a door that is solid to flow (static perm 0) — the leak config.
     solid_doors = [tuple(d) for d in doors if g.solid[d[0], d[1]]]

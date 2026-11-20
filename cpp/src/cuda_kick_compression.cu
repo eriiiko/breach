@@ -20,6 +20,7 @@
 #include "cuda_resident.h" // S8a Path A: KickScalarFolds/EnergyFluxScalarFolds + launch cores
 #include "fixed_point.h"   // q16, quantize, mul_q16, sat_add_q16, FP_ONE, floordiv_q, make_recip
 #include "cuda_fixedpoint_device.cuh"  // mul128_shr_signed, reciprocal_q16_dev, sqrt_q16_dev
+#include "cuda_batch.cuh"               // #29 P5: the (N, h, w) launch shape
 
 #include <cuda_runtime.h>
 
@@ -103,8 +104,17 @@ __global__ void kick_kernel(int32_t* __restrict__ wind_x,
                             unsigned long long* __restrict__ cnt,
                             int h, int w,
                             const bool* __restrict__ is_ambient,
-                            const int32_t* __restrict__ sponge_udamp) {
+                            const int32_t* __restrict__ sponge_udamp,
+                            size_t cstride) {
     const int n = h * w;
+    // #29 P5: (N, h, w) — this block's env (the kick runs once per tick on
+    // every env: no mask).
+    wind_x = bptr(wind_x, n); wind_y = bptr(wind_y, n);
+    gas_energy = bptr(gas_energy, n); p_new = bptr(p_new, n);
+    n_total = bptr(n_total, n); absorb_q = bptr(absorb_q, n);
+    solid = bptr(solid, n); is_vacuum = bptr(is_vacuum, n); ts = bptr(ts, n);
+    cap2_plane = bptr(cap2_plane, n); cnt = bptr(cnt, cstride);
+    is_ambient = bptr(is_ambient, n); sponge_udamp = bptr(sponge_udamp, n);
     const int64_t KE_SAFE = (int64_t)1 << 27;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
@@ -365,7 +375,14 @@ __global__ void energy_pressure_refresh_kernel(
         const bool* __restrict__ solid, const bool* __restrict__ ts,
         const bool* __restrict__ is_vacuum, const bool* __restrict__ is_ambient,
         int32_t c_q, int32_t t_max_phys_q, int32_t t_amb_q,
-        unsigned long long* __restrict__ cnt, int n) {
+        unsigned long long* __restrict__ cnt, int n,
+        size_t cstride, const EnvSub* __restrict__ es, int sub) {
+    if (sub_off(es, sub)) return;   // #29 P5: a masked env does nothing
+    pcur = bptr(pcur, (size_t)n); gas_energy = bptr(gas_energy, (size_t)n);
+    e0 = bptr(e0, (size_t)n); atmosphere = bptr(atmosphere, (size_t)n);
+    n_total = bptr(n_total, (size_t)n); solid = bptr(solid, (size_t)n);
+    ts = bptr(ts, (size_t)n); is_vacuum = bptr(is_vacuum, (size_t)n);
+    is_ambient = bptr(is_ambient, (size_t)n); cnt = bptr(cnt, cstride);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (!accountable_dev(i, solid, ts, is_vacuum, is_ambient)) { pcur[i] = 0; continue; }
@@ -389,8 +406,15 @@ __global__ void energy_flux_pass_a_kernel(
         const bool* __restrict__ solid, const bool* __restrict__ ts,
         const bool* __restrict__ is_vacuum, const bool* __restrict__ is_ambient,
         int32_t k_flux_q, int64_t flux_pu_cap, int64_t t_min_abs_raw,
-        int32_t* __restrict__ s_plane, int h, int w) {
+        int32_t* __restrict__ s_plane, int h, int w,
+        const EnvSub* __restrict__ es, int sub) {
+    if (sub_off(es, sub)) return;
+    if (es) { k_flux_q = es[benv()].k_flux_q; flux_pu_cap = es[benv()].flux_pu_cap; }
     const int n = h * w;
+    pcur = bptr(pcur, n); wind_x = bptr(wind_x, n); wind_y = bptr(wind_y, n);
+    n_total = bptr(n_total, n); gas_energy = bptr(gas_energy, n);
+    solid = bptr(solid, n); ts = bptr(ts, n); is_vacuum = bptr(is_vacuum, n);
+    is_ambient = bptr(is_ambient, n); s_plane = bptr(s_plane, n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (!accountable_dev(i, solid, ts, is_vacuum, is_ambient)) { s_plane[i] = FP_ONE; continue; }
@@ -441,8 +465,16 @@ __global__ void energy_flux_pass_b_kernel(
         const bool* __restrict__ is_vacuum, const bool* __restrict__ is_ambient,
         int32_t k_flux_q, int64_t flux_pu_cap,
         const int32_t* __restrict__ s_plane,
-        unsigned long long* __restrict__ cnt, int h, int w) {
+        unsigned long long* __restrict__ cnt, int h, int w,
+        size_t cstride, const EnvSub* __restrict__ es, int sub) {
+    if (sub_off(es, sub)) return;
+    if (es) { k_flux_q = es[benv()].k_flux_q; flux_pu_cap = es[benv()].flux_pu_cap; }
     const int n = h * w;
+    pcur = bptr(pcur, n); wind_x = bptr(wind_x, n); wind_y = bptr(wind_y, n);
+    n_total = bptr(n_total, n); gas_energy = bptr(gas_energy, n);
+    solid = bptr(solid, n); ts = bptr(ts, n); is_vacuum = bptr(is_vacuum, n);
+    is_ambient = bptr(is_ambient, n); s_plane = bptr(s_plane, n);
+    cnt = bptr(cnt, cstride);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (!accountable_dev(i, solid, ts, is_vacuum, is_ambient)) continue;
@@ -507,7 +539,11 @@ __global__ void energy_recovery_kernel(
         const bool* __restrict__ solid, const bool* __restrict__ ts,
         const bool* __restrict__ is_vacuum, const bool* __restrict__ is_ambient,
         int32_t t_min_q, int32_t t_max_phys_q, int32_t t_amb_q,
-        unsigned long long* __restrict__ cnt, int n) {
+        unsigned long long* __restrict__ cnt, int n, size_t cstride) {
+    gas_energy = bptr(gas_energy, (size_t)n); temperature = bptr(temperature, (size_t)n);
+    n_total = bptr(n_total, (size_t)n); solid = bptr(solid, (size_t)n);
+    ts = bptr(ts, (size_t)n); is_vacuum = bptr(is_vacuum, (size_t)n);
+    is_ambient = bptr(is_ambient, (size_t)n); cnt = bptr(cnt, cstride);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (!accountable_dev(i, solid, ts, is_vacuum, is_ambient)) continue;
@@ -585,12 +621,11 @@ void kick_compression_launch_resident(
         const int64_t* d_cap2_plane,
         unsigned long long* d_cnt, int h, int w,
         const bool* d_is_ambient, const int32_t* d_sponge_udamp,
-        const bool* d_ts) {
+        const bool* d_ts, int n_env, size_t cstride) {
     const int n = h * w;
     if (n <= 0) return;
     const int block = 256;
-    const int grid = (n + block - 1) / block;
-    kick_kernel<<<grid, block>>>(d_wind_x, d_wind_y, d_gas_energy, d_p_new,
+    kick_kernel<<<bgrid(n, n_env, block), block, 0, tstream()>>>(d_wind_x, d_wind_y, d_gas_energy, d_p_new,
                                  d_ntot, d_absorb_q, d_solid, d_is_vacuum, d_ts,
                                  folds.Kdt_raw, folds.inv_2dx_q,
                                  folds.n_floor_q, d_cap2_plane,
@@ -598,7 +633,8 @@ void kick_compression_launch_resident(
                                  folds.kd_q, folds.kd2_q, folds.rad_dead_q32,
                                  folds.k_ke_recip_q32,
                                  d_cnt, h, w,
-                                 d_is_ambient, d_sponge_udamp);
+                                 d_is_ambient, d_sponge_udamp,
+                                 cstride ? cstride : (size_t)KICK_CNT_SLOTS);
     cuda_check(cudaGetLastError(), "kick launch");
 }
 
@@ -628,6 +664,11 @@ EnergyFluxScalarFolds energy_flux_scalar_folds(
 }
 
 // ---- the LAUNCH CORE — K3 (two passes/sub-cycle) + the recovery -----------
+// #29 P5: (N, h, w). The sub-cycle loop runs to `n_cycles` (the batch's
+// maximum n_sub) and each pass masks the env whose own n_sub (es) is smaller;
+// k_flux_q / flux_pu_cap are the env's fold-table row (es) — or the folds'
+// scalars when unbatched (es == nullptr, n_cycles = folds.n_sub). The
+// recovery runs once on every env. Counters per env (cstride).
 void energy_flux_launch_resident(
         int64_t* d_gas_energy, int32_t* d_temperature,
         const int32_t* d_atmosphere,
@@ -637,42 +678,47 @@ void energy_flux_launch_resident(
         const bool* d_is_ambient,
         const EnergyFluxScalarFolds& folds,
         int64_t* d_e0, int32_t* d_pcur, int32_t* d_s_plane,
-        unsigned long long* d_cnt, int h, int w) {
+        unsigned long long* d_cnt, int h, int w,
+        int n_env, size_t cstride, const EnvSub* es, int n_cycles) {
     const int n = h * w;
     if (n <= 0) return;
+    const int N = n_env > 0 ? n_env : 1;
     const int block = 256;
-    const int grid = (n + block - 1) / block;
+    const dim3 grid = bgrid(n, N, block);
+    const size_t cst = cstride ? cstride : (size_t)FLUX_CNT_SLOTS;
+    const int cycles = es ? n_cycles : folds.n_sub;
+    cudaStream_t st = tstream();
     const int64_t t_min_abs_raw = (int64_t)folds.t_min_q + (int64_t)folds.t_amb_q;
 
-    cuda_check(cudaMemcpy(d_e0, d_gas_energy, (size_t)n * sizeof(int64_t),
-                          cudaMemcpyDeviceToDevice), "D2D e0 snapshot");
+    cuda_check(cudaMemcpyAsync(d_e0, d_gas_energy, (size_t)n * N * sizeof(int64_t),
+                               cudaMemcpyDeviceToDevice, st), "D2D e0 snapshot");
 
-    for (int k = 0; k < folds.n_sub; ++k) {
-        energy_pressure_refresh_kernel<<<grid, block>>>(
+    for (int k = 0; k < cycles; ++k) {
+        energy_pressure_refresh_kernel<<<grid, block, 0, st>>>(
             d_pcur, d_gas_energy, d_e0, d_atmosphere, d_n_total,
             d_solid, d_ts, d_is_vacuum, d_is_ambient,
-            folds.c_q, folds.t_max_phys_q, folds.t_amb_q, d_cnt, n);
+            folds.c_q, folds.t_max_phys_q, folds.t_amb_q, d_cnt, n, cst, es, k);
         cuda_check(cudaGetLastError(), "energy pressure refresh");
 
-        energy_flux_pass_a_kernel<<<grid, block>>>(
+        energy_flux_pass_a_kernel<<<grid, block, 0, st>>>(
             d_pcur, d_wind_x, d_wind_y, d_n_total, d_gas_energy,
             d_solid, d_ts, d_is_vacuum, d_is_ambient,
             folds.k_flux_q, folds.flux_pu_cap, t_min_abs_raw,
-            d_s_plane, h, w);
+            d_s_plane, h, w, es, k);
         cuda_check(cudaGetLastError(), "energy flux pass A");
 
-        energy_flux_pass_b_kernel<<<grid, block>>>(
+        energy_flux_pass_b_kernel<<<grid, block, 0, st>>>(
             d_pcur, d_wind_x, d_wind_y, d_n_total, d_gas_energy,
             d_solid, d_ts, d_is_vacuum, d_is_ambient,
             folds.k_flux_q, folds.flux_pu_cap,
-            d_s_plane, d_cnt, h, w);
+            d_s_plane, d_cnt, h, w, cst, es, k);
         cuda_check(cudaGetLastError(), "energy flux pass B");
     }
 
-    energy_recovery_kernel<<<grid, block>>>(
+    energy_recovery_kernel<<<grid, block, 0, st>>>(
         d_gas_energy, d_temperature, d_n_total,
         d_solid, d_ts, d_is_vacuum, d_is_ambient,
-        folds.t_min_q, folds.t_max_phys_q, folds.t_amb_q, d_cnt, n);
+        folds.t_min_q, folds.t_max_phys_q, folds.t_amb_q, d_cnt, n, cst);
     cuda_check(cudaGetLastError(), "energy recovery");
 }
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from ui.model import (  # noqa: F401
     ActionMarker, DEFAULT_HOTBAR, DS3_PAGES, FireLine, FlashlightCone,
+    carried_flashlight_cones,
     HotbarSlot, Hologram, MenuModel, MenuRow, PathViz, PlanOverlay,
     PlanningClock, RoundEndGhost, TargetMarker, WaypointMarker, bind_slot,
     default_bindings,
@@ -33,6 +34,7 @@ from ui.model import (  # noqa: F401
 
 __all__ = [
     "ActionMarker", "DEFAULT_HOTBAR", "DS3_PAGES", "FireLine",
+    "carried_flashlight_cones",
     "FlashlightCone", "HotbarSlot", "Hologram", "MenuModel", "MenuRow",
     "PathViz", "PlanOverlay", "PlanningClock", "RoundEndGhost",
     "TargetMarker",

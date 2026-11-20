@@ -266,6 +266,6 @@ def test_the_module_draws_no_rng():
     charge ticking down). Breaks if the charge path adds a draw."""
     sim = Simulation(_room([_charge(first_at_s=5.0)], crate=False), seed=1,
                      breach_physics=None, enable_recorder=False)
-    before = sim.rng.bit_generator.state
+    before = sim.draws.drawn
     timed_charge_system.sweep_timed_charges(sim)
-    assert sim.rng.bit_generator.state == before
+    assert sim.draws.drawn == before

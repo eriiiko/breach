@@ -10,6 +10,7 @@ argv scans, never per-test dicts::
     time_limit_s = 300.0         # sim seconds (default 300.0); draw at the limit
     zombies = 5                  # placed in the ZOMBIE_TEAM spawn room
     zombie_controller = "zombies"  # the horde's controller (default; #122)
+    sight = "cone"               # who may see whom (default; #195 1a): "cone" | "all_round"
 
     [[team]]                     # row i IS team i (0, 1, 2, ...)
     n = 4
@@ -55,11 +56,21 @@ FORMATION_PITCH = FORMATION_FOOTPRINT + FORMATION_GAP
 
 _ROOM_KEYS = ("team", "x", "y", "w", "h", "max_per_team", "placement")
 _MATCH_KEYS = ("objective", "seed", "time_limit_s", "zombies",
-               "zombie_controller", "creature_controller", "team", "creature")
+               "zombie_controller", "creature_controller", "sight", "team",
+               "creature")
 #: A ``[[creature]]`` row's keys (#106 P6d1): ``species``, ``x``, ``y``
 #: required; ``team`` (default CREATURE_TEAM) and ``heading`` (degrees,
 #: default 0) optional. The writer writes all five.
 _CREATURE_KEYS = ("species", "x", "y", "team", "heading")
+#: The sight rules a match may name (#195 1a, RL agent design 3.6): ONE rule
+#: per match, the same for every seat in it. ``"cone"`` is the game's own
+#: (the onephase facing cone + awareness radius, ``vision.can_see``);
+#: ``"all_round"`` is every living non-zombie unit seeing every living unit
+#: of another team along a clear line (``vision.ray_clear``). The writer
+#: omits the key at the default, so a match file that never named one stays
+#: byte-identical.
+SIGHT_RULES = ("cone", "all_round")
+DEFAULT_SIGHT = "cone"
 #: The horde's controller when match.toml names none (#122): the shipped
 #: zombie law through the control seam. The writer omits the key at this
 #: value, so a match file that never named one stays byte-identical.
@@ -111,6 +122,9 @@ class MatchSpec:
     #: ``Simulation.spawn_creatures`` after the teams and the horde. Empty by
     #: default, and the writer writes none then (byte-stable match files).
     creatures: tuple = ()
+    #: the match's sight rule (#195 1a): ``Simulation.spawn_match`` hands it
+    #: to the sim, ``vision.can_see`` reads it there.
+    sight: str = DEFAULT_SIGHT
 
 
 @dataclass(frozen=True)
@@ -307,6 +321,15 @@ def parse_creature_spawns(raw_list, where: str) -> list:
 # The door — match.toml
 # ---------------------------------------------------------------------------
 
+def check_sight(value, where: str) -> str:
+    """THE door of a sight rule (match.toml ``sight``, a run file's
+    ``[run] sight``): one of :data:`SIGHT_RULES`, refused by name."""
+    if not isinstance(value, str) or value not in SIGHT_RULES:
+        raise ValueError(f"{where} {value!r} is not a sight rule "
+                         f"(known: {list(SIGHT_RULES)})")
+    return value
+
+
 def parse_match(raw: dict, spawn_rooms, where: str) -> MatchSpec:
     """A raw match.toml dict -> a validated :class:`MatchSpec`, checked
     against the level's ``spawn_rooms`` and the live tables: a known
@@ -338,9 +361,9 @@ def parse_match(raw: dict, spawn_rooms, where: str) -> MatchSpec:
     rooms = {r.team: r for r in spawn_rooms}
     # Lazy: the tables need CFG + the weapon table; only a match file pays.
     from simulation.loadouts import get_tables
-    from control_source import registered_controllers
+    from control_source import match_file_controllers
     tables = get_tables()
-    controllers = registered_controllers()
+    controllers = match_file_controllers()
 
     teams = []
     for i, row in enumerate(team_rows):
@@ -385,6 +408,7 @@ def parse_match(raw: dict, spawn_rooms, where: str) -> MatchSpec:
         raise ValueError(f"{where}.zombie_controller {zctrl!r} is not a "
                          f"registered controller (known: "
                          f"{sorted(controllers)})")
+    sight = check_sight(raw.get("sight", DEFAULT_SIGHT), f"{where}.sight")
     if zombies:
         zroom = rooms.get(ZOMBIE_TEAM)
         if zroom is None:
@@ -402,8 +426,8 @@ def parse_match(raw: dict, spawn_rooms, where: str) -> MatchSpec:
     creatures = tuple(parse_creature_spawns(raw.get("creature"), where))
     return MatchSpec(teams=tuple(teams), seed=seed, zombies=zombies,
                      time_limit_s=float(tl), objective=objective,
-                     zombie_controller=zctrl, creature_controller=cctrl,
-                     creatures=creatures)
+                     zombie_controller=zctrl, sight=sight,
+                     creature_controller=cctrl, creatures=creatures)
 
 
 # ---------------------------------------------------------------------------
@@ -420,12 +444,21 @@ def spawn_match(sim, spec: MatchSpec) -> list:
     row's ``n`` units from its loadout + env_profile, then the zombies, each
     standing on its slot's cell of its room's placement rule. Returns the
     units in spawn order. Draws no randomness (the match seed is the sim's
-    own, passed at construction)."""
+    own, passed at construction; it keys ``sim.draws``, and ``sim.rng`` is
+    replaced by the refusing stand-in, #29 P3b). Sets the sim's sight rule from the spec
+    (``sim.sight``, #195 1a): the one place a match hands it over. Starts
+    the team picture last (``Simulation.start_team_picture``, #195 1d)."""
     from simulation.unit import Unit
 
     if sim.units:
         raise ValueError("spawn_match needs a fresh Simulation (it already "
                          f"holds {len(sim.units)} units); slots start at 0")
+    sim.sight = check_sight(getattr(spec, "sight", DEFAULT_SIGHT),
+                            "spec.sight")
+    # #29 P3b (design §4.7): a match draws ONLY through sim.draws (keyed
+    # Philox); sim.rng becomes a stand-in that raises on any use, naming it.
+    from simulation.draws import RefusingRng
+    sim.rng = RefusingRng()
     rooms = {r.team: r for r in sim.level.spawn_rooms}
     spawned = []
 
@@ -447,7 +480,47 @@ def spawn_match(sim, spec: MatchSpec) -> list:
         place(ZOMBIE_TEAM, spec.zombies)
     if spec.creatures:
         spawned += sim.spawn_creatures(spec.creatures)
+    # the team picture (#195 1d): one per marine team of the spec, the
+    # horde none; its first update is taken here, at the spawn tick
+    sim.start_team_picture(range(len(spec.teams)))
     return spawned
+
+
+# ---------------------------------------------------------------------------
+# Reporting a finished match (one wording: the headless runner and the
+# window's match observers print these lines, #127)
+# ---------------------------------------------------------------------------
+
+def living_slots(sim, spec: MatchSpec) -> tuple:
+    """``(living, converted)``: ``living`` maps each team of ``spec`` (and
+    ``ZOMBIE_TEAM`` when it has zombies) to the roster slots still alive ON
+    that team; ``converted`` counts living zombies spawned as marines."""
+    teams = list(range(len(spec.teams)))
+    if spec.zombies:
+        teams.append(ZOMBIE_TEAM)
+    living = {t: [u.slot for u in sim.roster(t)
+                  if u.alive and u.team == t] for t in teams}
+    spawned_zombies = {id(u) for u in sim.roster(ZOMBIE_TEAM)}
+    converted = sum(1 for u in sim.units if u.alive and u.is_zombie
+                    and id(u) not in spawned_zombies)
+    return living, converted
+
+
+def outcome_lines(result, living: dict, converted: int, field_digest: str,
+                  tick_digest: str) -> list:
+    """The lines a finished match is reported with (``tools/run_match.py``'s
+    stdout): result, ticks, the living slots per team, the converted zombies
+    and the final digests."""
+    lines = [f"result: {result.outcome}"
+             + (f" team {result.team}" if result.team is not None else ""),
+             f"ticks: {result.ticks}"]
+    for team, slots in living.items():
+        label = "zombies" if team == ZOMBIE_TEAM else f"team {team}"
+        lines.append(f"living {label}: {slots}")
+    lines += [f"converted zombies alive: {converted}",
+              f"field_digest: {field_digest}",
+              f"tick_digest: {tick_digest}"]
+    return lines
 
 
 __all__ = [
@@ -458,5 +531,5 @@ __all__ = [
     "formation_capacity", "formation_cells", "placement_cells",
     "spawn_room_from_dict", "parse_spawn_rooms", "parse_match",
     "creature_spawn_from_dict", "parse_creature_spawns",
-    "unit_name", "spawn_match",
+    "unit_name", "spawn_match", "living_slots", "outcome_lines",
 ]

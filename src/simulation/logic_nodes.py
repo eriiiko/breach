@@ -85,13 +85,16 @@ def aggregate_input(bus, driver_slots, mode) -> int:
 class _DeciderEval:
     """``out`` = cmp(in, threshold) AND (require_alive => source alive)."""
 
-    __slots__ = ("out_slot", "in_slots", "predicate", "threshold",
+    __slots__ = ("out_slot", "in_slots", "comparator", "predicate", "threshold",
                  "require_alive", "alive_slot")
 
     def __init__(self, out_slot, in_slots, comparator, threshold,
                  require_alive, alive_slot):
         self.out_slot = int(out_slot)
         self.in_slots = list(in_slots)
+        # #29 P6b.3: the comparator's TOKEN kept beside its lambda (the device
+        # reads the predicate as a code, unit_schema.comparators()' index)
+        self.comparator = str(comparator)
         self.predicate = _COMPARATORS[comparator]
         self.threshold = int(threshold)
         self.require_alive = bool(require_alive)
@@ -227,17 +230,32 @@ class AirlockControllerRuntime:
     (chamber ≤ far target), REPRESSURIZE waits on ``at_near`` (chamber ≥ near
     target). The pump runs open-loop; the sensor closes the loop, so
     REPRESSURIZE genuinely refills (the B5 single-pump gap is gone).
+
+    Interior mode (#133): ``interior`` True. The same transition function,
+    but ``at_far`` / ``at_near`` are DERIVED here from the three wired
+    pressure readings (|side - chamber| <= ``band``) instead of read from
+    deciders, and each leg drives its own transfer pump TOWARD the side's
+    reading (+1 inject when the side is higher, -1 extract when lower):
+    EQUALIZE the far side's pump (``pump_*``), REPRESSURIZE the near side's
+    (``near_pump_*``). The outputs then depend on the readings as well as on
+    the state -- still a pure function of ``pub``, so the sweep stays
+    order-independent.
     """
 
-    __slots__ = ("inst", "far_is_outer", "equalize_cmd",
+    __slots__ = ("inst", "far_is_outer", "equalize_cmd", "interior", "band",
+                 "i_chamber_p", "i_inner_side_p", "i_outer_side_p",
+                 "o_near_inject", "o_near_extract",
                  "i_presence", "i_inner_open", "i_outer_open",
                  "i_inner_alive", "i_outer_alive", "i_at_far", "i_at_near",
                  "o_inner_close", "o_inner_open", "o_outer_close",
                  "o_outer_open", "o_inject", "o_extract", "o_busy",
                  "state", "dwell", "alive")
 
-    def __init__(self, inst, far_is_outer, equalize_cmd, in_slots, out_slots):
+    def __init__(self, inst, far_is_outer, equalize_cmd, in_slots, out_slots,
+                 interior=False, band=0):
         self.inst = inst
+        self.interior = bool(interior)          # mode == "interior" (#133)
+        self.band = int(band)                   # interior: equalize_band
         self.far_is_outer = bool(far_is_outer)
         self.equalize_cmd = int(equalize_cmd)   # +1 inject / -1 extract / 0
         # Input slots (None => unwired => reads 0). Named to avoid colliding
@@ -249,6 +267,10 @@ class AirlockControllerRuntime:
         self.i_outer_alive = in_slots["outer_alive"]
         self.i_at_far = in_slots["at_far"]     # chamber ≤ far target (decider)
         self.i_at_near = in_slots["at_near"]   # chamber ≥ near target (decider)
+        # Interior mode's three pressure readings (#133; None in hull mode).
+        self.i_chamber_p = in_slots.get("chamber_p")
+        self.i_inner_side_p = in_slots.get("inner_side_p")
+        self.i_outer_side_p = in_slots.get("outer_side_p")
         # Output slots (all present — a LOGIC_NODE's SIGNALS all get a slot).
         self.o_inner_close = int(out_slots["inner_close"])
         self.o_inner_open = int(out_slots["inner_open_cmd"])
@@ -257,6 +279,8 @@ class AirlockControllerRuntime:
         self.o_inject = int(out_slots["pump_inject"])
         self.o_extract = int(out_slots["pump_extract"])
         self.o_busy = int(out_slots["busy"])
+        self.o_near_inject = int(out_slots["near_pump_inject"])
+        self.o_near_extract = int(out_slots["near_pump_extract"])
         self.state = AIRLOCK_IDLE          # synced runtime row (§8)
         self.dwell = 0                     # ticks in the current state (synced)
         self.alive = True
@@ -337,6 +361,19 @@ class AirlockControllerRuntime:
             far_open, far_alive = outer_open, outer_alive
         else:
             far_open, far_alive = inner_open, inner_alive
+        far_dir = near_dir = 0
+        if self.interior:
+            # #133: the legs end on EQUALITY with the side about to open, read
+            # from the three wired pressures (the deciders are not used).
+            p_ch = rd(self.i_chamber_p)
+            p_in, p_out = rd(self.i_inner_side_p), rd(self.i_outer_side_p)
+            p_far, p_near = (p_out, p_in) if self.far_is_outer else (p_in,
+                                                                     p_out)
+            d_far, d_near = p_far - p_ch, p_near - p_ch
+            at_far = 1 if abs(d_far) <= self.band else 0
+            at_near = 1 if abs(d_near) <= self.band else 0
+            far_dir = 0 if at_far else (1 if d_far > 0 else -1)
+            near_dir = 0 if at_near else (1 if d_near > 0 else -1)
 
         prev = self.state
         nxt = self._next_state(presence, inner_open, outer_open, inner_alive,
@@ -348,6 +385,7 @@ class AirlockControllerRuntime:
         # ABSTRACT roles; mapped to inner/outer by far_door below.
         far_open_cmd = far_close = near_open_cmd = near_close = 0
         inject = extract = busy = 0
+        near_inject = near_extract = 0
         st = self.state
         if st == AIRLOCK_IDLE:
             near_open_cmd = 1               # near door open for entry
@@ -356,14 +394,20 @@ class AirlockControllerRuntime:
             near_close = far_close = busy = 1
         elif st == AIRLOCK_EQUALIZE:
             near_close = far_close = busy = 1
-            inject, extract = self._pump_dir(self.equalize_cmd)
+            if self.interior:               # toward the far side's reading
+                inject, extract = self._pump_dir(far_dir)
+            else:
+                inject, extract = self._pump_dir(self.equalize_cmd)
         elif st == AIRLOCK_OPEN_FAR:
             near_close = far_open_cmd = busy = 1
         elif st == AIRLOCK_RESEAL:
             near_close = far_close = busy = 1
         elif st == AIRLOCK_REPRESSURIZE:
             near_close = far_close = busy = 1
-            inject, extract = self._pump_dir(-self.equalize_cmd)
+            if self.interior:               # the NEAR side's own pump (#133)
+                near_inject, near_extract = self._pump_dir(near_dir)
+            else:
+                inject, extract = self._pump_dir(-self.equalize_cmd)
         # AIRLOCK_FAULT: everything 0 — doors released to manual, busy 0 (§7).
 
         # Map the far/near roles onto the physical inner/outer command slots.
@@ -382,6 +426,8 @@ class AirlockControllerRuntime:
         stg[self.o_inject] = inject
         stg[self.o_extract] = extract
         stg[self.o_busy] = busy
+        stg[self.o_near_inject] = near_inject
+        stg[self.o_near_extract] = near_extract
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +511,18 @@ def build_logic_nodes(sim) -> list:
                 return lst[0] if lst else None
             in_slots = {n: _single(n) for n in (
                 "presence", "inner_open", "outer_open", "inner_alive",
-                "outer_alive", "at_far", "at_near")}
+                "outer_alive", "at_far", "at_near", "chamber_p",
+                "inner_side_p", "outer_side_p")}
+            interior = e.fields.get("mode", "hull") == "interior"
+            if interior:
+                missing = [n for n in ("chamber_p", "inner_side_p",
+                                       "outer_side_p") if in_slots[n] is None]
+                if missing:
+                    raise ValueError(
+                        f"airlock_controller '{e.id}': mode = \"interior\" "
+                        f"equalises on three wired pressure readings, but "
+                        f"{missing} is unwired (#133) -- wire a `pressure` "
+                        f"sensor's .value to each")
             out_slots = {sig.name: bus.slot(ordinal, sig.name)
                          for sig in REGISTRY[cn].SIGNALS}
             far = int(e.fields["target_far_atm"])
@@ -473,7 +530,9 @@ def build_logic_nodes(sim) -> list:
             equalize_cmd = 1 if far > near else (-1 if far < near else 0)
             far_is_outer = (e.fields["far_door"] == "outer")
             art = AirlockControllerRuntime(
-                e, far_is_outer, equalize_cmd, in_slots, out_slots)
+                e, far_is_outer, equalize_cmd, in_slots, out_slots,
+                interior=interior,
+                band=int(e.fields.get("equalize_band", 3277)))
             _replace_entity(sim.entities, e, art)
             evaluators.append(art)
         else:                             # pragma: no cover - registry drift

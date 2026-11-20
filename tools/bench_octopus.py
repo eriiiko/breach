@@ -269,7 +269,7 @@ def _move(sim, unit, deg: float, kind: str = "crawl") -> None:
     r = math.radians(deg)
     dx, dy, _ = quantize_stick_direction(math.cos(r), -math.sin(r), deadzone=0.0)
     body = sim._creature_system.bodies[unit.id]
-    sim.set_move_dir(unit.id, dx, dy, 0, speed_q=SC.gait_speed_q16(body, kind))
+    sim.set_move_dir(unit.id, dx, dy, SC.gait_speed_q16(body, kind))
 
 
 def _lift(body, z_m: float) -> None:

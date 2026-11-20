@@ -15,7 +15,7 @@ shortfall):
 
   1. ``GameMap``'s ``boundary`` is a SINGLE, level-global flag (space OR
      ambient — see ``src/simulation/gamemap.py`` __init__, "Boundary mode
-     (BC build...)"): every SPACE(9)-coded tile on one level routes WHOLESALE
+     (BC build...)"): every SPACE-coded tile on one level routes WHOLESALE
      to ``is_vacuum`` (space) or ``is_ambient`` (ambient), never a per-tile
      mix. A "corridor with one end open to the planetside ambient ring and
      the other vented to SPACE" (the task order's own first candidate) is

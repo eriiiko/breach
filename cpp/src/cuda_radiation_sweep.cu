@@ -48,6 +48,7 @@
 #include <cstdint>
 #include <sstream>
 #include <stdexcept>
+#include "cuda_batch.cuh"   // #29 P5: the tick stream
 
 namespace breach_cuda {
 
@@ -813,14 +814,14 @@ int radiation_sweep_launch_resident(
     const int64_t total = (int64_t)n_env * (int64_t)plane;
     int launches = 0;
 
-    rs_init_env<<<(n_env + 63) / 64, 64>>>(n_env, d_e_table, d_k_leak_q,
+    rs_init_env<<<(n_env + 63) / 64, 64, 0, tstream()>>>(n_env, d_e_table, d_k_leak_q,
                                            d_vac_level, d_amb_level == nullptr,
                                            d_heat_absorb_q16, n_gases,
                                            d_cnt);
     cuda_check(cudaGetLastError(), "init launch");
     ++launches;
 
-    rs_prepass<<<grid_for(total), BLOCK>>>(
+    rs_prepass<<<grid_for(total), BLOCK, 0, tstream()>>>(
         n_env, plane, d_temperature, d_heat_atten_q, d_dyn_heat_atten_q,
         d_heat_inv_shift, d_thermal_solid, d_amb_level, d_is_vacuum,
         d_e_table, d_vac_level, d_t_amb_q,
@@ -832,7 +833,7 @@ int radiation_sweep_launch_resident(
     cuda_check(cudaGetLastError(), "prepass launch");
     ++launches;
 
-    rs_zero<<<grid_for(total), BLOCK>>>(n_env, plane, d_cnt, d_rad_net,
+    rs_zero<<<grid_for(total), BLOCK, 0, tstream()>>>(n_env, plane, d_cnt, d_rad_net,
                                         d_rad_flux, d_rad_amb, d_rad_fluence, lk);
     cuda_check(cudaGetLastError(), "zero launch");
     ++launches;
@@ -842,7 +843,7 @@ int radiation_sweep_launch_resident(
         const dim3 grid((unsigned)((ws.L_max + BLOCK - 1) / BLOCK),
                         (unsigned)n_ordinates, (unsigned)n_env);
         for (int wf = 0; wf < ws.K; ++wf) {
-            rs_wavefront<false><<<grid, BLOCK>>>(
+            rs_wavefront<false><<<grid, BLOCK, 0, tstream()>>>(
                 wf, h, w, n_ordinates, shear, ords, w_m,
                 d_a_eff, d_d_eff, d_k_leak_q,
                 d_amb_m, d_ex_cell, d_f_q24, d_outflow,
@@ -860,7 +861,7 @@ int radiation_sweep_launch_resident(
     const dim3 grid((unsigned)((L_max + BLOCK - 1) / BLOCK),
                     (unsigned)n_ordinates, (unsigned)n_env);
     for (int wf = 0; wf < K; ++wf) {
-        rs_wavefront<true><<<grid, BLOCK>>>(
+        rs_wavefront<true><<<grid, BLOCK, 0, tstream()>>>(
             wf, h, w, n_ordinates, shear, ords, w_m,
             d_a_eff, d_d_eff, d_k_leak_q,
             d_amb_m, d_ex_cell, d_f_q24, d_outflow,
@@ -868,7 +869,7 @@ int radiation_sweep_launch_resident(
         cuda_check(cudaGetLastError(), "light wavefront launch");
         ++launches;
     }
-    rs_glow<<<grid_for(total * 3), BLOCK>>>(n_env, plane, d_cnt, lk);
+    rs_glow<<<grid_for(total * 3), BLOCK, 0, tstream()>>>(n_env, plane, d_cnt, lk);
     cuda_check(cudaGetLastError(), "glow launch");
     ++launches;
     return launches;

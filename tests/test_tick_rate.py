@@ -39,6 +39,9 @@ MARINE_ATTACK_S = 0.75
 MARINE_COVER_S = 0.5
 MARINE_SPRINT_S = 0.33333333
 ZOMBIE_S = 0.58333333          # 7/12
+# The LEGACY bite cadence the 12 / 24 tps helper checks below are built on (a
+# fixed number, so the helper is tested on it); the LIVE one is read from
+# config (Erik moved it to 2.2 s, 2026-11-12, the zombie bite balance).
 ATTACK_COOLDOWN_S = 1.0
 RIFLE_BURST_S = 0.16666667     # 2/12
 REPLAY_S = 100.0
@@ -55,12 +58,18 @@ def test_live_config_is_consistent_with_helper():
     assert CFG.movement.marine_attack_ticks_per_tile == ticks_from_seconds(MARINE_ATTACK_S, tps)
     assert CFG.movement.marine_cover_ticks_per_tile == ticks_from_seconds(MARINE_COVER_S, tps)
     assert CFG.movement.marine_sprint_ticks_per_tile == ticks_from_seconds(MARINE_SPRINT_S, tps)
-    assert CFG.zombie.ticks_per_tile == ticks_from_seconds(ZOMBIE_S, tps)
-    assert CFG.zombie.attack_cooldown_ticks == ticks_from_seconds(ATTACK_COOLDOWN_S, tps)
+    # (the zombie's walk cadence left this derivation at G1p-c: it is the
+    # [speeds] zombie_shamble_mps row at the map's tile size,
+    # tests/test_speed_table.py)
+    assert CFG.zombie.attack_cooldown_ticks == ticks_from_seconds(
+        CFG.zombie.attack_cooldown_seconds, tps)
     # W1 re-home: the rifle cadence now derives on the k5_carbine weapon row
     # (rof_interval_seconds -> rof_interval_ticks), same helper, same result.
+    # The row's OWN seconds: the carbine's rate is a ruling that moves (G2p:
+    # 1/12 s, was RIFLE_BURST_S); what this protects is the derivation.
     k5 = weapon_tables().weapons.by_name["k5_carbine"]
-    assert k5.rof_interval_ticks == ticks_from_seconds(RIFLE_BURST_S, tps)
+    assert k5.rof_interval_ticks == ticks_from_seconds(
+        k5.rof_interval_seconds, tps)
     assert CFG.recorder.capacity == round(REPLAY_S * tps)
 
 

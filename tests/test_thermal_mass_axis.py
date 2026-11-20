@@ -68,11 +68,18 @@ def test_air_is_thermal_mass_zero_and_the_only_gas_row():
     tbl = MaterialTable.from_config(CFG)
     assert tbl.thermal_mass[MAT_AIR] == 0.0
     assert bool(tbl.thermal_solid[MAT_AIR]) is False
-    # Every other shipped row is a thermal solid.
+    # Every other shipped row is a thermal solid UNLESS it DECLARES the gas
+    # regime (`thermal_mass = 0` authored, as air does). #134 rewrote this
+    # from "air is the only gas row" -- a pinned set -- when the grille
+    # (an air-like grating) became the second declared gas row; the property
+    # kept is that no row lands in the gas regime WITHOUT declaring it.
     for mid in sorted(MATERIAL_NAMES):
         if mid == MAT_AIR:
             continue
-        assert bool(tbl.thermal_solid[mid]) is True, MATERIAL_NAMES[mid]
+        declared = getattr(getattr(CFG.materials, MATERIAL_NAMES[mid]),
+                           "thermal_mass", None)
+        want = not (declared is not None and float(declared) == 0.0)
+        assert bool(tbl.thermal_solid[mid]) is want, MATERIAL_NAMES[mid]
 
 
 def test_thermal_mass_is_derived_from_the_rows_real_rho_c():
@@ -135,8 +142,16 @@ def test_thermal_mass_is_derived_from_the_rows_real_rho_c():
             f"(rho*c = {rho * c:.1f} J/(m3.K), fill = {fill:.5f}, so "
             f"{rho * c * fill / THERMAL_MASS_UNIT:.5f} column units)")
         checked += 1
-    assert checked == len(MATERIAL_NAMES) - 1, (
-        "every row but the gas row must carry a derived capacity")
+    # #134: "every row but THE gas row" became "every row but the rows that
+    # DECLARE the gas regime" (air, the grille) -- a row slipping into the
+    # gas regime without declaring it still fails here.
+    declared_gas = sum(
+        1 for name in tbl.names
+        if getattr(getattr(CFG.materials, name), "thermal_mass", None)
+        is not None
+        and float(getattr(getattr(CFG.materials, name), "thermal_mass")) == 0.0)
+    assert declared_gas >= 1 and checked == len(MATERIAL_NAMES) - declared_gas, (
+        "every row but the declared gas rows must carry a derived capacity")
 
 
 def test_a_flammable_row_is_thin_and_a_structural_row_is_solid():

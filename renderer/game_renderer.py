@@ -14,6 +14,7 @@ State flow:
 """
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple
@@ -48,6 +49,8 @@ from .overlays import (
 )
 from .pressure_overlay import PressureOverlay
 from .sprites import UnitSprites
+from . import swarm_dots
+from . import larva_bodies
 from .unit_model_renderer import UnitModelRenderer
 from .water import WaterPass
 from .world_composite import WorldComposite
@@ -257,6 +260,11 @@ class GameRenderer:
         # them). [render.gas_relief] is re-read every frame (Ctrl+R live);
         # enabled = false falls back to the B2 erosion look above.
         self.gas_relief = GasReliefPass.from_config(cfg.grid_h, cfg.grid_w, CFG)
+        # Graphics G5: the light curve editor, None unless
+        # [render.light_curve] panel is on.
+        self.curve_panel = None
+        self._curve_hist = None
+        self._curve_hist_age = 0.0
         # G2: the smoke cast shadow's inputs this frame (_smoke_cast_inputs)
         self._smoke_cast = (None, (1.0, 1.0), (0.0, 0.0, 0.0, 0.0),
                             (0.0, 0.0, 0.0, 0.0))
@@ -312,8 +320,64 @@ class GameRenderer:
             glow_min_k=self._fire_scales.glow_min_k)
         self.ember_draw = _particles.ParticleDraw(_es.cap)
         self._ember_sprites = None       # this frame's pack (both stages)
+        # Graphics G4 P3 -- SPARKS, the particle primitive's second consumer:
+        # thrown by each "blast" effect from its walk's seeds, riding the
+        # embers' law, drawn in the embers' draw (one sprite array per
+        # stage). [render.sparks] is re-read every frame; `enabled` there is
+        # its only switch.
+        self.sparks = _particles.SparkSystem(
+            _particles.spark_settings_from_config(CFG),
+            t_amb_k=self._fire_scales.t_amb_k,
+            glow_min_k=self._fire_scales.glow_min_k)
+        # Graphics G4 P4 -- DEBRIS, the particle primitive's third consumer:
+        # dark chips thrown by each "blast" effect from its walk's seeds,
+        # dragged by the tamed wind x the tile's gas density, stopped by
+        # ground friction and walls, drawn in the particle draw's
+        # premultiplied "debris" stage. [render.debris] is re-read every
+        # frame; `enabled` there is its only switch.
+        self.debris = _particles.DebrisSystem(
+            _particles.debris_settings_from_config(CFG))
+        # #87 -- THE MUZZLE FLAME (renderer/muzzle_flame.py): a procedural
+        # flame per shot at the barrel's tip, additive linear HDR after the
+        # units, and its sparks, the particle primitive's fourth consumer.
+        # [render.muzzle_flame] is re-read every frame; `enabled` there is
+        # its only switch.
+        from . import muzzle_flame as _mflame
+        self.muzzle_flames = _mflame.MuzzleFlames(
+            _mflame.settings_from_config(CFG))
+        self.muzzle_flame_draw = _mflame.MuzzleFlameDraw()
+        self.muzzle_sparks = _particles.MuzzleSparkSystem(
+            _particles.muzzle_spark_settings(CFG),
+            t_amb_k=self._fire_scales.t_amb_k,
+            glow_min_k=self._fire_scales.glow_min_k)
+        self._flame_pack = None          # this frame's pack (both stages)
+        # #141 -- THE TRACERS (renderer/tracers.py): a round in flight as a
+        # glowing streak at its own speed, its afterglow, and the sparks it
+        # throws off a wall. Sprites of the particle draw (their own
+        # instance: drawn after the units, with the muzzle flame).
+        # [render.tracers] is re-read every frame.
+        from . import tracers as _tracers
+        self.tracers = _tracers.Tracers(_tracers.settings_from_config(CFG))
+        self.tracer_draw = _particles.ParticleDraw(64)
+        self.impact_sparks = _particles.MuzzleSparkSystem(
+            _particles.muzzle_spark_settings(CFG, "tracers"),
+            t_amb_k=self._fire_scales.t_amb_k,
+            glow_min_k=self._fire_scales.glow_min_k)
+        self._tracer_sprites = None
+        self._tracer_speeds = _tracers.round_speeds(CFG)
+        self._tracer_solid = None        # the frame's solid mask (read-only)
+        self._flame_t_sim = 0.0          # sim seconds, (tick + alpha) / tps
+        self._flame_tile_m = 1.0
         self.shimmer = _shimmer.HeatShimmer(
             cfg.grid_h, cfg.grid_w, _shimmer.settings_from_config(CFG))
+        # Graphics G4 P2 -- the SHOCK FRONT (renderer/shockwave.py), the
+        # distortion block's second term: a ring per detonation ("blast"
+        # effect), riding the canonical Blast reach walk so walls clip it, on
+        # the sim clock. [render.shockwave] is re-read every frame (F5);
+        # `enabled` there is its only switch.
+        from . import shockwave as _shockwave
+        self.shockwave = _shockwave.Shockwave(
+            cfg.grid_h, cfg.grid_w, _shockwave.settings_from_config(CFG))
         # Graphics G3 F4b -- the fire's ROOM-LIGHT FLICKER
         # (renderer/fire_flicker.py; design 6.3, RULED D): a per-tick,
         # per-burning-tile multiplier on the sweep's thermal LIGHT emission,
@@ -373,6 +437,20 @@ class GameRenderer:
         # attenuation — the dormant default the default level relies on).
         self.water_pass.set_height_texture(getattr(self.textures, "height", None))
 
+        # arc #63 P4: the swarm dot view's render state -- the sprites packed
+        # at upload_state, the death flecks (driven by the events), the GL
+        # draw (built on its first sprite). Switched by [debug] swarm_dots,
+        # read every frame (Ctrl+R live), never a key.
+        self._swarm_sprites = None
+        self._swarm_flecks = swarm_dots.DeathFlecks()
+        self._swarm_dot_draw = None
+        # arc #63: the larvae's bodies ([render.larvae], read every frame):
+        # the packed instances and the dead bodies (render state), the GL
+        # draw (built on its first larva).
+        self.larvae = larva_bodies.LarvaBodies()
+        self._larva_draw = None
+        self._larva_tile_m = 1.0
+
         # Toggles
         self.show_grid = False
         self.show_smoke = True
@@ -427,6 +505,12 @@ class GameRenderer:
         # by consume_events, advanced by _advance_effects, drawn by
         # _draw_effects_world.
         self._effects: list = []
+        # The sim tick of the last upload_state: a "blast" effect consumed
+        # without an explicit tick is stamped with it (G4, #75).
+        self._last_sim_tick: int = 0
+        # Graphics G4 P5: the blast flashes on/off (a look shot's `hide =
+        # ["flash"]`; no key). Off = no blast flash light at all.
+        self.blast_flash_on: bool = True
 
         # ray-engine-v2 P6b/P6c: THE LIGHT is the radiation sweep's light
         # channels, read through the one accessor (simulation.light_field) and
@@ -506,6 +590,7 @@ class GameRenderer:
         ``[render.fire_vfx] idle_when_paused``). Both are pure reads of the
         caller's loop state: no sim state, no determinism."""
         t_start = time.perf_counter()
+        self._last_sim_tick = int(sim_tick)
 
         # #9: THE topology -> render seam. Drain the tiles every topology
         # writer marked (GameMap.on_tile_changed) into patches, read from the
@@ -549,6 +634,12 @@ class GameRenderer:
                                        v_ref=gd.wind_v_ref,
                                        v_sens=gd.wind_v_sens))
             return _wind[0]
+
+        # arc #63 P4: the swarm dot view's sprites from the store's host
+        # mirror (render-only; the sim never reads them).
+        self._upload_swarm_dots(gmap, sim_tick)
+        # arc #63: the larvae's bodies, from the same store read.
+        self._upload_larva_bodies(gmap, sim_tick)
 
         # Smoke medium. Fire & Heat Beauty B2 P2: the physical gas-medium pass
         # (renderer/gas_medium.py) replaces the flat-grey smoke_overlay + additive
@@ -663,6 +754,95 @@ class GameRenderer:
                         if pack is not None else (0, 0)),
                 s0=d.s0, strip_frac=d.strip_frac, wind_fn=frame_tamed_wind,
                 tps=tps, blocked=self._ember_blocked(gmap))
+        # Graphics G4 P3 -- the sparks: each new "blast" effect is consumed
+        # once ("sparks_seen") and throws its sparks from the canonical walk's
+        # seeds over the open mask; they step on the same VFX clock, ride the
+        # same tamed wind and curl field, and die in the same walls.
+        self.sparks.refresh_settings(
+            _particles.spark_settings_from_config(CFG))
+        if not self.fire_vfx.enabled:
+            self.sparks.p.clear()            # no VFX clock
+            for _fx in self._effects:        # seen, never thrown later
+                if _fx.get("kind") == "blast":
+                    _fx["sparks_seen"] = True
+        else:
+            from simulation.blast_expansion import (
+                open_mask as _open_mask_s, walk_seeds as _walk_seeds)
+            _mask_cache = []
+
+            def _spark_seeds(fy, fx, approach):
+                if not _mask_cache:
+                    _mask_cache.append(np.asarray(_open_mask_s(gmap), bool))
+                return _walk_seeds(_mask_cache[0], fy, fx, approach)
+
+            self.sparks.update(
+                t=self.fire_vfx.clock.t_noise, effects=self._effects,
+                seeds_fn=_spark_seeds, sim_tick=int(sim_tick),
+                wind_fn=frame_tamed_wind, tps=tps,
+                blocked=self._ember_blocked(gmap),
+                modes=self.embers.modes())
+        # #87 -- the muzzle flame's clock (the SIM clock: a paused game
+        # holds a flash) and its sparks, queued by last frame's new flashes
+        # (compose_world), stepping with the blast sparks.
+        from . import muzzle_flame as _mflame
+        self.muzzle_flames.refresh_settings(_mflame.settings_from_config(CFG))
+        self._flame_t_sim = (int(sim_tick) + min(max(float(alpha or 0.0), 0.0),
+                                                  1.0)) / tps
+        self._flame_tile_m = float(gmap.tile_size_m)
+        self.muzzle_sparks.refresh_settings(
+            _particles.muzzle_spark_settings(CFG))
+        # #141 -- the tracers' settings and what a round can stop on, and
+        # the impact sparks, queued by last frame's arrivals
+        from . import tracers as _tracers
+        self.tracers.refresh_settings(_tracers.settings_from_config(CFG))
+        self._tracer_speeds = _tracers.round_speeds(CFG)
+        self._tracer_solid = gmap.solid
+        self.impact_sparks.refresh_settings(
+            _particles.muzzle_spark_settings(CFG, "tracers"))
+        for _sys in (self.muzzle_sparks, self.impact_sparks):
+            if not self.fire_vfx.enabled:
+                _sys.p.clear()               # no VFX clock
+                _sys.consume((), None, int(sim_tick))
+            else:
+                _sys.update(
+                    t=self.fire_vfx.clock.t_noise, effects=(), seeds_fn=None,
+                    sim_tick=int(sim_tick), wind_fn=frame_tamed_wind, tps=tps,
+                    blocked=self._ember_blocked(gmap),
+                    modes=self.embers.modes())
+        # Graphics G4 P4 -- the debris: each new "blast" effect is consumed
+        # once ("debris_seen"); the chips are born at the same walk's seeds,
+        # step on the same VFX clock, ride the same tamed wind scaled by the
+        # tile's gas density (the prop sway's read, static_props
+        # .gas_frac_at_tiles: 0 in vacuum) and stop at walls.
+        self.debris.refresh_settings(
+            _particles.debris_settings_from_config(CFG))
+        if not self.fire_vfx.enabled:
+            self.debris.p.clear()            # no VFX clock
+            for _fx in self._effects:        # seen, never thrown later
+                if _fx.get("kind") == "blast":
+                    _fx["debris_seen"] = True
+        else:
+            from simulation.blast_expansion import (
+                open_mask as _open_mask_d, walk_seeds as _walk_seeds_d)
+            from .static_props import gas_frac_at_tiles as _gas_frac
+            _dmask = []
+
+            def _debris_seeds(fy, fx, approach):
+                if not _dmask:
+                    _dmask.append(np.asarray(_open_mask_d(gmap), bool))
+                return _walk_seeds_d(_dmask[0], fy, fx, approach)
+
+            _n_amb = float(gmap.ambient_seed()[0])
+
+            def _debris_density(iy, ix):
+                return _gas_frac(gmap.gas_bulk_n_at, _n_amb, iy, ix)
+
+            self.debris.update(
+                t=self.fire_vfx.clock.t_noise, effects=self._effects,
+                seeds_fn=_debris_seeds, sim_tick=int(sim_tick),
+                wind_fn=frame_tamed_wind, tps=tps,
+                density_fn=_debris_density,
+                blocked=self._ember_blocked(gmap))
         # Graphics G3 F4b -- the room-light flicker's dials and the fire's
         # light gain (their rows are computed per sim tick by
         # fire_light_rows, not per frame).
@@ -685,6 +865,16 @@ class GameRenderer:
                 t_noise=self.fire_vfx.clock.t_noise,
                 zoom_px_per_tile=self.camera.zoom_px_per_tile,
                 sim_tick=int(sim_tick), paused=bool(paused))
+        # ... and the shock front: a ring for each new "blast" effect (its
+        # distance plane from the canonical walk over the open mask), aged on
+        # the sim clock (tick + alpha) / tps, held while paused.
+        from . import shockwave as _shockwave
+        self.shockwave.refresh_settings(_shockwave.settings_from_config(CFG))
+        from simulation.blast_expansion import open_mask as _open_mask
+        self.shockwave.update(
+            effects=self._effects, mask_fn=lambda: _open_mask(gmap),
+            sim_tick=int(sim_tick), alpha=alpha, paused=bool(paused),
+            tps=tps, zoom_px_per_tile=self.camera.zoom_px_per_tile)
 
         # Pressure colormap: refresh the per-tile texture from the current
         # atmosphere + wave_p fields. Skipped when toggled off to save the
@@ -779,6 +969,8 @@ class GameRenderer:
                       doors: Sequence = (),
                       props: Sequence = (),
                       overlay_fn=None,
+                      charges: Sequence = (),
+                      charge_tick: int = 0,
                       creatures=None) -> None:
         """Draw every world-space layer into the world render targets.
 
@@ -833,6 +1025,10 @@ class GameRenderer:
         accessor (``Simulation.creature_chains()``): every creature, living
         or dead, is drawn from its chain in the same 3D pass (its unit is
         taken out of the marine / zombie draws). None draws none.
+        ``charges`` (#193) is the sim's ``planted_charges`` (read-only) and
+        ``charge_tick`` the sim tick: each live charge with a timer is drawn
+        as a blinking floor marker with its seconds left (display stage,
+        beside the doors).
 
         ``overlay_fn(world_px_per_tile)`` draws in the DISPLAY stage: it is
         for UI in authored colours. Lit 3D geometry goes in through
@@ -842,6 +1038,9 @@ class GameRenderer:
         # upload_state) before the lit ship samples the art.
         if self._pending_tile_patches:
             self._apply_tile_patches()
+
+        # Graphics G5: this frame's light curve, for the floor and the 3D pass.
+        self.lighting.set_light_curve(self._frame_light_curve())
 
         # 0. Graphics G2: the relief's CAST PRODUCT (occlusion + height per
         # texel, both species layers), rendered into its own target BEFORE the
@@ -885,6 +1084,14 @@ class GameRenderer:
                 world_px_w=self.world.world_px_w,
                 world_px_h=self.world.world_px_h,
                 anim_t=time.perf_counter() - self._anim_t0)
+        # 2b. arc #63 -- THE larvae's bodies ([render.larvae]): every larva
+        # (and the limp, fading dead) in ONE instanced draw, ON the floor
+        # (after the water) and under the smoke, lit by the light field,
+        # premultiplied. Then the swarm dot view ([debug] swarm_dots, a
+        # debug picture over them): the swarm units and their fading death
+        # flecks, unlit. No unit, no draw.
+        self._draw_larva_bodies()
+        self._draw_swarm_dots()
         # 3. B2 physical gas medium: ONE premult-over layer (C = inscatter +
         # T·bg), linear HDR inscatter. Occlusion (alpha) and inscatter (RGB)
         # composite in a single BLEND_ALPHA_PREMULTIPLY draw — no double-
@@ -909,6 +1116,11 @@ class GameRenderer:
             else:
                 self.gas_medium.draw(
                     0, 0, self.world.world_px_w, self.world.world_px_h)
+        # 3b. Graphics G4 P4 -- DEBRIS: the particle draw's premultiplied
+        # "debris" stage, chips lit by the light field (the props' read),
+        # lying on the floor: after the floor smoke group, under the flame,
+        # the units and the ceiling soot. No chip, no draw.
+        self._draw_debris(self._relief_view_rect())
         # 4. Graphics G3 F3 -- the FLAME (shaders/fire_glow.fs through
         # fire_vfx.draw_glow), in the linear scene as an emitter cover with
         # opacity tied to its emission (design §3.5, §13.4), UNDER the units
@@ -930,7 +1142,7 @@ class GameRenderer:
         # 4b. Graphics G3 F4a -- EMBERS (THE particle primitive): additive
         # linear-HDR sparks over the flame, under the units, clipped to the
         # view; coloured only through the blackbody GPU LUT. No ember, no
-        # draw.
+        # draw. (G4 P3: the SPARKS ride the same draw, one sprite array.)
         self._draw_embers(view)
         # 5. 3D units + props (+ projected shadows): the shared 3D pass --
         # ABOVE the flame.
@@ -941,8 +1153,16 @@ class GameRenderer:
                              if getattr(u, "id", None) not in self._creature_views]
             units_zombies = [u for u in units_zombies
                              if getattr(u, "id", None) not in self._creature_views]
+        self.unit_models.muzzle_poses.clear()    # #87: this frame's barrels
         drew_units_3d = self._draw_units_3d_world(units_marines, units_zombies,
                                                   props, self._creature_views)
+        # 5b. #87 -- THE MUZZLE FLAME: additive linear HDR at each firing
+        # unit's barrel tip (the pose the 3D pass just drew its gun at), OVER
+        # the units (it is at gun height), under the ceiling soot. No flash,
+        # no draw.
+        self._draw_muzzle_flames(view, units_marines, units_zombies)
+        # 5c. #141 -- THE TRACERS: the rounds in flight, the same layer
+        self._draw_tracers(view, units_marines, units_zombies)
         # 6. G1: the CEILING species layer (hot soot) -- ABOVE the units and
         # props (Erik's ruling 2, 2026-10-18), still in the linear scene.
         if relief_on:
@@ -960,12 +1180,18 @@ class GameRenderer:
                 # occlusion under the soot is the flame's, Erik's 0.2
                 self._draw_embers(view, stage="compensation",
                                   glow_through_ceil=gt[0])
+                # ... and the muzzle flames' (#87), the same rule
+                self._draw_muzzle_flames(view, stage="compensation",
+                                         glow_through_ceil=gt[0])
+                self._draw_tracers(view, stage="compensation",
+                                   glow_through_ceil=gt[0])
 
         # ======= the ONE tone-map: ACES + encode + dither (resolve) =======
         # (G3 F4a: with the heat SHIMMER, the first term of the resolve's
-        # distortion block -- never a second pass over the scene.)
+        # distortion block, and G4 P2's SHOCK FRONT, its second -- never a
+        # second pass over the scene.)
         self.world.resolve(encode_srgb=self.lighting.srgb_decode,
-                           shimmer=self.shimmer)
+                           shimmer=self.shimmer, shock=self.shockwave)
 
         # ============ DISPLAY: authored sRGB colours (RGBA8) ============
         # 6. Debug / legacy colormaps. Their colours are display values (a
@@ -1027,6 +1253,10 @@ class GameRenderer:
         # list (span/state/alive); no overlay system, no field writes.
         if doors:
             self._draw_doors_world(doors)
+        # 7b. Planted charges (#193): a blinking marker + the seconds left on
+        # each live charge's tile. Render-read only.
+        if charges:
+            self._draw_charges_world(charges, charge_tick)
 
         # 8. Waypoints, sprite units (the 2D fallback when the 3D pass did not
         # draw the units), projectiles, effects, grid — world-pixel space.
@@ -1142,6 +1372,40 @@ class GameRenderer:
                         x, y, side, side,
                         rl.Color(*self._DOOR_OPEN_OUTLINE))
 
+    def _draw_charges_world(self, charges: Sequence, tick: int) -> None:
+        """A planted charge (#193) as a small red square on its tile that
+        blinks on the SIM clock (twice a second, four times in the last five
+        seconds; a paused game holds it), with the whole seconds left above
+        it. Reads ``x``, ``y``, ``det_tick`` and ``live`` and writes
+        nothing; a remote charge (no timer) shows a steady marker."""
+        from config import CFG
+        tps = int(CFG.clock.ticks_per_second)
+        wpt = self.world.world_px_per_tile
+        side = max(4, int(1.2 * wpt))
+        for c in charges:
+            if not getattr(c, "live", False):
+                continue
+            cx = int((c.x + 0.5) * wpt)
+            cy = int((c.y + 0.5) * wpt)
+            det = getattr(c, "det_tick", None)
+            left = None if det is None else max(0, int(det) - int(tick))
+            on = True
+            if left is not None:
+                half = max(1, tps // (4 if left < 5 * tps else 2))
+                on = (left // half) % 2 == 0
+            col = (rl.Color(255, 40, 30, 255) if on
+                   else rl.Color(90, 20, 15, 255))
+            rl.draw_rectangle(cx - side // 2, cy - side // 2, side, side, col)
+            rl.draw_rectangle_lines(cx - side // 2, cy - side // 2, side,
+                                    side, rl.Color(20, 10, 5, 255))
+            if left is not None:
+                secs = -(-left // tps)
+                size = max(10, int(1.5 * wpt))
+                text = str(secs)
+                w = rl.measure_text(text, size)
+                rl.draw_text(text, cx - w // 2, cy - side // 2 - size - 2,
+                             size, rl.Color(255, 230, 200, 255))
+
     def _draw_overlay_to_world(self, field_tex: rl.Texture) -> None:
         """Stretch a physics-resolution texture across the full world RT."""
         src = rl.Rectangle(0, 0, float(field_tex.width), float(field_tex.height))
@@ -1204,25 +1468,33 @@ class GameRenderer:
 
     def _draw_embers(self, view, stage: str = "scene",
                      glow_through_ceil: float = 1.0) -> int:
-        """Draw the embers into the scene RT (G3 F4a): ``stage`` "scene"
-        (after the flame, under the units and the soot) packs and draws;
-        "compensation" (after the ceiling soot) re-adds what the soot hid
-        beyond ``glow_through_ceil``, as the flame's compensation does.
-        Returns the draw calls issued (0: no ember in view, or embers
-        off)."""
+        """Draw THE particle primitive's sprites into the scene RT -- the
+        embers (G3 F4a) and the sparks (G4 P3), concatenated into ONE sprite
+        array and ONE draw per stage: ``stage`` "scene" (after the flame,
+        under the units and the soot) packs and draws; "compensation" (after
+        the ceiling soot) re-adds what the soot hid beyond
+        ``glow_through_ceil``, as the flame's compensation does. A frame
+        with no spark draws exactly the embers' array. Returns the draw
+        calls issued (0: no particle in view, or both off)."""
         from .particles import pack_sprites
         from .fire_vfx import LUT_SIZE
-        em = self.embers
         if stage == "scene":
             self._ember_sprites = None
-            if not em.enabled or em.p.n == 0:
+            zoom = (self.camera.zoom_px_per_tile
+                    / self.world.world_px_per_tile)
+            packs = []
+            for system in (self.embers, self.sparks, self.muzzle_sparks,
+                           self.impact_sparks):
+                if system.enabled and system.p.n:
+                    packs.append(pack_sprites(
+                        system.p, view, self.world.world_px_per_tile,
+                        system.settings, screen_px_per_world_px=zoom))
+            if not packs:
                 self.ember_draw.draws_last_frame = 0
                 self.ember_draw.sprites_last_frame = 0
                 return 0
-            self._ember_sprites = pack_sprites(
-                em.p, view, self.world.world_px_per_tile, em.settings,
-                screen_px_per_world_px=(self.camera.zoom_px_per_tile
-                                        / self.world.world_px_per_tile))
+            self._ember_sprites = (packs[0] if len(packs) == 1
+                                   else np.concatenate(packs, axis=1))
         sprites = self._ember_sprites
         if sprites is None:
             return 0
@@ -1234,6 +1506,222 @@ class GameRenderer:
             stage=stage, smoke_cover=self._smoke_cast[0],
             glow_through_ceil=glow_through_ceil)
 
+    def _draw_muzzle_flames(self, view, marines: Sequence = (),
+                            zombies: Sequence = (), stage: str = "scene",
+                            glow_through_ceil: float = 1.0) -> int:
+        """#87: THE muzzle flame's draw. ``stage`` "scene" (after the units,
+        under the soot) first turns every new launched ``"tracer"`` effect
+        into a flash of its shooter's weapon's kind, ages the live ones on
+        the sim clock, puts each on its shooter's muzzle -- the barrel tip
+        the 3D pass just drew (``unit_models.muzzle_poses``), else the
+        footprint's edge along the facing -- queues the new flashes' sparks,
+        then packs and draws; "compensation" (after the ceiling soot) re-adds
+        what the soot hid beyond ``glow_through_ceil``. A unit that is not
+        drawn (fog of war) flashes nothing. Returns the draw calls issued."""
+        from . import muzzle_flame as _mflame
+        from .fire_vfx import LUT_SIZE
+        from .unit_looks import unit_key
+        mf = self.muzzle_flames
+        if stage == "scene":
+            self._flame_pack = None
+            by_id = {unit_key(u): u for u in (*marines, *zombies)}
+
+            def weapon_of(uid):
+                u = by_id.get(uid)
+                return None if u is None else str(
+                    getattr(u, "weapon_id", "") or "")
+
+            poses = self.unit_models.muzzle_poses
+
+            def pose_of(uid):
+                p = poses.get(uid)
+                u = by_id.get(uid)
+                if p is not None or u is None:
+                    return p
+                return _mflame.fallback_pose(
+                    float(u.x), float(u.y), float(getattr(u, "footprint", 3)),
+                    float(getattr(u, "facing", math.pi / 2.0)))
+
+            mf.consume(self._effects, weapon_of, self._last_sim_tick)
+            mf.update(self._flame_t_sim, pose_of)
+            for f in mf.born_last_frame:
+                if f.shot.sparks:
+                    self.muzzle_sparks.throw(
+                        f.shot.sparks, f.pose, self._flame_tile_m,
+                        _mflame.shot_rng(mf.settings.seed + 1, f.unit,
+                                         f.tick0))
+            if mf.enabled and mf.flashes:
+                self._flame_pack = mf.pack(view, self.world.world_px_per_tile,
+                                           self._flame_tile_m)
+        pack = self._flame_pack
+        if pack is None or pack.shape[1] == 0:
+            if stage == "scene":
+                self.muzzle_flame_draw.draws_last_frame = 0
+                self.muzzle_flame_draw.flashes_last_frame = 0
+            return 0
+        ramp = self.fire_vfx.ramp
+        return self.muzzle_flame_draw.draw(
+            pack, world_px_w=self.world.world_px_w,
+            world_px_h=self.world.world_px_h, lut_tex=self.fire_vfx.lut_tex,
+            lut_k=(ramp.kelvin_floor, ramp.kelvin_ceil), lut_n=LUT_SIZE,
+            stage=stage, smoke_cover=self._smoke_cast[0],
+            glow_through_ceil=glow_through_ceil)
+
+    def swarm_dots_on(self) -> bool:
+        """``[debug] swarm_dots`` (arc #63 P4), read every frame."""
+        return bool(getattr(getattr(CFG, "debug", None), "swarm_dots", True))
+
+    def _upload_swarm_dots(self, gmap, sim_tick: int) -> None:
+        """arc #63 P4: pack this frame's dot-view sprites -- every live swarm
+        unit of every species from the store's host mirror, then the death
+        flecks at the sim clock -- in numpy, one pass (no loop per unit).
+        Off, or no unit and no fleck: nothing is packed."""
+        self._swarm_sprites = None
+        if not self.swarm_dots_on():
+            self._swarm_flecks.clear()
+            return
+        from simulation import swarm as _swarm
+        ppt = self.world.world_px_per_tile
+        parts = []
+        if _swarm.swarm_present(gmap):
+            for sp in _swarm.SWARM_SPECIES:
+                col = lambda c: _swarm.swarm_column(gmap, sp, c)  # noqa: E731
+                parts.append(swarm_dots.pack_dots(
+                    col("pos_x"), col("pos_y"), col("heading"),
+                    col("ai_state"), col("valid"), ppt))
+        if len(self._swarm_flecks):
+            parts.insert(0, self._swarm_flecks.pack(
+                int(sim_tick) * self._sim_dt, ppt))
+        parts = [p for p in parts if p.shape[1]]
+        if parts:
+            self._swarm_sprites = np.concatenate(parts, axis=1)
+
+    def _draw_swarm_dots(self) -> int:
+        """arc #63 P4: THE swarm dot view's ONE draw (the flecks under the
+        live units). Returns the draw calls issued."""
+        s = self._swarm_sprites
+        if s is None or s.shape[1] == 0:
+            return 0
+        if self._swarm_dot_draw is None:
+            self._swarm_dot_draw = swarm_dots.SwarmDotDraw(max(1024, s.shape[1]))
+        return self._swarm_dot_draw.draw(
+            s, world_px_w=self.world.world_px_w,
+            world_px_h=self.world.world_px_h,
+            px_per_tile=self.world.world_px_per_tile)
+
+    def _upload_larva_bodies(self, gmap, sim_tick: int) -> None:
+        """arc #63: read ``[render.larvae]`` (the refusing door, every
+        frame) and pack this frame's larva instances -- the dead bodies,
+        then every living larva of every species in the view, from the
+        store's host mirror -- in numpy, one pass. Off: no store read,
+        nothing packed."""
+        lb = self.larvae
+        lb.refresh_settings(CFG)
+        lb.upload(gmap, int(sim_tick) * self._sim_dt,
+                  self.world.world_px_per_tile,
+                  view=self._relief_view_rect())
+        self._larva_tile_m = float(gmap.tile_size_m)
+
+    def _draw_larva_bodies(self) -> int:
+        """arc #63: THE larvae's ONE instanced draw. Returns the draw calls
+        issued (0: off, or no larva in view)."""
+        lb = self.larvae
+        inst = lb.instances
+        if not lb.enabled or inst is None or inst.shape[1] == 0:
+            if self._larva_draw is not None:
+                self._larva_draw.draws_last_frame = 0
+                self._larva_draw.instances_last_frame = 0
+            return 0
+        if self._larva_draw is None:
+            self._larva_draw = larva_bodies.LarvaBodyDraw(inst.shape[1])
+        return self._larva_draw.draw(
+            inst, lb.settings, light=self._light_field_ctx(),
+            tile_size_m=self._larva_tile_m,
+            px_per_tile=self.world.world_px_per_tile)
+
+    def _draw_tracers(self, view, marines: Sequence = (),
+                      zombies: Sequence = (), stage: str = "scene",
+                      glow_through_ceil: float = 1.0) -> int:
+        """#141: THE tracers' draw. ``stage`` "scene" (after the units,
+        under the soot) turns every new ``"tracer"`` effect into a streak
+        (its kind by the shooter's weapon, its speed the round's own, its
+        first segment from the muzzle the 3D pass just drew), ages the live
+        ones on the sim clock, queues the sparks of the streaks that just
+        reached a wall, then packs and draws them as sprites of the
+        particle draw; "compensation" re-adds what the ceiling soot hid. A
+        shooter that is not drawn (fog of war) shows no tracer."""
+        from . import muzzle_flame as _mflame
+        from .fire_vfx import LUT_SIZE
+        from .unit_looks import unit_key
+        tr = self.tracers
+        if stage == "scene":
+            self._tracer_sprites = None
+            by_id = {unit_key(u): u for u in (*marines, *zombies)}
+
+            def weapon_of(uid):
+                u = by_id.get(uid)
+                return None if u is None else str(
+                    getattr(u, "weapon_id", "") or "")
+
+            poses = self.unit_models.muzzle_poses
+
+            def start_of(uid):
+                p = poses.get(uid)
+                return None if p is None else (p[0], p[1])
+
+            tr.consume(self._effects, weapon_of=weapon_of,
+                       speed_of=self._tracer_speeds.get, start_of=start_of,
+                       solid=self._tracer_solid,
+                       tile_size_m=self._flame_tile_m,
+                       tps=1.0 / self._sim_dt, sim_tick=self._last_sim_tick)
+            tr.update(self._flame_t_sim)
+            for imp in tr.impacts_last_frame:
+                if imp.sparks:
+                    rng = _mflame.shot_rng(
+                        tr.settings.seed + int(imp.x * 64) + int(imp.y * 64),
+                        imp.unit, imp.tick0)
+                    n = int(rng.integers(max(imp.sparks // 2, 0),
+                                         imp.sparks + (imp.sparks + 1) // 2 + 1))
+                    self.impact_sparks.throw(
+                        n, (imp.x, imp.y, imp.dir_x, imp.dir_y),
+                        self._flame_tile_m, rng)
+            if tr.enabled and tr.live:
+                zoom = (self.camera.zoom_px_per_tile
+                        / self.world.world_px_per_tile)
+                self._tracer_sprites = tr.pack(
+                    view, self.world.world_px_per_tile, self._flame_tile_m,
+                    screen_px_per_world_px=zoom)
+        sprites = self._tracer_sprites
+        if sprites is None or sprites.shape[1] == 0:
+            if stage == "scene":
+                self.tracer_draw.draws_last_frame = 0
+                self.tracer_draw.sprites_last_frame = 0
+            return 0
+        ramp = self.fire_vfx.ramp
+        return self.tracer_draw.draw(
+            sprites, world_px_w=self.world.world_px_w,
+            world_px_h=self.world.world_px_h, lut_tex=self.fire_vfx.lut_tex,
+            lut_k=(ramp.kelvin_floor, ramp.kelvin_ceil), lut_n=LUT_SIZE,
+            stage=stage, smoke_cover=self._smoke_cast[0],
+            glow_through_ceil=glow_through_ceil)
+
+    def _draw_debris(self, view) -> int:
+        """Draw the debris chips (G4 P4) into the scene RT through the
+        particle draw's ``"debris"`` stage: premultiplied, lit by the light
+        field (``_light_field_ctx``), clipped to ``view``. Returns the draw
+        calls issued (0: no chip in view, or the debris off)."""
+        from .particles import pack_debris
+        ds = self.debris
+        if not ds.enabled or ds.p.n == 0:
+            self.ember_draw.debris_draws_last_frame = 0
+            self.ember_draw.debris_sprites_last_frame = 0
+            return 0
+        sprites = pack_debris(ds.p, view, self.world.world_px_per_tile,
+                              ds.settings)
+        return self.ember_draw.draw_debris(sprites,
+                                           light=self._light_field_ctx(),
+                                           albedo=ds.settings.albedo)
+
     def _relief_view_rect(self):
         """The camera's view in tiles, plus a margin, for the relief pass
         (graphics G1): its shader costs per world-RT pixel, so it draws only
@@ -1244,6 +1732,28 @@ class GameRenderer:
         m = 2.0
         return (cam.pos_tile_x - m, cam.pos_tile_y - m,
                 cam.pos_tile_x + vw + m, cam.pos_tile_y + vh + m)
+
+    def _light_field_ctx(self):
+        """THE ship's light field for a lit draw (``lit3d.LightFieldCtx``):
+        light_tex_a/b, world dims, ambient / exposure / normal-y sign, the
+        smoke cast product and the light curve -- single source of truth =
+        self.lighting. The 3D units and props (P1) and the debris stage
+        (G4 P4) take this one context."""
+        from renderer.lit3d import LightFieldCtx
+        return LightFieldCtx(
+            tex_a=self.lighting.light_tex_a,
+            tex_b=self.lighting.light_tex_b,
+            world_px_w=float(self.world.world_px_w),
+            world_px_h=float(self.world.world_px_h),
+            ambient=self.lighting.ambient,
+            light_gain=self.lighting.light_gain,
+            normal_y_sign=(-1.0 if self.normal_y_flipped else 1.0),
+            smoke_cover=self._smoke_cast[0],
+            smoke_grid=self._smoke_cast[1],
+            smoke_cast=self._smoke_cast[2],
+            smoke_cast2=self._smoke_cast[3],
+            curve=self.lighting.curve_uniforms,
+        )
 
     def _draw_units_3d_world(self, marines: Sequence, zombies: Sequence,
                              props: Sequence = (), creatures=None) -> bool:
@@ -1310,20 +1820,7 @@ class GameRenderer:
             # the ship beside it. light_rgb_fn stays as the flat CPU
             # fallback for marines (shader off / not compiled). normal_y_sign
             # follows the ship's H-toggle.
-            from renderer.lit3d import LightFieldCtx
-            light_ctx = LightFieldCtx(
-                tex_a=self.lighting.light_tex_a,
-                tex_b=self.lighting.light_tex_b,
-                world_px_w=float(self.world.world_px_w),
-                world_px_h=float(self.world.world_px_h),
-                ambient=self.lighting.ambient,
-                light_gain=self.lighting.light_gain,
-                normal_y_sign=(-1.0 if self.normal_y_flipped else 1.0),
-                smoke_cover=self._smoke_cast[0],
-                smoke_grid=self._smoke_cast[1],
-                smoke_cast=self._smoke_cast[2],
-                smoke_cast2=self._smoke_cast[3],
-            )
+            light_ctx = self._light_field_ctx()
             rl.begin_mode_3d(self._world_cam3d)
             try:
                 if draw_units_3d:
@@ -1480,14 +1977,12 @@ class GameRenderer:
             alpha_norm = max(0.0, 1.0 - t / max(life, 1e-6))
             kind = fx["kind"]
             if kind == "tracer":
-                a, b = fx["from"], fx["to"]
-                x1 = tile_to_world_px(a[0], wpt)
-                y1 = tile_to_world_px(a[1], wpt)
-                x2 = tile_to_world_px(b[0], wpt)
-                y2 = tile_to_world_px(b[1], wpt)
-                col = rl.Color(255, 240, 160, int(220 * alpha_norm))
-                rl.draw_line_ex(rl.Vector2(x1, y1), rl.Vector2(x2, y2),
-                                1.5, col)
+                # #141: a round is drawn by THE tracers (renderer/tracers.py,
+                # _draw_tracers: a glowing streak in the linear scene); the
+                # flat display-space line that stood here is gone. The effect
+                # stays in the queue: the muzzle light, the muzzle flame and
+                # the tracers all key on it.
+                pass
             elif kind == "beam":
                 # W2 laser (LaserFiredEvent): a distinct beam — crimson core
                 # with a thin white-hot centreline, thicker than a tracer.
@@ -1504,20 +1999,6 @@ class GameRenderer:
                                 3.0, outer)
                 rl.draw_line_ex(rl.Vector2(x1, y1), rl.Vector2(x2, y2),
                                 1.0, core)
-            elif kind == "explosion":
-                pos = fx["pos"]
-                radius = fx["radius"]
-                cx = tile_to_world_px(pos[0] + 0.5, wpt)
-                cy = tile_to_world_px(pos[1] + 0.5, wpt)
-                # Expanding ring then fading flash.
-                grow = 1.0 - alpha_norm    # 0 -> 1 as effect ages
-                r_wpx = (0.3 + grow * radius) * wpt
-                ring = rl.Color(255, 200, 100, int(220 * alpha_norm))
-                rl.draw_circle_lines(int(cx), int(cy), r_wpx, ring)
-                # Inner flash on first frames.
-                if alpha_norm > 0.6:
-                    flash = rl.Color(255, 255, 220, int(180 * (alpha_norm - 0.6) / 0.4))
-                    rl.draw_circle(int(cx), int(cy), 0.5 * radius * wpt, flash)
             elif kind == "hit":
                 pos = fx["pos"]
                 cx = tile_to_world_px(pos[0] + 0.5, wpt)
@@ -1600,7 +2081,26 @@ class GameRenderer:
         return self.fire_flicker.rows(fx.pack, fx.clock.t_noise,
                                       fx.settings.dials, grid_w, grid_h)
 
-    def transient_light_specs(self, footprint_of=None) -> list:
+    def blast_flash_light_specs(self, sim_tick: int, open_mask) -> list:
+        """Graphics G4 P5 (#75): the live blast flashes as transient-light
+        dicts (``frame_lights.blast_flash_lights``, the pure part), aged on the
+        SIM clock ``(sim_tick - tick0) / tps`` (design §6 S1: the light is
+        assembled once per sim tick, so there is no sub-tick alpha; paused, the
+        same tick relit holds the same flash). ``open_mask`` is the map's
+        ``blast_expansion.open_mask`` or a callable returning it (asked only
+        while a flash lives). Uncapped: :meth:`transient_light_specs` caps it
+        with the muzzle flashes; lighting_demo calls this directly."""
+        if not self.blast_flash_on:
+            return []
+        from . import frame_lights as _fl
+        tick, dt = int(sim_tick), float(self._sim_dt)
+        return _fl.blast_flash_lights(
+            self._effects,
+            lambda fx: (tick - int(fx.get("tick0", tick))) * dt,
+            open_mask)
+
+    def transient_light_specs(self, footprint_of=None, sim_tick=None,
+                              open_mask=None) -> list:
         """Light sources implied by the LIVE jet/glow effects (W6) — the
         'transient light emitter' half of the spray/plasma visuals.
 
@@ -1620,6 +2120,13 @@ class GameRenderer:
         part, with ``[render.muzzle_flash]`` read here every call so F5 retunes
         it). ``footprint_of(unit_id)`` gives a shooter's footprint in tiles;
         None = no muzzle flashes (a caller without the sim).
+
+        G4 P5: a detonation's FLASH rides it too -- the blast effects' row
+        flashes (:meth:`blast_flash_light_specs`) at ``sim_tick`` (the
+        monotonic tick the light is assembled for) over ``open_mask`` (the
+        map's open mask, or a callable); None for either = no blast flashes.
+        The muzzle and blast flashes share ONE cap
+        (``frame_lights.cap_transient_group``: the muzzle flashes dim first).
         """
         import math as _m
         specs = []
@@ -1656,13 +2163,17 @@ class GameRenderer:
                     "intensity": 1.2 * alpha,
                     "color": (1.0, 0.65, 0.35),
                 })
-        if footprint_of is not None:
-            from . import frame_lights as _fl
-            specs += _fl.muzzle_flash_lights(
-                self._effects, _fl.muzzle_flash_settings(CFG), footprint_of)
+        from . import frame_lights as _fl
+        muzzle = (_fl.muzzle_flash_lights(
+            self._effects, _fl.muzzle_flash_settings(CFG), footprint_of)
+            if footprint_of is not None else [])
+        blast = (self.blast_flash_light_specs(sim_tick, open_mask)
+                 if sim_tick is not None and open_mask is not None else [])
+        specs += _fl.cap_transient_group(muzzle, blast)
         return specs
 
-    def consume_events(self, events: Sequence) -> None:
+    def consume_events(self, events: Sequence,
+                       sim_tick: Optional[int] = None) -> None:
         """Read simulation tick events, spawn matching visual effects.
 
         Called once per frame after compose_world (or before — order
@@ -1674,12 +2185,39 @@ class GameRenderer:
         :class:`ExplosionEvent`, :class:`UnitHitEvent`. Unknown event
         types are ignored — additive design lets the sim emit new
         events without breaking older renderers.
+
+        ``sim_tick`` is the tick the events arrived on, on the SAME clock the
+        caller hands ``upload_state`` (main.py: the monotonic total tick); an
+        :class:`ExplosionEvent` becomes a ``"blast"`` effect stamped with it
+        (``tick0``), so the explosion look ages on the sim clock (G4 design
+        §6 S1). None stamps the last ``upload_state`` tick. Call it after
+        EVERY sim step: ``Simulation.step`` clears ``tick_events``.
         """
+        tick0 = self._last_sim_tick if sim_tick is None else int(sim_tick)
         # Lazy import — keeps renderer importable without the simulation pkg.
         from simulation.events import (
             ShotFiredEvent, LaserFiredEvent, ExplosionEvent, UnitHitEvent,
-            SprayJetEvent, ProjectileGlowEvent,
+            SprayJetEvent, ProjectileGlowEvent, SwarmUnitDiedEvent,
         )
+        # arc #63 P4: a swarm death leaves a fading fleck (the dot view's;
+        # the event's pre-zero position, never the freed slot).
+        died = [ev for ev in events if isinstance(ev, SwarmUnitDiedEvent)]
+        if died:
+            from simulation import swarm_fixed
+            self._swarm_flecks.add(
+                swarm_fixed.dequantize(np.array([ev.pos_x_q for ev in died])),
+                swarm_fixed.dequantize(np.array([ev.pos_y_q for ev in died])),
+                tick0 * self._sim_dt)
+            # arc #63: ... and a limp, fading body (the larvae's view)
+            self.larvae.on_deaths(
+                swarm_fixed.dequantize(np.array([ev.pos_x_q for ev in died])),
+                swarm_fixed.dequantize(np.array([ev.pos_y_q for ev in died])),
+                swarm_fixed.dequantize(np.array([ev.heading_q for ev in died])),
+                np.array([ev.unit_id for ev in died], dtype=np.int64),
+                tick0 * self._sim_dt)
+        # #162/#163: the pose layer's per-unit event queues (fire, flinch; a
+        # no-op with [render.pose] off).
+        self.unit_models.queue_events(events)
         for ev in events:
             if isinstance(ev, ShotFiredEvent):
                 self._effects.append({
@@ -1688,6 +2226,8 @@ class GameRenderer:
                     "to": ev.to_tile,
                     "unit": ev.unit_id,
                     "launch": bool(getattr(ev, "launch", True)),
+                    # #87: the muzzle flame's seed and its one-per-shot key
+                    "tick0": tick0,
                     # not aged on the frame it is born (see _advance_effects)
                     "fresh": True,
                     "t": 0.0,
@@ -1724,12 +2264,35 @@ class GameRenderer:
                     "life": 0.12,
                 })
             elif isinstance(ev, ExplosionEvent):
+                # G4 (#75): the explosion look's cue. The legacy ring is
+                # deleted; the shock front, sparks, debris and flash read it
+                # (P2-P5). The look ages on the sim clock from tick0; the
+                # effect lives `life` wall seconds AND until `sim_until` (the
+                # tick its flash falls below 1 %: a paused or slowed game keeps
+                # it, a long flashbang is never cut at the wall-clock life).
+                flash = float(getattr(ev, "flash", 0.0))
+                decay = float(getattr(ev, "flash_decay_s", 0.3))
+                sim_until = tick0
+                if flash > 0.0 and decay > 0.0:
+                    sim_until = tick0 + 1 + int(math.ceil(
+                        math.log(100.0) * decay / self._sim_dt))
                 self._effects.append({
-                    "kind": "explosion",
+                    "kind": "blast",
                     "pos": ev.pos,
                     "radius": ev.radius,
+                    "kind_name": ev.kind,
+                    "strength": float(getattr(ev, "strength", 0.0)),
+                    "flash": flash,
+                    "flash_decay_s": decay,
+                    "flash_color": tuple(getattr(ev, "flash_color",
+                                                 (1.0, 1.0, 1.0))),
+                    "approach": getattr(ev, "approach", None),
+                    "tick0": tick0,
+                    "sim_until": sim_until,
+                    # not aged on the frame it is born (see _advance_effects)
+                    "fresh": True,
                     "t": 0.0,
-                    "life": 0.6,
+                    "life": 3.0,
                 })
             elif isinstance(ev, UnitHitEvent):
                 # We don't know the unit's position from the event alone —
@@ -1754,7 +2317,12 @@ class GameRenderer:
             if fx.pop("fresh", False):
                 continue
             fx["t"] += dt
-        self._effects = [fx for fx in self._effects if fx["t"] < fx["life"]]
+        # a "blast" effect also lives on the SIM clock until its flash is out
+        # (G4 P5: `sim_until`, the last tick it lights anything)
+        tick = self._last_sim_tick
+        self._effects = [fx for fx in self._effects
+                         if fx["t"] < fx["life"]
+                         or fx.get("sim_until", -1) >= tick]
 
     def _draw_grid_world(self) -> None:
         wpt = self.world.world_px_per_tile
@@ -1809,7 +2377,9 @@ class GameRenderer:
 
     def draw_panel(self, sim=None, selected_unit=None,
                    planning_phase: int = 0,
-                   current_mode: Optional[int] = None) -> None:
+                   current_mode: Optional[int] = None,
+                   grenade_kind: Optional[int] = None,
+                   charge_timer_s: Optional[int] = None) -> None:
         """Right-side info panel. ``sim`` may be ``None`` for the demo;
         when provided we show turn/phase/tick state and (optionally) the
         selected unit's HP / inventory / orders summary."""
@@ -1824,62 +2394,22 @@ class GameRenderer:
         y += 22
 
         # ----- Game state (if a Simulation was passed) -----
+        # The block's text is DATA (ui.model.panel_state_lines: a turn-based
+        # ruleset's round / phase / AP, or under ContinuousRealtime the tick
+        # and the unit's magazine); this only draws it.
         if sim is not None:
-            paused = sim.is_paused()
-            state_label = "PAUSED — planning" if paused else "EXECUTING"
-            state_color = (255, 220, 120, 255) if paused else (120, 255, 120, 255)
-            draw_text(state_label, x, y, 16, color=state_color)
-            y += 22
-            draw_text(f"Round {getattr(sim, 'turn_number', 1)}   "
-                      f"Phase {sim.get_phase() + 1}/2", x, y, 14)
-            y += 18
-            draw_text(f"Tick {sim.get_tick()} / "
-                      f"{sim._ticks_per_round}", x, y, 13,
-                      color=(180, 180, 200, 255))
-            y += 18
-            n_events = len(getattr(sim, "tick_events", []))
-            draw_text(f"Tick events: {n_events}", x, y, 12,
-                      color=(150, 150, 180, 255))
-            y += 18
-            if paused:
-                draw_text(f"Planning phase {planning_phase + 1}",
-                          x, y, 12, color=(200, 200, 120, 255))
-                y += 16
-            y += 6
-
-            # Selected unit summary.
-            if selected_unit is not None and getattr(selected_unit, "alive", False):
-                draw_text(f"Selected: {selected_unit.name}", x, y, 14,
-                          color=(120, 220, 255, 255))
-                y += 18
-                # W6: the equipped weapon row — the weapon-cycle key's (N)
-                # on-screen feedback during Erik's tuning session.
-                weapon_id = getattr(selected_unit, "weapon_id", "")
-                if weapon_id:
-                    draw_text(f"Weapon: {weapon_id}  (N cycles)", x, y, 13,
-                              color=(255, 200, 120, 255))
-                    y += 16
-                from simulation.stats import effective_vitality
-                draw_text(f"HP: {int(selected_unit.current_hp)}/{int(effective_vitality(selected_unit))}",
-                          x, y, 13)
-                y += 16
-                draw_text(f"AP: {selected_unit.ap[0]}, {selected_unit.ap[1]}",
-                          x, y, 13)
-                y += 16
-                draw_text(f"Grenades: {selected_unit.has_grenade}   "
-                          f"Charges: {selected_unit.has_explosive}",
-                          x, y, 12)
-                y += 18
-                n_orders = len(selected_unit.orders)
-                draw_text(f"Queued orders: {n_orders}",
-                          x, y, 12, color=(180, 180, 180, 255))
-                y += 18
-            if current_mode is not None:
-                from simulation.orders import ORDER_NAMES
-                mode_name = ORDER_NAMES.get(current_mode, str(current_mode))
-                draw_text(f"Mode: {mode_name}", x, y, 13,
-                          color=(255, 200, 120, 255))
-                y += 22
+            from ui.model import panel_state_lines
+            for line in panel_state_lines(sim, selected_unit,
+                                          planning_phase, current_mode,
+                                          grenade_kind=grenade_kind,
+                                          charge_timer_s=charge_timer_s):
+                if line.text:
+                    if line.color is None:
+                        draw_text(line.text, x, y, line.size)
+                    else:
+                        draw_text(line.text, x, y, line.size,
+                                  color=line.color)
+                y += line.advance
 
         draw_text(f"FPS: {rl.get_fps()}", x, y, 14)
         y += 18
@@ -2116,14 +2646,69 @@ class GameRenderer:
             self.camera.set_zoom(self.camera.zoom_px_per_tile + zoom_step * 0.4)
         # Mouse wheel zoom
         wheel = rl.get_mouse_wheel_move()
-        if wheel != 0:
+        if wheel != 0 and not self.pointer_captured():
             self.camera.set_zoom(self.camera.zoom_px_per_tile + wheel * zoom_step)
 
-    def update_camera(self, dt: float, pan_speed_tiles_per_s: float = 30.0,
-                      wasd: bool = True) -> None:
-        """Pan with the arrows, and with WASD unless the control scheme steers
-        a unit with them (``wasd=False``: ``ControlSource.pans_camera_with_wasd``,
-        #106 P6f)."""
+    # ---- the light curve and its editor (graphics G5, #64) ---------------
+
+    def _frame_light_curve(self):
+        """This frame's curve: the panel's edit while it is open, else the
+        config's. ``panel = true`` + Ctrl+R opens it; a reload that changed
+        the table starts the edit again from the file."""
+        from renderer.light_curve import light_curve_settings
+        from ui.light_curve_panel import CurvePanel
+        curve = light_curve_settings(CFG)
+        if not curve.panel:
+            self.curve_panel = None
+            return curve
+        if self.curve_panel is None or self.curve_panel.base != curve:
+            self.curve_panel = CurvePanel(curve)
+        return self.curve_panel.curve
+
+    def pointer_captured(self) -> bool:
+        """The mouse is on the light curve panel: the game ignores its clicks
+        and its wheel."""
+        panel = self.curve_panel
+        if panel is None:
+            return False
+        from ui.light_curve_panel import panel_layout
+        return panel.captures(panel_layout(rl.get_screen_width()),
+                              rl.get_mouse_x(), rl.get_mouse_y())
+
+    def update_light_curve_panel(self, dt: float) -> None:
+        """The panel's frame: mouse in, histogram refreshed, drawn. Called
+        after the HUD. No panel, no cost."""
+        panel = self.curve_panel
+        if panel is None:
+            return
+        from renderer.light_curve import light_histogram, write_settings
+        from ui.draw import draw_light_curve_panel
+        from ui.light_curve_panel import panel_layout
+        layout = panel_layout(rl.get_screen_width())
+        mx, my = rl.get_mouse_x(), rl.get_mouse_y()
+        left = rl.MouseButton.MOUSE_BUTTON_LEFT
+        if rl.is_mouse_button_pressed(left):
+            if panel.press(layout, mx, my) == "save":
+                write_settings(CFG._path, panel.curve)
+                panel.mark_saved()
+        elif rl.is_mouse_button_down(left):
+            panel.move(layout, mx, my)
+        else:
+            panel.release()
+        if rl.is_mouse_button_pressed(rl.MouseButton.MOUSE_BUTTON_RIGHT):
+            panel.right_press(layout, mx, my)
+        self._curve_hist_age += dt
+        if self._curve_hist is None or self._curve_hist_age >= 0.25:
+            self._curve_hist_age = 0.0
+            light = (np.asarray(self.lighting.packed_a[..., :3],
+                                dtype=np.float32)
+                     * self.lighting.light_gain)
+            self._curve_hist = light_histogram(light, panel.curve.range)
+        draw_light_curve_panel(panel, layout, self._curve_hist)
+
+    def update_camera(self, dt: float, pan_speed_tiles_per_s: float = 30.0) -> bool:
+        """WASD / arrows pan (Shift x3). Returns True when the player panned
+        this frame -- the follow camera (#128) then drops to free."""
         K = rl.KeyboardKey
         dx = dy = 0.0
         if (wasd and rl.is_key_down(K.KEY_A)) or rl.is_key_down(K.KEY_LEFT):  dx -= 1
@@ -2131,11 +2716,12 @@ class GameRenderer:
         if (wasd and rl.is_key_down(K.KEY_W)) or rl.is_key_down(K.KEY_UP):    dy -= 1
         if (wasd and rl.is_key_down(K.KEY_S)) or rl.is_key_down(K.KEY_DOWN):  dy += 1
         if dx == 0 and dy == 0:
-            return
+            return False
         speed = pan_speed_tiles_per_s
         if rl.is_key_down(K.KEY_LEFT_SHIFT) or rl.is_key_down(K.KEY_RIGHT_SHIFT):
             speed *= 3
         self.camera.pan(dx * speed * dt, dy * speed * dt)
+        return True
 
     # ---- coordinate conversions -----------------------------------------
 
@@ -2158,7 +2744,7 @@ class GameRenderer:
 
     # ---- debug HUD ------------------------------------------------------
 
-    def draw_debug_hud(self, gmap) -> None:
+    def draw_debug_hud(self, gmap, units=None) -> None:
         """Cursor tile (x, y) + material readout, PLUS the hover "microscope"
         (T in game-deg + pseudo-Kelvin + fire/O2/trace-gas densities) on the
         line below. F6 toggles both — the diagnostic readout Erik asked for
@@ -2186,13 +2772,20 @@ class GameRenderer:
                     mat = "vacuum"
                 else:
                     mat = MATERIAL_NAMES.get(mat_val, f"mat{mat_val}")
-                blocked = bool(gmap.solid[cy, cx] or gmap.is_vacuum[cy, cx])
-                tag = "BLOCKED" if blocked else "walkable"
-                text = f"tile ({cx}, {cy}) | {mat} | {tag}"
+                # Walking and air are separate axes (#134: a grille is
+                # mobility 0 but open to gas; a legacy door the reverse), so
+                # the label reads walkability from MOBILITY (is_passable, the
+                # A* / movement predicate) and flow from `solid`.
+                walk = bool(gmap.is_passable(cy, cx)
+                            and not gmap.is_vacuum[cy, cx])
+                tag = "walkable" if walk else "BLOCKED"
+                flow = "sealed" if gmap.solid[cy, cx] else "air"
+                text = f"tile ({cx}, {cy}) | {mat} | {tag} | {flow}"
                 # hover_readout wants (tx, ty) in the same order this HUD
                 # already computes cursor coords in.
                 readout = pack_hover_readout(
-                    gmap, cx, cy, self.blackbody_ramp._kelvin_from_tgame)
+                    gmap, cx, cy, self.blackbody_ramp._kelvin_from_tgame,
+                    units=units)
                 readout_lines = readout.lines[1:] if readout else []
             else:
                 text = f"tile ({cx}, {cy}) - out of bounds"
@@ -2228,7 +2821,13 @@ class GameRenderer:
         self.gas_relief.unload()
         self.fire_vfx.unload()
         self.ember_draw.unload()
+        self.muzzle_flame_draw.unload()
+        self.tracer_draw.unload()
+        if self._larva_draw is not None:
+            self._larva_draw.unload()
+            self._larva_draw = None
         self.shimmer.unload()
+        self.shockwave.unload()
         self.temperature_overlay.unload()
         rl.unload_texture(self.cold_overlay.tex)
         rl.unload_texture(self.water_overlay.tex)

@@ -51,7 +51,12 @@ from simulation.creature_system import (  # #106 P6d1: creature presence carrier
     CREATURE_DIGEST_KEY, creature_carrier, diff_creature_records,
     require_creature_carrier,
 )
+from simulation import unit_schema  # #29 P3a: the unit record + its bytes
 from simulation.unit import Unit
+from simulation import swarm_fixed          # arc #63 P2: heading Q16.16 helper
+from simulation.swarm import (              # arc #63 P2: swarm presence carrier
+    SWARM_DIGEST_KEY, require_swarm_carrier, swarm_carrier, swarm_section_bytes,
+)
 
 SEED = 20260615
 
@@ -61,20 +66,15 @@ SEED = 20260615
 # per-unit / per-event reporting instead of an opaque "hashes differ".
 UNIT_DIGEST_KEY = "__unit_state__"
 
-# The synced (lockstep-critical) unit fields the digest captures, per unit, in a
-# STABLE id-sorted order. These are the fields a desync would corrupt: position
-# (tile + float), HP, life status, faction, and the footprint offsets (a stamp
-# slip would change occupancy). P3 adds the status/condition list (mechanics/06
-# §4 — durations, magnitudes, and the flags they suppress are synced state; a
-# status desync would silently fork movement/attack suppression and DoT damage).
-# RENDER-only / AI-scratch fields (orders' contents, zombie_path, accumulators)
-# are intentionally excluded — they are not part of the synced determinism
-# contract and may legitimately differ.
-SYNCED_UNIT_FIELDS = (
-    "tile_x", "tile_y", "x", "y", "current_hp",
-    "alive", "life_state", "faction", "offsets",
-    "facing", "ap", "n_orders", "statuses",
-)
+# The synced unit state the digest captures is THE UNIT SCHEMA's group S
+# (#29 P3a, ``simulation.unit_schema.COLUMNS``): every column under its key,
+# hashed always (id, life_state, x_q, y_q, facing, current_hp) or only while it
+# differs from its default (absence-transparent). WEGO's ``ap`` / ``n_orders``
+# and the derived ``tile_x`` / ``tile_y`` / ``alive`` / ``faction`` /
+# ``offsets`` left the record at P3a. Kept as the record's key tuple for
+# readers that list them.
+from simulation.unit_schema import COLUMNS as _UNIT_COLUMNS  # noqa: E402
+SYNCED_UNIT_FIELDS = tuple(c.key for c in _UNIT_COLUMNS)
 
 # Every field the physics writes — the sim state a structural refactor must
 # preserve bit-for-bit. `gas` is (N,h,w) and covers `smoke` (a view into
@@ -110,6 +110,9 @@ SIM_FIELDS = (
     # the int64 conserved-energy field — synced state now (mirror-derived
     # this patch; the stored writer-fed truth from P-G1a on).
     "gas_energy",
+    # #31: the blast's pending divergence source (tests/field_digest.py
+    # DIGEST_SECTIONS hashes it while non-zero).
+    "div_source",
 )
 
 
@@ -156,6 +159,77 @@ def default_scenario_sim() -> Simulation:
     return sim
 
 
+def swarm_scenario_sim() -> Simulation:
+    """The swarm-present A/B fixture (arc #63 P2): the default scenario plus
+    a scripted spawn/reclaim/spawn sequence, using explicit raw-Q16 values
+    from ``swarm_fixed`` (NO RNG) -- 12 larvae at interior tile centres
+    (``(tx << FP_SHIFT) + (FP_ONE >> 1)``, interior == tiles 1..14 of
+    ``_scenario_level``'s 16x16 map), with fixed headings including
+    ``+-PI_Q16``; 3 reclaimed (making holes); 2 more spawned (filling 2 of
+    the 3 holes). The result has ``high_water > live count``, non-contiguous
+    ids, and ``check_invariants(sim.gmap) == []`` -- the swarm-present
+    fixture for P2's tests and a ready scenario for P3's lockstep."""
+    sim = default_scenario_sim()
+
+    def tile_centre(t):
+        return (t << swarm_fixed.FP_SHIFT) + (swarm_fixed.FP_ONE >> 1)
+
+    tiles = [(1 + i, 1 + i) for i in range(12)]   # interior, tiles 1..12
+    xs = [tile_centre(tx) for tx, _ in tiles]
+    ys = [tile_centre(ty) for _, ty in tiles]
+    headings = [swarm_fixed.PI_Q16, -swarm_fixed.PI_Q16, 0, 1000, -1000,
+               50000, -50000, 100, -100, 205887, -205887, 12345]
+    slots = sim.swarm.spawn("larva", xs, ys, headings)
+
+    sim.swarm.reclaim("larva", slots[[2, 5, 9]])
+
+    xs2 = [tile_centre(2), tile_centre(3)]
+    ys2 = [tile_centre(13), tile_centre(13)]
+    sim.swarm.spawn("larva", xs2, ys2, [0, swarm_fixed.PI_Q16])
+
+    return sim
+
+
+def swarm_thermal_scenario_sim() -> Simulation:
+    """The swarm THERMAL fixture (arc #63 P3, docs/swarm_P3_impl.md §11 "The
+    thermal scenario"; NO RNG). P2's ``swarm_scenario_sim`` must keep its
+    fields equal to the default scenario's (P2 T8), so it cannot carry the
+    forcing a larva lockstep needs; this one does: ``_scenario_level`` (16 x
+    16, 1.0 m tiles), a hot patch (rows 2-5 x cols 2-5, 363.15 K) and a cold
+    patch (rows 10-13 x cols 2-5, 268.15 K) seeded ONCE through
+    ``gmap.seed_gas_temperature`` (the sanctioned door), and 24 larvae at
+    fixed raw-Q16 poses: 4 in the hot patch, 4 in the cold patch, 4 wall
+    larvae heading into the east hull, 12 spread over rows 7-12 x cols 6-13
+    with headings k * PI_Q16 / 6. Returns an unpaused sim."""
+    import temperature_scale
+    sim = Simulation(_scenario_level(), seed=SEED, breach_physics=bp,
+                     enable_recorder=False)
+    g = sim.gmap
+    ts = temperature_scale.load()
+    g.seed_gas_temperature((slice(2, 6), slice(2, 6)),
+                           swarm_fixed.quantize_scalar(ts.from_kelvin(363.15)))
+    g.seed_gas_temperature((slice(10, 14), slice(2, 6)),
+                           swarm_fixed.quantize_scalar(ts.from_kelvin(268.15)))
+    one, half = swarm_fixed.FP_ONE, swarm_fixed.FP_ONE >> 1
+    xs, ys, hs = [], [], []
+    for k, (tx, ty) in enumerate(((2, 2), (5, 3), (3, 5), (4, 4))):        # hot
+        xs.append((tx << 16) + half); ys.append((ty << 16) + half); hs.append(k * 30000)
+    for k, (tx, ty) in enumerate(((2, 10), (5, 11), (3, 13), (4, 12))):    # cold
+        xs.append((tx << 16) + half); ys.append((ty << 16) + half); hs.append(-k * 30000)
+    for ty in (6, 8, 10, 12):                                              # wall
+        xs.append((15 << 16) - 200); ys.append((ty << 16) + 32768); hs.append(0)
+    k = 0
+    for ty in range(7, 13, 2):                                             # spread
+        for tx in range(6, 14, 2):
+            xs.append((tx << 16) + half + 1000 * k); ys.append((ty << 16) + half)
+            hs.append(swarm_fixed.wrap_heading_q16(k * swarm_fixed.PI_Q16 // 6))
+            k += 1
+    del one
+    sim.swarm.spawn("larva", xs, ys, hs)
+    sim.set_paused(False)
+    return sim
+
+
 def _snapshot(gmap, fields):
     return {name: np.copy(getattr(gmap, name))
             for name in fields if hasattr(gmap, name)}
@@ -171,51 +245,25 @@ def _snapshot(gmap, fields):
 # These helpers capture that state per tick alongside the field snapshot.
 
 
-def _unit_faction(u):
-    """Stable faction identifier. ``faction_id`` is the spec field; fall back to
-    ``team`` (its alias) so the digest works on bare Unit objects too."""
-    return int(getattr(u, "faction_id", getattr(u, "team", -1)))
-
-
 def _unit_record(u):
-    """A canonical, JSON-ish dict of one unit's synced state.
+    """One unit's synced record: THE schema's (#29 P3a,
+    ``simulation.unit_schema.digest_record``) -- every group-S column's
+    integer encoding under its key, the positions as their Q16 ints
+    ``x_q`` / ``y_q`` (#29 P3c), the hp as its exact Q16 count, the status block fixed-width, the
+    intents with a presence flag, each column only while it differs from its
+    default bar the *always* ones. Built by ``getattr``, so a stand-in object
+    records its defaults."""
+    return unit_schema.digest_record(u)
 
-    Floats are rounded into a fixed-point integer (1e-9 quantum) so the record
-    serializes byte-stably and the digest is reproducible across runs on the
-    same machine — without that, float repr() noise could perturb the hash.
-    """
-    def q(v):
-        # Quantize a float to a stable integer (avoids repr/format drift).
-        return int(round(float(v) * 1_000_000_000))
 
-    life = getattr(u, "life_state", None)
-    life_repr = getattr(life, "value", str(life))   # enum -> its .value string
-    return {
-        "id":         int(getattr(u, "id", -1)),
-        "tile_x":     int(u.tile_x),
-        "tile_y":     int(u.tile_y),
-        "x":          q(u.x),
-        "y":          q(u.y),
-        "current_hp": q(getattr(u, "current_hp", 0.0)),
-        "alive":      bool(u.alive),
-        "life_state": str(life_repr),
-        "faction":    _unit_faction(u),
-        "offsets":    [[int(dx), int(dy)] for (dx, dy) in getattr(u, "offsets", ())],
-        # Sim-derived synced state beyond the core: facing (drives LOS/shot
-        # direction), action points (gate synced actions), and the count of
-        # remaining orders (a divergence in order-consumption shows here). A
-        # full per-order serialization is a future extension if needed.
-        "facing":     q(getattr(u, "facing", 0.0)),
-        "ap":         [int(a) for a in getattr(u, "ap", ())],
-        "n_orders":   len(getattr(u, "orders", ())),
-        # P3: the status/condition list (mechanics/06 §4) — canonical
-        # serialization owned by simulation.status: [[kind, magnitude_q16,
-        # remaining_ticks, source_id], ...] in LIST order (the P0 sync
-        # order), all plain ints. Statuses suppress movement/attacks and
-        # emit DoT packets, so a status desync IS an hp/position desync
-        # waiting one tick downstream — hashed at the source instead.
-        "statuses":   serialize_statuses(u),
-    }
+def _charge_records(sim):
+    """#193: the live planted charges (``sim.planted_charges``, plant order)
+    as their ``unit_schema.CHARGE_SCHEMA`` integer rows (#29 P3a: the ammo
+    row as its index, a remote charge's det_tick and a missing approach as
+    their sentinels) -- synced state the conductor fires at slot 9e."""
+    return [unit_schema.charge_record(c)
+            for c in getattr(sim, "planted_charges", ()) or ()
+            if getattr(c, "live", False)]
 
 
 def _event_record(ev):
@@ -268,8 +316,15 @@ def _capture_unit_state(sim):
         _event_record(ev) for ev in sim.tick_events
         if type(ev).__name__ in _SYNCED_EVENT_TYPES
     ]
-    payload = {"units": unit_records, "events": event_records}
-    blob = repr(payload).encode("utf-8")   # repr of nested int/str/bool == stable
+    # #29 P3a: the units as the schema's ``name|int64`` rows under the
+    # UNIT_SECT_V2 preamble (simulation.entities.serialize's encoding), then
+    # the events' canonical repr, then -- ABSENCE-TRANSPARENT, only while a
+    # charge lies on the floor -- the charges' CHARGE_SECT_V1 rows.
+    blob = (unit_schema.unit_section_bytes(unit_records)
+            + repr(event_records).encode("utf-8"))
+    charges = _charge_records(sim)
+    if charges:
+        blob += unit_schema.charge_section_bytes(charges)
     digest = hashlib.sha256(blob).hexdigest()
     return {"units": unit_records, "events": event_records, "hash": digest}
 
@@ -343,6 +398,11 @@ def capture_snapshot(sim, fields=SIM_FIELDS, capture_units=True):
     creatures = getattr(sim, "_creature_system", None)
     snap[CREATURE_DIGEST_KEY] = creature_carrier(creatures)
     require_creature_carrier(creatures, snap)
+    # arc #63 P2: the swarm presence carrier — ALWAYS written (present ==
+    # False on the canonical scenario, which spawns no swarm units), the
+    # same strict-presence idiom as the entity carrier above.
+    snap[SWARM_DIGEST_KEY] = swarm_carrier(sim.gmap)
+    require_swarm_carrier(sim.gmap, snap)
     return snap
 
 
@@ -435,6 +495,63 @@ def _diff_creature_state(t, ca, cb):
     if not out:
         out.append(f"tick {t}: __creature__ carriers differ but no record "
                    f"located -- serialization drift?")
+def _swarm_present(c):
+    """A carrier's presence, tolerating an absent carrier (``None`` — a
+    pre-P2 snapshot, or the R1 stripped fixture) as simply not-present."""
+    return c is not None and c.get("present", False)
+
+
+def _diff_swarm_state(t, ca, cb):
+    """Locate the first divergence between two swarm presence carriers
+    (arc #63 P2, engine/17 P2 §6). ``None`` reads as an absent carrier —
+    never a mismatch by itself (a pre-P2 snapshot has no key at all).
+    Returns human-readable mismatch lines (empty == match)."""
+    pa, pb = _swarm_present(ca), _swarm_present(cb)
+    if not pa and not pb:
+        return []                      # neither side ever spawned a unit
+    if pa != pb:
+        return [f"tick {t}: __swarm__ present in only one run"]
+
+    # Both present. The fast path is byte + species_hash equality — NEVER
+    # `ca == cb`: the carriers hold ndarrays, so `==` raises "truth value
+    # ... is ambiguous" (the entity fast path above must not be copied).
+    if (swarm_section_bytes(ca) == swarm_section_bytes(cb)
+            and ca["species_hash"] == cb["species_hash"]):
+        return []
+
+    out = []
+    if ca["next_unit_id"] != cb["next_unit_id"]:
+        out.append(f"tick {t}: __swarm__ next_unit_id "
+                   f"{ca['next_unit_id']} != {cb['next_unit_id']}")
+    for sp in sorted(set(ca["blocks"]) | set(cb["blocks"])):
+        ba, bb = ca["blocks"].get(sp), cb["blocks"].get(sp)
+        if ba is None or bb is None:
+            out.append(f"tick {t}: __swarm__ species {sp!r} block present "
+                       f"in only one run")
+            continue
+        if ba["high_water"] != bb["high_water"]:
+            out.append(f"tick {t}: __swarm__ species {sp!r} high_water "
+                       f"{ba['high_water']} != {bb['high_water']}")
+        hw = min(ba["high_water"], bb["high_water"])
+        for col_name, cola in ba["columns"].items():
+            colb = bb["columns"][col_name]
+            mism = np.flatnonzero(cola[:hw] != colb[:hw])
+            if mism.size:
+                slot = int(mism[0])
+                uid_a = int(ba["columns"]["unit_id"][slot])
+                uid_b = int(bb["columns"]["unit_id"][slot])
+                out.append(
+                    f"tick {t}: __swarm__ species {sp!r} column "
+                    f"'{col_name}' differs at slot {slot} "
+                    f"(a={cola[slot]!r} unit_id={uid_a} vs "
+                    f"b={colb[slot]!r} unit_id={uid_b})")
+    if ca["species_hash"] != cb["species_hash"]:
+        out.append(f"tick {t}: __swarm__ species_hash differs "
+                   f"({ca['species_hash'][:12]} != "
+                   f"{cb['species_hash'][:12]}) — A/B runs must share tuning")
+    if not out:   # carriers differed but nothing located — surface it loudly
+        out.append(f"tick {t}: __swarm__ carriers differ but no field "
+                   f"located — serialization drift?")
     return out
 
 
@@ -451,6 +568,14 @@ def diff_trajectories(a, b, tol=0.0):
     diffs = []
     for t, (sa, sb) in enumerate(zip(a, b)):
         for k in sorted(set(sa) | set(sb)):
+            if k == SWARM_DIGEST_KEY:
+                # arc #63 P2 (R1): BEFORE the one-sided-key check — a
+                # pre-P2 snapshot has no key at all, and that must read as
+                # an absent carrier, not a one-sided-key mismatch (else a
+                # tracked pre-P2 trajectory pickle goes red against every
+                # fresh capture).
+                diffs.extend(_diff_swarm_state(t, sa.get(k), sb.get(k)))
+                continue
             if k not in sa or k not in sb:
                 diffs.append(f"tick {t}: field '{k}' present in only one run")
                 continue
@@ -514,7 +639,7 @@ if __name__ == "__main__":
     b = capture_trajectory()
     assert_trajectories_match(a, b, tol=0.0)
     nfields = len(a[-1]) - sum(
-        k in a[-1] for k in (UNIT_DIGEST_KEY, ENTITY_DIGEST_KEY,
+        k in a[-1] for k in (UNIT_DIGEST_KEY, ENTITY_DIGEST_KEY, SWARM_DIGEST_KEY,
                              CREATURE_DIGEST_KEY))
     # S2a — make the integer WAVE determinism explicit: wave_p/wave_v/wave_source
     # are now int32 Q16.16 (the synced wave state). Assert the dtype + bit-identity

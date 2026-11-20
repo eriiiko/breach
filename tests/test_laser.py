@@ -38,6 +38,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 import breach_physics as bp  # noqa: E402
 from level_loader import LevelData  # noqa: E402
 from simulation.factions import ZOMBIE_TEAM  # noqa: E402
+from simulation.draws import MatchDraws  # #29 P3b: the keyed draws
 from simulation import Simulation  # noqa: E402
 from simulation import gas_fixed, unit_fixed, wall_fixed  # noqa: E402
 from simulation.combat import BEAM_MIN_ENERGY_Q16, fire_beam  # noqa: E402
@@ -92,7 +93,7 @@ def _fire(gmap, units, shooter, fx2, fy2, events, spread_deg=0.0, rng=None):
     weapon, ammo = _lance()
     fire_beam(gmap, units, shooter, 3, 9, fx2, fy2,
               tick=0, shots=[], real_time=0.0,
-              rng=rng if rng is not None else np.random.default_rng(SEED),
+              rng=rng if rng is not None else MatchDraws(SEED),
               events=events, weapon=weapon, ammo=ammo, spread_deg=spread_deg)
 
 

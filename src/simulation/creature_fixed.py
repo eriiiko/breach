@@ -264,6 +264,19 @@ def heading_q24_from_deg(deg: float) -> int:
     return _round_half_away(float(deg) * (math.pi / 180.0) * _CHAIN_ONE_F)
 
 
+def heading_q24_to_facing_q16(heading_q24: int) -> int:
+    """A Q24 pose heading -> ``Unit.facing_q`` (Q16.16 radians, the same
+    0 = East, CCW-on-screen convention): ONE shift by ``CHAIN_FINE_BITS``,
+    rounded half away from zero (the chain's rounding rule). Integer only:
+    the unit's synced facing is never derived from a float (merge of main,
+    2026-11-20: ``facing`` became a read-only view of ``facing_q``)."""
+    h = int(heading_q24)
+    half = 1 << (CHAIN_FINE_BITS - 1)
+    if h >= 0:
+        return (h + half) >> CHAIN_FINE_BITS
+    return -((-h + half) >> CHAIN_FINE_BITS)
+
+
 def heading_q24_to_rad(heading_q24: int) -> float:
     """A Q24 heading -> float radians (exact /2^24): the render-side
     ``Unit.facing`` bridge, never written back."""
@@ -629,7 +642,8 @@ __all__ = [
     "pose_to_unit_anchor", "unit_anchor_to_pose", "heading_rad_to_facing",
     "facing_to_heading_rad", "PI_Q24", "TWO_PI_Q24", "wrap_heading_q24",
     "body_th_to_heading_q24", "heading_q24_to_body_th",
-    "heading_q24_from_deg", "heading_q24_to_rad", "chain_tile", "segment_tiles",
+    "heading_q24_from_deg", "heading_q24_to_rad", "heading_q24_to_facing_q16",
+    "chain_tile", "segment_tiles",
     "node_radii_m", "node_masses_kg",
     "node_bend_stiffness_q16", "node_drag_k_q16",
     "HeadroomBound", "ChainHeadroom", "chain_headroom",

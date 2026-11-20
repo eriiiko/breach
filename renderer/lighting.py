@@ -87,13 +87,15 @@ def pack_light_view(view, gain: float, light_rgb: np.ndarray, light_dx: np.ndarr
 def load_lighting_fs() -> str:
     """``shaders/lighting.fs`` with the smoke cast shadow's GLSL
     (``lit3d._SMOKE_SHADOW_GLSL``, the ONE copy every receiver runs; graphics
-    G2) spliced in at its ``// <SMOKE_SHADOW>`` marker. Pure text, no GL."""
-    from .lit3d import _SMOKE_SHADOW_GLSL
+    G2) and the light curve's (``_LIGHT_CURVE_GLSL``, G5) spliced in at its
+    ``// <SMOKE_SHADOW>`` marker. Pure text, no GL."""
+    from .lit3d import _LIGHT_CURVE_GLSL, _SMOKE_SHADOW_GLSL
     src = (SHADERS_DIR / "lighting.fs").read_text(encoding="utf-8")
     if src.count("// <SMOKE_SHADOW>") != 1:
         raise RuntimeError("shaders/lighting.fs lost its // <SMOKE_SHADOW> "
                            "marker")
-    return src.replace("// <SMOKE_SHADOW>", _SMOKE_SHADOW_GLSL)
+    return src.replace("// <SMOKE_SHADOW>",
+                       _SMOKE_SHADOW_GLSL + _LIGHT_CURVE_GLSL)
 
 
 class LightingPass:
@@ -201,6 +203,10 @@ class LightingPass:
             getattr(getattr(CFG, "render", None), "lighting", None),
             "master_gain", 1.0))
         self.set_light_gain(self.light_gain)
+        # Graphics G5: (lut, vec4) as lit3d.set_light_curve_uniforms takes it;
+        # None = off. Every lit surface reads this one value.
+        self.curve_uniforms = None
+        self._curve_key = None
         # u_art_uv_rect MUST be initialised: an unset vec4 uniform reads as
         # (0,0,0,0) and the shader's world_uv division would produce NaNs.
         self._set_art_uv_rect((0.0, 0.0, 1.0, 1.0))
@@ -283,6 +289,25 @@ class LightingPass:
         val = rl.ffi.new("float[1]", [gain])
         rl.set_shader_value(self.shader, self._loc_light_gain, val,
                             rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
+
+    def set_light_curve(self, curve) -> None:
+        """Graphics G5: use this ``light_curve.LightCurve``. Re-bakes only when
+        it changed, so a frame with a still curve costs a tuple compare."""
+        from .lit3d import set_light_curve_uniforms
+        from .light_curve import bake_lut
+        key = (curve.enabled, curve.points, curve.range,
+               curve.dark_saturation, curve.dark_knee)
+        if key == self._curve_key:
+            return
+        self._curve_key = key
+        if curve.enabled:
+            lut = rl.ffi.new("float[256]", bake_lut(curve.points).tolist())
+            self.curve_uniforms = (lut, (1.0, curve.range,
+                                         curve.dark_saturation,
+                                         curve.dark_knee))
+        else:
+            self.curve_uniforms = None
+        set_light_curve_uniforms(self.shader, self.curve_uniforms)
 
     def set_art_align(self, offset_px, px_per_tile) -> None:
         """Bind the level's explicit [art.align] transform (format v2 §1.3).

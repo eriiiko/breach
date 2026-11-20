@@ -32,6 +32,9 @@ ALWAYS-WRITTEN carrier (``n_creatures``; a creature is not a level entity, so
 it cannot ride the entity carrier), folded only when ``n_creatures > 0``,
 section-local versioned (CREATURE_SECT_V<n>: V3 since P6f), serialized by the ONE
 ``simulation.creature_system.serialize_record``.
+serialized by the ONE canonical ``simulation.entities.serialize`` module. The
+``__swarm__`` section folds the same way (arc #63 P2, ``SWARM_SECT_V1``,
+``simulation.swarm.swarm_section_bytes``).
 
 Endianness: x86 and CUDA are both little-endian, so the raw int bytes compare
 directly. A big-endian dtype is REFUSED so a silent byteorder mismatch can never
@@ -143,6 +146,17 @@ DIGEST_FIELDS = (
     ("dyn_heat_atten_q", "int32"),   # v6 (T5b step 9)
 )
 
+# The field-plane SECTIONS (#31): a plane that is zero nearly always, hashed only
+# while it is not, ABSENCE-TRANSPARENTLY (the A4 __entity__ precedent): a snapshot
+# whose plane is all zero, or that has none, hashes the bytes it always did, so no
+# golden without a blast moves and DIGEST_SPEC_VERSION stays. Each carries its own
+# hashed preamble, the section-local version. `div_source` is the blast's pending
+# source (blast_expansion.py): a slot-9e blast leaves it for the next tick's solve,
+# and a replay that lost it would fork the wind.
+DIGEST_SECTIONS = (
+    ("div_source", "int32", "DIV_SOURCE_SECT_V1"),
+)
+
 # Float sim fields deliberately NOT in the cross-GPU integer digest (documented).
 # Not hashed (the digest reads DIGEST_FIELDS only), so editing this list moves no
 # digest and is no spec-version change: ray-engine-v2 P6c removed
@@ -177,6 +191,16 @@ def field_digest(snapshot: dict, *, strict: bool = True) -> str:
                 f"digest field '{name}' dtype {arr.dtype} != spec '{expect_dtype}' "
                 f"(spec v{DIGEST_SPEC_VERSION} stale — bump DIGEST_SPEC_VERSION + "
                 f"regenerate goldens)")
+        h.update(_field_bytes(name, arr))
+    for name, expect_dtype, preamble in DIGEST_SECTIONS:
+        arr = snapshot.get(name)
+        if arr is None or not arr.any():
+            continue
+        if str(arr.dtype) != expect_dtype:
+            raise TypeError(
+                f"digest section '{name}' dtype {arr.dtype} != spec "
+                f"'{expect_dtype}' (bump {preamble})")
+        h.update(f"|{preamble}|".encode("ascii"))
         h.update(_field_bytes(name, arr))
     return h.hexdigest()
 
@@ -236,6 +260,14 @@ def tick_digest(snapshot: dict) -> str:
                              digest_size=32).hexdigest()
         h.update(b"|__creature__|")
         h.update(ch.encode("ascii"))
+
+    from simulation.swarm import SWARM_DIGEST_KEY, swarm_section_bytes
+    sw = snapshot.get(SWARM_DIGEST_KEY)
+    if sw is not None and sw["present"]:
+        wh = hashlib.blake2b(swarm_section_bytes(sw),
+                             digest_size=32).hexdigest()
+        h.update(b"|__swarm__|")
+        h.update(wh.encode("ascii"))
     return h.hexdigest()
 
 

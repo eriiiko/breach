@@ -25,6 +25,8 @@ from simulation import orders as O  # noqa: E402
 from simulation.ruleset import OnePhaseWEGO  # noqa: E402
 from simulation.simulation import Simulation  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 
 EAST = 0.0
 NORTH = math.pi / 2
@@ -52,7 +54,7 @@ def _sim():
 def _marine(sim, x, y, name="m", facing=EAST):
     u = Unit(name, x=x, y=y, team=0)
     sim.add_unit(u)
-    u.facing = facing
+    _place_facing(u, _q_rad(facing))
     return u
 
 

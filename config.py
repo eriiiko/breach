@@ -97,9 +97,9 @@ class GameConfig:
             self.movement.marine_sprint_seconds_per_tile, tps
         )
 
-        self.zombie.ticks_per_tile = ticks_from_seconds(
-            self.zombie.seconds_per_tile, tps
-        )
+        # (The zombie's walk cadence is no longer derived here: it is the
+        # [speeds] zombie_shamble_mps row at the map's tile size, G1p-c,
+        # simulation/speeds.py.)
         self.zombie.attack_cooldown_ticks = ticks_from_seconds(
             self.zombie.attack_cooldown_seconds, tps
         )

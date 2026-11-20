@@ -1,0 +1,17 @@
+# Cycle type (scale 2): the FLANK PAIR -- rev 2.1 §1.3 / §2 (the spec's example, verbatim).
+# `second_leg` on the spawn slab and the wing lobby: the existing path
+# slab-passageway-lobby is the wide, lit leg; this file adds the OTHER one --
+# narrow and dim, exactly ONE room (a hull strip) entered from its long sides,
+# the one narrow leg Erik's width ruling allows (§1.2).
+[cycle]
+name = "flank_pair"
+move = "second_leg"             # subdivide | edge_to_cycle | leaf | ring | parallel | duct | second_leg
+phase = [2]                     # phases an archetype recipe may apply it in; one ENTRY applies it in one phase
+tactic = "Two ways between the same hubs; the slow team takes the dark way round."
+
+[[leg]]                         # [archetype rev 2]: ONE leg -- the existing path (slab-passageway-lobby) is the other
+walk = true
+rooms = [1, 1]                  # inclusive range of rooms on this leg
+width = "narrow"                # wide (floor >= 6) | narrow (floor 3; one room; entered from its long sides)
+light = "dim"
+edges = ["door"]                # edge kinds this leg's openings may use

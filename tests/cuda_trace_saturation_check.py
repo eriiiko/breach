@@ -148,11 +148,11 @@ def _scn_composite():
     return tm, setup, action, 30, False
 
 
-# The live GPU combustion (cuda_combustion_step) carries NO gas_energy -- it
-# predates arc #54's ledger -- so a CPU-vs-GPU world with combustion on the GPU
-# diverges on E/T by design, outside #88. The FIRE leg therefore checks the GPU
-# world ALONE: the runner's eos= wiring on the CUDA branch, the identity, the
-# range and the non-vacuity. CPU == GPU on the mint is PART 3's isolated pair.
+# The FIRE leg runs combustion on the GPU. Until #71 (residency arc #29 P2)
+# the twin carried no gas_energy, so the leg checked the GPU world ALONE; the
+# twin is on the seam now (tests/cuda_combustion_burn_check.py), so the leg is
+# a full CPU == GPU parity run like the others, plus the runner's eos= wiring
+# on the CUDA branch, the identity, the range and the non-vacuity.
 def _scn_fire():
     from simulation.payloads import ignite_ring
     tm = _box(16, 20)
@@ -347,7 +347,7 @@ def part3_mint() -> bool:
         print(f"  full plane: Δ S {d} != mint − clip {mint1 - clip1}")
     if ok:
         print(f"  isolated: CPU == GPU; mint {mint1}, clip {clip1} at the ceiling")
-    ok = _run("FIRE", _scn_fire, resident=False, parity=False) and ok
+    ok = _run("FIRE", _scn_fire, resident=False) and ok
     return ok
 
 

@@ -294,5 +294,35 @@ def test_the_cone_and_sky_door_refuses_illegal_input():
     assert ok["light_q"].max() > 0
 
 
+def test_the_cone_door_charges_each_ordinate_not_the_level():
+    """PROPERTY (#173): the budget is on what ALL cones put in ONE ordinate,
+    because a stream lives in one ordinate. Omni lamps may sum to 16 budgets at
+    S16, in one cell or across many, and so may 16 beams in 16 directions; the
+    same light in one ordinate is refused, by one count of a row maximum or of
+    the budget. A row's rgb above LIGHT_CONE_ROW_MAX is refused whatever its
+    spread (the projection's product).
+
+    BREAKS IF: the door goes back to the summed rgb (a ship's lamps refused
+    again), stops seeing beams that share an ordinate (a stream past the int64
+    argument), or the row maximum is dropped.
+    """
+    n = 5
+    sc, la, ld = _room(n)
+    B = R.LIGHT_CONE_BUDGET
+    a, d, T, his, ts = sc
+    assert int(bp.RadiationSweep.LIGHT_CONE_ROW_MAX) == R.LIGHT_CONE_ROW_MAX == 16 * B
+    many = [(y, x, (16 * B // (n * n),) * 3, 0, TURN) for y in range(n) for x in range(n)]
+    beams = [(0, 0, (B, B, B), (2 * m + 1) * TURN // 32, 0) for m in range(16)]
+    for cones in ([(0, 0, (16 * B,) * 3, 0, TURN)], many, beams):
+        assert _lit(sc, la, ld, cones=cones)["light_q"].max() > 0
+    bad = [[(0, 0, (16 * B + 16, 0, 0), 0, TURN)],
+           [(y, x, (16 * B // (n * n) + 16, 0, 0), 0, TURN) for y in range(n) for x in range(n)],
+           [(0, 0, (B, 0, 0), 100, 0), (4, 4, (1, 0, 0), 200, 0)],
+           [(0, 0, (R.LIGHT_CONE_ROW_MAX + 1, 0, 0), 0, 0)]]
+    for cones in bad:
+        with pytest.raises(ValueError):
+            cpp_sweep(a, d, 0, T, his, ts, table=live_table(), light=dict(la=la, ld=ld, cones=cones))
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

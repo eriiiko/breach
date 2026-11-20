@@ -57,15 +57,24 @@ endif()
 
 # CUDA-S0: enable the CUDA language + toolkit only when requested.
 if(BREACH_CUDA)
+    # The default arch list MUST be set before enable_language(CUDA): under
+    # CMP0104 enable_language itself defines CMAKE_CUDA_ARCHITECTURES (nvcc's
+    # own default, 52) when it is unset, so a check after it never fires --
+    # found by #29 P10, whose first Linux build came out sm_52 (the Windows
+    # scripts always pass a list, which hid it).
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND
+       NOT DEFINED ENV{CUDAARCHS})
+        # 86 Ampere (desktop 3070), 89 Ada (Lenovo), 75 Turing opportunistic,
+        # 80 A100 and 90 Hopper (Berzelius, #29 P10 / design §8). One fatbin
+        # runs on every machine. The Windows build_cuda*.bat scripts pass
+        # their own 75;86;89 (the PCs need nothing else); cpp/build_linux.sh
+        # takes this default.
+        set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 90)
+    endif()
     enable_language(CUDA)
     find_package(CUDAToolkit REQUIRED)
     set(CMAKE_CUDA_STANDARD 20)            # signed-shift (SAR) portability floor
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-        # 86 Ampere (desktop 3070), 89 Ada (Lenovo), 75 Turing opportunistic.
-        # One fatbin runs on all three machines.
-        set(CMAKE_CUDA_ARCHITECTURES 75 86 89)
-    endif()
     message(STATUS "BREACH_CUDA=ON: archs ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
 
@@ -88,6 +97,10 @@ set(BREACH_SOURCES
     src/radiation_sweep.cpp  # ray-engine-v2 P1: the radiation sweep (integer)
     src/arm_chain_solver.cpp # #106 P6c: the arm chain solver (integer, stateless)
     src/physics_engine.cpp
+    src/horde_field.cpp      # #183 G9p: the horde's distance field (host reference; device P7d)
+    src/sight_lines.cpp      # #195 1c: has_los's walk for many tiles (a host call, both modules)
+    src/swarm.cpp            # arc #63 P3: the swarm step's host side (registry, step_all)
+    src/swarm_larva.cpp      # arc #63 P3: the larva law's CPU entry (THE reference)
     src/bindings.cpp
 )
 if(BREACH_CUDA)
@@ -110,17 +123,130 @@ if(BREACH_CUDA)
         src/cuda_eos_step.cu       # EOS P6.5 chained full-eos.step dispatch (the big flip)
         src/cuda_eos_resident.cu   # S8a Path A: fully device-resident EOS tick + device MG build
         src/cuda_combustion.cu     # EOS P6.9b two-gather combustion (closes P6)
+        src/cuda_water_tail.cu     # #29 P4a: the W5/W3 water tail on the device
+        src/cuda_stamp.cu          # #29 P4b: the stamp kernel (slot 6's five planes)
+        src/cuda_edit_queue.cu     # #29 P4c: the device edit queue (slot 6b's FieldEdit flush)
+        src/cuda_resident_tick.cu  # #29 P4a: the resident tick's drivers (the brackets gone)
+        # #29 P6.1: the device unit store (P6.2: + the device tables, the counts,
+        # the input staging; its slot-1c kernel moved to cuda_unit_exposure.cu), Class T.
+        # Like every .cu it is on the determinism floor through the target-wide
+        # CUDA options below (--fmad=false, -Xcompiler /fp:strict); pure integer.
+        src/cuda_unit_store.cu
+        # #29 P6.3: the event ring (Class T), and the slots that hurt over the
+        # device damage pipeline (cuda_unit_damage.cuh); pure integer, on the
+        # same target-wide CUDA determinism floor.
+        src/cuda_unit_events.cu     # the event ring
+        src/cuda_unit_books.cu      # #29 P7e.4: the conductor's one books read, the sync count
+        src/cuda_unit_status.cu     # slot 2b
+        src/cuda_unit_exchange.cu   # slots 9c, 9c3
+        src/cuda_unit_damage_probe.cu # TEST-ONLY: apply_packet on synthetic rows
+        # #29 P6.2: the unit slot kernels, one TU per slot family over the device
+        # unit library (cuda_unit_lib.cuh); Class T, pure integer, on the same
+        # target-wide CUDA determinism floor.
+        src/cuda_unit_exposure.cu   # slot 1c
+        src/cuda_unit_impulse.cu    # slots 1a, 9c2
+        src/cuda_unit_orders.cu     # slots 1b', 10'
+        src/cuda_unit_conversion.cu # slot 10's ruleset tail
+        src/cuda_unit_lib_probe.cu  # TEST-ONLY: the unit library on synthetic rows
+        src/cuda_unit_movement.cu   # #29 P6.2m: slot 3 (the continuous path)
+        src/cuda_unit_movement_probe.cu  # TEST-ONLY: the walk's library functions
+        # #29 P6.4a: slot 1b's hand verbs (the request list: cuda_unit_events.cu's
+        # record list), the done kernel; Class T, pure integer.
+        src/cuda_unit_verbs.cu      # slot 1b
+        src/cuda_unit_done.cu       # the done kernel (MatchRules)
+        src/cuda_unit_verbs_probe.cu # TEST-ONLY: the gates on synthetic rows
+        # #29 P6.4b: the per-env serial applier over the topology seam as device
+        # functions (cuda_topology.cuh), and the tick-end clears; Class T, pure
+        # integer, on the same target-wide CUDA determinism floor.
+        src/cuda_applier.cu         # slot 9 (burn-through), the tick-end clears
+        src/cuda_topology_probe.cu  # TEST-ONLY: on_tile_changed on fixture maps
+        # #29 P7a.1: slot 4a, the melee verb (the effect list's first device
+        # producer; the list and its resolve stage are cuda_applier.cu's);
+        # Class T, pure integer, on the same target-wide CUDA determinism floor.
+        src/cuda_unit_melee.cu      # slot 4a
+        # #29 P7.0a: slot 9d (ignition from temperature, a per-cell kernel) and
+        # the kit's TEST-ONLY probe (the device draws, sight, the falloffs);
+        # Class T, pure integer, on the same target-wide CUDA determinism floor.
+        src/cuda_unit_ignition.cu   # slot 9d
+        src/cuda_unit_kit_probe.cu  # TEST-ONLY: draws, sight, falloffs on synthetic inputs
+        # #29 P7.0b: the device object tables (the record list's buffers with an
+        # upload, an ordered append and a stable compaction); Class T, pure
+        # integer, on the same target-wide CUDA determinism floor.
+        src/cuda_object_table.cu    # the object tables (the charge table first)
+        # #29 P7b: the grenades and the planted charges on their tables (slot
+        # 1b's appends, slot 2's flight and fuse-out, charges.tick); Class T,
+        # pure integer, on the same target-wide CUDA determinism floor.
+        src/cuda_unit_objects.cu    # slot 1b appends, slot 2 grenades, 9e(d')
+        # #29 P7a.3: slot 4b (the sprays: the cone over the physical sight, the
+        # cell buffer) and the device edit door's buffers (step (a)); Class T,
+        # pure integer, on the same target-wide CUDA determinism floor.
+        src/cuda_unit_sprays.cu     # slot 4b, the cone's TEST-ONLY probe
+        src/cuda_edit_door.cu       # the device edit door (step (a))
+        # #29 P7a.2: slot 4's shooting and slot 2''s rounds over THE MARCH
+        # (cuda_unit_march.cuh); Class T, pure integer, on the same target-wide
+        # CUDA determinism floor.
+        src/cuda_unit_shooting.cu   # slots 4 (shooting) and 2' (rounds)
+        # #29 P6b.1: the doors -- slot 1b's USE as a door-table write (the 9e(d)
+        # sweep is the applier's DOORS stage, cuda_applier.cu; seal / unseal and
+        # the gas-N primitives are the topology seam's); Class T, pure integer,
+        # on the same target-wide CUDA determinism floor.
+        src/cuda_unit_doors.cu      # slot 1b's door-table write
+        # #29 P7d: the horde -- slot 5 is the applier's HORDE stage
+        # (cuda_unit_horde.cuh, included by cuda_applier.cu); this TU is the
+        # flood's TEST-ONLY probe. Class T, pure integer, on the same
+        # target-wide CUDA determinism floor.
+        src/cuda_unit_horde.cu      # TEST-ONLY: the flood on given masks
+        # #29 P7e.2: the device sorts and 9b -- the burn-through list ranked
+        # row-major, slot 9b's scan and top-K, slot 6's stamp rows from the
+        # unit store and the refill. Class T, pure integer, on the same
+        # target-wide CUDA determinism floor.
+        src/cuda_unit_sorts.cu
+        # #29 P7e.3: the edit door, step (c) -- slot 6b's flush buffers built
+        # on the device from the door's rows (the sort, the range checks), fed
+        # to the edit queue's K1 / K2. Class T, pure integer, on the same
+        # target-wide CUDA determinism floor.
+        src/cuda_edit_flush.cu
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like
         # every other .cu, which is all an integer kernel needs.
-        src/cuda_radiation_sweep.cu)
+        src/cuda_radiation_sweep.cu
+        # arc #63 P3: the swarm step's device side, the larva law's CUDA
+        # entries (per-call + resident core) and the TEST-ONLY resident probe;
+        # pure integer, on the same target-wide CUDA determinism floor.
+        src/swarm.cu
+        src/swarm_larva.cu
+        src/swarm_probe.cu)
     # S5 cuda_wave.cu / S7 cuda_atmosphere.cu RETIRED in EOS P6.0 — their CPU
     # solvers (wave_substep / diffuse_solve) were replaced by the compressible
     # EOS solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
 endif()
 
+# The build id (#29 P1b, residency design §6 / §13 b.16): ONE generated TU,
+# `generated/build_id.cpp` in this build dir, defining breach_build_id() =
+# git HEAD's SHA (+ "-dirty" for a modified tracked file), exposed as
+# `breach_physics.build_id()` -- the compiled module's provenance, read by
+# rl_env.require_snapshot and tools/cuda_green.py (match_replay.build_id()
+# stays THE git-describe helper). Generated at BUILD time, never at configure:
+# the target below always runs (cmake -P cpp/gen_build_id.cmake) and rewrites
+# the TU only when its text changes, so an incremental build can never carry
+# a stale id and an unchanged commit recompiles nothing. Not a sim TU (one
+# string, no arithmetic): it keeps the global flags, off the /fp:strict list.
+find_package(Git QUIET)
+set(BREACH_BUILD_ID_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/build_id.cpp")
+add_custom_target(breach_build_id ALL
+    COMMAND "${CMAKE_COMMAND}"
+        "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+        "-DREPO_DIR=${CMAKE_CURRENT_SOURCE_DIR}/.."
+        "-DOUT=${BREACH_BUILD_ID_CPP}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/gen_build_id.cmake"
+    BYPRODUCTS "${BREACH_BUILD_ID_CPP}"
+    COMMENT "breach build id (git HEAD at build time)"
+    VERBATIM)
+list(APPEND BREACH_SOURCES "${BREACH_BUILD_ID_CPP}")
+
 pybind11_add_module(breach_physics ${BREACH_SOURCES})
+add_dependencies(breach_physics breach_build_id)
 
 if(BREACH_CUDA)
     set_target_properties(breach_physics PROPERTIES
@@ -198,6 +324,14 @@ set_source_files_properties(
     src/radiation_sweep.cpp
     # #106 P6c: the arm chain solver -- pure integer, pinned 0/0/0 on the ratchet.
     src/arm_chain_solver.cpp
+    # #183 G9p: the horde field (pure integer BFS; a sim TU, so on the floor).
+    src/horde_field.cpp
+    # #195 1c: the sight routine for many tiles (pure integer; a sim TU, so on the floor).
+    src/sight_lines.cpp
+    # arc #63 P3: the swarm step and the larva law's CPU entry (pure integer;
+    # sim TUs, so on the floor; pinned 0/0/0 on the float ratchet).
+    src/swarm.cpp
+    src/swarm_larva.cpp
     PROPERTIES COMPILE_OPTIONS "${BREACH_FP_STRICT}")
 
 target_include_directories(breach_physics PRIVATE src)

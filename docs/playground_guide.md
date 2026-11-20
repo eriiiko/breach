@@ -50,18 +50,20 @@ space. The decompression demo.
 
 ## Experiments
 
-**1. Bowl the squad over** (P4 wave-push + KNOCKED_DOWN). Select Alpha →
+**1. Bowl the squad over** (#140 wind law + KNOCKED_DOWN). Select Alpha →
 `G` → click ~6–8 tiles from the other marines (not on them) → `Space`.
-The blast buffets everyone ~0.3–0.5 tile and the knockdown ring (~9–10
-tiles) is ~2× the damage ring (~4.6): the outer ring goes down sprawling
-(sideways sprites, 1.5 s) without real damage — the mechanics/06 §4
-signature, straight from the physics.
+Anyone whose footprint sees the blast wind's dynamic pressure reach
+`wind_q_fall_pa` (245 Pa, ~20 m/s at ambient density) goes down sprawling
+(sideways sprites, 1.5 s); nobody is shoved — the wind never moves a body
+(2026-10-31: the old push buffet is retired). The tile inspector's wind row
+shows q at each tile.
 
-**2. Crank the cannon** (config hot-reload — the core tuning loop). Edit
-`config.toml` `[exchange]`: `k_push = 400.0` → `1200.0`, and/or
-`knockdown_dv_threshold = 6.0` → `3.0`. Save → **Ctrl+R in-game** → re-throw.
-**All four `[exchange]` keys apply LIVE** (read every tick;
-`knockdown_getup_seconds` re-derives its tick count on reload). The
+**2. Tune the wind** (config hot-reload — the core tuning loop). Edit
+`config.toml` `[exchange]`: `wind_q_fall_pa = 245.0` → `120.0` (topple
+sooner), `wind_q_slow_pa` / `wind_slow_min_scale` (the walking slowdown
+below it). Save → **Ctrl+R in-game** → re-throw. **The `[exchange]` wind
+keys apply LIVE** (read every pass; `knockdown_getup_seconds` re-derives its
+tick count on reload). The
 `[weapons.grenade]` stats (`pressure`, `unit_damage`, `blast_radius`) are
 also read at detonation → live too. Feel comments + interesting ranges sit
 next to every key in config.toml.

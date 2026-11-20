@@ -55,6 +55,11 @@ from simulation.gases import (  # noqa: F401  (re-exported)
     INERT_N2,
 )
 
+# Swarm store (arc #63 P2, engine/17 §1.3): the per-species SoA arrays +
+# their allocation hook. No other GameMap dependency on the swarm module.
+from simulation.swarm import (SWARM_PLANE_NAMES, SWARM_RESIDENT_NAMES,  # arc #63 P2
+                              allocate_swarm_store)
+
 
 # P-O2b (docs/fire_realism_design_2026-08-01.md v5.2 "F-O2b") — the draw's two
 # authored dials, resolved in ONE place so the dem_acc plane's depth and the
@@ -135,22 +140,26 @@ class GameMap:
         # four planes, int64 (the `gas_energy` precedent), LIVE since T5b.
         # Born through the residency path from day one (RL-batch habits §A
         # rule 3: no mirror-only fields) — a device buffer each at
-        # `enable_residency`, written on the HOST MIRROR by step 2b of the
-        # bracketed `step_tail` (no device kernel touches them until P4).
+        # `enable_residency`. #29 P4a: the resident tick's sweep WRITES them
+        # on the device (resident_tail); its exit download carries
+        # `rad_flux_sweep` every tick (the unit heat-damage sensor) and the
+        # other three only when the runner is not headless (render / tools).
         # They are per-tick planes OVERWRITTEN by the sweep's own start (P2a,
-        # design row 38 — not wiped by the conductor), so the resident tick's
-        # explicit `to_host` lists never name them (a defaulted `to_host()`
-        # would carry stale device zeros over the mirror, which the resident
-        # tick forbids anyway). NOTE: the old planes rad_net/rad_amb/rad_flux
+        # design row 38 — not wiped by the conductor). NOTE: the old planes rad_net/rad_amb/rad_flux
         # are NOT resident and, since T6 deleted the cast that wrote them,
         # carry nothing at all any more — see the field definitions above.
         "rad_net_sweep", "rad_flux_sweep", "rad_amb_sweep", "rad_fluence",
         # Ray-engine-v2 P6a: the sweep's three LIGHT planes, born through the
-        # residency path the same way (no mirror-only fields) and written on the
-        # host mirror by the same bracketed step_tail -- only while light is
-        # requested -- so the resident tick's explicit to_host lists never name
-        # them either.
+        # residency path the same way (no mirror-only fields). #29 P4a: written
+        # on the device by the resident sweep -- only while light is requested
+        # -- and downloaded at the tick's exit only then.
         "light_q", "light_flux_q", "light_glow",
+        # #29 P4a: combustion's error-feedback DEMAND ACCUMULATOR (synced,
+        # digested, IN/OUT): the resident tick's combustion core runs on the
+        # device copy now. No host code writes it after GameMap.__init__, so
+        # it is uploaded once (enable_residency) and comes down at every
+        # resident tick's exit for the digest.
+        "dem_acc",
     )
     _RESIDENT_MASKS = (
         "solid", "is_vacuum", "is_ambient", "obstacles", "flammable",
@@ -162,12 +171,15 @@ class GameMap:
         # patched IN PLACE by `on_tile_changed`, one upload at
         # `enable_residency`); `dyn_heat_atten_q` is the fourth `stamp_units`
         # output and rides the per-tick always-upload set beside the other
-        # stamp outputs. No device kernel reads either until P4.
+        # stamp outputs. #29 P4a: the resident sweep reads both on the device
+        # (`heat_atten_q` re-uploaded when `_tile_serial` moved).
         "heat_atten_q", "dyn_heat_atten_q",
         # Ray-engine-v2 P6a: their LIGHT twins (h, w, 3), on the same terms --
         # `light_atten_q` a static projection (reassigned by _update_caches,
         # patched in place by on_tile_changed), `dyn_light_atten_q` the fifth
-        # stamp_units output. The sweep reads both on the host mirror.
+        # stamp_units output. #29 P4a: the resident sweep reads both on the
+        # device while light is requested (`dyn_light_atten_q` in that tick's
+        # entry upload, `light_atten_q` when `_tile_serial` moved).
         "light_atten_q", "dyn_light_atten_q",
         # THERMAL-MASS AXIS, P2 (docs/thermal_mass_axis_design_2026-07-25.md +
         # build addendum §3): the per-medium THERMAL mask (`thermal_mass > 0`)
@@ -189,9 +201,9 @@ class GameMap:
         # `from_host` LIST in `physics_runner._step_resident` beside
         # `solid`/`is_vacuum`/`is_ambient`. Do not move it back to a one-shot
         # upload (that is the exact staleness bug the is_ambient note records).
-        # The resident temperature pass itself is still a host bracket
-        # (`step_tail` on the mirror), and the per-call CUDA temperature kernel
-        # does its own H2D from `GameMap.thermal_solid`.
+        # #29 P4a: the resident temperature pass, sweep, fire and combustion
+        # read it on the device too (the per-call CUDA kernels still do their
+        # own H2D from `GameMap.thermal_solid` on the --cuda-only path).
         "thermal_solid",
         # T5b step 7 / R1: "cool_shift" was a resident-synced plane here;
         # Pass 3 is deleted and the plane has no reader.
@@ -207,10 +219,12 @@ class GameMap:
         # `on_tile_changed` patches it whenever a tile's material changes (a
         # crate burning out is exactly that), so the moment a DEVICE kernel
         # reads the resident pointer it MUST join the per-tick `from_host` list
-        # in `physics_runner._step_resident`. No device kernel reads it today:
-        # the resident tick's fire pass is a host bracket (`step_tail` on the
-        # mirror) and the per-call CUDA fire kernel does its own H2D from
-        # `GameMap.fuel_recip`.
+        # in `physics_runner._step_resident`. #29 P4a: the resident fire core
+        # reads it now. It rides the upload of the table-derived static planes,
+        # made whenever `_tile_serial` moved -- on_tile_changed bumps it on
+        # every patch, and nothing else writes the plane after load (a writer
+        # that patched it without on_tile_changed would be invisible to the
+        # device: route it through on_tile_changed).
         "fuel_recip",
         # PER-MATERIAL EXTINCTION TEMPERATURE (P-R3, 2026-07-31): the per-tile
         # Q16.16 foot of the fire logistic's `hot` ramp
@@ -223,10 +237,9 @@ class GameMap:
         # SAME CAVEAT AS `fuel_recip`: NOT static — `on_tile_changed` patches it
         # whenever a tile's material changes — so the moment a DEVICE kernel
         # reads the resident pointer it MUST join the per-tick `from_host` list
-        # in `physics_runner._step_resident`. No device kernel reads it today:
-        # the resident tick's fire pass is a host bracket (`step_tail` on the
-        # mirror) and the per-call CUDA fire kernel does its own H2D from
-        # `GameMap.fire_T_ext_plane`.
+        # in `physics_runner._step_resident`. #29 P4a: the resident fire and
+        # combustion cores read it now; it rides the `_tile_serial` upload, as
+        # `fuel_recip` (above) does.
         "fire_T_ext_plane",
         # S8a Path A: the BC sponge grids — static per map (built ONCE in
         # __init__, never recomputed — unlike is_ambient, which destroy_wall's
@@ -236,7 +249,48 @@ class GameMap:
         # _step_resident's explicit per-tick lists; a defaulted from_host()
         # re-uploading them is harmless.
         "sponge_sigma", "sponge_udamp",
+        # #29 P4a: the two planes the resident combustion core reads that were
+        # host-only: `material` (int8; the device gathers the per-tile
+        # ignition threshold from it and a per-material table -- the host path
+        # rebuilds that plane in numpy every tick) and the per-tile fuel
+        # exchange rate `fuel_per_o2_plane` (R14). `material` is patched by
+        # destroy_wall / seal / unseal and rides the per-tick upload beside
+        # `solid`; `fuel_per_o2_plane` is a static projection patched in place
+        # by on_tile_changed and rides the topology-serial upload.
+        "material", "fuel_per_o2_plane",
+        # #29 P4b: the stamp kernel's static baselines (the host stamp resets
+        # to them): table-derived, patched in place by on_tile_changed, so
+        # they ride the `_tile_serial` upload beside `heat_atten_q`. With
+        # them the device rebuilds the five stamp outputs itself and the
+        # per-tick upload carries the unit rows instead of the planes.
+        "permeability", "wave_absorb",
     )
+    # #29 P7e.1: the planes a device UNIT slot reads or writes that were slot
+    # inputs staged per launch (applier.non_resident_planes()): device buffers
+    # of the batch now, so a device slot is handed `ResidentBatch.buffers` as
+    # they are. `sight_screen` (device sight's screen), the float pair
+    # `heat_atten` / `light_atten` (written by the topology seam as bit
+    # patterns; read by no law, only by tests) are table-derived and patched
+    # by on_tile_changed: they ride the `_tile_serial` upload. `ignition_armed`
+    # (slot 9d's edge trigger, digested) and `div_source` (the blast's pending
+    # source, a digest section) are written by host slots every tick: they
+    # ride the per-tick entry upload while host gameplay is in the loop.
+    _RESIDENT_UNIT_PLANES = ("sight_screen", "heat_atten", "light_atten",
+                             "ignition_armed", "div_source")
+    _RESIDENT_MASKS = _RESIDENT_MASKS + _RESIDENT_UNIT_PLANES
+    # arc #63 P2 (engine/17 §2): the swarm store — host-written resident arrays.
+    # No device kernel reads them in P2, so no per-tick transfer list names them
+    # and device copies go stale after any host store write (spawn/reclaim set
+    # gmap.swarm_host_dirty[sp]; P3's upload consumes it). Being in
+    # _RESIDENT_SYNCED puts them in the DEFAULT to_host() set: a defaulted
+    # to_host() would overwrite host writes with stale device data (the resident
+    # tick already forbids a defaulted to_host(), physics_runner._step_resident).
+    # The arrays are PER MAP (a column (max_units,), the counters 0-d); a
+    # ResidentBatch stacks them to (N, max_units) / (N,) like every resident
+    # field -- the batch axis is ResidentBatch's (P6 ruling, 2026-11-14).
+    # arc #63 P5a: + the swarm's output planes (the bite-dose plane), written
+    # by the swarm step on either path, downloaded while a swarm is present.
+    _RESIDENT_SYNCED = _RESIDENT_SYNCED + SWARM_RESIDENT_NAMES + SWARM_PLANE_NAMES
     _RESIDENT_FIELD_NAMES = _RESIDENT_SYNCED + _RESIDENT_MASKS
 
     def __setattr__(self, name, value):
@@ -315,12 +369,32 @@ class GameMap:
         # (a set of coordinates), so a headless run that never drains it holds
         # at most H*W entries.
         self.render_dirty = set()
-        # #106 P6d1: a counter bumped by `on_tile_changed` -- how a SIM reader
-        # of the static topology (the creature bodies' copy of `solid`, the
-        # arm chain's walls) learns the map changed, since `render_dirty` is
-        # the renderer's to drain. Not synced state (a derived change marker:
-        # the topology it marks is digested itself), never digested.
-        self.topology_serial = 0
+        # The BLAST LOG (levelgen vocabulary E.2 row 3, the heat-source
+        # entity's death hook): every explosion disc ``execute_payload``
+        # executes this tick, as ``(fy, fx, radius, wall_damage_q)`` in call
+        # order. Appended ONLY by ``payloads.execute_payload`` (step 1, when
+        # ``radius > 0``) and DRAINED once per tick at slot 9e -- by
+        # ``heat_source_system.sweep_heat_sources`` when the level has
+        # sources, else cleared there unread -- so it is empty at every tick
+        # boundary. The seam a slot-9e entity runtime reads to learn that a
+        # blast covered it (entities have no hp path in the damage system).
+        # Plain Python list: never digested, never recorded, never a field.
+        self.blast_log = []
+        # The NOISE LOG (#183 G9p, simulation/noise.py): every noise made
+        # since the last zombie slot as ``(fy, fx, radius_tiles)`` in the
+        # order made -- shots, detonations, door bashes -- appended only by
+        # ``noise.emit`` and DRAINED once per tick by the zombie slot
+        # (``noise.take``). Plain list: never digested, never recorded.
+        self.noise_log = []
+        # #31: the blast's pending divergence source, Q16 1/s, owned by
+        # blast_expansion.py and consumed at the head of the physics step.
+        # Synced state (tests/field_digest.py hashes it while non-zero). The
+        # counters are plain ints, and `expansions` is the comparison rows'
+        # later ticks; none of the three is digested.
+        self.div_source = np.zeros((h, w), dtype=np.int32)
+        self.div_source_sat_hits = 0
+        self.div_source_cut_q = 0
+        self.expansions = []
         self.flammable    = np.zeros((h, w), dtype=bool)
         # S2c: the atmosphere (bulk pressure) is int32 Q16.16 (scale 2^16, shared
         # with water/heat/wave/gas) — the CLOSER of the S2 group: with atmosphere
@@ -777,6 +851,17 @@ class GameMap:
         # move — copies + a boolean compare + per-cell min/max, no float math).
         self._physics_engine = None
         self.use_cpp_stamp = True
+        # #29 P4a: THE TILE SERIAL -- a plain host counter (never digested,
+        # the render_dirty idiom) bumped by every rebuild or patch of the
+        # table-derived static planes (_update_caches, on_tile_changed). The
+        # resident tick re-uploads those planes (heat_inv_shift, face_shift,
+        # fuel_recip, fire_T_ext_plane, fuel_per_o2_plane, heat_atten_q,
+        # light_atten_q) only when it moved since their last upload.
+        self._tile_serial = 0
+        # #29 P4b: the rows the last C++ stamp flattened the living units into
+        # (+ the topology serial it stamped under), handed to the resident
+        # tick's device stamp ONCE by take_stamp_rows.
+        self._stamp_pending = None
 
         # Populate material + vacuum from the level's CSV (vocabulary is
         # format-version dependent — v1 generator codes vs v2 canon ids).
@@ -925,10 +1010,64 @@ class GameMap:
 
         # Gas energy seed (design §2.2/§5, P-G0): mirrors the level's t=0
         # (N, T) state now that every seed above (water/air_init) has run.
-        # `temperature` is all-ambient (0) at this point on every level (no
-        # per-level temperature seed exists yet), so this only matters where
-        # `air_init_q` set N != the P1 calibration default.
+        # `temperature` is all-ambient (0) at this point on every level; the
+        # temp_init seed below re-derives its own gas cells afterwards.
         self.refresh_gas_energy()
+
+        # --- temp_init.npy initial-temperature seed (vocabulary E.2 row 4) -
+        self._seed_temp_init(getattr(level_data, "temp_init_q", None),
+                             getattr(level_data, "name", "?"))
+
+        # Swarm store (arc #63 P2, engine/17 §1.3): the last statement of
+        # __init__, deliberately after every other seed above. Allocation
+        # draws no RNG and runs on every level/reset (fresh GameMap each
+        # time). Dormancy comes from the presence gate (§5.1), not from
+        # skipping allocation — no code ever branches on "does the store
+        # exist".
+        allocate_swarm_store(self)
+
+    def _seed_temp_init(self, temp_seed_q, level_name):
+        """Apply a level's ``temp_init.npy`` (Q16.16 game degrees above
+        ambient, already door-checked by the loader) at load, once, AFTER the
+        air seed and the level-load ``refresh_gas_energy``.
+
+        GAS cells (the accountable set) go through
+        :meth:`seed_gas_temperature` -- the one sanctioned way to give a gas
+        cell a temperature: the mirror and ``gas_energy`` written together,
+        restricted to the seeded cells, so E == N·(T + T_amb) exactly and the
+        once-per-tick recovery reads the seed back. THERMAL SOLIDS are their
+        own truth (the temperature solver owns them; no gas_energy there), so
+        a load-time write of their ``temperature`` is the whole seed; the
+        solver's ``solid_energy_books_sum`` is a snapshot recomputed at the
+        end of every step, so the solid ledger simply starts from the seeded
+        state -- nothing is booked, since nothing has run yet.
+
+        Refused (ValueError) when a non-zero value lands anywhere else -- a
+        wall without thermal mass has no temperature to hold, and the vacuum
+        / ambient ring are boundary conditions, not state -- naming the
+        offending tile count and a first tile. ``None`` or all-zero is a no-op
+        (dormancy: 0 is ambient, what every plane already holds)."""
+        if temp_seed_q is None:
+            return
+        seed = np.asarray(temp_seed_q)
+        if not seed.any():
+            return
+        gas = self._gas_energy_accountable()
+        solid = self.thermal_solid & ~gas
+        bad = (seed != 0) & ~(gas | solid)
+        if bad.any():
+            ys, xs = np.nonzero(bad)
+            raise ValueError(
+                f"temp_init.npy for level '{level_name}': {int(bad.sum())} "
+                f"tile(s) seeded on a wall without thermal mass, vacuum or "
+                f"the ambient ring (first at y={int(ys[0])}, x={int(xs[0])}) "
+                f"-- only gas cells and thermal solids hold a temperature")
+        gas_sel = gas & (seed != 0)
+        sol_sel = solid & (seed != 0)
+        if sol_sel.any():
+            self.temperature[sol_sel] = seed[sol_sel]
+        if gas_sel.any():
+            self.seed_gas_temperature(gas_sel, seed[gas_sel])
 
     # ------------------------------------------------------------------
     # Gas energy field (gas-energy conservation arc #54, design §2.2/§2.7)
@@ -1515,6 +1654,7 @@ class GameMap:
         """
         m = self.material
         tbl = self.materials
+        self._tile_serial = self.__dict__.get("_tile_serial", 0) + 1   # #29 P4a
 
         # Static per-channel light attenuation: table column projected onto the
         # grid (ch.03 march input). C-contiguous f32 so it crosses to C++ as a
@@ -1631,6 +1771,13 @@ class GameMap:
         # unchanged; it replaces the retired ``is_wall`` flag as the
         # physics/light/smoke/vision boundary source. Always boolean-typed.
         self.solid = self.permeability <= 0.0
+        # Sight screen (#134): the tiles that stop a line of SIGHT although
+        # they are OPEN to gas -- a material whose row says ``blocks_sight``
+        # (the grille: air passes, sight does not). ``has_los`` stops on
+        # ``solid`` OR this, so ``solid`` stays the one truth for a wall and
+        # this plane only ever ADDS to it. A derived cache, never digested;
+        # all False on a map with no such material.
+        self.sight_screen = tbl.blocks_sight[m] & ~self.solid
 
         # Atmosphere: interior air + (on ambient maps) the reservoir ring seed
         # to the ambient fill; 0.0 at solid tiles and vacuum. On space maps the
@@ -1749,6 +1896,7 @@ class GameMap:
         """
         if not (0 <= fy < self._h and 0 <= fx < self._w):
             return
+        self._tile_serial += 1   # #29 P4a: the static planes changed (above)
         # arc #54 P-G1b (design §2.7, last structural row): THE MEMBERSHIP
         # SNAPSHOT. `material` has already been reassigned by the caller, but
         # the `solid` / `thermal_solid` caches this predicate reads are patched
@@ -1819,6 +1967,9 @@ class GameMap:
         self.wave_absorb[fy, fx] = float(tbl.wave_absorb[mat_id])
         # Solid mask follows permeability (sealed iff permeability == 0).
         self.solid[fy, fx] = bool(self.permeability[fy, fx] <= 0.0)
+        # The sight screen follows the same tile (open to gas, closed to sight).
+        self.sight_screen[fy, fx] = bool(tbl.blocks_sight[mat_id]
+                                         and not self.solid[fy, fx])
         # sky-exchange (§1.1): any structural edit can change reachability (this
         # tile's solidness, and — via destroy_wall's joins-ambient twin, which
         # runs AFTER this seam — the ring). Mark the sky mask dirty; it rebuilds
@@ -1831,9 +1982,6 @@ class GameMap:
         # here, so writers that finish the edit after this seam (destroy_wall's
         # vacuum join) are seen as they end the tick.
         self.render_dirty.add((int(fy), int(fx)))
-        # #106 P6d1: the sim-side twin of that mark (creature bodies re-read
-        # `solid` for their arm chains' walls when it moves).
-        self.topology_serial += 1
 
         # --- arc #54 P-G1b: THE MEMBERSHIP DIFF (design §2.7 last row) ------
         # Every structural edit funnels through this seam (seal, unseal,
@@ -1977,7 +2125,42 @@ class GameMap:
         if self._physics_engine is not None and self.use_cpp_stamp:
             self._stamp_units_cpp(units)
         else:
+            self._stamp_pending = None        # the reference path builds no rows
             self._stamp_units_python(units)
+
+    def take_stamp_rows(self):
+        """#29 P4b: the stamp rows for the resident tick's DEVICE stamp, or None.
+
+        The last C++ :meth:`stamp_units` flattened the living units into one
+        row per in-bounds footprint tile; this hands them over packed for the
+        device kernel (``cuda_stamp.cu``) as an ``(R, 9)`` int32 matrix
+        ``[env, y, x, perm bits, wabsorb bits, heat_q, l0, l1, l2]`` -- the
+        floats as their IEEE bit patterns, so the device reads exactly the
+        values the oracle compared -- and CLEARS them (a stamp's rows are
+        consumed by one tick). None means "upload the host planes instead",
+        which is what the CPU physics saw: there was no C++ stamp since the
+        last take (the Python reference path, or a tick that never stamped), or
+        a tile changed between the stamp and now (slot 6b's payload walls), so
+        the device's static baselines are no longer the ones the oracle reset
+        to and a device stamp would differ from it.
+        """
+        p = self._stamp_pending
+        self._stamp_pending = None
+        if p is None:
+            return None
+        ys, xs, perm, wabsorb, heat_q, light_q, serial = p
+        if serial != self._tile_serial:
+            return None
+        n = int(ys.shape[0])
+        rows = np.empty((n, 9), dtype=np.int32)
+        rows[:, 0] = 0                                  # env 0 (N = 1 today)
+        rows[:, 1] = ys
+        rows[:, 2] = xs
+        rows[:, 3] = perm.view(np.int32)
+        rows[:, 4] = wabsorb.view(np.int32)
+        rows[:, 5] = heat_q
+        rows[:, 6:9] = light_q
+        return rows
 
     def _stamp_units_cpp(self, units):
         """C++ path: flatten living units' footprints, call the engine, then run
@@ -2052,6 +2235,9 @@ class GameMap:
             self.heat_atten_q, self.dyn_heat_atten_q, heat_q_a,
             self.light_atten_q, self.dyn_light_atten_q, light_q_rows_a,
         )
+        # #29 P4b: keep the rows for the device stamp (take_stamp_rows).
+        self._stamp_pending = (ys_a, xs_a, perm_a, wabsorb_a, heat_q_a,
+                               light_q_rows_a, self._tile_serial)
 
         # Atmosphere refill (Python-only, UNCHANGED — gamemap.py contract §c).
         # `freed` = walls that became free this tick (wall destroyed). Units are
@@ -2234,9 +2420,93 @@ class GameMap:
         block = self.material[y0:y1, x0:x1]
         return self.materials.mobility[block].reshape(-1).tolist()
 
-    def has_los(self, fy1, fx1, fy2, fx2):
-        """Bresenham line-of-sight check. Stops on ``solid``."""
+    def footprint_wind_load(self, fy, fx, footprint: int = 3) -> int:
+        """The wind LOAD on a footprint at (fy, fx) -- #140, THE field read of
+        what the air does to a body (docs/wind_on_units_design_2026-10-31.md
+        §2): the dynamic pressure ``q = 1/2 rho v^2`` as the int
+
+            W_i = N_raw[i] * ((wind_x[i]^2 + wind_y[i]^2) >> FP_SHIFT)
+            W   = max over the footprint's GAS tiles of W_i
+
+        ``N_raw`` is the tile's bulk N (:meth:`gas_bulk_n_at`, BULK_ONE = one
+        ambient density) and the wind the EOS velocity in m/s Q16, so
+        ``W = (N / N_amb) * v^2 * 2^32`` and ``q [Pa] = rho_ref * W / 2^33``.
+        A solid tile -- a walk-through door tile stores atmosphere 0 -- is
+        excluded (#121); a footprint with no in-bounds gas tile reads 0.
+
+        Every product is a Python int (unbounded): the planes are int32 and a
+        square in int32 wraps above 0.707 m/s. Pure read; the coupling layer
+        (``exchange.apply_wind_force``, the unit impulse law) owns what it
+        does to a body. The W of :meth:`footprint_wind`.
+        """
+        return GameMap.footprint_wind(self, fy, fx, footprint)[0]
+
+    def footprint_wind(self, fy, fx, footprint: int = 3):
+        """``(W, vx, vy)``: the wind LOAD on a footprint at (fy, fx) --
+        :meth:`footprint_wind_load`'s max -- and the wind (Q16 m/s, the
+        planes' own ints, world axes) of the gas tile it was read on, the
+        first such tile in row-major order on a tie. ``(0, 0, 0)`` when no
+        gas tile of the footprint carries any load. THE read of what the air
+        does to a body (G5p-b: the force's direction comes through here,
+        never from the planes, critique B §6)."""
+        from simulation.atmosphere_fixed import FP_SHIFT
+        y0 = max(0, fy)
+        x0 = max(0, fx)
+        y1 = min(self._h, fy + footprint)
+        x1 = min(self._w, fx + footprint)
+        if y1 <= y0 or x1 <= x0:
+            return 0, 0, 0
+        solid = self.solid[y0:y1, x0:x1].tolist()
+        vx = self.wind_x[y0:y1, x0:x1].tolist()
+        vy = self.wind_y[y0:y1, x0:x1].tolist()
+        n_o2 = self.gas[O2][y0:y1, x0:x1].tolist()
+        n_n2 = self.gas[INERT_N2][y0:y1, x0:x1].tolist()
+        best, bvx, bvy = 0, 0, 0
+        for r in range(y1 - y0):
+            for c in range(x1 - x0):
+                if solid[r][c]:
+                    continue
+                v2 = (vx[r][c] * vx[r][c] + vy[r][c] * vy[r][c]) >> FP_SHIFT
+                w_i = (n_o2[r][c] + n_n2[r][c]) * v2
+                if w_i > best:
+                    best, bvx, bvy = w_i, vx[r][c], vy[r][c]
+        return best, int(bvx), int(bvy)
+
+    def wind_load_plane(self):
+        """``(W, vx, vy)``: the per-tile term of :meth:`footprint_wind`'s
+        read over the whole map (#195 1g, obs spec 1.7) -- ``W[i] = N_raw[i]
+        * ((wind_x[i]^2 + wind_y[i]^2) >> FP_SHIFT)`` on every GAS tile, 0
+        on a solid one, and the wind planes' own Q16 m/s values (world axes)
+        beside it -- as three float64 arrays of the map's shape. A READ-SIDE
+        product like the observation crop's dequantize (the int product
+        overflows int64 at a few atmospheres of a gale): the square is exact
+        in int64, the product float64, nothing is written back and nothing
+        in the sim reads it. The footprint max of ``W`` is
+        :meth:`footprint_wind_load`'s value wherever that value fits a
+        float64 exactly (below 2^53; the shipped game's wind loads are
+        orders of magnitude under it). The observation's wind planes."""
+        from simulation.atmosphere_fixed import FP_SHIFT
+        vx = np.asarray(self.wind_x, dtype=np.int64)
+        vy = np.asarray(self.wind_y, dtype=np.int64)
+        v2 = (vx * vx + vy * vy) >> FP_SHIFT
+        n_raw = (np.asarray(self.gas[O2], dtype=np.int64)
+                 + np.asarray(self.gas[INERT_N2], dtype=np.int64))
+        w = n_raw.astype(np.float64) * v2.astype(np.float64)
+        w[np.asarray(self.solid, dtype=bool)] = 0.0
+        return w, vx.astype(np.float64), vy.astype(np.float64)
+
+    def has_los(self, fy1, fx1, fy2, fx2, physical=False):
+        """Bresenham line check between two tiles.
+
+        By default it is a line of SIGHT and stops on a ``solid`` tile or on
+        the ``sight_screen`` (a material open to gas whose row says
+        ``blocks_sight`` -- the grille). ``physical=True`` asks instead
+        whether something that travels with the air gets through (a flame
+        jet's cone): it stops on ``solid`` only. The two agree on every map
+        without such a material."""
         h, w = self._h, self._w
+        solid = self.solid
+        screen = None if physical else self.sight_screen
         dx = abs(fx2 - fx1)
         dy = abs(fy2 - fy1)
         sx = 1 if fx1 < fx2 else -1
@@ -2246,7 +2516,8 @@ class GameMap:
         while True:
             if x == fx2 and y == fy2:
                 return True
-            if 0 <= y < h and 0 <= x < w and self.solid[y, x]:
+            if 0 <= y < h and 0 <= x < w and (
+                    solid[y, x] or (screen is not None and screen[y, x])):
                 return False
             e2 = 2 * err
             if e2 > -dy:
@@ -2257,18 +2528,22 @@ class GameMap:
                 y += sy
 
     def _neighbor_mean(self, field, fy, fx):
-        """Mean of field values from passable (non-solid, non-vacuum) 4-neighbors."""
+        """Mean of field values from passable (non-solid, non-vacuum)
+        4-neighbors -- an INTEGER division rounded toward zero (#29 P3e): the
+        field is an int32 plane (the atmosphere, Q16), whose store truncated
+        the old float quotient toward zero; this is that value exactly."""
+        from simulation.unit_fixed import div_trunc
         h, w = field.shape
-        total = 0.0
+        total = 0
         count = 0
         for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             ny, nx = fy + dy, fx + dx
             if (0 <= ny < h and 0 <= nx < w
                     and not self.solid[ny, nx]
                     and not self.is_vacuum[ny, nx]):
-                total += field[ny, nx]
+                total += int(field[ny, nx])
                 count += 1
-        return total / count if count > 0 else 0.0
+        return div_trunc(total, count) if count > 0 else 0
 
     # (``_seed_bulk_gas_neighbor_mean`` DELETED — P-M3: it WAS the mint. It
     # seeded gas[O2]/gas[INERT_N2] at a newly-opened tile with the neighbour
@@ -2324,7 +2599,6 @@ class GameMap:
         # S2c: atmosphere is int32 Q16.16 — dequantize to REAL pressure here so
         # the spread (hi-lo) compares against the real-unit burst_threshold `t`.
         from simulation import atmosphere_fixed as _atm_fx
-        atm = _atm_fx.dequantize(self.atmosphere)
         solid = self.solid
         is_vacuum = self.is_vacuum
         # BC (boundary_conditions_spec_2026-07-19 §1, audit (c)): an ambient-side
@@ -2338,48 +2612,52 @@ class GameMap:
                       if self._ambient is not None else 0.0)
         thresh = self.materials.burst_threshold
 
-        failing = []  # (differential, fy, fx)
-        ys, xs = np.where(solid)
-        for fy, fx in zip(ys.tolist(), xs.tolist()):
-            mat_id = int(self.material[fy, fx])
-            t = float(thresh[mat_id])
-            if t <= 0.0:
-                continue  # n/a material (e.g. air) never bursts
-            lo = None
-            hi = None
-            for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                ny, nx = fy + dy, fx + dx
-                if not (0 <= ny < h and 0 <= nx < w):
-                    continue
-                # A solid neighbour is not a side — it's more wall; skipping
-                # it (rather than counting 0) is what makes the spread a true
-                # differential: equal pressure on both open sides -> 0, and a
-                # tile with fewer than two open/vacuum sides can never burst.
-                if solid[ny, nx]:
-                    continue
-                # An exposed-vacuum breach is a real side holding no air; an
-                # ambient breach is a real side holding the effective pin P_amb.
-                if is_vacuum[ny, nx]:
-                    p = 0.0
-                elif is_ambient[ny, nx]:
-                    p = p_amb_real
-                else:
-                    p = float(atm[ny, nx])
-                lo = p if lo is None or p < lo else lo
-                hi = p if hi is None or p > hi else hi
-            if lo is None:
-                continue
-            spread = hi - lo
-            if spread > t:
-                failing.append((spread, fy, fx))
-
-        if not failing:
+        # Vectorised (#143: the per-tile Python loop was 2 ms every tick) with
+        # the loop's exact arithmetic: float64 pressures from the same
+        # dequantize, float64 thresholds widened from the float32 column,
+        # min / max / subtract / compare in float64, and a STABLE descending
+        # sort over the row-major scan -- so the list (ties included) is the
+        # loop's, bit for bit (tests/test_burst_walls_parity.py).
+        ys, xs = np.nonzero(solid)            # row-major scan order
+        if ys.size == 0:
             return []
-        # Worst differentials first; apply the per-tick cap.
-        failing.sort(key=lambda r: r[0], reverse=True)
+        t = thresh[self.material[ys, xs]].astype(np.float64)
+        live = t > 0.0                        # n/a material (e.g. air) never bursts
+        ys, xs, t = ys[live], xs[live], t[live]
+        if ys.size == 0:
+            return []
+        lo = np.full(ys.shape, np.inf)
+        hi = np.full(ys.shape, -np.inf)
+        has_side = np.zeros(ys.shape, dtype=bool)
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ny, nx = ys + dy, xs + dx
+            in_bounds = (ny >= 0) & (ny < h) & (nx >= 0) & (nx < w)
+            ny = np.clip(ny, 0, h - 1)
+            nx = np.clip(nx, 0, w - 1)
+            # A solid neighbour is not a side — it's more wall; skipping
+            # it (rather than counting 0) is what makes the spread a true
+            # differential: equal pressure on both open sides -> 0, and a
+            # tile with fewer than two open/vacuum sides can never burst.
+            side = in_bounds & ~solid[ny, nx]
+            # An exposed-vacuum breach is a real side holding no air; an
+            # ambient breach is a real side holding the effective pin P_amb.
+            p = np.where(
+                is_vacuum[ny, nx], 0.0,
+                np.where(is_ambient[ny, nx], p_amb_real,
+                         _atm_fx.dequantize(self.atmosphere[ny, nx])))
+            lo = np.where(side, np.minimum(lo, p), lo)
+            hi = np.where(side, np.maximum(hi, p), hi)
+            has_side |= side
+        spread = hi - lo
+        burst = np.flatnonzero(has_side & (spread > t))
+        if burst.size == 0:
+            return []
+        # Worst differentials first (ties keep the scan order); apply the
+        # per-tick cap.
+        burst = burst[np.argsort(-spread[burst], kind="stable")]
         if max_pops is not None:
-            failing = failing[:max_pops]
-        return [(fy, fx) for _, fy, fx in failing]
+            burst = burst[:max_pops]
+        return list(zip(ys[burst].tolist(), xs[burst].tolist()))
 
     # ------------------------------------------------------------------
     # Mutators (used by explosions, fire wall burn-through)
@@ -2598,8 +2876,9 @@ class GameMap:
             # install one at the burst end, same code path, same tick. Three
             # further same-tick readers of a stale 0 confirm it is not
             # display-only: the MG warm start (p_prev := atmosphere),
-            # apply_wave_push (a ~1 atm phantom grad-P that can fire
-            # KNOCKED_DOWN beside a burnt-through wall), and the PRESSURE sensor
+            # the retired apply_wave_push (a ~1 atm phantom grad-P that could
+            # fire KNOCKED_DOWN beside a burnt-through wall; #140 replaced it
+            # with a wind read that never sees atmosphere), and the PRESSURE sensor
             # channel (an RL observation).
             #
             # The value is the map's effective PIN, not n_total_q: p*(N_amb, 0)
@@ -3059,7 +3338,7 @@ class GameMap:
             # It is read the SAME tick by the MG warm start (p_prev :=
             # atmosphere), by find_burst_walls' spread scan — where a stale 0
             # in a freshly-opened tile manufactures a phantom differential that
-            # pops its neighbours — by apply_wave_push, and by the PRESSURE
+            # pops its neighbours — (once) by apply_wave_push, and by the PRESSURE
             # sensor channel. Leaving it unwritten trades a mass artefact for a
             # burst artefact. It remains OUTSIDE the conservation ledger (the
             # solver rematerializes P from N next tick); the divisor stays k
@@ -3091,6 +3370,10 @@ class GameMap:
     # port tile joins the §5b dirty-set H2D upload — pushing this edit to the
     # device is that LATER rider's job; Arc B edits only the host mirror. Do NOT
     # add a ``from_host()`` / device push here.
+
+    #: The O2 mole fraction of the air :meth:`inject_gas_n` mints (its fixed
+    #: standard mix; quantized once per call by ``gas_fixed.quantize_q16_scalar``).
+    INJECT_O2_FRACTION = 0.21
 
     @staticmethod
     def gas_proportional_split(holdings, want):
@@ -3177,7 +3460,9 @@ class GameMap:
         # 0.21 O2 by mole fraction (Earth-normal) — quantize_q16_scalar(0.21) == 13763,
         # the P1 calibration constant the ambient air seed uses (13763 + 51773 ==
         # FP_ONE), so an inject reproduces calibrated air composition to the LSB.
-        o2_frac_q = _gas_fx.quantize_q16_scalar(0.21)
+        # (#29 P6b.1: the literal named, INJECT_O2_FRACTION, so the device
+        # tables' row reads the one source.)
+        o2_frac_q = _gas_fx.quantize_q16_scalar(GameMap.INJECT_O2_FRACTION)
         o2_add = (dn * o2_frac_q + (1 << 15)) >> 16      # round-half-up (air seed)
         n2_add = dn - o2_add                              # exact remainder
         add_vec = [0] * N_GASES
@@ -3203,6 +3488,73 @@ class GameMap:
         """
         remove = self.extract_gas_n_vec(fy, fx, delta_n)
         return int(remove[O2]) + int(remove[INERT_N2])
+
+    def _air_withdrawal(self, fy, fx, delta_n):
+        """THE pump withdrawal split (#88 P0), shared by
+        :meth:`extract_gas_n_vec` and :meth:`transfer_gas_n` -- one rule,
+        never a second copy. Returns ``(remove, want)``: ``want =
+        min(delta_n, N_bulk)`` of AIR split over the two bulk planes by
+        :meth:`gas_proportional_split`, each trace plane priced by air
+        (``floor(want * S_t / N_bulk)``). Pure: mutates nothing. All zeros
+        (``want == 0``) for ``delta_n <= 0`` or a tile with no air (A5)."""
+        dn = int(delta_n)
+        remove = [0] * N_GASES
+        if dn <= 0:
+            return remove, 0
+        o2 = int(self.gas[O2][fy, fx])
+        n2 = int(self.gas[INERT_N2][fy, fx])
+        n_bulk = (o2 if o2 > 0 else 0) + (n2 if n2 > 0 else 0)
+        if n_bulk < 1:                      # N_EPS_RAW -- no air to price by (A5)
+            return remove, 0
+        want = dn if dn < n_bulk else n_bulk            # aggregate zero-clamp
+        remove[O2], remove[INERT_N2] = self.gas_proportional_split(
+            [o2 if o2 > 0 else 0, n2 if n2 > 0 else 0], want)
+        for g in range(N_GASES):
+            if g == O2 or g == INERT_N2:
+                continue
+            s_t = int(self.gas[g][fy, fx])
+            if s_t > 0:
+                remove[g] = (want * s_t) // n_bulk      # priced by air
+        return remove, want
+
+    def transfer_gas_n(self, sy, sx, dy, dx, delta_n,
+                       channel="pump_transfer"):
+        """MOVE up to ``delta_n`` of AIR from tile ``(sy, sx)`` to tile
+        ``(dy, dx)`` -- the CONSERVATIVE pump feed (#133, the interior
+        airlock: a transfer pump moves gas between its vestibule and a
+        side, never in from or out to nowhere). Returns the bulk total moved.
+
+        The withdrawal is the pump's own (:meth:`_air_withdrawal`: bulk
+        budget, trace priced by air, nothing from an airless tile); the
+        parcel lands whole at the destination through the shared mutation
+        core (bulk loud on int32 overflow, trace through the counted
+        saturation, a clip booked), and its energy is MOVED through the seam
+        (:meth:`gas_energy_move`) at the donor's absolute temperature read
+        BEFORE the donor drained -- so ``Σ N`` is conserved exactly over the
+        two cells, ``Σ_accountable gas_energy`` changes by nothing when both
+        are accountable, and the destination's mirror is the exact energy
+        mix (no rail can bind: the mix lies between two railed cells).
+        Bounds STRICT, like the other pump primitives.
+        """
+        h, w = self._h, self._w
+        for (y, x) in ((sy, sx), (dy, dx)):
+            if not (0 <= y < h and 0 <= x < w):
+                raise ValueError(f"transfer_gas_n: tile ({y}, {x}) out of "
+                                 f"bounds")
+        if (sy, sx) == (dy, dx):
+            return 0
+        remove, want = self._air_withdrawal(sy, sx, delta_n)
+        if not want:
+            return 0
+        t_abs = self.gas_t_abs_at(sy, sx)               # BEFORE the drain
+        for g in range(N_GASES):
+            if remove[g]:
+                self.gas[g][sy, sx] = int(self.gas[g][sy, sx]) - remove[g]
+        self._inject_gas_n_core(dy, dx, remove)
+        self.gas_energy_move((sy, sx), (dy, dx), want, channel, t_abs)
+        self.gas_energy_refresh_cell(sy, sx)
+        self.gas_energy_refresh_cell(dy, dx)
+        return want
 
     def extract_gas_n_vec(self, fy, fx, delta_n):
         """§3 extension (docs/vent_system_design_2026-08-23.md), re-priced by
@@ -3233,24 +3585,9 @@ class GameMap:
         h, w = self._h, self._w
         if not (0 <= fy < h and 0 <= fx < w):
             raise ValueError(f"extract_gas_n_vec: tile ({fy}, {fx}) out of bounds")
-        dn = int(delta_n)
-        remove = [0] * N_GASES
-        if dn <= 0:
+        remove, want = self._air_withdrawal(fy, fx, delta_n)
+        if not want:
             return remove
-        o2 = int(self.gas[O2][fy, fx])
-        n2 = int(self.gas[INERT_N2][fy, fx])
-        n_bulk = (o2 if o2 > 0 else 0) + (n2 if n2 > 0 else 0)
-        if n_bulk < 1:                      # N_EPS_RAW -- no air to price by (A5)
-            return remove
-        want = dn if dn < n_bulk else n_bulk            # aggregate zero-clamp
-        remove[O2], remove[INERT_N2] = self.gas_proportional_split(
-            [o2 if o2 > 0 else 0, n2 if n2 > 0 else 0], want)
-        for g in range(N_GASES):
-            if g == O2 or g == INERT_N2:
-                continue
-            s_t = int(self.gas[g][fy, fx])
-            if s_t > 0:
-                remove[g] = (want * s_t) // n_bulk      # priced by air
         # arc #54 P-G1b (design §2.7 pump row): the withdrawn mass takes
         # `ΔN · T_abs(cell)` with it -- read BEFORE the slices move, and
         # counted over the CONSERVATIVE bulk slices only (the books' N).
@@ -3265,7 +3602,8 @@ class GameMap:
             self.gas_energy_refresh_cell(fy, fx)
         return remove
 
-    def inject_gas_n_vec(self, fy, fx, add_vec, t_dep, t_min_q, t_max_phys_q):
+    def inject_gas_n_vec(self, fy, fx, add_vec, t_dep, t_min_q, t_max_phys_q,
+                         channel="pump_inject_vec", rail_channel="pump_rail"):
         """§3/§4 extension (docs/vent_system_design_2026-08-23.md): inject an
         ARBITRARY per-slice composition ``add_vec`` (length ``N_GASES``,
         non-negative Q16.16 ints — bulk AND trace slices alike, unlike
@@ -3295,6 +3633,14 @@ class GameMap:
         aperture guards (docs §4: never call this on a solid, thermal_solid,
         vacuum, ambient, or flooded tile) — this primitive trusts its caller,
         exactly like :meth:`inject_gas_n` trusts the pump port resolve.
+
+        ``channel`` / ``rail_channel`` name the :attr:`gas_energy_books`
+        channels the deposit and its rail clamp book into. The defaults are
+        the vent sweep's (``pump_inject_vec`` / ``pump_rail``); the bulk-gas
+        payload effect (``payloads.inject_bulk_gas``, #133 E.2) books its own
+        (``payload_bulk_gas`` / ``payload_bulk_gas_rail``) so a books reader
+        can tell an O2-store rupture from a duct. Both are ordinary seam
+        channels -- counted by :meth:`gas_energy_seam_net`, never a new group.
         """
         h, w = self._h, self._w
         if not (0 <= fy < h and 0 <= fx < w):
@@ -3332,7 +3678,7 @@ class GameMap:
             t_amb = self.gas_t_amb_raw()
             de = delta_n_bulk * (int(t_dep) + t_amb)
             self.gas_energy[fy, fx] = int(self.gas_energy[fy, fx]) + de
-            self._gas_energy_book("pump_inject_vec", de)
+            self._gas_energy_book(channel, de)
             t_new = (int(self.gas_energy[fy, fx]) // n_new) - t_amb
             rail_hit = 0
             if t_new < t_min_q:
@@ -3343,7 +3689,7 @@ class GameMap:
                 rail_hit = 1
             if rail_hit:
                 e_new = n_new * (t_new + t_amb)
-                self._gas_energy_book("pump_rail",
+                self._gas_energy_book(rail_channel,
                                       e_new - int(self.gas_energy[fy, fx]))
                 self.gas_energy[fy, fx] = e_new
             self.temperature[fy, fx] = t_new

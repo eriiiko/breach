@@ -8,21 +8,21 @@ REM integration installed, so `-G "Visual Studio 17 2022"` fails with
 REM "No CUDA toolset found". Ninja invokes nvcc directly (the spike's proven
 REM path) and needs no VS CUDA integration.
 REM
-REM PATHS below are the Work Desktop's (VS2022 Community, anaconda 3.11, CUDA
-REM 12.4). On the Lenovo (Ada), adjust the VS edition / conda / CUDA_PATH as
-REM needed — CUDA_PATH is read from the environment when set by the installer.
+REM PATHS below are both desktops' (VS2022 Community, the anaconda `data` env,
+REM cmake + ninja from that env). The Lenovo has build_cuda_lenovo.bat. CUDA_PATH
+REM is read from the environment when set by the installer.
 REM ===========================================================================
 setlocal
 call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul 2>nul
 echo === toolchain ===
 where cl
 where nvcc
-set "CMAKE=C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
-set "NINJA=C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"
+set "CMAKE=C:/Users/steen/anaconda3/envs/data/Scripts/cmake.exe"
+set "NINJA=C:/Users/steen/anaconda3/envs/data/Scripts/ninja.exe"
 if not defined CUDA_PATH set "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
 set "NVCC=%CUDA_PATH%\bin\nvcc.exe"
-set "PYEXE=C:/Users/steen/anaconda3/python.exe"
-set "PYBIND=C:/Users/steen/anaconda3/Lib/site-packages/pybind11/share/cmake/pybind11"
+set "PYEXE=C:/Users/steen/anaconda3/envs/data/python.exe"
+set "PYBIND=C:/Users/steen/anaconda3/envs/data/Lib/site-packages/pybind11/share/cmake/pybind11"
 cd /d "%~dp0\.."
 echo === CONFIGURE (cpp/build_cuda, Ninja, BREACH_CUDA=ON) ===
 "%CMAKE%" -S cpp -B cpp/build_cuda -G Ninja ^

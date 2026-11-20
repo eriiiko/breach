@@ -137,11 +137,15 @@ def _run(tag, n_ticks, gpu_on, gpu_off, fields=None) -> None:
         gpu_off()
         s_cpu.set_paused(False)
         s_cpu.step()
-        c0 = int(bp.radiation_sweep_cuda_calls())
+        # #29 P4a: on the resident tick the sweep is the resident driver (its
+        # own counter, light-carrying calls), on the per-call path the twin's.
+        c0 = (int(bp.radiation_sweep_cuda_calls())
+              + int(bp.resident_stage_counters()["sweep_light"]))
         gpu_on()
         s_gpu.set_paused(False)
         s_gpu.step()
-        calls += int(bp.radiation_sweep_cuda_calls()) - c0
+        calls += (int(bp.radiation_sweep_cuda_calls())
+                  + int(bp.resident_stage_counters()["sweep_light"])) - c0
         gpu_off()
         lit += int(np.any(s_cpu.gmap.light_q != 0))
         if _compare(tag, t, s_cpu, s_gpu, fields) >= 4:
@@ -172,13 +176,15 @@ def part1_per_call() -> None:
 
 
 def part2_resident() -> None:
-    print("PART G2b — resident tick, every backend but combustion, transport=SHEAR")
+    print("PART G2b — resident tick, every backend, transport=SHEAR")
     from simulation import physics_runner
 
+    # Combustion was excluded until #71 (residency arc #29 P2) brought its
+    # twin onto the gas energy seam (tests/cuda_combustion_burn_check.py).
     def all_gpu_resident(on):
         physics_runner.set_residency(bool(on))
         for name in _ALL_BACKENDS:
-            getattr(bp, name)(bool(on) and name != "set_combustion_backend")
+            getattr(bp, name)(bool(on))
 
     try:
         import cupy  # noqa: F401

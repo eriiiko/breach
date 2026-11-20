@@ -42,14 +42,23 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 
 import numpy as np
+import pytest
 
 import breach_physics as bp
+from config import CFG
 from level_loader import LevelData
 from simulation import Simulation
 from simulation.gamemap import GameMap
 
 SEED = 7
 N_STEPS = 5
+
+@pytest.fixture(autouse=True)
+def _burst_on(monkeypatch):
+    """The mechanism under test is switched off in config.toml since 2026-11-11
+    (#186: a redesign is owed). These tests protect the mechanism as it stands,
+    so each turns the switch on for itself."""
+    monkeypatch.setattr(CFG.physics, "burst_enabled", True)
 
 
 def _sealed_room_level():

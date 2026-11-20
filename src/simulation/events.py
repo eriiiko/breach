@@ -31,7 +31,7 @@ belongs in the renderer.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
@@ -65,6 +65,11 @@ class Cause(str, Enum):
     ``burning`` / ``poisoned`` / ``suffocating`` / ``regen``
                     the DoT/HoT status rows (``status.STATUS_REGISTRY``'s
                     names; ``status.py`` asserts every emitting row is here)
+    ``larva_bite``  the larvae's bite (arc #63 P5a): the ``swarm_bite_dose``
+                    coupling row's dose (``exchange.apply_bite_dose``), whose
+                    harm the poison law emits later as it leaves the blood
+                    (``poison.tick`` carries the latest dose's cause);
+                    never credited (``attacker_id`` -1)
     ==============  ==========================================================
 
     NOT here because no damage path exists yet (``environment.py``: pressure,
@@ -83,6 +88,7 @@ class Cause(str, Enum):
     POISONED    = "poisoned"
     SUFFOCATING = "suffocating"
     REGEN       = "regen"
+    LARVA_BITE  = "larva_bite"    # arc #63 P5a; appended (indices never move)
 
 
 #: Every cause string, in declaration order.
@@ -138,6 +144,101 @@ class ShotFiredEvent:
 
 
 @dataclass
+class ReloadEvent:
+    """A unit STARTED a reload this tick (gameplay pack G1p-c): the manual one
+    (``Simulation.reload_intent``) or the automatic one when the magazine
+    empties (``combat.mag_spend``) -- emitted by ``combat.reload_begin`` on
+    the tick the stall starts, only when a stall starts (a dry unit with no
+    spare emits nothing). ``ticks`` is the stall's length
+    (``weapon.reload_ticks``): the gun holds a full magazine ``ticks`` ticks
+    later. Render-only (an animation session, #184, plays the reload clip
+    from it), like :class:`ShotFiredEvent`: not in the synced event digest
+    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``), so emitting it moves no
+    digest."""
+    unit_id: int                    # the unit that is reloading
+    ticks: int                      # the stall's length, in ticks
+
+
+@dataclass
+class ShoveEvent:
+    """A unit SHOVED another this tick (gameplay pack G5p-a2,
+    ``Simulation.shove_intent`` consumed in slot 1b and a target found):
+    ``unit_id`` shoved ``target_id``, whose impulse lands in the next slot
+    1a. Render-only (the animation session, #184), like
+    :class:`ReloadEvent`: not in the synced event digest
+    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``), so emitting it moves
+    no digest; the push itself is synced unit state."""
+    unit_id: int                    # the shover
+    target_id: int                  # the unit shoved
+
+
+@dataclass
+class MeleeEvent:
+    """A unit STRUCK a blow (gameplay pack G6p, ``Simulation.melee_intent``
+    consumed in slot 4's phase A and a target found): ``unit_id`` struck
+    ``target_id``; the blow's packet, stun and push land at the slot's
+    phase B. ``ticks`` is the blow's cadence, the row's
+    ``rof_interval_ticks`` (what the swing animation spans). Render-only
+    (the animation session, #184), like :class:`ShoveEvent` and
+    :class:`ReloadEvent`: not in the synced event digest
+    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``), so emitting it moves no
+    digest."""
+    unit_id: int                    # the striker
+    target_id: int                  # the unit struck
+    ticks: int                      # the blow's cadence, in ticks
+
+
+@dataclass
+class StaggerEvent:
+    """A unit's in-place SWAY overflowed this tick (G5p-a2,
+    ``unit_impulse.integrate`` in slot 1a): a push beyond what it absorbs
+    without a step, so it is now pushed (``pv``) and catching itself for
+    ``ticks`` ticks (the reaction delay; it cannot walk meanwhile, it can
+    shoot). Emitted on every overflow, a renewed one included. Render-only,
+    like :class:`ReloadEvent`: outside the synced event digest.
+
+    ``dir_x_q`` / ``dir_y_q`` (#185): the direction of the push that
+    overflowed -- the overflow itself, the part of the sway this tick moved
+    into ``pv`` (Q16 tiles per tick, x right, y down). The renderer's
+    stagger reaction plays along it."""
+    unit_id: int                    # the staggered unit
+    ticks: int                      # the reaction delay's length, in ticks
+    dir_x_q: int = 0                # the overflow, Q16 tiles / tick
+    dir_y_q: int = 0
+
+
+@dataclass
+class ThrowEvent:
+    """A unit STARTED a grenade throw this tick (gameplay pack G3p): emitted
+    by ``Simulation._start_throw`` on the tick the throw verb is consumed
+    and a wind-up begins (the unit carries a grenade of that kind and is not
+    already winding up; a refused verb emits nothing). ``kind`` is the throw
+    verb's hand-grenade row index; ``ticks`` the wind-up's length -- the
+    grenade leaves the hand ``ticks`` ticks later (0: this very tick).
+    Render-only (the animation session, #184, plays the throw clip to it),
+    like :class:`ReloadEvent`: not in the synced event digest
+    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``), so emitting it moves no
+    digest."""
+    unit_id: int                    # the unit that is throwing
+    kind: int                       # the hand-grenade row index
+    ticks: int                      # the wind-up's length, in ticks
+
+
+@dataclass
+class PlantEvent:
+    """A unit STARTED planting a charge this tick (#193): emitted by
+    ``Simulation._start_plant`` on the tick the plant verb is consumed and
+    the plant begins (the unit carries a charge, can act and is neither
+    planting nor throwing; a refused verb emits nothing). ``ticks`` is the
+    plant's length -- the charge lies on the floor ``ticks`` ticks later
+    unless the unit dies or is stunned first. Render-only, like
+    :class:`ThrowEvent`: not in the synced event digest, so emitting it
+    moves no digest."""
+    unit_id: int                    # the unit that is planting
+    ticks: int                      # the plant's length, in ticks
+
+
+@dataclass
 class LaserFiredEvent:
     """A hitscan beam was fired (mechanics/03 §5, W2 — the Lance family).
 
@@ -167,6 +268,20 @@ class ExplosionEvent:
     pos: tuple                      # (fx, fy)
     radius: int
     kind: str                       # "grenade" | "door_explosive"
+    # G4 (#75): what the explosion look reads. Render-only, outside the digest
+    # (field_ab_harness hashes only UnitHit/UnitKilled). Defaults are what a row
+    # without strength or flash fills, so a three-argument construction and its
+    # repr hold.
+    strength: float = 0.0           # the row's [payloads.*] strength, 0 = none
+    flash: float = 0.0              # light units at peak (row column, P5)
+    flash_decay_s: float = 0.3      # e-fold of the flash (row column, P5)
+    flash_color: tuple = (1.0, 1.0, 1.0)
+    approach: object = None         # (y, x) the charge came from, as
+                                    # execute_payload received it, or None
+    # #202: the [payloads.*] row that fired -- the sound layer's binding key;
+    # "" = not from a row. Render-only, and out of the repr and of equality,
+    # so two rows that do the same thing still make equal events.
+    payload: str = field(default="", repr=False, compare=False)
 
 
 @dataclass
@@ -180,13 +295,24 @@ class UnitHitEvent:
     hit, :data:`NO_ATTACKER` (-1) for the environment — see
     ``damage.apply_packet`` for who is credited with what.
 
-    SYNCED: hashed into the per-tick unit digest with all four fields
-    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``).
+    ``dir_x_q`` / ``dir_y_q`` (#185) is the direction the hit TRAVELLED, a
+    Q16 tile vector (x right, y down, not normalised), from the packet
+    (``damage.DamagePacket``): a round's flight, striker -> victim for a
+    blow or a bite, detonation -> victim for a blast; ``(0, 0)`` = none
+    (heat, gas, status, the environment). The renderer's directional flinch
+    reads it (the side the hit came from is minus this vector).
+
+    SYNCED: hashed into the per-tick unit digest with its first four fields
+    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``; ``_event_record`` reads
+    NAMED fields, so the direction is NOT hashed: render-only, it moves no
+    digest).
     """
     unit_id: int
     damage: int
     source: str
     attacker_id: int = NO_ATTACKER
+    dir_x_q: int = 0
+    dir_y_q: int = 0
 
     def __post_init__(self):
         self.source = cause_value(self.source)
@@ -262,6 +388,23 @@ class WallDestroyedEvent:
     pos: tuple                      # (fy, fx)
 
 
+@dataclass
+class SwarmUnitDiedEvent:
+    """A swarm unit died this tick (arc #63 P3, engine/17 §7). Carries the
+    PRE-ZERO values of its slot -- the post-move position and the heading it
+    moved along -- because the slot itself is already the all-zero freed form.
+    Renderers read this event, never the freed slot. Emitted in
+    (SWARM_SPECIES order, env, ascending slot) order. Not in the synced event
+    digest (field_ab_harness._SYNCED_EVENT_TYPES is unchanged): its content is
+    gated CPU==GPU by tests/cuda_swarm_check.py, and cross-machine it is a
+    pure function of the previous tick's digested swarm section."""
+    species: str
+    unit_id: int
+    pos_x_q: int      # Q16.16 tile units, raw
+    pos_y_q: int
+    heading_q: int    # Q16.16 radians, canonical (-PI_Q16, PI_Q16]
+
+
 __all__ = [
     "Cause",
     "CAUSE_NAMES",
@@ -269,6 +412,12 @@ __all__ = [
     "cause_value",
     "attacker_value",
     "ShotFiredEvent",
+    "ReloadEvent",
+    "ShoveEvent",
+    "MeleeEvent",
+    "StaggerEvent",
+    "ThrowEvent",
+    "PlantEvent",
     "LaserFiredEvent",
     "SprayJetEvent",
     "ProjectileGlowEvent",
@@ -277,4 +426,5 @@ __all__ = [
     "UnitKilledEvent",
     "DoorDestroyedEvent",
     "WallDestroyedEvent",
+    "SwarmUnitDiedEvent",
 ]

@@ -533,15 +533,20 @@ class CreatureBody:
         return CF.body_th_to_heading_q24(int(self.bufs.body[0, 0, AC.BS_TH]))
 
     def write_unit(self, unit) -> None:
-        """``Unit.x/y/facing`` FROM the integer pose (the converters; floats
-        are render-side, never read back), and the unit's hit shape from the
-        integer chain (P6d3: ``build_hit_shape``, derived)."""
+        """``Unit.x/y/facing`` FROM the integer pose, and the unit's hit shape
+        from the integer chain (P6d3: ``build_hit_shape``, derived). The
+        position lands through the unit's ONE float door ``Unit.set_pos``
+        (quantized once onto the Q16 grid, #29 P3c); the facing through
+        ``turning.place`` (the facing AND its target at rest: the turning law
+        never turns a creature, slot 1a skips it), the Q24 heading rounded
+        once to the unit's Q16 radians (``CF.heading_q24_to_facing_q16``)."""
+        from simulation import turning
         bd = self.bufs.body[0, 0]
         x, y = CF.pose_to_unit_anchor(float(CF.chain_to_m(int(bd[AC.BS_X]))),
                                       float(CF.chain_to_m(int(bd[AC.BS_Y]))),
                                       self.footprint, self.tile_size_m)
-        unit.x, unit.y = x, y
-        unit.facing = CF.heading_rad_to_facing(CF.heading_q24_to_rad(self.heading_q24))
+        unit.set_pos(x, y)
+        turning.place(unit, CF.heading_q24_to_facing_q16(self.heading_q24))
         _laps.lap("unit")
         # the hit seam (P6d3): rebuilt from the chain with every pose write
         h, w = self.bufs.blocked.shape[1:]
@@ -564,7 +569,7 @@ class CreatureBody:
         hub_step``.)"""
         b = self.bufs
         b.unit_rects = np.asarray(unit_rects, dtype=np.int32).reshape(1, -1, 4)
-        serial = int(gmap.topology_serial)
+        serial = int(gmap._tile_serial)
         if serial != self.topology_serial:
             AC.set_topology(b, 0, gmap.solid, self.tile_size_m)
             self.topology_serial = serial
@@ -854,7 +859,7 @@ def spawn_creature_units(sim, rows) -> list:
         sim.add_unit(u)
         sim._creature_system.add(CreatureBody(
             u, cdef, ticks_per_second=tps, tile_size_m=gmap.tile_size_m, solid=gmap.solid,
-            topology_serial=gmap.topology_serial, sim_seed=sim._seed,
+            topology_serial=gmap._tile_serial, sim_seed=sim._seed,
             heading_q24=CF.heading_q24_from_deg(row.heading)))
         out.append(u)
     return out

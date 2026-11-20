@@ -31,7 +31,7 @@ wins and a nicer version is a follow-up issue.
 | Wildlife | Spawn points only, flag off | Octopus (milestone 8), swarm (#63) |
 | Time model | `ContinuousRealtime`, the plain tick loop | — |
 | Rendering | Headless: no window, no light requested | Replay viewing (its own milestone) |
-| Determinism | One seed drives levelgen, spawn, bots and zombies (Philox, #63 P1 is merged on `63-swarm-units`) | — |
+| Determinism | One seed drives levelgen, spawn, bots and zombies (Philox, #63 P1 is merged on `63-swarm-units`). **Amended 2026-10-31 (archetype recipe design §5.2): one seed per MATCH (`match.toml`'s `seed`, the episode); a generated LEVEL has its own `level_seed` in `level.toml [levelgen]`; a per-episode generation loop may derive both from one root and records both.** | — |
 
 ## 3. Built early so both agent shapes fit
 

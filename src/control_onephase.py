@@ -197,7 +197,9 @@ class OnePhaseWEGOInput(ControlSource):
                 self._nudge_dial(dial, 0.25 if wheel > 0 else -0.25)
 
         # ---- mouse ----
-        if rl.is_mouse_button_pressed(rl.MouseButton.MOUSE_BUTTON_LEFT):
+        if renderer.pointer_captured():
+            pass
+        elif rl.is_mouse_button_pressed(rl.MouseButton.MOUSE_BUTTON_LEFT):
             self._left_click(sim, renderer)
         elif rl.is_mouse_button_pressed(rl.MouseButton.MOUSE_BUTTON_RIGHT):
             shift = (rl.is_key_down(K.KEY_LEFT_SHIFT) or

@@ -14,11 +14,11 @@
 # Launch:  C:/Users/steen/anaconda3/python.exe main.py --level playground
 # (or set [display] level = "playground" in config.toml)
 
-version = "2"
+version = "3"
 name = "Playground"
 
-# v2 codes ARE canon material ids (src/simulation/materials.py):
-#   0=air, 1=hull, 2=wood, 3=door, 4=steel, 5=glass, 6=furniture, 9=SPACE
+# v3 codes ARE canon material ids (src/simulation/materials.py):
+#   0=air, 1=hull, 2=wood, 3=door, 4=steel, 5=glass, 6=furniture, -1=SPACE
 tilemap = "tilemap.csv"
 
 # Same physical scale as the ship.

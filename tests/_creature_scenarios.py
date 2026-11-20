@@ -179,7 +179,7 @@ class Scenario:
         if speed is None:
             speed = "crawl"
         sq = self.speed_of(speed) if isinstance(speed, str) else int(speed)
-        self.sim.set_move_dir(self.unit.id, dx, dy, 0, speed_q=sq)
+        self.sim.set_move_dir(self.unit.id, dx, dy, sq)
 
     def stop(self) -> None:
         self.sim.clear_move_dir(self.unit.id)

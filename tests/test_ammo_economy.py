@@ -40,8 +40,10 @@ import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
 from simulation import Simulation  # noqa: E402
+from simulation.draws import MatchDraws  # #29 P3b: the keyed draws
 from simulation import wall_fixed  # noqa: E402
-from simulation.combat import fire_burst, mag_gate, mag_spend, process_shooting  # noqa: E402
+from simulation.combat import (SPARES_UNTRACKED, fire_burst, mag_gate,  # noqa: E402
+                               mag_spend, process_shooting)
 from simulation.events import ExplosionEvent, ShotFiredEvent, UnitHitEvent  # noqa: E402
 from simulation.field_edit import EditQueue  # noqa: E402
 from simulation.gamemap import GameMap  # noqa: E402
@@ -50,6 +52,7 @@ from simulation.orders import ORDER_FIRE, Order  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.weapons import get_tables  # noqa: E402
 from simulation import weapons as weapons_mod  # noqa: E402
+from simulation.unit_schema import MAG_UNBOUND  # noqa: E402  (#29 P3a; was None)
 
 from _test_charge import install_test_charge  # noqa: E402
 
@@ -119,7 +122,7 @@ def test_gl6_detonates_on_the_stopping_wall(monkeypatch):
     shooter = Unit("S", x=2, y=8, team=0)
     shooter.id = 1
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     events, bullets, shots = [], [], []
     _fire_gl6(gmap, [shooter], shooter, 23, 9, queue=queue, rng=rng,
               events=events, bullets=bullets, shots=shots)
@@ -162,7 +165,7 @@ def test_gl6_detonates_on_unit_footprint_no_direct_hit_packet(monkeypatch):
     shooter.id, target.id = 1, 2
     target.current_hp = 1e9
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     events, bullets, shots = [], [], []
     _fire_gl6(gmap, [shooter, target], shooter, 15, 9, queue=queue, rng=rng,
               events=events, bullets=bullets, shots=shots)
@@ -196,7 +199,7 @@ def test_gl6_airbursts_at_max_range(monkeypatch):
     shooter = Unit("S", x=2, y=8, team=0)
     shooter.id = 1
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     events, bullets, shots = [], [], []
     _fire_gl6(gmap, [shooter], shooter, 55, 9, queue=queue, rng=rng,
               events=events, bullets=bullets, shots=shots)
@@ -222,7 +225,7 @@ def test_mag_gate_and_spend_cadence_exact_ticks():
     gl6 = get_tables().weapons.by_name["gl6_revolver"]
     assert gl6.rof_interval_ticks == 29 and gl6.reload_ticks == 72
     u = Unit("S", x=2, y=8, team=0)
-    assert u.current_mag is None and u.reload_done_tick == -1
+    assert u.current_mag == MAG_UNBOUND and u.reload_done_tick == -1
 
     fire_ticks = []
     for i in range(6):
@@ -261,7 +264,7 @@ def test_mag_cadence_through_process_shooting():
     u.orders = [Order(ORDER_FIRE, target_fx=15, target_fy=9, phase=0),
                 Order(ORDER_FIRE, target_fx=15, target_fy=9, phase=1)]
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     shots, events, bullets = [], [], []
 
     fired_at = []
@@ -282,20 +285,30 @@ def test_mag_cadence_through_process_shooting():
     assert u.current_mag == 5                        # shot 7 came off a fresh mag
 
 
-def test_k5_mag_size_zero_never_touches_the_state():
-    """DORMANCY: the shipped k5 (mag_size 0) fires bursts forever without
-    binding a magazine — the W3 fields stay at their virgin values, so no
-    shipped scenario can move (the golden-safety argument in unit form)."""
+def test_untracked_weapon_never_touches_the_state():
+    """DORMANCY: a weapon with mag_size 0 (the shipped lance_3 row; the k5
+    was the example until gameplay pack G2p gave it a magazine) fires
+    forever without binding a magazine — the W3 fields stay at their virgin
+    values, so a weapon nobody gave a magazine cannot move (the golden-safety
+    argument in unit form). Breaks if the gate, the spend or the reload law
+    writes magazine state for a weapon whose row says mag_size 0."""
     gmap = _room()
     u = Unit("S", x=2, y=8, team=0)
     u.id = 1
+    u.weapon_id = "lance_3"
+    assert get_tables().weapons.by_name["lance_3"].mag_size == 0
+    target = Unit("T", x=14, y=8, team=1)
+    target.id = 2
+    target.current_hp = 1e9
     u.orders = [Order(ORDER_FIRE, target_fx=15, target_fy=9, phase=0)]
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     shots, events = [], []
     for tick in range(0, 40):
-        process_shooting(gmap, [u], tick, shots, 0.0, rng, events=events)
-    assert [e for e in events if isinstance(e, ShotFiredEvent)]  # it fired
-    assert u.current_mag is None
+        process_shooting(gmap, [u, target], tick, shots, 0.0, rng,
+                         events=events)
+    assert any(isinstance(e, UnitHitEvent) for e in events)   # it fired
+    assert u.current_mag == MAG_UNBOUND
+    assert u.spare_mags == SPARES_UNTRACKED
     assert u.reload_done_tick == -1
 
 
@@ -310,7 +323,7 @@ def test_round_boundary_resets_mag_state():
     m.current_mag = 2
     m.reload_done_tick = 500
     sim._end_round()
-    assert m.current_mag is None
+    assert m.current_mag == MAG_UNBOUND
     assert m.reload_done_tick == -1
     assert m.last_fire_tick == -999
 

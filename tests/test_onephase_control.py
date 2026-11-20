@@ -84,6 +84,9 @@ class FakeRenderer:
     def __init__(self, tile=(0, 0)):
         self.tile = tile
 
+    def pointer_captured(self):
+        return False
+
     def mouse_to_tile(self):
         return self.tile
 

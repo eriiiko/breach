@@ -65,6 +65,10 @@ SIM_TUS = (
     "radiation_sweep.cpp",
     "emissive_table.cpp",
     "arm_chain_solver.cpp",
+    # arc #63 P3 (docs/swarm_P3_impl.md F6, R11): the swarm step and the larva
+    # law's CPU entry, at a HARD 0/0/0 (no line names the word, not even a comment).
+    "swarm.cpp",
+    "swarm_larva.cpp",
 )
 
 # Whole-word ``float`` / ``double`` (so "floating" / "doubled" in prose don't
@@ -396,6 +400,8 @@ BASELINE = {
     "radiation_sweep.cpp":    {"float": 0,  "double": 0,  "fp:fast": 0},
     "emissive_table.cpp":     {"float": 0,  "double": 8,  "fp:fast": 0},
     "arm_chain_solver.cpp":   {"float": 0,  "double": 0,  "fp:fast": 0},
+    "swarm.cpp":              {"float": 0,  "double": 0,  "fp:fast": 0},
+    "swarm_larva.cpp":        {"float": 0,  "double": 0,  "fp:fast": 0},
 }
 
 # The TUs that have been MIGRATED to integer end-to-end (S3c). For these, the
@@ -406,7 +412,18 @@ BASELINE = {
 # A separate test (test_migrated_tus_at_documented_floor) asserts these stay at or
 # below their floor, so a later patch cannot smuggle a new float into migrated
 # fire/temperature without tripping CI.
-MIGRATED_FLOOR_TUS = ("fire_simulation.cpp", "temperature_solver.cpp")
+MIGRATED_FLOOR_TUS = ("fire_simulation.cpp", "temperature_solver.cpp",
+                      "swarm.cpp", "swarm_larva.cpp")   # arc #63 P3: born integer
+
+# arc #63 P3 (F6, R11): SIM-LAW HEADERS. The larva law is FP_HD-inline in
+# headers that the CPU TUs and the .cu kernels compile, so the TU scan above
+# cannot see it; these headers are held at 0/0/0 by their own test below.
+SIM_HEADERS = (
+    "swarm.h",
+    "swarm_larva.h",
+    "swarm_launch.cuh",
+    "swarm_tables_layout.h",
+)
 
 
 def _count_tokens(path: Path) -> dict:
@@ -516,6 +533,21 @@ def test_baseline_is_not_stale_low():
               + "\n  ".join(stale))
     # Intentionally always passes — this is a nudge, not a gate.
     assert True
+
+
+def test_sim_law_headers_hold_no_float():
+    """arc #63 P3 (F6, R11): every SIM_HEADERS file exists and no line of it
+    names `float`, `double` or `fp:fast` -- the swarm law is integer from
+    birth and lives in headers the TU ratchet does not scan.
+
+    Must break when a non-integer type or a fast-math pragma enters a sim-law
+    header (even in a comment), or a header is renamed without updating the
+    list (a vacuous scan)."""
+    missing = [h for h in SIM_HEADERS if not (CPP_SRC / h).exists()]
+    assert not missing, f"sim-law header(s) not found: {missing}"
+    bad = {h: c for h in SIM_HEADERS
+           if any((c := _count_tokens(CPP_SRC / h)).values())}
+    assert not bad, f"float / double / fp:fast in a sim-law header: {bad}"
 
 
 if __name__ == "__main__":

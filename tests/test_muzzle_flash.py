@@ -122,12 +122,13 @@ def test_only_the_first_segment_of_a_slow_round_is_a_launch():
 
 def test_a_big_volley_stays_inside_the_light_budget():
     """PROPERTY: however many units fire in the same frame, their flashes
-    together carry at most ``MUZZLE_FLASH_MAX_TOTAL`` light units (half the
-    sweep's cone budget), every shooter still flashes, and the cone rows they
-    make pass ``cone_rows``' budget door. BREAKS if the flashes are summed
-    unbounded -- a firefight of enough shooters would make ``cone_rows``
-    raise mid-game -- or if the cap drops shooters instead of dimming them."""
-    from renderer.frame_lights import (LIGHT_CONE_BUDGET, MUZZLE_FLASH_MAX_TOTAL,
+    together carry at most ``TRANSIENT_MAX_TOTAL`` light units, every
+    shooter still flashes, and in any one ordinate (what the sweep's door
+    charges, #173) they stay within half its budget. BREAKS if the flashes are
+    summed unbounded -- a firefight of enough shooters would trip the door
+    mid-game -- or if the cap drops shooters instead of dimming them."""
+    import breach_physics as bp
+    from renderer.frame_lights import (LIGHT_CONE_BUDGET, TRANSIENT_MAX_TOTAL,
                                        cone_rows, transient_specs)
     shooters = 200
     effects = [_tracer(0.0, unit=u, frm=(10.0 + 3 * (u % 20), 10.0 + 3 * (u // 20)),
@@ -135,6 +136,8 @@ def test_a_big_volley_stays_inside_the_light_budget():
     lights = _lights(effects)
     assert len(lights) == shooters
     assert sum(d["intensity"] for d in lights) * max(FLASH.color) \
-        <= MUZZLE_FLASH_MAX_TOTAL * (1 + 1e-9)
+        <= TRANSIENT_MAX_TOTAL * (1 + 1e-9)
     rows = cone_rows(transient_specs(lights), 128, 128, 37)   # L_FINE_BITS
-    assert np.all(rows[:, 2:5].sum(axis=0) <= LIGHT_CONE_BUDGET // 2 + shooters)
+    per_ordinate = sum(np.asarray(bp.RadiationSweep.cone_emission(
+        r[2:5].tolist(), int(r[5]), int(r[6]))) for r in rows)
+    assert per_ordinate.max() <= LIGHT_CONE_BUDGET // 2 + shooters

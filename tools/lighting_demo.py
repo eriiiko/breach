@@ -104,6 +104,23 @@ Headless flags (no human at the keyboard):
                      full strength). fire_smoke_studio lights itself;
                      elsewhere add --perf-ignite "X,Y;X,Y" (the heat-only
                      [payloads.studio_ignite] at each tile).
+    --shock-perf [N]  graphics G4 P2: the SHOCK FRONT's GPU ms -- the resolve
+                     with the ring term on minus off (GL_TIME_ELAPSED,
+                     alternated frame by frame, forced to full strength at
+                     any zoom) over N (600) frames, on the current --level's
+                     own volley (run it with --level blast_final: the level's
+                     timed charges fire, their rings are held live and their
+                     age swept over the ring's whole life).
+    --spark-perf [N]  graphics G4 P3: the SPARKS' GPU ms -- the particle
+                     draw (both stages, GL_TIME_ELAPSED) with the level's
+                     volley of sparks held at its birth state minus the same
+                     frame without them, alternated frame by frame over N
+                     (600) frames (run it with --level blast_final).
+    --debris-perf [N] graphics G4 P4: the DEBRIS' GPU ms -- the particle
+                     draw's premultiplied "debris" stage with the level's
+                     volley of chips held 12 ticks after birth minus the same
+                     frame without them, alternated over N (600) frames (run
+                     it with --level blast_final).
     --shots [A,B]   graphics G0 P3: render the named LOOK SHOTS of
                      tools/look_shots.toml (all, or the comma-separated
                      subset) to scratchpad/look/<name>_<git-sha>.png, one
@@ -115,6 +132,7 @@ Headless flags (no human at the keyboard):
 """
 from __future__ import annotations
 
+import copy
 import sys
 import time
 import tomllib
@@ -141,7 +159,6 @@ from simulation import Simulation
 from simulation import atmosphere_fixed
 from simulation.unit import Unit
 from simulation.payloads import execute_payload
-from simulation.weapons import PayloadDef
 from simulation.gases import STEAM, SMOKE
 from level_lights import LightSpec, monotonic_total_tick, partition_lights
 from renderer import frame_lights
@@ -167,9 +184,12 @@ DEFAULTS = {
     # Render exposure: light_rgb is a PHYSICAL field (the sweep's irradiance in
     # light units, `intensity` = total emitted power). This master dial maps
     # physical power -> display brightness: physics tunes power, exposure tunes
-    # look. (The demo's historical 10 vs the game's [render.lighting]
-    # master_gain 2.0 predates the sweep; reconcile in a tuning session.)
-    "light_gain": 10.0,
+    # look. THE GAME'S exposure, [render.lighting] master_gain, since
+    # 2026-11-07: the demo's historical 10 (pre-sweep) made Erik judge the
+    # blast studios' lamps ten times too bright (G4 P3). A look shot's
+    # `light_gain = "game"` reads the same value from the renderer.
+    "light_gain": float(getattr(getattr(CFG.render, "lighting", None),
+                                "master_gain", 1.0)),
     "normal_strength": 1.0,
     "use_normal": True,
     "srgb_decode": True,
@@ -214,7 +234,6 @@ DEFAULTS = {
     "show_pressure": True,
     "pressure_scale": 2.0,
     "blast_radius": 6.0,
-    "blast_pressure": 10.0,
     "wall_damage": 200.0,
     "unit_damage": 60.0,
     "fuse_seconds": 0.0,
@@ -299,7 +318,6 @@ def _state_to_toml_section(name: str, s: dict) -> str:
     lines.append(f"pressure_scale = {s['pressure_scale']:.4f}")
     lines.append(
         f"grenade = {{ blast_radius = {int(s['blast_radius'])}, "
-        f"pressure = {s['blast_pressure']:.2f}, "
         f"wall_damage = {int(s['wall_damage'])}, "
         f"unit_damage = {int(s['unit_damage'])}, "
         f"fuse_seconds = {s['fuse_seconds']:.2f}, "
@@ -389,7 +407,6 @@ def _toml_dict_to_state(d: dict) -> dict:
     if "grenade" in d:
         g = d["grenade"]
         s["blast_radius"] = float(g.get("blast_radius", s["blast_radius"]))
-        s["blast_pressure"] = float(g.get("pressure", s["blast_pressure"]))
         s["wall_damage"] = float(g.get("wall_damage", s["wall_damage"]))
         s["unit_damage"] = float(g.get("unit_damage", s["unit_damage"]))
         s["fuse_seconds"] = float(g.get("fuse_seconds", s["fuse_seconds"]))
@@ -817,10 +834,10 @@ def _capture_map_viewport(renderer, out_path: str, gmap=None) -> None:
 # executor — so the blast carried no unit damage, no ignite/gas columns, and
 # its ExplosionEvent was a hand-rolled renderer dict. It now runs
 # `execute_payload` with the FRAG GRENADE ROW resolved exactly as the sim's own
-# fuse-out site resolves it (Simulation._update_projectiles:
+# fuse-out site resolves it (Simulation._update_grenades:
 # `weapons_tables.payload_for_ammo(proj.ammo_name)` -> grenade_frag ->
 # [payloads.frag_standard]), writing through `sim.edit_queue` / `sim.units` /
-# `sim.rng` — the FieldEdit seam, not the fields.
+# `sim.draws` — the FieldEdit seam, not the fields.
 DEMO_GRENADE_AMMO = "grenade_frag"      # -> [payloads.frag_standard]
 
 
@@ -831,25 +848,16 @@ def demo_payload(sim, state):
     The numbers come FROM the table (`[payloads.frag_standard]` — the sliders
     are initialised from it at startup, see main()), so nothing here invents a
     blast; the overrides exist because this is Erik's blast-tuning instrument
-    and radius/pressure/wall-damage are exactly what he drags. Every other
-    column (gas, ignite, heat, the two smoke booleans) is passed through
-    untouched, so a future column added to the row reaches the demo for free.
+    and radius and wall damage are what he drags. The row is COPIED, so every
+    other column, the strength and all a door derived from it included, reaches
+    the demo for free (rebuilt by hand it would lose the blast, #31).
     """
-    base = sim.weapons_tables.payload_for_ammo(DEMO_GRENADE_AMMO)
-    return PayloadDef(
-        name=f"{base.name}@demo",
-        radius=int(max(1, state.get("blast_radius"))),
-        pressure=float(state.get("blast_pressure")),
-        wall_damage=int(state.get("wall_damage")),
-        unit_damage=int(state.get("unit_damage")),
-        gas_species=base.gas_species, gas_amount=base.gas_amount,
-        gas_radius=base.gas_radius,
-        ignite_radius=base.ignite_radius,
-        ignite_intensity=base.ignite_intensity,
-        clear_smoke=base.clear_smoke,
-        emit_blast_smoke=base.emit_blast_smoke,
-        heat_amount=base.heat_amount, heat_radius=base.heat_radius,
-    )
+    row = copy.copy(sim.weapons_tables.payload_for_ammo(DEMO_GRENADE_AMMO))
+    row.name = f"{row.name}@demo"
+    row.radius = int(max(1, state.get("blast_radius")))
+    row.wall_damage = int(state.get("wall_damage"))
+    row.unit_damage = int(state.get("unit_damage"))
+    return row
 
 
 def detonate(sim, renderer, state, tile) -> bool:
@@ -879,7 +887,7 @@ def detonate(sim, renderer, state, tile) -> bool:
         state.get("explosion_smoke_noise"))
     events: list = []
     execute_payload(sim.gmap, sim.edit_queue, sim.units, ty, tx,
-                    demo_payload(sim, state), sim.rng, events=events,
+                    demo_payload(sim, state), sim.draws, events=events,
                     kind="grenade")
     renderer.consume_events(events)
     return True
@@ -1020,14 +1028,19 @@ _WATER_POOL_CENTER_TILE = (33, 27)     # gen_fire_studio's POOL_X0..X1/Y0..Y1
 
 
 def demo_light_rows(lights_in, total_tick: int, sim_time_per_tick: float,
-                    grid_w: int, grid_h: int, state=None, mouse_f=None):
+                    grid_w: int, grid_h: int, state=None, mouse_f=None,
+                    renderer=None, gmap=None):
     """THE STUDIO'S LIGHTS through THE ONE ASSEMBLY (renderer/frame_lights.py;
     ray-engine-v2 P6c port): the level's lamps and beacon -- a group dropped
     when its demo toggle (``state.lamps_on`` / ``state.beacon_on``) is off --
     plus the slider-driven mouse flashlight at ``mouse_f`` (a cursor-kind cone
     of ``flash_intensity`` and ``flash_angle_spread``, centred on +x like the
     old demo's), as the sweep's cone-emitter rows for ``Simulation.set_light``.
-    ``state=None`` is everything on and no flashlight (the --perf pass)."""
+    ``state=None`` is everything on and no flashlight (the --perf pass).
+    With ``renderer`` and ``gmap`` (graphics G4 P5) the live blast flashes ride
+    too -- ``GameRenderer.blast_flash_light_specs`` at ``total_tick`` over the
+    map's open mask, through the one transient cap -- so ``--shots`` sees the
+    flash exactly as the game assembles it."""
     lights = [e for e in lights_in if state is None
               or (state.beacon_on if e.kind == "beacon" else state.lamps_on)]
     extra = []
@@ -1037,6 +1050,11 @@ def demo_light_rows(lights_in, total_tick: int, sim_time_per_tick: float,
                                intensity=float(state.get("flash_intensity")),
                                angle_spread=float(state.get("flash_angle_spread")),
                                kind="cursor", source="render"))
+    if renderer is not None and gmap is not None:
+        from simulation.blast_expansion import open_mask as _open_mask
+        extra += frame_lights.transient_specs(frame_lights.cap_transient_group(
+            [], renderer.blast_flash_light_specs(
+                total_tick, lambda: _open_mask(gmap))))
     specs = frame_lights.frame_light_specs(
         lights, total_tick=total_tick, sim_time_per_tick=sim_time_per_tick,
         extra=extra).specs
@@ -1215,6 +1233,312 @@ def _parse_fire_vfx_perf() -> Optional[int]:
         return 600
 
 
+def _parse_shock_perf() -> Optional[int]:
+    """``--shock-perf [N]`` -- measure N frames (default 600)."""
+    if "--shock-perf" not in sys.argv:
+        return None
+    v = _argv_value("--shock-perf")
+    try:
+        return max(2, int(v)) if v and not v.startswith("--") else 600
+    except ValueError:
+        return 600
+
+
+def _parse_spark_perf() -> Optional[int]:
+    """``--spark-perf [N]`` -- measure N frames (default 600)."""
+    if "--spark-perf" not in sys.argv:
+        return None
+    v = _argv_value("--spark-perf")
+    try:
+        return max(2, int(v)) if v and not v.startswith("--") else 600
+    except ValueError:
+        return 600
+
+
+def _run_spark_perf(renderer, sim, lights_in, light_sky,
+                    sim_time_per_tick: float, ticks_per_round: int,
+                    frames: int) -> None:
+    """Graphics G4 P3: the sparks' GPU cost on the level's own volley. The
+    sim runs (lit) until the volley's sparks exist, then FREEZES (no more
+    upload_state: the sparks are held as born); each measured frame times
+    the particle draw's two stages on the GPU, alternating the sparks on
+    (the held state) and off (cleared) -- cost = on - off, the embers' and
+    the shock front's method."""
+    from gl_timer import GLTimer
+    rl.set_target_fps(0)
+    grid_h, grid_w = sim.gmap.solid.shape
+    sp = renderer.sparks
+    held = None
+    for _ in range(int(20 * CFG.clock.ticks_per_second)):
+        total = monotonic_total_tick(sim.turn_number, ticks_per_round,
+                                     sim.tick)
+        sim.set_light(True, demo_light_rows(lights_in, total,
+                                            sim_time_per_tick, grid_w,
+                                            grid_h), light_sky)
+        if sim.is_paused():
+            sim.set_paused(False)
+        sim.step()
+        total = monotonic_total_tick(sim.turn_number, ticks_per_round,
+                                     sim.tick)
+        renderer.consume_events(sim.tick_events, sim_tick=total)
+        renderer.upload_state(sim.gmap, sim_tick=total,
+                              light_serial=sim.light_serial, alpha=0.0,
+                              paused=False)
+        if sp.p.n:
+            held = sp.p.d.copy()
+            break
+    if held is None:
+        print("[spark perf] no spark in 20 s on this level -- run it with "
+              "--level blast_final")
+        return
+    draw_fn = renderer._draw_embers
+    timer = GLTimer()
+    cur = {"gpu": 0.0}
+
+    def timed(*a, **kw):
+        timer.begin()
+        n = draw_fn(*a, **kw)
+        timer.end()
+        cur["gpu"] += timer.result_ms()
+        return n
+
+    renderer._draw_embers = timed
+    rows = []
+    try:
+        for i in range(PERF_WARMUP_FRAMES + frames):
+            on = (i % 2) == 0
+            sp.p.d = held.copy() if on else held[:0].copy()
+            cur["gpu"] = 0.0
+            renderer.begin_frame()
+            renderer.compose_world(units_marines=sim.marines(),
+                                   units_zombies=sim.zombies(),
+                                   projectiles=sim.projectiles)
+            renderer.draw_background_to_screen()
+            renderer.blit_world_to_screen()
+            renderer.end_frame()
+            if i >= PERF_WARMUP_FRAMES:
+                rows.append((float(on), cur["gpu"],
+                             float(renderer.ember_draw.sprites_last_frame)))
+    finally:
+        renderer._draw_embers = draw_fn
+    a = np.asarray(rows, np.float64)
+    on, off = a[a[:, 0] == 1], a[a[:, 0] == 0]
+
+    def stat(x):
+        return f"mean {x.mean():6.3f}  p95 {np.percentile(x, 95):6.3f}"
+
+    print(f"[spark perf] {held.shape[0]} sparks held at birth, "
+          f"{on[:, 2].mean():.0f} sprites drawn; {len(a)} frames "
+          f"(+{PERF_WARMUP_FRAMES} warm-up)")
+    print(f"[spark perf] PARTICLE DRAW GPU ms (both stages): sparks on "
+          f"{stat(on[:, 1])} ; off {stat(off[:, 1])} ; SPARKS GPU = on - off "
+          f"= {on[:, 1].mean() - off[:, 1].mean():6.3f} ms (world RT "
+          f"{renderer.world.world_px_w}x{renderer.world.world_px_h})")
+    print(f"[spark perf] CPU update ms (the spawn frame) "
+          f"{sp.last_update_ms:6.3f}")
+    print("OK -- spark perf pass complete (--spark-perf)")
+
+
+def _parse_debris_perf() -> Optional[int]:
+    """``--debris-perf [N]`` -- measure N frames (default 600)."""
+    if "--debris-perf" not in sys.argv:
+        return None
+    v = _argv_value("--debris-perf")
+    try:
+        return max(2, int(v)) if v and not v.startswith("--") else 600
+    except ValueError:
+        return 600
+
+
+def _run_debris_perf(renderer, sim, lights_in, light_sky,
+                     sim_time_per_tick: float, ticks_per_round: int,
+                     frames: int) -> None:
+    """Graphics G4 P4: the debris' GPU cost on the level's own volley, the
+    sparks' method. The sim runs (lit) until the volley's chips exist and
+    then 12 ticks more (they have flown out and landed), then FREEZES (no
+    more upload_state: the chips are held); each measured frame times the
+    debris stage on the GPU, alternating the chips on (the held state) and
+    off (cleared) -- cost = on - off."""
+    from gl_timer import GLTimer
+    rl.set_target_fps(0)
+    grid_h, grid_w = sim.gmap.solid.shape
+    ds = renderer.debris
+    held = None
+    after = None
+    for _ in range(int(20 * CFG.clock.ticks_per_second)):
+        total = monotonic_total_tick(sim.turn_number, ticks_per_round,
+                                     sim.tick)
+        sim.set_light(True, demo_light_rows(lights_in, total,
+                                            sim_time_per_tick, grid_w,
+                                            grid_h), light_sky)
+        if sim.is_paused():
+            sim.set_paused(False)
+        sim.step()
+        total = monotonic_total_tick(sim.turn_number, ticks_per_round,
+                                     sim.tick)
+        renderer.consume_events(sim.tick_events, sim_tick=total)
+        renderer.upload_state(sim.gmap, sim_tick=total,
+                              light_serial=sim.light_serial, alpha=0.0,
+                              paused=False)
+        if ds.p.n and after is None:
+            after = 12
+        if after is not None:
+            after -= 1
+            if after <= 0:
+                held = ds.p.d.copy()
+                break
+    if held is None:
+        print("[debris perf] no chip in 20 s on this level -- run it with "
+              "--level blast_final")
+        return
+    draw_fn = renderer._draw_debris
+    timer = GLTimer()
+    cur = {"gpu": 0.0}
+
+    def timed(*a, **kw):
+        timer.begin()
+        n = draw_fn(*a, **kw)
+        timer.end()
+        cur["gpu"] += timer.result_ms()
+        return n
+
+    renderer._draw_debris = timed
+    rows = []
+    try:
+        for i in range(PERF_WARMUP_FRAMES + frames):
+            on = (i % 2) == 0
+            ds.p.d = held.copy() if on else held[:0].copy()
+            cur["gpu"] = 0.0
+            renderer.begin_frame()
+            renderer.compose_world(units_marines=sim.marines(),
+                                   units_zombies=sim.zombies(),
+                                   projectiles=sim.projectiles)
+            renderer.draw_background_to_screen()
+            renderer.blit_world_to_screen()
+            renderer.end_frame()
+            if i >= PERF_WARMUP_FRAMES:
+                rows.append((float(on), cur["gpu"],
+                             float(renderer.ember_draw
+                                   .debris_sprites_last_frame)))
+    finally:
+        renderer._draw_debris = draw_fn
+    a = np.asarray(rows, np.float64)
+    on, off = a[a[:, 0] == 1], a[a[:, 0] == 0]
+
+    def stat(x):
+        return f"mean {x.mean():6.3f}  p95 {np.percentile(x, 95):6.3f}"
+
+    print(f"[debris perf] {held.shape[0]} chips held 12 ticks after birth, "
+          f"{on[:, 2].mean():.0f} drawn; {len(a)} frames "
+          f"(+{PERF_WARMUP_FRAMES} warm-up)")
+    print(f"[debris perf] DEBRIS STAGE GPU ms: chips on {stat(on[:, 1])} ; "
+          f"off {stat(off[:, 1])} ; DEBRIS GPU = on - off = "
+          f"{on[:, 1].mean() - off[:, 1].mean():6.3f} ms (world RT "
+          f"{renderer.world.world_px_w}x{renderer.world.world_px_h})")
+    print(f"[debris perf] CPU update ms (the last frame) "
+          f"{ds.last_update_ms:6.3f}")
+    print("OK -- debris perf pass complete (--debris-perf)")
+
+
+def _run_shock_perf(renderer, sim, lights_in, light_sky,
+                    sim_time_per_tick: float, ticks_per_round: int,
+                    frames: int) -> None:
+    """Graphics G4 P2: the shock front's GPU cost on the level's own volley
+    (design §3.3: budget 0.2 ms on blast_final). The sim runs (lit) until its
+    detonations' rings are live, then FREEZES; each measured frame re-uploads
+    with the ring clock set to one of the ring's life ticks (all of them in
+    turn, so every radius is measured) and times the resolve on the GPU,
+    alternating the term on and off (the G3 F4a shimmer method: cost = on -
+    off). The term is forced to full strength at any zoom and the dials
+    restored after."""
+    from gl_timer import GLTimer
+    rl.set_target_fps(0)
+    grid_h, grid_w = sim.gmap.solid.shape
+    sw = renderer.shockwave
+    sc = CFG.render.shockwave
+    saved = (sc.zoom_zero, sc.zoom_full)
+    sc.zoom_zero, sc.zoom_full = 0.0, 1e-3
+    tick0 = None
+    try:
+        for _ in range(int(20 * CFG.clock.ticks_per_second)):
+            total = monotonic_total_tick(sim.turn_number, ticks_per_round,
+                                         sim.tick)
+            sim.set_light(True, demo_light_rows(lights_in, total,
+                                                sim_time_per_tick, grid_w,
+                                                grid_h), light_sky)
+            if sim.is_paused():              # _step_keep_running, inline:
+                sim.set_paused(False)        # the step's events are read
+            sim.step()                       # right after it (S3)
+            total = monotonic_total_tick(sim.turn_number, ticks_per_round,
+                                         sim.tick)
+            renderer.consume_events(sim.tick_events, sim_tick=total)
+            renderer.upload_state(sim.gmap, sim_tick=total,
+                                  light_serial=sim.light_serial, alpha=0.0,
+                                  paused=False)
+            if sw.set.rings:
+                tick0 = max(rg.tick0 for rg in sw.set.rings)
+                break
+        if tick0 is None:
+            print("[shock perf] no detonation in 20 s on this level -- run it "
+                  "with --level blast_final")
+            return
+        n_rings = len(sw.set.rings)
+        life_ticks = max(1, int(sc.life_s * CFG.clock.ticks_per_second))
+        res_fn = renderer.world.resolve
+        timer = GLTimer()
+        cur = {"on": True, "gpu": 0.0}
+
+        def timed_resolve(*a, **kw):
+            if not cur["on"]:
+                kw["shock"] = None
+            timer.begin()
+            out = res_fn(*a, **kw)
+            timer.end()
+            cur["gpu"] = timer.result_ms()
+            return out
+
+        renderer.world.resolve = timed_resolve
+        rows = []
+        for i in range(PERF_WARMUP_FRAMES + frames):
+            k = (i // 2) % life_ticks
+            cur["on"] = (i % 2) == 0
+            renderer.upload_state(sim.gmap, sim_tick=tick0 + k,
+                                  light_serial=sim.light_serial, alpha=0.0,
+                                  paused=False)
+            active = sw.active(renderer.world.world_px_per_tile)
+            box = sw.uniforms(renderer.world.world_px_per_tile)["u_shock_box"]
+            renderer.begin_frame()
+            renderer.compose_world(units_marines=sim.marines(),
+                                   units_zombies=sim.zombies(),
+                                   projectiles=sim.projectiles)
+            renderer.draw_background_to_screen()
+            renderer.blit_world_to_screen()
+            renderer.end_frame()
+            if i >= PERF_WARMUP_FRAMES:
+                rows.append((float(cur["on"]), cur["gpu"], float(active),
+                             (box[2] - box[0]) * (box[3] - box[1]),
+                             sw.last_update_ms))
+        renderer.world.resolve = res_fn
+    finally:
+        sc.zoom_zero, sc.zoom_full = saved
+    a = np.asarray(rows, np.float64)
+    on, off = a[a[:, 0] == 1], a[a[:, 0] == 0]
+
+    def stat(x):
+        return f"mean {x.mean():6.3f}  p95 {np.percentile(x, 95):6.3f}"
+
+    print(f"[shock perf] {n_rings} live rings (tick0 {tick0}), ages swept over "
+          f"{life_ticks} ticks; {len(a)} frames (+{PERF_WARMUP_FRAMES} warm-up)"
+          f"; term active in {100 * on[:, 2].mean():.0f} % of its frames; "
+          f"band box mean {on[:, 3].mean():.0f} tiles^2")
+    print(f"[shock perf] RESOLVE GPU ms: shock on {stat(on[:, 1])} ; off "
+          f"{stat(off[:, 1])} ; SHOCK GPU = on - off = "
+          f"{on[:, 1].mean() - off[:, 1].mean():6.3f} ms (world RT "
+          f"{renderer.world.world_px_w}x{renderer.world.world_px_h})")
+    print(f"[shock perf] CPU update ms {stat(a[:, 4])}")
+    print("OK -- shock perf pass complete (--shock-perf)")
+
+
 def _parse_perf_ignite() -> list:
     """``--perf-ignite "X,Y;X,Y"`` -- tiles lit before the warm-up with the
     canonical heat-only igniter ``[payloads.studio_ignite]`` (CLAUDE.md
@@ -1237,7 +1561,7 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
         payload = sim.weapons_tables.payloads.by_name["studio_ignite"]
         for (x, y) in ignite:
             execute_payload(sim.gmap, sim.edit_queue, sim.units, y, x,
-                            payload, sim.rng, events=[], kind="charge")
+                            payload, sim.draws, events=[], kind="charge")
 
     def _lit_step():
         total = monotonic_total_tick(sim.turn_number, ticks_per_round, sim.tick)
@@ -1600,6 +1924,36 @@ def main() -> None:
             renderer.shutdown()
         return
 
+    spark_perf_frames = _parse_spark_perf()
+    if spark_perf_frames is not None:
+        try:
+            _run_spark_perf(renderer, sim, lights_in, light_sky,
+                            sim_time_per_tick, ticks_per_round,
+                            spark_perf_frames)
+        finally:
+            renderer.shutdown()
+        return
+
+    debris_perf_frames = _parse_debris_perf()
+    if debris_perf_frames is not None:
+        try:
+            _run_debris_perf(renderer, sim, lights_in, light_sky,
+                             sim_time_per_tick, ticks_per_round,
+                             debris_perf_frames)
+        finally:
+            renderer.shutdown()
+        return
+
+    shock_perf_frames = _parse_shock_perf()
+    if shock_perf_frames is not None:
+        try:
+            _run_shock_perf(renderer, sim, lights_in, light_sky,
+                            sim_time_per_tick, ticks_per_round,
+                            shock_perf_frames)
+        finally:
+            renderer.shutdown()
+        return
+
     # FINAL keybindings (B2 P5, design §8 human-test readiness) — the FULL
     # map, also drawn on the panel (see the on-screen block in _draw_panel).
     # Printed here since the tall panel can scroll the on-screen help off the
@@ -1711,6 +2065,18 @@ def main() -> None:
             renderer.embers.enabled_override = False
         if "shimmer" in look_shot.hide:
             renderer.shimmer.enabled_override = False
+        # graphics G4 P2: the shock front
+        if "shock" in look_shot.hide:
+            renderer.shockwave.enabled_override = False
+        # graphics G4 P3: the sparks
+        if "sparks" in look_shot.hide:
+            renderer.sparks.enabled_override = False
+        # graphics G4 P4: the debris
+        if "debris" in look_shot.hide:
+            renderer.debris.enabled_override = False
+        # ... and since G4 P5 the blast flashes (their light, not the event)
+        if "flash" in look_shot.hide:
+            renderer.blast_flash_on = False
         # graphics G3 F2: a shot may open a flame VFX debug view (F11's cycle)
         if look_shot.fire_debug:
             renderer.fire_vfx.debug_override = look_shot.fire_debug
@@ -1825,13 +2191,12 @@ def main() -> None:
     # "grenade" was quietly NOT the game's grenade.
     _frag = sim.weapons_tables.payload_for_ammo(DEMO_GRENADE_AMMO)
     state.set("blast_radius", float(_frag.radius))
-    state.set("blast_pressure", float(_frag.pressure))
     state.set("wall_damage", float(_frag.wall_damage))
     state.set("unit_damage", float(_frag.unit_damage))
     print(f"[lighting_demo] detonation: payload {_frag.name!r} "
           f"(ammo {DEMO_GRENADE_AMMO!r}) via simulation.payloads."
           f"execute_payload -- radius={_frag.radius} "
-          f"pressure={_frag.pressure} wall={_frag.wall_damage} "
+          f"strength={_frag.strength} wall={_frag.wall_damage} "
           f"unit={_frag.unit_damage}")
     # smoke_emission mirror REMOVED at P-S1 — [physics.fire] no longer
     # carries the key (a stale config now loud-errors at load instead).
@@ -1920,7 +2285,8 @@ def main() -> None:
     def _light_rows_now(mouse_f):
         total = monotonic_total_tick(sim.turn_number, ticks_per_round, sim.tick)
         return demo_light_rows(lights_in, total, sim_time_per_tick, grid_w,
-                               grid_h, state=state, mouse_f=mouse_f)
+                               grid_h, state=state, mouse_f=mouse_f,
+                               renderer=renderer, gmap=sim.gmap)
 
     # graphics G3 F4b: the fire's room-light rows -- its gain x its flicker
     # (main.py's rule: handed with the cone rows each tick; None = none)
@@ -2059,6 +2425,9 @@ def main() -> None:
                     lit_rows = _light_rows_now(mouse_f)
                     sim.set_light(True, lit_rows, light_sky, _flicker_now())
                     sim.step()
+                    renderer.consume_events(
+                        sim.tick_events, sim_tick=monotonic_total_tick(
+                            sim.turn_number, ticks_per_round, sim.tick))
                     stepped = True
                 else:
                     tick_accum += dt
@@ -2067,6 +2436,9 @@ def main() -> None:
                         lit_rows = _light_rows_now(mouse_f)
                         sim.set_light(True, lit_rows, light_sky, _flicker_now())
                         sim.step()
+                        renderer.consume_events(
+                            sim.tick_events, sim_tick=monotonic_total_tick(
+                                sim.turn_number, ticks_per_round, sim.tick))
                         stepped = True
                         tick_accum -= sim_dt
                         steps += 1
@@ -2221,7 +2593,7 @@ def main() -> None:
                                   light_serial=sim.light_serial,
                                   alpha=0.0 if auto else tick_accum / sim_dt,
                                   paused=bool(state.paused))
-            renderer.consume_events(sim.tick_events)
+            # tick events were consumed after every sim step above (G4 #75)
             renderer._advance_effects(dt)
 
             # Pressure overlay is now owned by the renderer (shared with
@@ -2487,7 +2859,6 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     # -- §4.6 Grenade tuning (overrides on [payloads.frag_standard]) --
     y = _section_header("Grenade [R=arm, click=det]", x, y)
     y = _slider(state, "blast_radius", "Radius", 1.0, 15.0, x, y)
-    y = _slider(state, "blast_pressure", "Pressure", 1.0, 30.0, x, y)
     y = _slider(state, "wall_damage", "Wall dmg", 0.0, 1000.0, x, y)
     # unit_damage IS applied as of P4r — the executor runs apply_blast_damage
     # (the wave_p blast coupling row) like every other detonation site.

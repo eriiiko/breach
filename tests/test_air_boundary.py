@@ -83,7 +83,7 @@ def _write_png(path: Path, w: int = 8, h: int = 6) -> None:
 
 
 PREFIX = ("# hand comment stays\n"
-          'version = "2"\nname = "T"\ntilemap = "tilemap.csv"\n'
+          'version = "3"\nname = "T"\ntilemap = "tilemap.csv"\n'
           'tile_size_m = 0.333\ndiffuse = "diffuse.png"\n\n')
 SUFFIX = ('[art.bare]\n# baked by the P2 baker\n'
           'diffuse = "diffuse.png"\n\n'
@@ -231,7 +231,7 @@ def test_solid_and_space_values_ignored(tmp_path):
     today's: 0 atmosphere, 0 species."""
     tm = np.ones((ROOM, ROOM), dtype=np.int32)
     tm[1:-1, 1:-1] = 0
-    tm[0, 0] = 9                            # one SPACE tile in the ring
+    tm[0, 0] = level_loader.SPACE_CODE         # one SPACE tile in the ring
     d = _mini_level(tmp_path, tilemap=tm)
     _air(d, _full(3 * FP_ONE))              # big values EVERYWHERE
     with warnings.catch_warnings():
@@ -400,7 +400,7 @@ def test_boundary_explicit_values_parse(tmp_path, value):
     prefix = PREFIX[:-1] + f'boundary = "{value}"\n\n'
     # A SPACE ring is valid for both modes (vacuum ring / reservoir ring), so
     # the ambient case does not trip the ring-dormant warning.
-    tm = np.full((ROOM, ROOM), 9, dtype=np.int32)
+    tm = np.full((ROOM, ROOM), level_loader.SPACE_CODE, dtype=np.int32)
     tm[1:-1, 1:-1] = 0
     lvl = _load_silent(_mini_level(tmp_path, prefix=prefix, tilemap=tm))
     assert lvl.boundary == value
@@ -417,7 +417,7 @@ def test_boundary_round_trips_byte_stable_through_managed_save(tmp_path):
     """boundary is a top-level scalar OUTSIDE every managed family — the
     managed-block writer must preserve it byte-for-byte through a real
     family rewrite (and through a no-op save)."""
-    tm = np.full((ROOM, ROOM), 9, dtype=np.int32)   # SPACE ring: a real ambient map
+    tm = np.full((ROOM, ROOM), level_loader.SPACE_CODE, dtype=np.int32)  # SPACE ring: a real ambient map
     tm[1:-1, 1:-1] = 0
     d = _mini_level(tmp_path, body=ENTITY_LIGHT, prefix=BOUNDARY_PREFIX,
                     tilemap=tm)
@@ -514,7 +514,7 @@ def test_write_boundary_field_atomic_write_is_a_real_file_replace(tmp_path):
 
 def test_upscale_replicates_air_grid(tmp_path):
     from main import _upscale_level             # heavy import: test-local
-    tm = np.full((ROOM, ROOM), 9, dtype=np.int32)   # SPACE ring: a real ambient map
+    tm = np.full((ROOM, ROOM), level_loader.SPACE_CODE, dtype=np.int32)  # SPACE ring: a real ambient map
     tm[1:-1, 1:-1] = 0
     d = _mini_level(tmp_path, prefix=BOUNDARY_PREFIX, tilemap=tm)
     g = _full(FP_ONE)
@@ -552,9 +552,9 @@ PIN_DEFAULT = 65632                 # p*(quantize(1.0), ΔT=0) — NOT 65536 (th
 
 
 def _ambient_tilemap(n: int = ROOM, interior: int = 0) -> np.ndarray:
-    """A planetside room: SPACE (9) border ring, interior air — the ring
+    """A planetside room: SPACE (SPACE_CODE) border ring, interior air — the ring
     becomes is_ambient wholesale on an ambient map."""
-    tm = np.full((n, n), 9, dtype=np.int32)         # SPACE ring
+    tm = np.full((n, n), level_loader.SPACE_CODE, dtype=np.int32)  # SPACE ring
     tm[1:-1, 1:-1] = interior
     return tm
 
@@ -647,7 +647,7 @@ def test_ambient_wide_sponge_warns(tmp_path):
 
 def test_ambient_space_tiles_route_to_is_ambient_wholesale(tmp_path):
     g = GameMap(_load_silent(_ambient_level(tmp_path)))
-    ring = (_ambient_tilemap() == 9)
+    ring = (_ambient_tilemap() == level_loader.SPACE_CODE)
     assert np.array_equal(g.is_ambient, ring)   # SPACE → is_ambient
     assert not g.is_vacuum.any()                # NO vacuum on a planetside map
 

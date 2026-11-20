@@ -3224,11 +3224,13 @@ def gate19_cones_and_sky(fast=False):
       (d) HEAT IS UNTOUCHED: with cones and a sky, every heat plane and the heat
           telemetry equal the heat-only run's.
       (e) THE DOOR refuses a cone outside the grid, a negative rgb, a centre or a
-          spread out of range, a summed rgb one count over the budget, a sky
-          value out of range or a sky of the wrong shape. PAIR: exactly the
-          budget and exactly the sky maximum are accepted.
+          spread out of range, an rgb over the row maximum, a summed emission
+          one count over the budget IN ONE ORDINATE, a sky value out of range or
+          a sky of the wrong shape. PAIR: exactly the budget and exactly the sky
+          maximum are accepted, and an omni cone at n times the budget (#173).
       (f) HEADROOM, over-driven (the whole cone budget into ONE ordinate of ONE
-          cell, the sky at its maximum in every ordinate, table-top emitters):
+          cell, and into EVERY ordinate of one cell, #173; the sky at its
+          maximum in every ordinate, table-top emitters):
           every light stream < 2^45, light_q < 2^50, every plain product < 2^62,
           the books < 2^63. PAIR: a budget 2^3 larger crosses 2^63.
 
@@ -3431,22 +3433,26 @@ def gate19_cones_and_sky(fast=False):
            dict(cones=[(0, 0, (-1, 1, 1), 0, 0)]), dict(cones=[(0, 0, (1, 1, 1), T_, 0)]),
            dict(cones=[(0, 0, (1, 1, 1), -1, 0)]), dict(cones=[(0, 0, (1, 1, 1), 0, T_ + 1)]),
            dict(cones=[(0, 0, (B, 0, 0), 0, 0), (1, 1, (1, 0, 0), 0, 0)]),
+           dict(cones=[(0, 0, (16 * B + 16, 0, 0), 0, T_)]),
+           dict(cones=[(0, 0, (R.LIGHT_CONE_ROW_MAX + 1, 0, 0), 0, 0)]),
            dict(sky=[[R.LIGHT_SKY_MAX + 1, 0, 0]] + [[0] * 3] * 15),
            dict(sky=[[-1, 0, 0]] + [[0] * 3] * 15), dict(sky=[[0] * 3] * 12)]
     refused = [_refused(**kw) for kw in bad]
     accepted = not _refused(cones=[(0, 0, (B, B, B), 0, 0)],
                             sky=[[R.LIGHT_SKY_MAX] * 3] * 16)
+    accepted = accepted and not _refused(cones=[(0, 0, (16 * B, 16 * B, 16 * B), 0, T_)])
     good = all(refused) and accepted
     ok &= good
     lines.append(f"  (e) the door refuses {sum(refused)}/{len(refused)} illegal inputs "
-                 f"(off-grid, negative, centre/spread out of range, budget + 1, sky out of "
-                 f"range or shape). PAIR: exactly the budget and the sky maximum are "
-                 f"accepted {accepted}  {'OK' if good else 'FAIL'}")
+                 f"(off-grid, negative, centre/spread out of range, budget + 1 in one "
+                 f"ordinate, omni at 16 budgets + 16, row maximum + 1, sky out of range or "
+                 f"shape). PAIR: exactly the budget, the sky maximum and an omni cone at 16 "
+                 f"budgets are accepted {accepted}  {'OK' if good else 'FAIL'}")
     # ---- (f) headroom ------------------------------------------------------------
     hh, ww = (7, 8) if fast else (9, 11)
     top = R.T_TABLE_TOP_GAME << 16
 
-    def _over(budget):
+    def _over(budget, every_ordinate=False):
         out = dict(stream=0, plain=0, lq=0, books=0)
         for n_ord in (16, 12):
             for ltr in ("step", "shear"):
@@ -3455,7 +3461,8 @@ def gate19_cones_and_sky(fast=False):
                     T2[y][x] = top
                     for ch in range(3):
                         la2[ch][y][x] = ONE
-                cones = [(0, 0, (budget,) * 3, 0, 0)]          # the whole budget, one ordinate
+                cones = ([(hh // 2, ww // 2, (budget * T_ // -(-T_ // n_ord),) * 3, 0, T_)] if every_ordinate
+                         else [(0, 0, (budget,) * 3, 0, 0)])   # the whole budget, one ordinate
                 sky = [[R.LIGHT_SKY_MAX] * 3] * n_ord
                 rr = R.sweep_q(R.plane(hh, ww), R.plane(hh, ww), R.plane(hh, ww), T2,
                                n_ord=n_ord,
@@ -3471,11 +3478,13 @@ def gate19_cones_and_sky(fast=False):
 
     worst = _over(R.LIGHT_CONE_BUDGET)
     worst_big = _over(R.LIGHT_CONE_BUDGET << 3)
+    for k, v in _over(R.LIGHT_CONE_BUDGET, every_ordinate=True).items():
+        worst[k] = max(worst[k], v)
     good = (worst["stream"] < 2 ** 45 and worst["lq"] < 2 ** 50 and worst["plain"] < 2 ** 62
             and worst["books"] < 2 ** 63 and worst_big["plain"] >= 2 ** 63)
     ok &= good
-    lines.append(f"  (f) over-driven (budget 2^{lg2(R.LIGHT_CONE_BUDGET):.0f} into one "
-                 f"ordinate of one cell, the sky at 2^{lg2(R.LIGHT_SKY_MAX):.0f} in every "
+    lines.append(f"  (f) over-driven (budget 2^{lg2(R.LIGHT_CONE_BUDGET):.0f} into one, and "
+                 f"into every, ordinate of one cell, the sky at 2^{lg2(R.LIGHT_SKY_MAX):.0f} in every "
                  f"ordinate, table-top emitters; S16/S12 x light step/shear): max stream "
                  f"2^{lg2(worst['stream']):.2f} (< 2^45), light_q 2^{lg2(worst['lq']):.2f} "
                  f"(< 2^50), widest plain product 2^{lg2(worst['plain']):.2f} (< 2^62), books "

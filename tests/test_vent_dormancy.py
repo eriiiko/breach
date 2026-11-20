@@ -118,7 +118,8 @@ def test_entities_toml_registration_of_duct_vent_does_not_change_class_registry_
     assert [f.name for f in REGISTRY["door"].FIELDS] == \
         ["x", "y", "orientation", "length_m", "initial_state"]
     assert [f.name for f in REGISTRY["pump"].FIELDS] == \
-        ["x", "y", "port_dx", "port_dy", "rate", "target_atm", "hysteresis_band"]
+        ["x", "y", "port_dx", "port_dy", "rate", "target_atm", "hysteresis_band",
+             "feed", "source_dx", "source_dy"]   # #133: the transfer feed
 
 
 if __name__ == "__main__":

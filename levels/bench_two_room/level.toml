@@ -25,7 +25,7 @@
 #   conda run -n data python tools/bench_two_room.py --ticks 4800 --pf1b
 #
 # Art is a flat placeholder (the bench is headless; the loader requires the file).
-version = "2"
+version = "3"
 name = "bench_two_room"
 
 tilemap = "tilemap.csv"

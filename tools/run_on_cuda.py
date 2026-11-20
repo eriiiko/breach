@@ -35,7 +35,6 @@ EOS_P6_PENDING_KERNELS. This tool is unusable during that window.
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -52,6 +51,7 @@ if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 from cuda_harness import cuda_dll_dir as _cuda_dll_dir  # noqa: E402
 from cuda_harness import cuda_pyd as _cuda_pyd  # noqa: E402
+from cuda_harness import register_cuda_runtime  # noqa: E402
 
 
 def setup_cuda_import() -> None:
@@ -66,15 +66,15 @@ def setup_cuda_import() -> None:
     pyd = _cuda_pyd()
     if pyd is None:
         raise SystemExit(
-            "CUDA build not found at cpp/build_cuda/breach_physics*.pyd.\n"
-            "Build it first:  cpp/build_cuda.bat\n"
+            "CUDA build not found at cpp/build_cuda/breach_physics*.pyd (.so).\n"
+            "Build it first:  cpp/build_cuda.bat (Linux: cpp/build_linux.sh cuda)\n"
             "(The CPU game still runs with:  python main.py)")
     dll = _cuda_dll_dir()
     if dll is None:
         raise SystemExit(
-            "CUDA runtime DLLs (cudart64_*.dll) not found. Set CUDA_PATH or "
-            "install the CUDA Toolkit v12.4.")
-    os.add_dll_directory(str(dll))
+            "CUDA runtime (cudart64_*.dll / libcudart.so*) not found. Set "
+            "CUDA_PATH or install the CUDA Toolkit v12.4.")
+    register_cuda_runtime(dll)
     # CUDA build first; then repo root + src so the game's own modules import.
     sys.path.insert(0, str(ROOT / "src"))
     sys.path.insert(0, str(ROOT))
@@ -84,7 +84,8 @@ def setup_cuda_import() -> None:
 # The live-dispatched GPU backends. The first four are field solvers
 # (PhysicsEngine::step); the fifth — the radiation sweep (step 2b of
 # PhysicsEngine::step_tail, ray-engine-v2 P4) — is read per tick by step_tail
-# (bit-identical, tests/cuda_radiation_sweep_check.py).
+# (bit-identical, tests/cuda_radiation_sweep_check.py); the last is the
+# combustion pass (PhysicsRunner._run_combustion's CUDA branch, #71).
 # EOS P6.0: set_wave_backend / set_atmos_backend RETIRED (cuda_wave.cu /
 # cuda_atmosphere.cu deleted — their CPU solvers were replaced by the EOS solve
 # in P3; docs/eos_p6_gpu_alignment_review.md §1.11). NOTE the remaining kernels
@@ -105,6 +106,16 @@ _BACKEND_SETTERS = (
     "set_sl_advection_backend",      # EOS P6.2
     "set_mg_solve_backend",          # EOS P6.3
     "set_kick_compression_backend",  # EOS P6.4
+    # The combustion pass (cuda_combustion.cu). Left out until #71: the twin
+    # predated arc #54's gas energy seam and parted from CombustionSolver on
+    # every burning scene. Level since residency arc #29 P2 -- gate
+    # tests/cuda_combustion_burn_check.py (burning scenes through the real
+    # tick, only this backend flipped, every array and book at tol 0).
+    "set_combustion_backend",
+    # arc #63 P3: the host-path swarm step on the per-call CUDA wrapper (the
+    # resident tick runs the swarm stage in its tail regardless). Gate:
+    # tests/cuda_swarm_check.py (CPU == per-call == resident, tol 0).
+    "set_swarm_backend",
 )
 
 

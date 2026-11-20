@@ -21,20 +21,14 @@ math (``Unit.x``/``y``) or the deterministic integer trig kit
 The ``dx_q``/``dy_q`` pair of :class:`MoveDirIntent` / :class:`AimIntent` /
 :class:`ThrowIntent` is a Q16.16 **unit vector** (the control seam normalizes
 before quantizing), so a common scale factor never leaks a speed dependency
-into direction. ``speed_mode`` is one of the movement order-type ids
-(``ORDER_MOVE_ATTACK`` / ``ORDER_MOVE_COVER`` / ``ORDER_SPRINT``) so the
-continuous move branch reuses the exact same per-order base cadence WEGO uses.
-
-Two speeds, two laws (#106 P6f, Erik's ruling of 2026-10-31: "assume we can
-control the speed from 0 to its max speed, as if we had an Xbox controller"):
-
-* ``MoveDirIntent.speed_q`` is the ANALOG speed: Q16.16, ``0 .. FP_ONE`` = the
-  fraction of the unit's own maximum speed (a stick's deflection past its
-  deadzone, a bot's choice). Default ``FP_ONE``. A CREATURE's hub reads it
-  and chooses its gait from it (``creature_primitives``' speed law); 0 idles.
-* ``MoveDirIntent.speed_mode`` is the MARINES' order law (the WEGO cadence
-  above). A marine's movement never reads ``speed_q`` -- its law is byte for
-  byte what it was; a creature never reads ``speed_mode``.
+into direction. ``throttle_q`` (gameplay pack G1p) is a Q16 THROTTLE in
+``[0, ONE]`` between the ``[speeds]`` table's walk and full speed (G1p-c, m/s;
+the extra speed forward only): continuous, never a speed-mode id. A
+CREATURE reads the same throttle as its ANALOG speed (#106 P6f, Erik's ruling
+of 2026-10-31: "assume we can control the speed from 0 to its max speed, as
+if we had an Xbox controller"): its hub picks the gait from it
+(``creature_primitives.creature_speed_q16`` / ``speed_band``); the marines'
+walk law never sees a creature.
 """
 from __future__ import annotations
 
@@ -60,27 +54,27 @@ class MoveDirIntent:
     """Move the possessed unit by velocity this tick (§3c, the new mechanic).
 
     ``dx_q``/``dy_q`` — Q16.16 unit-vector direction (normalized at the control
-    seam). ``speed_mode`` — a movement order-type id whose base ticks-per-tile
-    cadence the continuous branch scales by the footprint's area-average
-    mobility, exactly as the WEGO A* replay does (the marines' law).
-    ``speed_q`` — the ANALOG speed (#106 P6f), Q16.16 in ``[0, FP_ONE]``:
-    the fraction of the unit's maximum speed. Default ``FP_ONE`` (every
-    caller that predates it is unchanged). Read by a creature's hub (its
-    gait and tempo), never by the marines' law.
+    seam). ``throttle_q`` — Q16 in ``[0, ONE]`` (clamped at
+    ``Simulation.set_move_dir``): 0 walks, ONE runs at full speed, linear in
+    tiles per second between, the extra speed forward only and the walk
+    slower sideways and backward (``movement.move_speed_tiles_per_tick``,
+    G1p-c); both ends are scaled by the footprint's area-average mobility and
+    the wind, exactly as every walker is (``movement.default_speed``).
     """
 
     dx_q: int
     dy_q: int
-    speed_mode: int
-    speed_q: int = FP_ONE
+    throttle_q: int
 
 
 @dataclass
 class AimIntent:
     """Continuous facing (§3c). ``dx_q``/``dy_q`` — Q16.16 unit-vector aim
-    direction. The sim turns it into ``Unit.facing`` through the deterministic
-    integer ``atan2`` kit (``unit_fixed.atan2_rad``), never ``math.atan2`` —
-    facing is synced state hashed by the lockstep digest."""
+    direction: the facing the unit WANTS. Each tick the sim turns
+    ``Unit.facing`` toward it by at most the unit's turn rate (G1p,
+    ``simulation/turning.py``) through the deterministic integer ``atan2``
+    kit (``unit_fixed.atan2_q16``), never ``math.atan2`` — facing is synced
+    state hashed by the lockstep digest."""
 
     dx_q: int
     dy_q: int
@@ -88,19 +82,23 @@ class AimIntent:
 
 @dataclass
 class ThrowIntent:
-    """Lob a grenade along ``dx_q``/``dy_q`` (Q16.16 unit vector), fusing after
-    ``fuse_seconds`` (§3c THROW). Edge-triggered: latched by the facade until
-    the next tick consumes it, so a button tap between two ticks is never
-    dropped and never double-fired."""
+    """Lob a grenade along ``dx_q``/``dy_q`` (Q16.16 unit vector), fusing
+    ``fuse_ticks`` INTEGER ticks after it leaves the hand (§3c THROW; G3p).
+    Edge-triggered: latched by the facade until the next tick consumes it,
+    so a button tap between two ticks is never dropped and never
+    double-fired. ``kind`` is the index of the hand-grenade ``[ammo.*]`` row
+    thrown (``WeaponsTables.hand_grenade_rows``)."""
 
     dx_q: int
     dy_q: int
-    fuse_seconds: float
+    fuse_ticks: int
     #: How far to lob, Q16.16 tiles (#121: a controller aiming at a POINT,
     #: the bots' group centre). ``None`` = the v0.1 fixed reach (the gamepad's
     #: throw, unchanged). The consumer clamps it to the hand grenade row's
     #: ``max_throw_range``.
     reach_q: int | None = None
+    #: The hand-grenade row's index (0 = ``grenade_frag``).
+    kind: int = 0
 
 
 __all__ = [

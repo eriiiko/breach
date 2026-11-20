@@ -308,8 +308,8 @@ def test_intents_are_the_goal_never_a_move(room):
         for t in range(12):
             if with_intents:
                 # at the crawl's band top (#106 P6f: the analog speed)
-                sim.set_move_dir(u.id, 65536, 0, 0,
-                                 speed_q=body_of(sim, u).dials.crawl_until)
+                sim.set_move_dir(u.id, 65536, 0,
+                                 body_of(sim, u).dials.crawl_until)
                 sim.set_aim(u.id, 0, -65536)
             sim.set_paused(False)
             sim.step()

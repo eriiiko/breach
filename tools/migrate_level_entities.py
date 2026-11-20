@@ -23,6 +23,15 @@ at once, with a ``.bak`` of every touched file:
   (c) ``[[spawn]]`` is untouched — permanent (units are NOT entities,
       entity design §3e).
 
+``--doors-only`` (#215, Erik 2026-11-18: the painted doors are retired
+completely; the loader now REFUSES a bare painted door): (a) alone -- the
+legacy ``[[light]]`` blocks are left as they are and are no legacy form for
+this run. It is how the shipped levels with painted doors were migrated
+(unhcr_vessel, bake_demo); a level written by a generator is regenerated
+instead (gen_ship's door rows emit door entities). Kept: it is THE way a
+level that still carries painted doors (an old branch, a hand edit) is
+brought to entity form, since such a level no longer loads.
+
 Grouping rule for painted runs: maximal HORIZONTAL runs (length >= 2)
 claim first in row-major scan order, then maximal VERTICAL runs (length
 >= 2) among the remaining tiles, then leftover singletons become 1-tile
@@ -266,12 +275,14 @@ def _canonical_csv_bytes(csv_bytes: bytes, grid: np.ndarray) -> bytes:
 
 
 def migrate_level(level_dir, *, dry_run: bool = False,
-                  verbose: bool = True) -> MigrationPlan:
+                  verbose: bool = True,
+                  doors_only: bool = False) -> MigrationPlan:
     """Migrate one level folder in place (or plan it, with ``dry_run``).
 
     Raises ValueError on refusal (v1 level, half-migrated level, id
     collision, non-canonical CSV, verification failure). Returns the
     :class:`MigrationPlan` — ``noop=True`` when there was nothing to do.
+    ``doors_only``: the painted doors alone; ``[[light]]`` is left as it is.
     """
     level_dir = Path(level_dir)
     say = print if verbose else (lambda *a, **k: None)
@@ -279,21 +290,24 @@ def migrate_level(level_dir, *, dry_run: bool = False,
 
     # -- read (level_lib's read side == level_loader; the loader already
     # hard-errors the [[light]]+entity-light mix, naming this tool) --------
-    handle = level_lib.open_level(str(level_dir))
+    handle = level_lib.open_level(str(level_dir),
+                                  allow_bare_painted_doors=True)
     lvl = handle.data
-    if str(lvl.version) != "2":
+    if str(lvl.version) != level_loader.LEVEL_FORMAT_VERSION:
         raise ValueError(
             f"{level_dir}: level format version {lvl.version!r} — the "
-            f"painted-door rewrite is v2 CSV vocabulary; run "
-            f"tools/migrate_tilemap_v2.py first")
+            f"painted-door rewrite is v{level_loader.LEVEL_FORMAT_VERSION} CSV "
+            f"vocabulary; migrate the level first (v1: "
+            f"tools/migrate_tilemap_v2.py, then tools/migrate_tilemap_v3.py)")
 
-    raw_lights = lvl.raw_toml.get("light", [])
+    raw_lights = [] if doors_only else lvl.raw_toml.get("light", [])
     runs = door_runs(lvl.tilemap)
     plan.door_tiles = sorted(t for _, tiles in runs for t in tiles)
     legacy_present = bool(runs or raw_lights)
 
     migrated_classes = sorted({e.class_name for e in lvl.entities
-                               if e.class_name in ("door", "light")})
+                               if e.class_name in (("door",) if doors_only
+                                                   else ("door", "light"))})
     if legacy_present and migrated_classes:
         raise ValueError(
             f"{level_dir}: HALF-MIGRATED level — [[entity]] "
@@ -354,10 +368,11 @@ def migrate_level(level_dir, *, dry_run: bool = False,
 
     # -- write: level.toml first (THE writer, one atomic replace), then the
     # CSV — a crash in between leaves a loadable, tool-refusable state ----
-    plan.toml_bak = handle.save({
-        "light": lambda nl: [],
-        "entity": lambda nl: level_lib.format_entity_lines(all_entities, nl),
-    }, write_bak=True)
+    managed = {
+        "entity": lambda nl: level_lib.format_entity_lines(all_entities, nl)}
+    if not doors_only:
+        managed["light"] = lambda nl: []
+    plan.toml_bak = handle.save(managed, write_bak=True)
     if runs:
         plan.csv_bak = level_lib.write_tilemap_csv(
             lvl.path, new_grid, tilemap_rel=lvl.raw_toml.get("tilemap"),
@@ -410,6 +425,8 @@ def main(argv=None) -> int:
                     help="levels/ folder name(s) or path(s)")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the plan, write nothing")
+    ap.add_argument("--doors-only", action="store_true",
+                    help="migrate the painted doors alone; leave [[light]]")
     args = ap.parse_args(argv)
 
     rc = 0
@@ -422,7 +439,8 @@ def main(argv=None) -> int:
             rc = 2
             continue
         try:
-            migrate_level(level_dir, dry_run=args.dry_run)
+            migrate_level(level_dir, dry_run=args.dry_run,
+                          doors_only=args.doors_only)
         except ValueError as e:
             print(f"REFUSED: {e}")
             rc = 1

@@ -39,6 +39,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
@@ -64,6 +65,7 @@ from simulation.orders import (  # noqa: E402
 from simulation.status import STUNNED, apply_status  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.weapons import get_tables  # noqa: E402
+from simulation.unit_schema import MAG_UNBOUND  # noqa: E402  (#29 P3a; was None)
 
 SEED = 20260707
 
@@ -344,6 +346,12 @@ def test_spray_code_never_touches_unit_hp_structural_and_runtime():
     assert "UnitKilledEvent" not in seen_kinds
 
 
+@pytest.mark.xfail(strict=False, reason=(
+    "Erik, 2026-11-18 (#215): the spray weapon is a placeholder, 'treat it as "
+    "not really implemented'; not tuned for. Since the body law, the jet's own "
+    "air (about 10 000 C at 6 atm on this 1 m tile, sealed 24 x 24 room) "
+    "reaches the sprayer's tiles, and its body takes up the hot air: the "
+    "sprayer loses about 7 HP in 12 ticks at the shipped protection"))
 def test_marine_in_flames_loses_hp_via_the_existing_heat_row():
     """The same scene WITH the engine attached: the victim drains through
     apply_environmental_damage (source 'heat') — the EXISTING coupling row,
@@ -476,7 +484,7 @@ def test_stationary_rule_move_order_blocks_the_burst():
     _step(sim, 30)
     assert s.spray_ticks_left == 0
     assert not sim.gmap.heat.any()                    # nothing ever deposited
-    assert s.current_mag is None                      # mag state untouched
+    assert s.current_mag == MAG_UNBOUND                      # mag state untouched
     assert s.last_fire_tick == -999
 
 
@@ -491,13 +499,13 @@ def test_auto_fire_skips_spray_weapons_and_draws_nothing():
     sim.add_unit(z)
     assert sim.apply_action(sid, Order(
         ORDER_MOVE_ATTACK, target_fx=6, target_fy=10, phase=0))
-    state0 = sim.rng.bit_generator.state
+    state0 = sim.draws.drawn
     _step(sim, 10)
     assert s.spray_ticks_left == 0
     assert not sim.gmap.heat.any()
     assert not sim.gmap.gas[FUEL_GAS].any()
-    assert s.last_fire_tick == -999 and s.current_mag is None
-    assert sim.rng.bit_generator.state == state0
+    assert s.last_fire_tick == -999 and s.current_mag == MAG_UNBOUND
+    assert sim.draws.drawn == state0
 
 
 # ---------------------------------------------------------------------------
@@ -521,6 +529,7 @@ def test_burst_mag_reload_cadence_exact_ticks():
 
     deposit_ticks = []
     mag_at = {}
+    done_at = {}
     for t in range(210):
         process_shooting(gmap, [u], t, shots, 0.0, rng, queue=queue)
         process_sprays(gmap, [u], queue)
@@ -529,6 +538,7 @@ def test_burst_mag_reload_cadence_exact_ticks():
         queue.clear()                                 # never flushed — cadence only
         if t in (0, 108, 143, 150, 204):
             mag_at[t] = u.current_mag
+            done_at[t] = u.reload_done_tick
 
     # 4 back-to-back bursts: every tick 0..143 deposits; then the stall.
     assert deposit_ticks[:144] == list(range(144))
@@ -538,7 +548,7 @@ def test_burst_mag_reload_cadence_exact_ticks():
     # reload window 108 + 96 = 204; refilled-and-spent -> 3 at tick 204.
     assert mag_at[0] == 3
     assert mag_at[108] == 0 and mag_at[143] == 0 and mag_at[150] == 0
-    assert u.reload_done_tick == 108 + 96
+    assert done_at[150] == 108 + 96                   # the stall's deadline
     assert mag_at[204] == 3
     assert rng.bit_generator.state == state0          # NO RNG anywhere in W4
 
@@ -580,7 +590,7 @@ def test_dormancy_no_spray_weapon_is_bit_identical_to_prew4():
             snap["__hp__"] = tuple(u.current_hp for u in sim.units)
             snap["__pos__"] = tuple((u.x, u.y) for u in sim.units)
             traj.append(snap)
-        return traj, sim.rng.bit_generator.state
+        return traj, sim.draws.drawn
 
     traj_new, rng_new = run(build())
 

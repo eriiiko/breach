@@ -30,6 +30,7 @@
 #include "trace_decay.h"     // the shared decay rule + its host fold (P2b)
 #include "fixed_point.h"   // q16, mul_wide, scale_mag, FP_ONE, FP_SHIFT (FP_HD)
 #include "cuda_fixedpoint_device.cuh"  // flux_to_dq_dev (hoisted here in P6.1)
+#include "cuda_batch.cuh"               // #29 P5: the (N, h, w) launch shape
 
 #include <cuda_runtime.h>
 
@@ -67,8 +68,13 @@ __global__ void bulk_flux_dq(const int32_t* __restrict__ N,
                              const int32_t* __restrict__ coeffE,
                              const int32_t* __restrict__ coeffS,
                              int32_t* __restrict__ dq_e,
-                             int32_t* __restrict__ dq_s, int h, int w) {
+                             int32_t* __restrict__ dq_s, int h, int w,
+                             size_t gs, const EnvSub* __restrict__ es, int sub) {
+    if (sub_off(es, sub)) return;   // #29 P5: a masked env does nothing
     const int n = h * w;
+    N = bptr(N, gs); wind_x = bptr(wind_x, n); wind_y = bptr(wind_y, n);
+    solid = bptr(solid, n); coeffE = bptr(coeffE, n); coeffS = bptr(coeffS, n);
+    dq_e = bptr(dq_e, n); dq_s = bptr(dq_s, n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         const int y = i / w;
@@ -102,8 +108,12 @@ __global__ void bulk_flux_dq(const int32_t* __restrict__ N,
 __global__ void bulk_scale(const int32_t* __restrict__ dq_e,
                            const int32_t* __restrict__ dq_s,
                            const int32_t* __restrict__ N,
-                           int32_t* __restrict__ scale_q, int h, int w) {
+                           int32_t* __restrict__ scale_q, int h, int w,
+                           size_t gs, const EnvSub* __restrict__ es, int sub) {
+    if (sub_off(es, sub)) return;
     const int n = h * w;
+    dq_e = bptr(dq_e, n); dq_s = bptr(dq_s, n); N = bptr(N, gs);
+    scale_q = bptr(scale_q, n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         const int y = i / w;
@@ -128,8 +138,11 @@ __global__ void bulk_scale(const int32_t* __restrict__ dq_e,
 __global__ void bulk_scale_apply(int32_t* __restrict__ dq_e,
                                  int32_t* __restrict__ dq_s,
                                  const int32_t* __restrict__ scale_q,
-                                 int h, int w) {
+                                 int h, int w,
+                                 const EnvSub* __restrict__ es, int sub) {
+    if (sub_off(es, sub)) return;
     const int n = h * w;
+    dq_e = bptr(dq_e, n); dq_s = bptr(dq_s, n); scale_q = bptr(scale_q, n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         const int y = i / w;
@@ -147,8 +160,11 @@ __global__ void bulk_scale_apply(int32_t* __restrict__ dq_e,
 // FROZEN (scaled) dq; writes its own N in place.
 __global__ void bulk_diverge(int32_t* __restrict__ N,
                              const int32_t* __restrict__ dq_e,
-                             const int32_t* __restrict__ dq_s, int h, int w) {
+                             const int32_t* __restrict__ dq_s, int h, int w,
+                             size_t gs, const EnvSub* __restrict__ es, int sub) {
+    if (sub_off(es, sub)) return;
     const int n = h * w;
+    N = bptr(N, gs); dq_e = bptr(dq_e, n); dq_s = bptr(dq_s, n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         const int y = i / w;
@@ -175,7 +191,12 @@ __global__ void bulk_clamp(int32_t* __restrict__ N,
                            const bool* __restrict__ solid,
                            const bool* __restrict__ is_vacuum, int n,
                            const bool* __restrict__ is_ambient, int32_t n_amb,
-                           unsigned long long* __restrict__ rail) {
+                           unsigned long long* __restrict__ rail,
+                           size_t gs, size_t rstride,
+                           const EnvSub* __restrict__ es, int sub) {
+    if (sub_off(es, sub)) return;
+    N = bptr(N, gs); solid = bptr(solid, (size_t)n); is_vacuum = bptr(is_vacuum, (size_t)n);
+    is_ambient = bptr(is_ambient, (size_t)n); rail = bptr(rail, rstride);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (solid[i] || is_vacuum[i]) {
@@ -199,7 +220,11 @@ __global__ void bulk_clamp(int32_t* __restrict__ N,
 __global__ void bulk_dq_accum(int64_t* __restrict__ dqsum_e,
                               int64_t* __restrict__ dqsum_s,
                               const int32_t* __restrict__ dq_e,
-                              const int32_t* __restrict__ dq_s, int n) {
+                              const int32_t* __restrict__ dq_s, int n,
+                              const EnvSub* __restrict__ es, int sub) {
+    if (sub_off(es, sub)) return;
+    dqsum_e = bptr(dqsum_e, (size_t)n); dqsum_s = bptr(dqsum_s, (size_t)n);
+    dq_e = bptr(dq_e, (size_t)n); dq_s = bptr(dq_s, (size_t)n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         dqsum_e[i] += (int64_t)dq_e[i];
@@ -217,7 +242,10 @@ __device__ __forceinline__ bool e_part_dev(int i, const bool* solid,
 
 // ---- n_bulk accumulate (one plane per launch; the CPU's inner gi sum) ------
 __global__ void bulk_nb_accum(int64_t* __restrict__ nb,
-                              const int32_t* __restrict__ N, int n) {
+                              const int32_t* __restrict__ N, int n,
+                              size_t gs, const EnvSub* __restrict__ es, int sub) {
+    if (sub_off(es, sub)) return;
+    nb = bptr(nb, (size_t)n); N = bptr(N, gs);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         nb[i] += (int64_t)N[i];
@@ -250,8 +278,14 @@ __global__ void bulk_e_apply_v2(int64_t* __restrict__ gas_energy,
                                 const bool* __restrict__ is_ambient,
                                 int32_t t_amb_raw,
                                 unsigned long long* __restrict__ cnt,
-                                int h, int w) {
+                                int h, int w,
+                                size_t cstride, const EnvSub* __restrict__ es, int sub) {
+    if (sub_off(es, sub)) return;
     const int n = h * w;
+    gas_energy = bptr(gas_energy, n); e_pre = bptr(e_pre, n); n_pre = bptr(n_pre, n);
+    dqsum_e = bptr(dqsum_e, n); dqsum_s = bptr(dqsum_s, n);
+    solid = bptr(solid, n); ts = bptr(ts, n); is_vacuum = bptr(is_vacuum, n);
+    is_ambient = bptr(is_ambient, n); cnt = bptr(cnt, cstride);
     const int64_t t_amb64 = (int64_t)t_amb_raw;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
@@ -335,8 +369,14 @@ __global__ void bulk_e_recover_v2(int32_t* __restrict__ temperature,
                                   int32_t t_min_q, int32_t t_max_phys_q,
                                   int32_t t_amb_raw,
                                   unsigned long long* __restrict__ cnt,
-                                  int h, int w) {
+                                  int h, int w,
+                                  size_t cstride, const EnvSub* __restrict__ es, int sub) {
+    if (sub_off(es, sub)) return;
     const int n = h * w;
+    temperature = bptr(temperature, n); gas_energy = bptr(gas_energy, n);
+    nb_new = bptr(nb_new, n); dqsum_e = bptr(dqsum_e, n); dqsum_s = bptr(dqsum_s, n);
+    solid = bptr(solid, n); ts = bptr(ts, n); is_vacuum = bptr(is_vacuum, n);
+    is_ambient = bptr(is_ambient, n); cnt = bptr(cnt, cstride);
     const int64_t t_amb64 = (int64_t)t_amb_raw;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
@@ -411,8 +451,15 @@ __global__ void trace_apply(int32_t* __restrict__ S,
                             unsigned long long* __restrict__ vent,
                             unsigned long long* __restrict__ clip,
                             unsigned long long* __restrict__ neg,
-                            int h, int w) {
+                            int h, int w,
+                            size_t gs, size_t tstride,
+                            const EnvSub* __restrict__ es, int sub) {
+    if (sub_off(es, sub)) return;
     const int n = h * w;
+    S = bptr(S, gs); s_pre = bptr(s_pre, n); n_pre = bptr(n_pre, n);
+    dqsum_e = bptr(dqsum_e, n); dqsum_s = bptr(dqsum_s, n);
+    solid = bptr(solid, n); is_vacuum = bptr(is_vacuum, n); is_ambient = bptr(is_ambient, n);
+    vent = bptr(vent, tstride); clip = bptr(clip, tstride); neg = bptr(neg, tstride);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (!t_part_dev(i, solid, is_vacuum, is_ambient)) continue;
@@ -494,7 +541,13 @@ __global__ void trace_wipe(int32_t* __restrict__ S,
                            const bool* __restrict__ solid,
                            const bool* __restrict__ is_vacuum,
                            const bool* __restrict__ is_ambient,
-                           unsigned long long* __restrict__ wipe, int n) {
+                           unsigned long long* __restrict__ wipe, int n,
+                           size_t gs, size_t tstride,
+                           const EnvSub* __restrict__ es, int sub) {
+    if (sub_off(es, sub)) return;
+    S = bptr(S, gs); nb_post = bptr(nb_post, (size_t)n);
+    solid = bptr(solid, (size_t)n); is_vacuum = bptr(is_vacuum, (size_t)n);
+    is_ambient = bptr(is_ambient, (size_t)n); wipe = bptr(wipe, tstride);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (!t_part_dev(i, solid, is_vacuum, is_ambient)) continue;
@@ -561,19 +614,22 @@ void bulk_flux_transport_cached(
 
         // B1 face flux + dq
         bulk_flux_dq<<<grid, block>>>(d_N, d_wx, d_wy, d_solid,
-                                      d_coeffE, d_coeffS, d_dq_e, d_dq_s, h, w);
+                                      d_coeffE, d_coeffS, d_dq_e, d_dq_s, h, w,
+                                      (size_t)n, nullptr, 0);
         cuda_check(cudaGetLastError(), "flux_dq launch");
         // B2 limiter factor
-        bulk_scale<<<grid, block>>>(d_dq_e, d_dq_s, d_N, d_scale, h, w);
+        bulk_scale<<<grid, block>>>(d_dq_e, d_dq_s, d_N, d_scale, h, w,
+                                    (size_t)n, nullptr, 0);
         cuda_check(cudaGetLastError(), "scale launch");
         // B3 scale-apply (in-place on d_dq_e/d_dq_s)
-        bulk_scale_apply<<<grid, block>>>(d_dq_e, d_dq_s, d_scale, h, w);
+        bulk_scale_apply<<<grid, block>>>(d_dq_e, d_dq_s, d_scale, h, w, nullptr, 0);
         cuda_check(cudaGetLastError(), "scale-apply launch");
         // B4 diverge (in-place on d_N)
-        bulk_diverge<<<grid, block>>>(d_N, d_dq_e, d_dq_s, h, w);
+        bulk_diverge<<<grid, block>>>(d_N, d_dq_e, d_dq_s, h, w, (size_t)n, nullptr, 0);
         cuda_check(cudaGetLastError(), "diverge launch");
         // B5 clamp (in-place on d_N). Isolated entry: no ambient ring.
-        bulk_clamp<<<grid, block>>>(d_N, d_solid, d_vac, n, nullptr, 0, nullptr);
+        bulk_clamp<<<grid, block>>>(d_N, d_solid, d_vac, n, nullptr, 0, nullptr,
+                                    (size_t)n, 0, nullptr, 0);
         cuda_check(cudaGetLastError(), "clamp launch");
 
         cuda_check(cudaDeviceSynchronize(), "sync");
@@ -641,28 +697,35 @@ void bulk_flux_plane_device(
         int32_t* d_dq_e, int32_t* d_dq_s, int32_t* d_scale,
         int h, int w,
         const bool* d_is_ambient, int32_t n_amb, unsigned long long* d_rail,
-        int64_t* d_dqsum_e, int64_t* d_dqsum_s) {
+        int64_t* d_dqsum_e, int64_t* d_dqsum_s, const BulkBatch& bb) {
+    // #29 P5: (N, h, w) — every launch covers the batch's envs on the tick
+    // stream; the gas plane rebases by bb.gs, a masked env does nothing.
     const int n = h * w;
     const int block = 256;
-    const int grid = (n + block - 1) / block;
-    bulk_flux_dq<<<grid, block>>>(d_N, d_wind_x, d_wind_y, d_solid,
-                                  d_coeffE, d_coeffS, d_dq_e, d_dq_s, h, w);
+    const dim3 grid = bgrid(n, bb.n_env, block);
+    const size_t gs = bb.gs ? bb.gs : (size_t)n;
+    cudaStream_t st = tstream();
+    bulk_flux_dq<<<grid, block, 0, st>>>(d_N, d_wind_x, d_wind_y, d_solid,
+                                  d_coeffE, d_coeffS, d_dq_e, d_dq_s, h, w,
+                                  gs, bb.es, bb.sub);
     cuda_check(cudaGetLastError(), "flux_dq launch (P6.5 chained)");
-    bulk_scale<<<grid, block>>>(d_dq_e, d_dq_s, d_N, d_scale, h, w);
+    bulk_scale<<<grid, block, 0, st>>>(d_dq_e, d_dq_s, d_N, d_scale, h, w, gs, bb.es, bb.sub);
     cuda_check(cudaGetLastError(), "scale launch (P6.5 chained)");
-    bulk_scale_apply<<<grid, block>>>(d_dq_e, d_dq_s, d_scale, h, w);
+    bulk_scale_apply<<<grid, block, 0, st>>>(d_dq_e, d_dq_s, d_scale, h, w, bb.es, bb.sub);
     cuda_check(cudaGetLastError(), "scale-apply launch (P6.5 chained)");
     // P-E1 stage 2c: bank the APPLIED dq — AFTER the limiter/scale_mag and
     // BEFORE the divergence apply, exactly where the CPU banks it.
     if (d_dqsum_e && d_dqsum_s) {
-        bulk_dq_accum<<<grid, block>>>(d_dqsum_e, d_dqsum_s, d_dq_e, d_dq_s, n);
+        bulk_dq_accum<<<grid, block, 0, st>>>(d_dqsum_e, d_dqsum_s, d_dq_e, d_dq_s, n,
+                                              bb.es, bb.sub);
         cuda_check(cudaGetLastError(), "dq_accum launch (P-E1)");
     }
-    bulk_diverge<<<grid, block>>>(d_N, d_dq_e, d_dq_s, h, w);
+    bulk_diverge<<<grid, block, 0, st>>>(d_N, d_dq_e, d_dq_s, h, w, gs, bb.es, bb.sub);
     cuda_check(cudaGetLastError(), "diverge launch (P6.5 chained)");
     // BC: the ambient ring reset + rail (nullptr/0/nullptr = space path).
-    bulk_clamp<<<grid, block>>>(d_N, d_solid, d_is_vacuum, n,
-                                d_is_ambient, n_amb, d_rail);
+    bulk_clamp<<<grid, block, 0, st>>>(d_N, d_solid, d_is_vacuum, n,
+                                d_is_ambient, n_amb, d_rail, gs, bb.rstride,
+                                bb.es, bb.sub);
     cuda_check(cudaGetLastError(), "clamp launch (P6.5 chained)");
 }
 
@@ -686,12 +749,22 @@ void bulk_flux_energy_transport_device(
         unsigned long long* const* d_rail,
         int32_t* const* d_trace_planes, int n_trace, int32_t* d_spre,
         unsigned long long* d_tvent, unsigned long long* d_twipe,
-        unsigned long long* d_tclip, unsigned long long* d_tneg) {
+        unsigned long long* d_tclip, unsigned long long* d_tneg,
+        const BulkBatch& bb) {
     const int n = h * w;
     if (n <= 0) return;
     const int block = 256;
-    const int grid = (n + block - 1) / block;
-    const size_t n8 = (size_t)n * sizeof(int64_t);
+    // #29 P5: (N, h, w). Every scratch plane is (N, h, w); the gas planes are
+    // the env's (n_gases, h, w) block (stride bb.gs); the books are per env
+    // (strides bb.cstride / bb.tstride); a masked env (bb.es, bb.sub) does
+    // nothing in any kernel. The whole-batch copies / memsets of SCRATCH below
+    // touch no env's state, masked or not.
+    const int N = bb.n_env > 0 ? bb.n_env : 1;
+    const dim3 grid = bgrid(n, N, block);
+    const size_t gs = bb.gs ? bb.gs : (size_t)n;
+    const size_t cst = bb.cstride, tst = bb.tstride;
+    cudaStream_t st = tstream();
+    const size_t n8 = (size_t)n * sizeof(int64_t) * (size_t)N;
     // Smoke transport v2 (#12): the trace stages run only when the caller hands
     // trace planes (the chained path its live ones, the resident path all).
     const bool do_trace = (d_trace_planes != nullptr && n_trace > 0
@@ -702,63 +775,66 @@ void bulk_flux_energy_transport_device(
     // ---- stage 1: snapshot (E, n_bulk) PRE-flux (arc #54 design §2.7) -----
     // `d_e` is now a PLAIN SNAPSHOT of the live `gas_energy` (D2D copy) —
     // no rebuild from T (the pre-#54 `bulk_e_build`, deleted).
-    cuda_check(cudaMemcpy(d_e, d_gas_energy, n8, cudaMemcpyDeviceToDevice),
+    cuda_check(cudaMemcpyAsync(d_e, d_gas_energy, n8, cudaMemcpyDeviceToDevice, st),
               "D2D e_pre snapshot");
-    cuda_check(cudaMemset(d_nb, 0, n8), "memset nb (pre)");
+    cuda_check(cudaMemsetAsync(d_nb, 0, n8, st), "memset nb (pre)");
     for (int k = 0; k < n_cons; ++k) {
-        bulk_nb_accum<<<grid, block>>>(d_nb, d_gas_planes[k], n);
+        bulk_nb_accum<<<grid, block, 0, st>>>(d_nb, d_gas_planes[k], n, gs, bb.es, bb.sub);
         cuda_check(cudaGetLastError(), "nb_accum (pre)");
     }
 
     // ---- stage 2: the mass flux, banking the APPLIED per-face dq ----------
-    cuda_check(cudaMemset(d_dqsum_e, 0, n8), "memset dqsum_e");
-    cuda_check(cudaMemset(d_dqsum_s, 0, n8), "memset dqsum_s");
+    cuda_check(cudaMemsetAsync(d_dqsum_e, 0, n8, st), "memset dqsum_e");
+    cuda_check(cudaMemsetAsync(d_dqsum_s, 0, n8, st), "memset dqsum_s");
     for (int k = 0; k < n_cons; ++k) {
+        BulkBatch pb = bb;
         bulk_flux_plane_device(
             d_gas_planes[k], d_wind_x, d_wind_y, d_solid, d_is_vacuum,
             d_coeffE, d_coeffS, d_dq_e, d_dq_s, d_scale, h, w,
             d_is_ambient, n_amb_cons ? n_amb_cons[k] : 0,
             d_rail ? d_rail[k] : nullptr,
-            d_dqsum_e, d_dqsum_s);
+            d_dqsum_e, d_dqsum_s, pb);
     }
 
     // ---- stage 3: e apply (gather), priced off the LIVE energy field ------
-    bulk_e_apply_v2<<<grid, block>>>(d_gas_energy, d_e, d_nb,
+    bulk_e_apply_v2<<<grid, block, 0, st>>>(d_gas_energy, d_e, d_nb,
                                      d_dqsum_e, d_dqsum_s,
                                      d_solid, d_ts, d_is_vacuum, d_is_ambient,
-                                     t_amb_raw, d_ecnt, h, w);
+                                     t_amb_raw, d_ecnt, h, w, cst, bb.es, bb.sub);
     cuda_check(cudaGetLastError(), "e_apply");
 
     // ---- stage 3b: TRACE apply (smoke transport v2, design §2.1) -----------
     // BETWEEN stage 3 and stage 4's `d_nb` memset: d_nb still holds the PRE-flux
     // bulk N (stage 1's accumulate; stage 2 mutates only the gas planes), which
     // is the CPU's `n_pre`. One snapshot D2D + one gather launch per live plane;
-    // the kernel boundary is the CPU's loop boundary.
+    // the kernel boundary is the CPU's loop boundary. #29 P5: the snapshot of
+    // plane k is one 2D copy (N rows of h·w, the env stride gs apart).
     if (do_trace) {
         const size_t n4 = (size_t)n * sizeof(int32_t);
         for (int k = 0; k < n_trace; ++k) {
-            cuda_check(cudaMemcpy(d_spre, d_trace_planes[k], n4,
-                                  cudaMemcpyDeviceToDevice), "D2D s_pre snapshot");
-            trace_apply<<<grid, block>>>(d_trace_planes[k], d_spre, d_nb,
+            cuda_check(cudaMemcpy2DAsync(d_spre, n4, d_trace_planes[k], gs * sizeof(int32_t),
+                                         n4, (size_t)N, cudaMemcpyDeviceToDevice, st),
+                       "D2D s_pre snapshot");
+            trace_apply<<<grid, block, 0, st>>>(d_trace_planes[k], d_spre, d_nb,
                                          d_dqsum_e, d_dqsum_s,
                                          d_solid, d_is_vacuum, d_is_ambient,
                                          &d_tvent[k], &d_tclip[k], &d_tneg[k],
-                                         h, w);
+                                         h, w, gs, tst, bb.es, bb.sub);
             cuda_check(cudaGetLastError(), "trace_apply");
         }
     }
 
     // ---- stage 4: the mirror refresh (n_bulk POST, T = floordiv(E, n)) ----
-    cuda_check(cudaMemset(d_nb, 0, n8), "memset nb (post)");
+    cuda_check(cudaMemsetAsync(d_nb, 0, n8, st), "memset nb (post)");
     for (int k = 0; k < n_cons; ++k) {
-        bulk_nb_accum<<<grid, block>>>(d_nb, d_gas_planes[k], n);
+        bulk_nb_accum<<<grid, block, 0, st>>>(d_nb, d_gas_planes[k], n, gs, bb.es, bb.sub);
         cuda_check(cudaGetLastError(), "nb_accum (post)");
     }
-    bulk_e_recover_v2<<<grid, block>>>(d_temperature, d_gas_energy, d_nb,
+    bulk_e_recover_v2<<<grid, block, 0, st>>>(d_temperature, d_gas_energy, d_nb,
                                        d_dqsum_e, d_dqsum_s,
                                        d_solid, d_ts, d_is_vacuum, d_is_ambient,
                                        t_min_q, t_max_phys_q, t_amb_raw,
-                                       d_ecnt, h, w);
+                                       d_ecnt, h, w, cst, bb.es, bb.sub);
     cuda_check(cudaGetLastError(), "e_recover");
 
     // ---- stage 3c: TRACE wipe (smoke transport v2, design §2.1) ------------
@@ -767,9 +843,9 @@ void bulk_flux_energy_transport_device(
     // before it and 3b cannot sit after the memset.
     if (do_trace) {
         for (int k = 0; k < n_trace; ++k) {
-            trace_wipe<<<grid, block>>>(d_trace_planes[k], d_nb,
+            trace_wipe<<<grid, block, 0, st>>>(d_trace_planes[k], d_nb,
                                         d_solid, d_is_vacuum, d_is_ambient,
-                                        &d_twipe[k], n);
+                                        &d_twipe[k], n, gs, tst, bb.es, bb.sub);
             cuda_check(cudaGetLastError(), "trace_wipe");
         }
     }
@@ -989,109 +1065,25 @@ int trace_tail_launch_resident(
     const long long total = (long long)n_env * n;
     const int grid = (int)((total + block - 1) / block);
     const int m = n_env * n_gases * TRACE_TAIL_CNT_SLOTS;
-    trace_tail_zero<<<(m + block - 1) / block, block>>>(d_cnt, m);
+    trace_tail_zero<<<(m + block - 1) / block, block, 0, tstream()>>>(d_cnt, m);
     cuda_check(cudaGetLastError(), "trace_tail_zero");
-    trace_tail_sink<<<grid, block>>>(d_gas, d_s0, d_solid, d_is_vacuum,
+    trace_tail_sink<<<grid, block, 0, tstream()>>>(d_gas, d_s0, d_solid, d_is_vacuum,
                                      d_is_ambient, d_scal, d_cnt,
                                      n_env, n_gases, n);
     cuda_check(cudaGetLastError(), "trace_tail_sink");
-    trace_tail_diffuse<<<grid, block>>>(d_gas, d_s0, d_solid, d_is_vacuum,
+    trace_tail_diffuse<<<grid, block, 0, tstream()>>>(d_gas, d_s0, d_solid, d_is_vacuum,
                                         d_is_ambient, d_perm, d_scal, d_cnt,
                                         n_env, n_gases, h, w);
     cuda_check(cudaGetLastError(), "trace_tail_diffuse");
-    trace_tail_decay<<<grid, block>>>(d_gas, d_scal, d_cnt, n_env, n_gases, n);
+    trace_tail_decay<<<grid, block, 0, tstream()>>>(d_gas, d_scal, d_cnt, n_env, n_gases, n);
     cuda_check(cudaGetLastError(), "trace_tail_decay");
     return 4;
 }
 
-namespace {
-// Persistent scratch for the N == 1 wrapper, keyed (N, h, w, n_gases) (§A
-// habit 5). C++-owned, allocated once, zero cudaMalloc steady-state.
-struct TraceTailResidentScratch {
-    int n_env = 0, h = 0, w = 0, n_gases = 0;
-    int32_t* s0 = nullptr;                 // (N, n_gases, h, w)
-    int32_t* scal = nullptr;               // (N, n_gases, TRACE_TAIL_SCAL)
-    unsigned long long* cnt = nullptr;     // (N, n_gases, TRACE_TAIL_CNT_SLOTS)
-    void free_all() {
-        if (s0) cudaFree(s0);
-        if (scal) cudaFree(scal);
-        if (cnt) cudaFree(cnt);
-        s0 = nullptr; scal = nullptr; cnt = nullptr;
-        n_env = h = w = n_gases = 0;
-    }
-    void ensure(int N, int H, int W, int G) {
-        if (N == n_env && H == h && W == w && G == n_gases && s0) return;
-        free_all();
-        n_env = N; h = H; w = W; n_gases = G;
-        const size_t planes = (size_t)N * G * H * W;
-        cuda_check(cudaMalloc(&s0, planes * sizeof(int32_t)), "tail malloc s0");
-        cuda_check(cudaMalloc(&scal, (size_t)N * G * TRACE_TAIL_SCAL * sizeof(int32_t)),
-                   "tail malloc scal");
-        cuda_check(cudaMalloc(&cnt, (size_t)N * G * TRACE_TAIL_CNT_SLOTS
-                                    * sizeof(unsigned long long)), "tail malloc cnt");
-    }
-};
-TraceTailResidentScratch g_trace_tail_res;
-}  // namespace
-
-void trace_tail_resident(
-        int32_t* d_gas_base,
-        const bool* d_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
-        const float* d_perm,
-        int h, int w, int n_gases,
-        const bool* gas_conservative, const float* gas_diffusion,
-        const float* gas_decay, float dt,
-        int64_t* vent, int64_t* sink, int64_t* decay) {
-    const int n = h * w;
-    if (n <= 0 || n_gases <= 0) return;
-    constexpr int N_ENV = 1;   // §A: the core is (N, h, w); one env today
-    g_trace_tail_res.ensure(N_ENV, h, w, n_gases);
-
-    // The per-env, per-gas folds — the CPU tail's own host folds, called
-    // through the SAME out-of-line definitions (bulk_transport.cpp, on
-    // /fp:strict): dd_q = trace_diffusion_dd_q(d, dt), frac_q =
-    // trace_decay::frac_q(decay, dt). The stability door 4·dd_q <= ONE is
-    // refused at the gases door and at PhysicsRunner's dt binding; a breach of
-    // it here (a mis-wired caller) THROWS — the CPU asserts the same bound.
-    std::vector<int32_t> scal((size_t)N_ENV * n_gases * TRACE_TAIL_SCAL, 0);
-    for (int gi = 0; gi < n_gases; ++gi) {
-        if (gas_conservative[gi]) continue;
-        const int32_t dd_q = ::trace_diffusion_dd_q(gas_diffusion[gi], dt);
-        if (4 * (int64_t)dd_q > (int64_t)FP_ONE) {
-            std::ostringstream os;
-            os << "trace_tail_resident: gas " << gi << " diffusion·dt fold "
-               << dd_q << " breaks the Jacobi stability door 4·dd_q <= ONE";
-            throw std::invalid_argument(os.str());
-        }
-        scal[(size_t)gi * TRACE_TAIL_SCAL + 0] = 1;
-        scal[(size_t)gi * TRACE_TAIL_SCAL + 1] = dd_q;
-        scal[(size_t)gi * TRACE_TAIL_SCAL + 2] = trace_decay::frac_q(gas_decay[gi], dt);
-    }
-    cuda_check(cudaMemcpy(g_trace_tail_res.scal, scal.data(),
-                          scal.size() * sizeof(int32_t), cudaMemcpyHostToDevice),
-               "H2D tail folds");
-
-    trace_tail_launch_resident(N_ENV, h, w, n_gases, d_gas_base,
-                               d_solid, d_is_vacuum, d_is_ambient, d_perm,
-                               g_trace_tail_res.scal, g_trace_tail_res.s0,
-                               g_trace_tail_res.cnt);
-    cuda_check(cudaDeviceSynchronize(), "trace_tail_resident sync");
-
-    // ONE small D2H per tick: the (1, n_gases, 3) book block, ADDED to the
-    // caller's books exactly as the CPU tail accumulates (vent in
-    // boundary_flux_'s trace slots, then sink, decay).
-    std::vector<unsigned long long> c((size_t)n_gases * TRACE_TAIL_CNT_SLOTS, 0);
-    cuda_check(cudaMemcpy(c.data(), g_trace_tail_res.cnt,
-                          c.size() * sizeof(unsigned long long),
-                          cudaMemcpyDeviceToHost), "D2H tail books");
-    for (int gi = 0; gi < n_gases; ++gi) {
-        if (gas_conservative[gi]) continue;
-        const size_t b = (size_t)gi * TRACE_TAIL_CNT_SLOTS;
-        vent[gi]  += (int64_t)c[b + TRACE_TAIL_VENT];
-        sink[gi]  += (int64_t)c[b + TRACE_TAIL_SINK];
-        decay[gi] += (int64_t)c[b + TRACE_TAIL_DECAY];
-    }
-}
+// (#29 P5: the N == 1 wrapper trace_tail_resident is DELETED — the batched
+// resident tick's driver, cuda_resident_tick.cu resident_trace_tail, folds
+// the same host folds into the same launch core for every env, its books in
+// the tick's one arena.)
 
 namespace {
 bool g_bulk_flux_backend_cuda = false;

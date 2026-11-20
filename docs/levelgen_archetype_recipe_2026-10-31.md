@@ -1,0 +1,712 @@
+# Levelgen: the archetype recipe -- the build order for a whole ship
+
+> **Status**: design, **revision 2** (2026-10-31 night, lead
+> `level-design-lead`, Claude alone; Erik on a break). Revision 1's
+> adversarial critique (`levelgen_archetype_recipe_2026-10-31_critique.md`,
+> Opus, 18 findings, 3 blockers, every code claim checked) is folded in.
+> Revision 2 is NOT re-critiqued; Erik may call one. The FORMAT is the
+> lead's call; the CONTENT of the first recipe (which departments a
+> freighter carries, at what odds) is game design, written in §7 as Erik's
+> to veto. Serves #136 inside milestone 11 (#131); §5 is the RL contract and
+> serves #76. Design only: no code.
+>
+> **What revision 2 changed.** The executor is pseudo-code with a GRAMMAR
+> attempt loop over its own rng stream (a draw the layout cannot realise no
+> longer kills the seed). The freighter fits the layout's real numbers: a
+> medium ship is quarters + cargo and nothing else. The flank pair and the
+> retreat loop ride a named seventh move, `second_leg`. `any-room` became
+> `department-room`; the ring and the bypass are mutually exclusive per
+> ship. Counts are QUOTIENT counts. Profiles name their operators and are
+> checked per (size, profile). Cells: the department file is the default,
+> the archetype PROMOTES. Zombies scale the generator's argument. The seed
+> contract is what the code almost has: the level has its own seed, the
+> match keeps its one `seed`. LevelSpec carries every generator input and
+> the generator version; `recipe_hash` is defined. A `[validation]` table
+> restores L2's third component. Unbuilt departments are refused at load.
+> `mutate` is defined. Banks are a format.
+>
+> **Amends** (dated lines land in the named documents in the same patch):
+> recipe doc §0.1 (`second_leg`, the seventh move), §3.1 prose (the loop is
+> on ONE department's entry); layout doc §2 (the skeleton's roles are CODE;
+> the archetype names the skeleton); v0.1 §9 (seven moves); the RL-ready
+> scope doc's line "one seed drives levelgen, spawn, bots and zombies"
+> becomes "one seed per match; the level has its own" (§5).
+
+## 0. What an archetype recipe is
+
+v0.1 L2: **a map archetype = axiom + rule subset + validation profile.** In
+family B that is one file: the SKELETON it is laid out on (code in the
+layout stage; the file names it), the AXIOM (the departments every ship of
+the kind carries; the skeleton's own rooms come with the skeleton), an
+ORDERED LIST of applications per phase (which departments, which cycle
+types, how many), the budgets (secrets, spawn exits), the cells it
+promotes, the DIFFICULTY PROFILES that shift the counts, and the
+VALIDATION profile (the metric gates, L8). Everything in it is a name or a
+count range; no geometry, no physics number. A ship is a pure function of
+its LevelSpec (§5.1).
+
+## 1. The file
+
+`levels/recipes/archetypes/<name>.toml`.
+
+```toml
+[archetype]
+name = "freighter"
+skeleton = "freighter"          # a skeleton the layout stage implements in code (layout doc §2); its rooms and edges come with it
+sizes = ["medium", "large"]     # gen_ship.SIZES presets this recipe fits (checked per size and profile, §6); small stays plan_graph's arena
+passageway = { across = [6, 8] }       # the wing passageway's width
+lobby = { x = [8, 10] }                # the wing lobby's x-extent
+band = { sections = [3, 5] }           # INTERSECTED with the preset's own range at load (medium: 3-4)
+spawn = { exits = [1, 3] }      # drawn uniformly in phase 2 (§2); capped at what the skeleton can realise (§3)
+zombies = "axis_section"        # the horde's room: the main-cell axis section nearest the centre
+secrets = { budget = 1 }        # units per ship: a wing secret (a mirrored pair) or an axis secret each cost one
+allow_cross_cell_leak = false   # L5's leak-path clause; true is REFUSED until the damper (#49) exists
+
+[cells]
+promote = []                    # main-cell departments this archetype makes their own cell (the department file's `cell` is the default)
+
+# ---- the axiom: departments present in every ship of this kind ----
+[[axiom]]
+department = "engineering"      # REQUIRED on the freighter skeleton: the lobbies' airlocks land on its engine room
+placement = "axis"
+
+[[axiom]]
+department = "crew_quarters"
+placement = "wing"              # once per wing: every count in this file is a QUOTIENT count (§2)
+
+# ---- phase 1: grow (departments, their internal cycles) ----
+[[apply]]
+phase = 1
+department = "cargo_hold"
+count = { medium = [1, 1], large = [1, 1] }
+
+[[apply]]
+phase = 1
+department = "medbay"           # v1: without its isolation room (a room-level cell; §7)
+count = { medium = [0, 0], large = [1, 1] }
+
+[[apply]]
+phase = 1
+department = "armory"
+count = { medium = [0, 0], large = [0, 1] }
+
+# garden_dome and pool_hall: NOT in v1 -- their water stamps are unbuilt (recipe doc §5.2); the loader would refuse them (§6)
+
+# ---- phase 2: tactical patterns (ship-level cycle types; then the spawn exits draw) ----
+[[apply]]
+phase = 2
+cycle = "retreat_loop"
+on = "department-entry"         # anchor class (§3): a wing department with an attach = "end" room
+count = { medium = [0, 0], large = [0, 1] }
+
+[[apply]]
+phase = 2
+cycle = "flank_pair"
+on = "slab-lobby"
+count = { medium = [0, 1], large = [0, 1] }
+
+[[apply]]
+phase = 2
+cycle = "maintenance_ring"      # large only (band width >= 20); mutually exclusive with the bypass per ship (§3)
+on = "engineering.engine_room"
+count = { medium = [0, 0], large = [0, 1] }
+
+[[apply]]
+phase = 2
+cycle = "airlock_bypass"
+on = "lobby-engine_room"
+count = { medium = [0, 1], large = [0, 1] }
+
+[[apply]]
+phase = 2
+cycle = "pocket"
+on = "department-room"
+count = { medium = [0, 1], large = [0, 2] }
+
+# ---- phase 3: terminalise -- no entries by choice: fixtures are department data, the secret draw is the budget ----
+
+# ---- phase 4: annotate (ducts) ----
+[[apply]]
+phase = 4
+cycle = "duct_link"
+on = "same-cell-rooms"
+count = { medium = [0, 1], large = [0, 2] }
+
+# ---- validation profile (L2's third component; L8): metric gates from a closed registry in code ----
+[validation]
+bot_walkable = true             # A* between the two slabs with airlock outer doors CLOSED (layout doc §2)
+spawn_distance = { medium = [40, 120], large = [80, 220] }   # walk-graph tiles between slab centres, after embed
+cells = [2, 3]                  # pressure cells per ship
+rooms = { medium = [14, 30], large = [28, 60] }              # rooms per ship (L6's target count)
+
+# ---- difficulty profiles: each key names its operator ----
+[profiles.easy]
+cycles_shift = -1               # added to every phase-2 and phase-4 cycle range, floored at 0 (pockets included)
+secrets = 0                     # ABSOLUTE budget
+zombies_scale = 0.5             # multiplies the generator's zombies argument (§4)
+
+[profiles.standard]             # the file as written
+
+[profiles.hard]
+cycles_shift = 1                # capped at the layout's realisable maximum per type (§3)
+promote = ["armory"]            # ABSOLUTE set, replaces [cells].promote: the armory becomes its own cell
+zombies_scale = 1.5
+```
+
+### 1.1 Field reference
+
+| Key | Meaning | Loader check |
+|---|---|---|
+| `archetype.skeleton` | the layout skeleton (code) | one the layout stage implements; its required axiom departments present (freighter: an `axis` engineering) |
+| `archetype.sizes` | presets this recipe is allowed on | each in `SIZES`; the feasibility twin (§6) passes on each (size, profile) |
+| `archetype.passageway`, `lobby`, `band` | the skeleton's own ranges | `band.sections` intersected with the preset's; a ring entry on a size needs `band_w.hi >= 20`; a bypass entry needs the hub section's height >= 13 (the band packer pins it) |
+| `archetype.spawn.exits` | range drawn in phase 2 | within 1-3 |
+| `archetype.zombies` | `axis_section` (v1's only value) | known value |
+| `archetype.secrets.budget` | units per ship | int >= 0 |
+| `archetype.allow_cross_cell_leak` | L5's leak clause | `true` refused naming #49 |
+| `cells.promote` | `main` departments made `own` | each a wing department whose stub `across` range allows >= 7 (the airlock entry; layout doc §4); the grammar rewrites its entry edge to `airlock` in phase 1, logged in provenance |
+| `[[axiom]]` | departments in every ship | exists; `placement` matches the department's |
+| `[[apply]]` | `phase`, exactly one of `department` / `cycle`, `on` for a cycle, `count` per allowed size | phase 1 departments only; phase 2 cycles whose `phase` list contains 2; phase 4 `duct_link`; `on` a row of §3; the cycle's `rooms` within what the skeleton realises (ring <= 6) |
+| `count` | `{size = [lo, hi]}`, a QUOTIENT count | `lo <= hi`; every allowed size present |
+| `[validation]` | gates from the registry | known keys; ranges per allowed size where sized |
+| `[profiles.*]` | `cycles_shift` int; `secrets` int (absolute); `zombies_scale` float > 0; `promote` list (absolute) | per profile: the shifted ranges capped at the realisable maxima; the feasibility twin re-run; `promote` checked as `cells.promote` |
+
+A phase with no entries is legal. Refusal by name, at load, before any
+ship is planned. **The loader walks the recipe's transitive closure**
+(departments, their fixtures, cycles) and refuses, naming the extension,
+any key whose mechanism is unbuilt (recipe doc §5.2), so an unbuilt
+department never reaches a stamp-time exception.
+
+## 2. The executor (determinism)
+
+Two rng streams (layout doc §11), with a GRAMMAR attempt loop:
+
+```
+for g in range(G_MAX):                       # G_MAX = 8
+    rng_g = default_rng(SeedSequence([seed, 0, g]))
+    graph = grammar(recipe, size, profile, rng_g)      # may raise GrammarReject
+    if graph is None: continue
+    for a in range(MAX_ATTEMPTS):            # 32, as today
+        rng_a = default_rng(SeedSequence([seed, 1, g, a]))
+        try: plan = layout(graph, rng_a); emb = embed(plan, rng_a)
+        except _Reject: continue
+        if validate(...) passes and validation_profile(...) passes: return plan, (g, a)
+raise ShipGenError
+```
+
+`grammar` applies the axiom, then the phases in order, then within a
+phase the `[[apply]]` entries in FILE order:
+
+```
+k = rng_g.integers(lo, hi + 1)                        # the count, uniform
+cand = sorted(candidates(on), key=global_id)          # (side, department, instance, room)
+placed = 0
+while placed < k and cand:
+    c = cand.pop(rng_g.integers(len(cand)))           # uniform, without replacement per entry
+    if precondition(c) and apply(c) keeps the phase's invariants (recipe doc §5.3):
+        placed += 1; provenance.append((entry, c, "ok"))
+    else:
+        provenance.append((entry, c, reason))         # a rejected candidate does not consume the count
+if placed < lo: raise GrammarReject(entry)            # the grammar attempt g is over; g + 1 draws afresh
+```
+
+Then, still in phase 2 and after the cycle entries, the spawn exits:
+`exits = rng_g.integers(lo, hi + 1)` capped at what the skeleton realises
+(§3). `global_id` is `(side, department, instance, room_id)` with `side`
+in `(axis, wing)`, `instance` the department's draw index, `room_id` the
+recipe's id plus the `count` index; it is assigned when the department
+expands and never changes. **Every count is a quotient count**: the grammar
+runs on one wing plus the axis band; a wing application appears once per
+wing after the layout reflects, an axis one once per ship. `(g, a)` are
+recorded in the LevelSpec's realised factors. The mirror is never drawn.
+Invariants run per phase as the recipe doc §5.3 says (reachability from
+phase 3 on, the air invariants in phase 4), never "all after every
+application".
+
+## 3. The anchor classes (what a ship-level entry may act on)
+
+| `on` | Candidates (graph terms) | Move | Realised as (layout doc §4) | Realisable maximum |
+|---|---|---|---|---|
+| `department-entry` | a wing department with an `attach = "end"` room and loader-twin slack for a second stub | `second_leg` on passageway-entry | two-stub | one per department |
+| `slab-lobby` | the wing's two hubs | `second_leg` on slab-passageway-lobby | hull strip | one per wing |
+| `engineering.engine_room` (the `<department>.<room id>` convention) | the hub | `ring` | ring in the band | one per hub |
+| `lobby-engine_room` | the lobby's airlock edge into engineering | `parallel` | breakable on the airlock wall | one per wing; **mutually exclusive with the ring** (v1: a ship has one or the other; the second application is rejected by name) |
+| `department-room` | a department room the layout can attach to (`side` or `behind`), never an axiom or ring room; precondition: the department's loader-twin slack at the room's minimum | `leaf` | packed room or behind room | bounded by slack |
+| `same-cell-rooms` | two rooms of one cell in different departments, both in the quotient wing or both on the axis | `duct` | none | bounded by vent sites |
+
+**`second_leg`** (the seventh move, amendment to the recipe doc §0.1 and
+v0.1 §9): precondition, a path A-C-B exists; effect, add A-D-B with D new
+(one room, the cycle file's single leg); the existing leg is not redrawn.
+It is what `edge_to_cycle` becomes when one leg is already an axiom path.
+The flank pair and the retreat loop files carry ONE `[[leg]]` each.
+
+A new class is a layout primitive first, then a row here; the "realisable
+maximum" column is what the profiles' shifts are capped at.
+
+## 4. Zombies and cells under a profile
+
+- **Zombies.** The profile scales the GENERATOR's `zombies` argument
+  (round half up; at least 1 when the base is > 0). The recipe path's
+  `check_request` checks the scaled count against the zombie section's
+  capacity; the scaled count is written into the zombie `[[spawn_room]]`
+  and `match.toml`'s `zombies`, which is how `parse_match`'s ceiling is met.
+  The LevelSpec records the base and the result.
+- **Cells.** The department file's `cell` is the default (engineering is
+  `own` in its own file; listing it in `promote` is redundant and refused
+  as such). `promote` makes a `main` wing department `own`: its entry edge
+  becomes an airlock pair (the grammar rewrites it in phase 1), its stub
+  must take `across >= 7`. On `hard` the armory is then unreachable to the
+  bots until #142 (a feel consequence, §7). A ROOM-level cell (the
+  medbay's isolation room, vocabulary B.3) cannot be expressed by the
+  resolver's per-department numbering; v1's medbay file omits the room.
+  The magazine-as-own-cell idea of revision 1 is dropped (vocabulary B.5
+  stands: v1's magazine doors are plain).
+
+## 5. LevelSpec, seeds, banks, mutate (the RL contract, strand c)
+
+### 5.1 LevelSpec
+
+`LevelSpec = (archetype, recipe_hash, generator_version, size, profile,
+max_per_team, zombies_base, level_seed)`, every generator input. A ship is
+a pure function of it. Written into the level folder (`level.toml`'s
+`[levelgen]` table, a new managed family in `level_lib`, read by
+`level_loader`) together with the REALISED factors: `(g, a)`, departments
+present, cycle applications per type (from provenance, which survives the
+layout), cells, secrets, spawn exits, zombies after scaling, room count,
+spawn-to-spawn walk distance (an A* after `embed`, the same metric the
+validation profile gates).
+
+- `recipe_hash`: SHA-256 over the parsed, key-sorted TOML of the archetype
+  file WITHOUT its `[profiles]` table, plus the chosen profile's table,
+  plus the transitive closure of every department, cycle and fixture file
+  it names, plus the resolved preset values (recipe doc §3.4). A comment
+  edit does not move it; retuning `hard` does not move `easy` ships.
+- `generator_version`: `git describe` of the generator (the precedent is
+  #126's recording header `build`), which covers the moves, `SIZES`, the
+  layout constants and `MAX_ATTEMPTS`.
+- Folder name: `ship_{archetype}_{profile}_s{seed}_{size}` (today's
+  `ship_s{seed}_{size}` collides across archetypes and profiles, and
+  recordings identify a level by folder). The #126 recording header gains
+  `recipe_hash` when #126's patch touches it.
+
+### 5.2 Seeds
+
+- `level_seed` is the GENERATOR's seed, recorded in `[levelgen]`.
+- `match.toml`'s existing `seed` IS the episode seed: no new key, no
+  `parse_match` change, no re-pinned digest, every #126 recording stays
+  valid. "Fixed level, varying episode" is `run_match --seed N` on one
+  folder, as today.
+- A loop that generates a level per episode may derive both from one root
+  (`SeedSequence(root).spawn(2)`, each integerised by
+  `generate_state(1)[0]`) and records both ints; a convenience, not the
+  contract.
+- The RL-ready scope's line "one seed drives levelgen, spawn, bots and
+  zombies" is amended to "one seed per match; the level has its own"
+  (dated line in `docs/rl_ready_scope_2026-10-29.md`, this patch). Any
+  later `match.toml` change belongs to #76's patches, not this arc.
+
+### 5.3 Banks
+
+A bank is a file under `levels/banks/<name>.toml`: header `(name,
+generator_version, held_out = {factor: values})`, rows `(LevelSpec,
+output_digest)` where `output_digest` is the tilemap's digest from
+`field_digest`. A row becomes a level by generating it into
+`levels/banks/<name>/<folder>` (the §5.1 name) or in memory with that
+folder name as its id. A generator change that moves any row's digest is a
+re-baseline with rationale, like a golden. `train` / `test-iid` /
+`test-ood` / `probe` are bank names; with one archetype and one skeleton
+the held-out axes are size, profile and a count above the training range
+INSIDE the recipe's own range. Not built in this arc; the format is fixed
+here.
+
+### 5.4 mutate
+
+`mutate(spec, entry) -> spec' | None`: `spec'.mutations = spec.mutations +
+(entry,)`; a mutation is an extra `[[apply]]` entry appended to its
+phase's list, and the whole pipeline is re-run from the same seeds (so L6's
+phase order holds and the result is a pure function of `spec'`, whose
+`mutations` are part of it). The layout's per-department draws are keyed
+`SeedSequence([seed, 1, g, a, dept_index])` so departments the mutation does
+not touch keep their geometry (the small-edit property ACCEL needs). A
+mutant that fails every attempt returns `None`. A real piece, costed in §8.
+
+## 6. Feasibility at load, per (size, profile)
+
+The archetype loader calls the LAYOUT's loader twin (layout doc §4, §6;
+imported, never copied) for every allowed size and every profile:
+
+1. the row packing at the recipe's MINIMA (departments at minimum count,
+   one-sided demands) against the preset's row LENGTH and DEPTH, including
+   phase-2 entries at their minimum (a mandatory two-stub widens, a
+   mandatory hull strip shallows row A); a failure refuses the recipe by
+   name, size and profile;
+2. the same at the MAXIMA: a WARNING naming the expected reroll;
+3. the skeleton conditions: ring needs `band_w.hi >= 20`, bypass needs a
+   pinnable hub height >= 13, every `promote`d stub >= 7;
+4. the closure walk for unbuilt mechanisms (§1.1).
+
+A per-seed failure-rate GATE is part of the recipe path's tests: N = 100
+seeds per (size, profile) must each produce a ship within `G_MAX ×
+MAX_ATTEMPTS`, and the mean `(g, a)` is reported, so a recipe that only
+just fits is seen before the RL track samples it.
+
+## 7. The freighter's content: Erik's calls, written as the draft above
+
+Each is a statement to veto, none is settled:
+
+- Crew quarters and engineering are the AXIOM; cargo is in every ship.
+- A MEDIUM freighter is quarters + cargo per wing and nothing else, no
+  retreat loop, no ring: the two-department ship the layout's numbers
+  allow. A LARGE one adds medbay and, half the time, an armory.
+- The medbay ships WITHOUT its isolation room until room-level cells
+  exist; the garden and the pool wait for their water stamps.
+- The hard profile makes the armory its own cell (an airlock fight for the
+  guns), which the bots cannot enter until #142.
+- Secrets: one unit per ship on standard and hard, none on easy.
+- Zombies: ×0.5 / ×1.5 of the generator's count on easy / hard.
+- The validation ranges in §1 are first guesses to tune on the failure-rate
+  gate.
+
+### 7.1 Build-session amendments (2026-11-06, the lead)
+
+From the layout doc §13 (read it first; it holds where the two disagree):
+
+- `lobby = { x = [9, 11] }` (A1: the engineering airlocks' vestibules stand
+  in the lobbies), not 8-10.
+- `G_MAX` = 16, and the executor ends with the layout's minima feasibility
+  on the whole graph; infeasible is a `GrammarReject` (A5).
+- `secrets = { budget = 1, size = [6, 8] }`: the annex is one room, both
+  sides drawn in `size`, attached `behind` its host by the department's
+  secret edge kind. (The annex's size was "the archetype's" and never
+  written down.)
+- The skeleton's GRAPH side (its quotient rooms with their roles, its axiom
+  edges, the band's section chain, what each `on` class may anchor to) is
+  declared in `tools/ship_layout.py` and imported by the grammar; the
+  geometry is added to the same module by the layout patch. One module is
+  the skeleton's home.
+
+**The v1 cut of each department** (content from the vocabulary doc Part B,
+trimmed to what the layout's primitives and the built mechanisms can stamp
+today; every trim is Erik's to veto and each names what brings the room
+back):
+
+| Department | In v1 | Left out, and what it waits for |
+|---|---|---|
+| `crew_quarters` (wing, main) | as shipped (recipe doc §3.1) | -- |
+| `engineering` (axis, own) | engine room (the hub: the `engine` heat source, hot, harsh light, its own duct with supply + return) · fuel bunker aft of it (sealed, a door, kindling, dark, no vent) | workshop, switchboard, pump room: a second axis room does not fit a medium band (layout §13 A2); the still (a secret off the workshop) |
+| `cargo_hold` (wing, main, `toward = "axis"`) | stub · main hold at the stub's end, against the hull, with the closed cargo door to space (`hull_door`) · side bays, open arches onto the stub · hazmat bay (optional, sealed, the `hazmat` fixture) · secret annex behind a bay | cold storage (the sub-ambient physics session); livestock pens (props, a straw row); bays opening onto the hold rather than the stub (a side room touches only its stub) |
+| `medbay` (wing, main; large only) | stub · ward at the stub's end · operating theatre and scrub room (open arches: one clean compartment with the stub and ward) · pharmacy (sealed, the `o2_store` fixture) · morgue (sealed, dim) · secret annex behind the morgue | isolation room (a room-level cell); the locked pharmacy door (#135); the cold morgue (physics session) |
+| `armory` (wing, main; large only; `own` on hard) | stub · armory at the stub's end · magazine behind it (sealed, a door, the `magazine` fixture) · firing range (optional, a long side room, an open arch) | explosives bunker (a `behind` of a `behind`); the locked door (#135) |
+
+New recipe key this needs: `room.hull_door = true` (the resolver writes
+gen_ship's `HULL_DOOR_DEFAULT`; geometry, not physics). New preset rows, all
+PLACEHOLDER: `[heat_sources.engine]`, `[hazards.hazmat_release]`, the
+`hazmat` fixture.
+
+## 8. Costs
+
+| Piece | Where |
+|---|---|
+| archetype loader (closure walk, intersections, per-(size, profile) feasibility through the layout's twin) + the executor (§2: attempt loops, two streams, counts, candidates, provenance, per-phase invariants, exits draw, `second_leg`) | new `tools/ship_grammar.py` (stage 1), pure, seeded; ~500 lines + property tests (a crafted violating application is rejected by name; the same spec gives the same graph; the mirror holds; the failure-rate gate) |
+| `[validation]` registry (bot-walkable A*, spawn distance, cells, rooms) | `ship_layout.py` acceptance + `validate` call site |
+| `[levelgen]` managed family in `level_lib` + `level_loader` field; folder naming; `ShipPlan` carrying the spec and `(g, a)` | `level_lib.py`, `level_loader.py`, `gen_ship.py` |
+| the recipe-path `check_request` with scaled zombies | `ship_layout.py` |
+| `mutate` + per-department layout streams | `ship_grammar.py` / `ship_layout.py` |
+| banks format + the walk-distance metric | this arc: the format and the metric; the banks themselves: the RL track |
+| the freighter file, engineering / crew quarters / cargo / medbay / armory department files, six cycle files, `fixtures.toml` | data, with the implementing chat's loader; each department costed against recipe doc §5.2 before it enters the file |
+| the scope-doc amendment (§5.2) | `docs/rl_ready_scope_2026-10-29.md`, one dated line |
+
+## 9. Open
+
+- An `exits` profile key (the most direct spawn difficulty knob). Draft:
+  not in v1.
+- Whether the strip's door into the slab counts toward the drawn exits.
+  Draft: no, it is extra (the flank pair's own property).
+- The validation ranges' numbers.
+
+## Systems
+
+**(a) Existing canonical systems this design uses**: Level generators
+(`generate`'s retry and `MAX_ATTEMPTS`; `SIZES`; `check_request`'s role;
+`ShipPlan`; the layout stage as the geometry producer); Level data layer
+(`[levelgen]` through `level_lib`'s managed families, read by
+`level_loader`); Match config (`match.toml`'s one `seed` unchanged;
+`zombies` written from the plan as today); Spawn rooms (unchanged);
+Determinism gates (`field_digest` for bank rows); the Recipe library,
+Resolver, Fixtures (recipe doc) and the Layout stage (layout doc).
+
+**(b) New systems this design creates** (draft rules, into CLAUDE.md when
+the code exists):
+
+- **Archetype recipe** -- `A ship kind ON AN EXISTING SKELETON is one file
+  under levels/recipes/archetypes/: axiom departments, ordered (phase,
+  department | cycle, on, count-per-size) entries, budgets, promoted cells,
+  difficulty profiles with named operators, a validation profile; a new
+  skeleton is layout code first. The executor applies the file in order
+  with two rng streams and a bounded grammar attempt loop, rejects a
+  failing application by name with provenance, and the loader refuses, per
+  size and profile, a recipe the layout's own arithmetic cannot pack or
+  whose closure names an unbuilt mechanism.`
+- **LevelSpec** -- `Every generated level records its LevelSpec (every
+  generator input, the recipe hash and the generator version) and its
+  realised factors in level.toml's [levelgen] table; the level's seed is
+  its own, the match's seed stays the episode's; a level is a pure function
+  of its spec.`
+
+## As built (2026-11-06, branch `136-ship-grammar`): the grammar
+
+Built against revision 2, its §7.1 and the layout doc's §13 (A1-A7):
+`tools/ship_grammar.py` (the archetype door, the executor, the seven moves,
+the invariants, the quotient graph, `recipe_hash`), `tools/ship_layout.py`
+(the freighter skeleton's GRAPH side only -- roles, axiom edge kinds, anchor
+classes, closed-form numbers -- and the one `layout_feasibility` call site
+the layout patch fills in), `levels/recipes/archetypes/freighter.toml` (§1
+with §7.1), `tests/test_ship_grammar.py`. `gen_ship` untouched, `ship_demo`
+untouched, no recipe data file edited.
+
+**The quotient graph** (`QuotientGraph`, the layout's input): rooms with a
+stable string id, their skeleton role (`slab`, `passageway`, `lobby`,
+`section`) or (department, instance, recipe room id, index) or a made role
+(`stub2`, `flank_strip`, `ring_fore` / `ring_aft` / `ring_side`, `pocket`,
+`secret`), `side` (axis = self-twin, wing = reflected; a ring side room is a
+wing-class room inside the band), shape, size ranges (None where the layout
+derives a side), width, `attach` + `parent`, `exit`, `cell` and resolved
+`ROOM_TAGS` (vent ducts qualified `<dept>_<instance>_<duct>`); declared
+edges `(a, b, kind)` with a role (`skeleton`, `entry`, `department`, `exit`,
+`cycle`, `secret`) and provenance, `a` meaningful for an airlock; department
+instances with `(row, position)`; the band fore to aft; cycle applications
+(type, anchor, rooms and edges made, edges rewritten, kinds drawn, params);
+the exits and their edges; ducts with filters; the zombie room and the
+scaled zombie count; the secret annexes; per-entry placed counts; the
+provenance log of every candidate tried; `digest()`.
+
+**How each cycle type is realised.** Retreat loop: `second_leg` on
+passageway-stub-END, the new `stub2` with its own passageway opening; the
+department's side rooms (the exit room excepted, it stays on the first stub)
+move to `stub2` alternately. Flank pair: `second_leg` on
+slab-passageway-lobby, one `narrow`, `dim` hull strip. Maintenance ring:
+`ring` on the hub (4 or 6 rooms: `ring_fore` and `ring_aft` on the axis, 1 or
+2 left side rooms, the right ones the layout's reflection; the hub joined to
+the odd-numbered ones; a ring room's `index` is its ring number), then the
+rewrites: the lobby's airlock onto the aft-most side room, hub-fore / aft
+rooms onto `ring_fore` / `ring_aft`, the block's bulkhead onto `ring_fore`.
+Airlock bypass: `parallel` on the lobby-hub airlock (a `breakable`).
+Pocket: `leaf` on a wing department's stub (a new side room) or a side / end
+room with no behind child (a new behind room). Duct link: `duct` on two
+rooms of one cell in different department instances, a new `link_<n>` duct
+carrying both roles. Spawn exits after the phase-2 entries; secrets in phase
+3; invariants per phase (contact rules always, reachability from phase 3,
+the air rules in phase 4, all on the final graph).
+
+Deviations (dated 2026-11-06, as built; each the simplest reading that keeps
+the docs' guarantees):
+
+- **The skeleton's own triangle.** The lead's band decision (the lobby's
+  door to the aft-most main section), A1 (the lobby-hub airlock) and A2 (the
+  bulkhead between that section and the block) declare a 3-cycle, which the
+  recipe doc §1.5 rule refuses as written -- so no freighter could exist.
+  The invariant exempts a 3-cycle all of whose pairs are SKELETON contacts:
+  a T-junction the skeleton draws (the lobby's band wall along two stacked
+  sections; §1.5 itself says the rule is sufficient, not necessary). A
+  triangle with any move's or department's edge is still refused.
+- **Ring size.** §1.1 refuses a cycle whose `rooms` exceed what the skeleton
+  realises (ring <= 6); the shipped `maintenance_ring.toml` says [4, 8]. The
+  loader intersects with 4..6 and refuses only an empty intersection.
+- **A [0, 0] count is not shifted.** `cycles_shift` moves both ends of a
+  cycle range the file allows on a size, but a [0, 0] stays [0, 0]: the
+  file's own statement that the type is not realised there. Otherwise hard
+  puts a retreat loop on every medium ship, which §7 rules out and the
+  layout cannot pack (a two-stub needs 28 of a 16-21 row).
+- **Exclusive minima.** The ring and the bypass share one realisable maximum
+  (`ship_layout.EXCLUSIVE_MAX`): their shifted minima are capped in file
+  order so they never require both; otherwise every hard large attempt
+  rejects. Consequence: **a hard large freighter always has the ring and
+  never the bypass** (feel, for Erik).
+- **Invariant phases**: the archetype doc §2 reading of §5.3 (contact rules
+  in every phase, reachability from phase 3, the air rules in phase 4), not
+  §5.3's "all" in phases 1-2; the returned graph satisfies all.
+- **The flank strip's door is not an exit** (§9's draft; the layout doc §7
+  counts it).
+- **Exits**: an exit room in another cell than the slab's (a promoted first
+  department) is not available (L5); the drawn count takes rows A then B.
+- **Department `[[cycle]]` rows are refused** by the closure walk, naming the
+  missing grammar step (no shipped department has one).
+- **Rows** (layout doc §13 A7, the lead's decision): gradient order dealt to
+  A, B alternately; no first-fit.
+- **Made rooms' sizes**: a pocket is 6-8 square (`ship_layout.POCKET_SIZE`;
+  the docs give none), a strip 3 across, a ring room 6 deep; a second stub
+  copies the stub's ranges; the annex is `secrets.size` both sides. A room
+  of a department made by a cycle or the secret draw takes that department's
+  `temp` (the ring rooms are hot like engineering).
+- **Pockets** land only in wing departments (an axis block has one fore and
+  one aft place, and no fore room fits medium, A2), never on an exit,
+  hull-door, secret or ring room. **Duct links**: a room joins at most one
+  link (one vent site per role); secret rooms are not candidates.
+- **Secrets**: a host instance must be able to take a behind room; the draw
+  is by department weight, then uniform over host instances; no host is a
+  `GrammarReject`.
+- **Cells**: `own` departments by file first, then promoted ones, each in
+  file order; fixed per profile whatever the draw.
+- **Rewritten edges** keep their kind, order and role and take the
+  application's provenance.
+- **One feasibility function**, `ship_layout.layout_feasibility(size, *,
+  graph=None, archetype=None, profile=None)`, called at the end of every
+  attempt and by the loader per (size, profile); it accepts everything until
+  the layout patch.
+- `recipe_hash` covers the fixtures the departments USE (not the whole
+  fixtures file) and the filter rows' values.
+
+Measured: 100 seeds x (medium, large) x (easy, standard, hard), zombies 4:
+every seed returns a graph at `g = 0` (no layout feasibility yet: the
+grammar alone never rejects the freighter); ~12 ms per graph.
+
+## As built (2026-11-06, branch `136-ship-layout`): the layout patch's part
+
+- **§2's loops are `gen_ship._generate_recipe`** (`generate(seed, size,
+  recipe=, profile=)`): grammar attempt `g` on `SeedSequence([seed, 0, g])`,
+  layout + `embed` on `SeedSequence([seed, 1, g, a])`, `MAX_ATTEMPTS` layout
+  attempts per graph, then `g + 1`; `ShipPlan` records `g`, `attempt` (= `a`),
+  `recipe`, `profile`, `recipe_hash`, the quotient graph and the layout's id
+  map; the folder name is §5.1's `ship_{archetype}_{profile}_s{seed}_{size}`.
+- **§6 as built.** Item 1 (the minima): `ship_layout.layout_feasibility(size,
+  archetype=, profile=)` is a DEMAND test -- each row's least x-extents
+  inside the longest row, the two rows' least depths inside the wing (less a
+  mandatory hull strip, which needs a row without a hull-door room), the
+  band's least heights -- over departments at minimum count with their
+  required rooms, the mandatory retreat loops (any choice of departments),
+  the ring and the bypass. It is deliberately NOT the exact packing: at
+  minimum counts a large row cannot be FILLED (two bunks do not line a
+  30-long stub), which is the grammar's draw to fix, not the recipe's
+  fault. Pockets, secrets and duct links are not in it (slack-bounded;
+  the per-graph check has them). Item 2 (the maxima):
+  `ship_layout.maxima_warning`, kept in `Archetype.warnings[(size,
+  profile)]` -- the freighter warns on medium for all three profiles (rows
+  need 30 + 30 of 54), not on large. Items 3-4 unchanged (the grammar
+  patch's).
+- **The per-graph check (A5) is EXACT**: `layout_feasibility(size, graph=)`
+  is None exactly when the layout has a skeleton draw that packs the graph,
+  so a layout attempt never fails on packing; what the grammar loop pays for
+  an unpackable draw is one attempt (~12 ms).
+- **`[validation]`**: `ship_layout.acceptance` runs after `validate`:
+  `bot_walkable` ALWAYS (the layout's own gate, whatever the file says),
+  `spawn_distance`, `cells`, `rooms` when the file names them. Tuned ranges:
+  the recipe doc's as-built section.
+- **§4 zombies**: `ship_layout.check_request` refuses before any draw (size
+  and profile allowed, the slab seats the team, the zombie section seats the
+  SCALED horde); the scaled count is `ShipGraph.zombies`, so it is the
+  zombie `[[spawn_room]]`'s `max_per_team` and `match.toml`'s `zombies`.
+- **Not built here** (unchanged from §8): LevelSpec / the `[levelgen]`
+  managed family, banks, `mutate` and the per-department layout streams.
+- Tuned counts (dated lines in the recipe doc): armory `large` [1, 1],
+  pocket `medium` [0, 0], `secrets.size` [6, 16], the `[validation]` ranges.
+
+## As built (2026-11-06, branch `136-levelspec`): LevelSpec
+
+**What the record holds.** level.toml's `[levelgen]` table (a managed
+family of `level_lib`, `format_levelgen_lines` / `write_levelgen`; read by
+`level_loader.parse_levelgen` into `LevelData.levelgen`, a
+`LevelgenRecord`), one table, keys in this order:
+
+- the LevelSpec (§5.1, every input of `gen_ship.generate`): `archetype`,
+  `recipe_hash` (64 hex), `generator_version`, `size`, `profile`,
+  `max_per_team`, `zombies_base`, `level_seed`;
+- the realised factors: `g`, `a`; `departments` (the department instances
+  in quotient order, the axis department first); `cycles` (an INLINE table,
+  cycle type -> applications, every type the archetype's `[[apply]]` names,
+  0 included); `cells` (pressure cells, the `[validation]` count);
+  `secrets`; `spawn_exits`; `zombies` (after the profile's scaling, =
+  match.toml's); `rooms` (the ship's, both wings, the `[validation]` count);
+  `spawn_distance` (`ship_layout.bot_path`'s steps between the two spawn
+  rooms, the `[validation]` metric, re-used, not re-measured).
+
+Example (`ship_freighter_standard_s1_medium`):
+
+```toml
+[levelgen]
+archetype = "freighter"
+recipe_hash = "190ea8da976c48b3f87a336571c0a5a6f50d8a0c41be023b32abcfb458ace44d"
+generator_version = "beatrice-b1g-422-g08e3b441-dirty"
+size = "medium"
+profile = "standard"
+max_per_team = 6
+zombies_base = 4
+level_seed = 1
+g = 0
+a = 0
+departments = ["engineering", "crew_quarters", "cargo_hold"]
+cycles = { retreat_loop = 0, flank_pair = 1, maintenance_ring = 0, airlock_bypass = 0, pocket = 0, duct_link = 1 }
+cells = 2
+secrets = 1
+spawn_exits = 1
+zombies = 4
+rooms = 36
+spawn_distance = 107
+```
+
+The door refuses an unknown key, a missing input or realised factor and a
+mistyped value, each by name; the writer runs the same door before it
+touches disk. A level without the table loads with `levelgen = None`
+(every hand-made level, and v1's ships, which write none: `ship_demo` does
+not move by a byte). `gen_ship.generate_from_spec(record | folder,
+allow_stale=False)` / `gen_ship.py --from-level FOLDER [--allow-stale]` is
+the ship of a record; it refuses (`StaleRecipeError`) a `recipe_hash` that
+is not the current library's.
+
+**The spawn box** (the layout patch's open item). A recipe ship's
+`[[spawn_room]]` rows are `gen_ship.centred_spawn_box` of the slab (and of
+the zombie section): the least `formation` box for `max_per_team` across
+the host's short side, centred along its long side, the long side's parity
+kept so `_centre` -- validate's and `bot_path`'s A* endpoint -- is the
+host's own. So the spawn distances, the gates' verdicts and every recipe
+ship's tiles are unchanged; only the rows written move. No new `placement`
+value: the box route needed nothing the loader does not already check.
+
+Deviations (dated 2026-11-06, as built):
+
+- `departments`, `cycles`, `secrets` and `spawn_exits` count the QUOTIENT
+  (the recipe's own units: a wing department is one instance, its mirror
+  twin is not counted again); `cells`, `rooms` and `spawn_distance` count
+  the whole ship, as the gates do. §5.1 did not say which.
+- Every key is REQUIRED, the realised factors too (§5.1 names them as written
+  "together with" the spec); `generate_from_spec` reads only the inputs.
+- `generator_version` is `git describe --always --dirty` at WRITE time
+  through `match_replay.build_id` (#126's helper, reused), `"unknown"`
+  without git. It is informational: `generate_from_spec` does not compare
+  it, and `test_gen_ship_edges`' regenerate gate leaves that one line out (a
+  later build legitimately rewrites it).
+- The level.toml header's regenerate comment names `--from-level` beside
+  the explicit command.
+- **The lamp budget** (not in the design; found by picking the first ships):
+  `main.py` refused the first large freighter on frame 3 --
+  `frame_lights.cone_rows`: its 161 lamps summed past the cone door (2^44
+  counts = 128 light units per channel), and the muzzle flashes may take 64
+  of those, so every recipe ship, medium too (56-79 light units of lamps),
+  would have tripped it in a full volley. Stage 2 now holds a ship with
+  `lamp_span` rooms at `gen_ship.LAMP_LIGHT_BUDGET` = 128 - 64 - 16 = 48
+  (`_ship_lamps`): the spans widen together down to one lamp per room, then
+  every lamp is dimmed by one common factor if that is still too much.
+  Measured over seeds 1-20: medium ships keep 39-49 lamps (40-47 light
+  units, no dimming); large ones end at one lamp per room (51-73 lamps),
+  dimmed to 48 (a factor ~0.6). Tiles, draws and gates are untouched; v1
+  ships (no `lamp_span`) are not touched. How dark that reads is Erik's.
+
+**The first two ships** (Erik's HUMAN-TEST; NOT committed: a generated
+level ships only after he has played it): `ship_freighter_standard_s28_medium`
+(g, a = 0, 0; 35 rooms; a flank pair, the airlock bypass, a duct link, one
+secret, 2 spawn exits) and `ship_freighter_standard_s7_large` (0, 0; 73
+rooms; all five departments, a retreat loop, a flank pair, the maintenance
+ring, 2 pockets, 2 duct links, one secret). Headless bot matches (`bots`
+both sides, the written match.toml's default): win team 1 at tick 1174
+(medium) and 1335 (large). The bots walk slab -> flank strip / passageway
+-> lobby and meet at the band; no bot entered a wing department or
+engineering (#142: an airlock's outer door is closed to them).
+
+Still not built: banks (§5.3), `mutate` and the per-department layout
+streams (§5.4), the #126 recording header's `recipe_hash`.
+
+**Amended 2026-11-06 (#124, vocabulary doc §0.6):** the air-volume vent rule
+(it replaced the sealed-room rule) runs from PHASE 1 on every application,
+not in phase 4 as §2 and the grammar's as-built say: the retreat loop
+re-parents side rooms and can split a department's air, and that
+application is refused, not the whole attempt. `duct_in_cell` stays in
+phase 4.

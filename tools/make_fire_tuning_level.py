@@ -72,14 +72,15 @@ for _p in (ROOT, ROOT / "src", ROOT / "tools"):
         sys.path.insert(0, str(_p))
 
 import level_lib  # noqa: E402
-from level_loader import EntityInstance, SpawnEntry  # noqa: E402
+from level_loader import (  # noqa: E402
+    LEVEL_FORMAT_VERSION, SPACE_CODE, EntityInstance, SpawnEntry,
+)
 import door_entity_port  # noqa: E402
 from simulation.materials import (MAT_AIR, MAT_DOOR_CLOSED, MAT_FURNITURE,  # noqa: E402
                                   MAT_HULL, MAT_KINDLING, MAT_WOOD)
 
 LEVEL_NAME = "fire_tuning"
 DEFAULT_OUT_DIR = ROOT / "levels" / LEVEL_NAME
-SPACE_CODE = 9
 
 W, H = 72, 46            # tiles (x right, y down); tilemap shape = (H, W)
 PX = 16                  # diffuse px per tile -> 1152x736 png
@@ -251,12 +252,13 @@ def _header_toml(display_name: str) -> str:
         "# [[entity]] below ARE level_lib-managed and will be overwritten).\n"
         "# docs/fire_phase2_hud_and_level_2026-09-01.md SS B. Deterministic,\n"
         "# no RNG.\n"
-        'version = "2"\n'
+        f'version = "{LEVEL_FORMAT_VERSION}"\n'
         f'name = "{display_name}"\n'
         "\n"
-        "# v2 codes ARE canon material ids (src/simulation/materials.py):\n"
+        f"# v{LEVEL_FORMAT_VERSION} codes ARE canon material ids "
+        "(src/simulation/materials.py):\n"
         "#   0=air 1=hull 2=wood 3=door 4=steel 5=glass 6=furniture\n"
-        "#   7=door_closed 8=kindling 9=SPACE\n"
+        f"#   7=door_closed 8=kindling {SPACE_CODE}=SPACE\n"
         'tilemap = "tilemap.csv"\n'
         f"tile_size_m = {TILE_SIZE_M}\n"
         "\n"

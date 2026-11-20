@@ -246,8 +246,7 @@ def _sealed_box_level(material_id):
     #12, Phase 3c pre-benches, 2026-09-01) so Bench 1's infinite-fuel sealed
     variant reuses EXACTLY the M7-run-2 scenario shape instead of a second
     hand-rolled tilemap. Returns (LevelData, cx, cy)."""
-    from level_loader import LevelData
-    SPACE_CODE = 9
+    from level_loader import LEVEL_FORMAT_VERSION, SPACE_CODE, LevelData
     W, H = 20, 20
     x0, y0, x1, y1 = 3, 3, 16, 16
     cx, cy = 9, 9
@@ -259,7 +258,7 @@ def _sealed_box_level(material_id):
     tm[y0, x0:x1 + 1] = tm[y1, x0:x1 + 1] = 1
     tm[y0:y1 + 1, x0] = tm[y0:y1 + 1, x1] = 1
     tm[cy, cx] = material_id
-    lvl = LevelData(name="phase3a_sealed", version="2", path=Path("."),
+    lvl = LevelData(name="phase3a_sealed", version=LEVEL_FORMAT_VERSION, path=Path("."),
                     tilemap=tm, tile_size_m=0.333, diffuse_path=Path("."),
                     boundary="space")   # NOT "ambient" -> SPACE ring is vacuum,
                                         # HULL ring seals the interior for real.
@@ -558,10 +557,10 @@ def _build_cluster_level(interior_w, interior_h, origin_xy, offsets, tile_size_m
     instead of one, to measure mutual net-T^4 radiation coupling between
     burning tiles. Mirrors build_level's ring/ambient setup exactly; only the
     crate placement differs. Returns (LevelData, [(cx,cy), ...])."""
-    from level_loader import LevelData
+    from level_loader import LEVEL_FORMAT_VERSION, SPACE_CODE, LevelData
     from simulation.ambient import derive_ambient
     from simulation.materials import MAT_FURNITURE
-    AIR, SPACE = 0, 9
+    AIR, SPACE = 0, SPACE_CODE
     h, w = interior_h + 2, interior_w + 2
     tm = np.full((h, w), AIR, dtype=np.int32)
     tm[0, :] = SPACE
@@ -576,7 +575,7 @@ def _build_cluster_level(interior_w, interior_h, origin_xy, offsets, tile_size_m
         cells.append((cx, cy))
     ambient = derive_ambient(sky_tau_s=float(sky_tau_s), sponge_width=int(sponge_width))
     lvl = LevelData(
-        name="phase3a_cluster", version="2", path=Path("."),
+        name="phase3a_cluster", version=LEVEL_FORMAT_VERSION, path=Path("."),
         tilemap=tm, tile_size_m=float(tile_size_m), diffuse_path=Path("."),
         boundary="ambient", ambient=ambient)
     return lvl, cells

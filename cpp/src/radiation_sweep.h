@@ -116,10 +116,12 @@ struct OrdinateDir {
 // virtual ring's outflow per ordinate and channel, (n_ordinates, 3): an
 // off-grid light upwind read returns sky[m][c] (0 without one, P6a's dark
 // ring), booked on ring_in. THE DOOR: every cone inside the grid, rgb >= 0,
-// center in [0, CONE_TURN), spread in [0, CONE_TURN]; per channel the SUM of
-// every cone's rgb <= LIGHT_CONE_BUDGET; every sky value in [0, LIGHT_SKY_MAX]
-// -- the int64 argument (a stream stays below 2^44.3, every plain product
-// below 2^62: gate 19 (f), over-driven).
+// center in [0, CONE_TURN), spread in [0, CONE_TURN], rgb <= LIGHT_CONE_ROW_MAX;
+// per channel and PER ORDINATE the sum of every cone's emission (cone_emission,
+// so an omni lamp is charged 1/n of its rgb, #173) <= LIGHT_CONE_BUDGET; every
+// sky value in [0, LIGHT_SKY_MAX] -- the int64 argument (a stream lives in one
+// ordinate and stays below 2^44.3, every plain product below 2^62: gate 19 (f),
+// over-driven).
 //
 // ---- G3 F4b: THE FIRE'S LIGHT FLICKER (docs/g3_fire_design_2026-10-23.md
 // §6.3, RULED D; the spec is sweep_ref_q.py's LightGroup.emit_mult) ---------
@@ -143,7 +145,7 @@ struct OrdinateDir {
 // (S12), so one ordinate's unscaled thermal source src = (L°·w_m) >> 16 <
 // 2^40.42, and
 //   * the scaling product ((src·a) >> 16) · mult_q < 2^40.42 · 2^20 = 2^60.4;
-//   * a stream is at most the sky + every cone + the largest thermal outflow
+//   * a stream is at most the sky + its ordinate's cones + the largest thermal outflow
 //     (Kirchhoff keeps a cell's outflow below max(stream, mult·src) + 1 when
 //     d >= a), so stream < 2^40 + 2^44 + 16·2^40.42 = 2^45.26 (P6b's 2^44.3
 //     at mult = ONE);
@@ -155,7 +157,8 @@ struct OrdinateDir {
 // this argument (they scale with the cell count) and are not now.
 static constexpr int     CONE_ROW_WIDTH    = 7;
 static constexpr int64_t CONE_TURN         = 65536;             // one turn, Q16
-static constexpr int64_t LIGHT_CONE_BUDGET = (int64_t)1 << 44;  // Σ_cones rgb, per channel
+static constexpr int64_t LIGHT_CONE_BUDGET = (int64_t)1 << 44;  // Σ_cones emission, per ordinate + channel
+static constexpr int64_t LIGHT_CONE_ROW_MAX = (int64_t)1 << 48; // one cone's rgb: rgb * overlap < 2^62
 static constexpr int64_t LIGHT_SKY_MAX     = (int64_t)1 << 40;  // one ordinate's sky
 static constexpr int     EMIT_MULT_ROW_WIDTH = 3;                         // (y, x, mult_q)
 static constexpr int64_t LIGHT_EMIT_MULT_MAX = (int64_t)16 << 16;         // 16·ONE, Q16 (the headroom above)

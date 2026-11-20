@@ -43,7 +43,7 @@ from simulation.gases import INERT_N2, O2  # noqa: E402
 
 FP_ONE = 1 << 16
 O2_FRAC_Q = int(gas_fixed.quantize_q16_scalar(0.21))    # 13763 — one truth w/ the ring
-SPACE = 9                                            # v2 SPACE tile code
+SPACE = level_loader.SPACE_CODE                      # level format v3 (#27)
 HULL = 1
 AIR = 0
 
@@ -302,7 +302,7 @@ def _write_png(path: Path, w: int = 8, h: int = 6) -> None:
                      + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
-_PREFIX = ('version = "2"\nname = "sky"\ntilemap = "tilemap.csv"\n'
+_PREFIX = ('version = "3"\nname = "sky"\ntilemap = "tilemap.csv"\n'
            'tile_size_m = 0.333\ndiffuse = "diffuse.png"\n')
 
 

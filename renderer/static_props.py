@@ -130,6 +130,7 @@ from .gas_detail import WIND_V_REF
 # taming ceiling, 0.08, before the wind moved to the honest m/s scale).
 SWAY_WIND_REF = 0.08
 from .lit3d import (_COMMON_GLSL, _FIELD_SAMPLE_GLSL, LightFieldCtx,
+                    set_light_curve_uniforms,
                     bind_smoke_cover_map, make_camera)
 from .propgen import GENERATORS
 
@@ -260,6 +261,26 @@ def apply_gas_density(wind_x: float, wind_z: float, frac: float,
     return (float(wind_x) * factor, float(wind_z) * factor)
 
 
+def gas_frac_at_tiles(gas_bulk_fn, n_ambient_q: float, iy, ix) -> np.ndarray:
+    """THE density read of :meth:`StaticPropRenderer.sample_gas_frac`, for
+    many tiles at once (graphics G4 P4: the debris' air term, Erik's ruling
+    2026-11-07): each tile's bulk gas N through the SAME single-tile
+    accessor (``GameMap.gas_bulk_n_at``, raw Q16.16) over the SAME ambient
+    reference (``GameMap.ambient_seed()[0]``) -- 0 in vacuum, 1 at ambient.
+    The accessor is asked once per DISTINCT tile (a blast's chips share a
+    few), never a full-grid dequantize. ``gas_bulk_fn`` None reads as
+    ambient, as the props' read does."""
+    iy = np.asarray(iy, dtype=np.int64)
+    ix = np.asarray(ix, dtype=np.int64)
+    if gas_bulk_fn is None or iy.size == 0:
+        return np.ones(iy.shape, np.float64)
+    pairs, inv = np.unique(np.stack([iy.ravel(), ix.ravel()], axis=1),
+                           axis=0, return_inverse=True)
+    vals = np.array([float(gas_bulk_fn(int(y), int(x))) for y, x in pairs],
+                    np.float64) / max(float(n_ambient_q), 1e-9)
+    return vals[np.asarray(inv).ravel()].reshape(iy.shape)
+
+
 PROP_VS = """#version 330
 // Static-prop vertex shader. No skinning; the ONE animation is P4's WIND SWAY,
 // a pure vertex displacement in MODEL space (so it rides the placement's yaw +
@@ -362,12 +383,17 @@ void main() {
     if (u_srgb_decode == 1) albedo = srgb_to_linear(albedo);  // else double-dark
     albedo *= colDiffuse.rgb;
 
-    vec3 lit = albedo * (u_ambient + incoming_rgb * u_light_gain * ndotl);
+    // G5: the light curve (lit3d's block; off = exactly 1).
+    vec3 light_rgb = incoming_rgb * u_light_gain;
+    light_rgb *= lightCurveGain(light_rgb);
+    albedo = lightCurveAlbedo(albedo, light_rgb);
+
+    vec3 lit = albedo * (u_ambient + light_rgb * ndotl);
 
     // Rim tinted by the LOCAL light, so a prop is never brighter than the room
     // it stands in (dark room -> faint ambient rim only).
     float rim = pow(1.0 - max(0.0, dot(N, u_view_dir)), u_rim_power);
-    lit += u_rim_strength * rim * (u_ambient + incoming_rgb * u_light_gain);
+    lit += u_rim_strength * rim * (u_ambient + light_rgb);
 
     // Linear HDR out (G0 P1): the world resolve tone-maps and encodes, once.
 
@@ -703,6 +729,7 @@ class StaticPropRenderer:
                                     float(ctx.ambient[2])]),
             rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3)
         self._set_f("u_light_gain", ctx.light_gain)
+        set_light_curve_uniforms(self._shader, ctx.curve)
         rl.set_shader_value(
             self._shader, self._locs["u_world_px"],
             rl.ffi.new("float[2]", [float(ctx.world_px_w),
@@ -943,4 +970,4 @@ class StaticPropRenderer:
 
 __all__ = ["StaticPropRenderer", "PropPlacement", "SwaySettings",
            "build_model", "placements_from_entities", "apply_gas_density",
-           "PROP_VS", "PROP_FS", "HEIGHT_BUCKET_M", "make_camera"]
+           "gas_frac_at_tiles", "PROP_VS", "PROP_FS", "HEIGHT_BUCKET_M", "make_camera"]

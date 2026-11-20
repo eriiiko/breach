@@ -4,7 +4,7 @@ Erik's founding principle (mechanics/05, verbatim): "there simply shouldn't
 be any barrier between gameplay and the physics" — operationally, **the unit
 must be able to read every field**. This module is that principle's ONE home:
 every physics→unit coupling — shockwave damage, heat damage, water slowing,
-gas poisoning, O2, pushes — is a **row in a table**::
+gas poisoning, O2, wind — is a **row in a table**::
 
     (field, reduction over footprint, response(sample, unit.profile) -> outputs)
 
@@ -33,10 +33,17 @@ named EXCHANGE-READ slot that iterates this table in table order (mechanics/05
 §4, pipeline phase 2) is a later patch; nothing here reorders or merges the
 shipped call sites.
 
-P4 (2026-07-05) adds the first NEW row — :func:`apply_wave_push`, the
-``wave_p | grad`` impulse push + KNOCKED_DOWN trigger — invoked post-physics
-at ``Simulation.step`` 9c2, directly after the heat row (the documented
-within-tick exchange order: heat damage, then push).
+P4 (2026-07-05) added the first NEW row — ``apply_wave_push``, the
+``wave_p | grad`` impulse push + KNOCKED_DOWN trigger at ``Simulation.step``
+9c2. **#140 (2026-10-31) RETIRED it** (history in git and mechanics/05 §1):
+the 9c2 row became the ``wind | max`` row (docs/wind_on_units_design_2026-
+10-31.md): the dynamic pressure ``q = 1/2 rho v^2`` at the footprint. Since
+#183 G5p-b that row is :func:`apply_wind_force`: the dynamic pressure is a
+FORCE handed to the unit impulse law (``unit_impulse.add_wind``), whose own
+outcomes (slowed, pushed by the excess over the hold, knocked down) replace
+#140's cadence scale and bespoke knockdown, both deleted. Still directly
+after the heat row (the documented within-tick exchange order: heat, then
+wind).
 
 P2 note (also behaviour-preserving, 2026-07-05): both responses now hand
 their pre-mitigation amounts to the mechanics/06 DamagePacket pipeline
@@ -67,18 +74,22 @@ from typing import Callable, Optional, Sequence
 
 from config import CFG
 from simulation import atmosphere_fixed as _atm_fx
+from simulation import corpse as _corpse
+from simulation import body_temp as _body_temp
 from simulation import gas_fixed
+from simulation import poison
+from simulation import unit_fixed as _unit_fixed
 from simulation.damage import (
     BLAST, CREDIT_HEAT, HEAT, POISON, DamagePacket, apply_packet,
     mitigation_for, tick_credit,
 )
-from simulation.events import NO_ATTACKER
+from simulation.events import NO_ATTACKER, Cause
 # Gas SLICE ids (engine/05 §6.2) — aliased so they can't be confused with the
 # damage-type constants above (gases.POISON = slice 2; damage.POISON = dtype 4).
 from simulation.gases import POISON as GAS_POISON, TEARGAS as GAS_TEARGAS
 from simulation.species import ZOMBIE_STABILITY
 from simulation.creature_system import is_creature
-from simulation.status import BLINDED, KNOCKED_DOWN, apply_status
+from simulation.status import BLINDED, apply_status
 
 
 # ---------------------------------------------------------------------------
@@ -180,8 +191,8 @@ def reduce_grad(field, tiles: Sequence[tuple[int, int]]) -> tuple[int, int]:
         gy = mean(field on tiles with ty == y_hi) - mean(... ty == y_lo)
 
     (each mean = one :func:`_mean_round` divide). Positive toward increasing
-    tx / ty (y-down), i.e. it points UPHILL like ∇p — the future impulse-push
-    row (mechanics/05 §1) consumes ``-grad``. The result is the raw field
+    tx / ty (y-down), i.e. it points UPHILL like ∇p. No row uses it since
+    #140 retired the impulse push (it stays in the vocabulary). The result is the raw field
     difference ACROSS the footprint extremes (span ``x_hi - x_lo`` tiles),
     deliberately NOT normalised per tile — v1 keeps the divides to one per
     axis and lets the consuming response own its scale constant.
@@ -238,8 +249,99 @@ REDUCTIONS: dict[str, Callable] = {
 HEAT_SCALE = 65536
 
 
+def heat_dials(cfg) -> tuple:
+    """The ``[combat]`` dials of the felt-temperature law, read once per
+    call of the row (or once per episode by the observation): ``(absorption,
+    reflectivity, flux_to_temp, ambient_ref)`` as floats."""
+    cmb = cfg.combat
+    return (float(cmb.unit_absorption), float(cmb.unit_reflectivity),
+            float(cmb.heat_flux_to_temp), float(cmb.heat_ambient_ref))
+
+
+def heat_dials_q(dials) -> tuple:
+    """:func:`heat_dials` at the door (#29 P3e): ``(gain_q, ambient_q)``,
+    Q16 -- the law's ONE gain ``flux_to_temp * absorption * (1 -
+    reflectivity)`` (felt degrees per heat unit) and the ambient felt
+    temperature, each quantized once (config constants)."""
+    absorption, reflectivity, flux_to_temp, ambient_ref = dials
+    gain = flux_to_temp * absorption * (1.0 - reflectivity)   # p3e-door
+    return (_unit_fixed.quantize_scalar(gain),
+            _unit_fixed.quantize_scalar(ambient_ref))
+
+
+def felt_temperature(gmap, u, dials) -> tuple:
+    """THE felt temperature of one body (the ``heat | max`` row's own law,
+    extracted in #195 1g (b) so the row and the observation call ONE
+    function; obs spec 1.3 col 96): ``(t_felt, peak_tile, peak_from_heat)``.
+
+    ``peak_raw`` is the max over the unit's in-bounds footprint tiles of the
+    larger of the ``heat`` deposit buffer and the radiation sensor
+    ``rad_flux_sweep`` (converted once out of the sweep's fine currency,
+    #78) -- the hottest tile on the body is the exposure; ``peak_tile`` is
+    that tile ``(ty, tx)`` (None when nothing reaches the body:
+    ``peak_raw <= 0``, the row's cold-tile early-out), ``peak_from_heat``
+    whether its exposure was the ``heat`` buffer (the #123 credit question).
+    Then the law, in Q16 integers since #29 P3e (:func:`felt_temperature_q`;
+    ``peak_raw`` is already Q16 heat units)::
+
+        t_felt_q = ambient_q + round(gain_q * peak_raw / 65536)
+        gain     = flux_to_temp * absorption * (1 - reflectivity)
+
+    returned here as its exact float view. With no flux ``t_felt`` is
+    ``ambient_ref``. ``dials`` is :func:`heat_dials`. Pure read: nothing is
+    written anywhere."""
+    t_q, peak_tile, peak_from_heat = felt_temperature_q(
+        gmap, u, heat_dials_q(dials))
+    return _unit_fixed.dequantize_scalar(t_q), peak_tile, peak_from_heat
+
+
+def felt_temperature_q(gmap, u, dials_q) -> tuple:
+    """:func:`felt_temperature` in Q16 (#29 P3e): ``(t_felt_q, peak_tile,
+    peak_from_heat)``; ``dials_q`` is :func:`heat_dials_q`."""
+    from simulation import optics_fixed as _optics_fx
+    gain_q, ambient_q = dials_q
+    h, w = gmap.heat.shape
+    heat = gmap.heat
+    rad_flux = getattr(gmap, "rad_flux_sweep", None)
+    rad_fine_bits = _optics_fx.sweep_fine_bits(gmap)
+    # max-over-footprint incident flux (the hottest tile on the body is the
+    # exposure that matters; shadowed tiles read ~0, max picks the burning
+    # side). In-bounds guard for safety against off-grid footprints.
+    peak_raw = 0
+    # #123 credit: the hottest footprint tile and whether its exposure
+    # is the `heat` deposit buffer (a claimable deposit: a jet, a splash,
+    # an igniter's heat) or the radiation sensor (fire light: nobody's).
+    peak_tile = None
+    peak_from_heat = False
+    for (tx, ty) in u.occupied_tiles():
+        if 0 <= ty < h and 0 <= tx < w:
+            v = int(heat[ty, tx])
+            from_heat = True
+            if rad_flux is not None:
+                # D3: the radiant sensor and the (non-radiative) heat
+                # writers are two independent exposures at the same tile —
+                # take the larger, exactly as the footprint loop takes the
+                # hottest tile. Both are Q16.16 in the same domain --
+                # once the sensor leaves the sweep's fine currency (#78).
+                fv = _optics_fx.fine_heat_shr(int(rad_flux[ty, tx]), 0,
+                                              rad_fine_bits)
+                if fv > v:
+                    v = fv
+                    from_heat = False
+            if v > peak_raw:
+                peak_raw = v
+                peak_tile = (ty, tx)
+                peak_from_heat = from_heat
+    if peak_raw <= 0:
+        return ambient_q, None, False
+    return (ambient_q + _unit_fixed.mul_q16_round(gain_q, peak_raw),
+            peak_tile, peak_from_heat)
+
+
 def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
-    """Apply per-tick radiant heat damage to every LIVING unit (proposal §4.2).
+    """Apply per-tick radiant heat damage to every unit, a corpse included
+    (proposal §4.2; arc #63 P5c: a corpse's hp is its body, so a corpse
+    takes the same packet, uncredited, with no event).
 
     A unit is a full ray-blocker (stamped before the ray pass), so rays
     terminate on its leading tiles and ``gmap.heat`` already holds the
@@ -255,7 +357,8 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
         Phi     = max(heat over occupied_tiles) / HEAT_SCALE      # incident flux
         Phi_abs = Phi * unit_absorption * (1 - unit_reflectivity)
         T_felt  = heat_ambient_ref + heat_flux_to_temp * Phi_abs
-        over    = T_felt - temperature_max                        # damage band
+        body    = body_temp.advance(T_felt, the air)  # #215: the BODY's law
+        over    = body - temperature_max                          # damage band
         if over <= 0: no heat damage this tick
         dmg     = environmental_damage_rate * (1 + heat_overtemp_scale*over) * dt_tick
         apply_packet(u, DamagePacket(dmg, HEAT), ...)             # mechanics/06 §2
@@ -325,72 +428,70 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
     # exactly as before in real units -- the fine bits refine the sweep's
     # exchange, they are not heat (tests/test_sweep_fine_currency.py: the same
     # HP per second within 1 %).
-    from simulation import optics_fixed as _optics_fx
-    h, w = gmap.heat.shape
-    heat = gmap.heat
-    rad_flux = getattr(gmap, "rad_flux_sweep", None)
-    rad_fine_bits = _optics_fx.sweep_fine_bits(gmap)
+    # #29 P3e: the row in Q16 integers -- the dials quantized once here (the
+    # door), the felt temperature from felt_temperature_q, the over-band and
+    # the damage as ONE rational each (div_round: the real value rounded
+    # once, half away):
+    #     dmg_q = round(rate_q * (ONE + round(k_q * over_q / ONE)) / (ONE * tps))
+    #
+    # #215 (docs/body_temperature_design_2026-11-17.md section 2): THE BODY.
+    # The felt temperature is no longer billed the tick it is read: it is the
+    # flow into the unit's own body temperature (simulation.body_temp, an
+    # energy balance with the env profile's heat capacity, its loss split
+    # between the air on the unit's tiles and what the shell radiates), and
+    # the band reads the BODY. Every living unit advances every tick (a body
+    # cools after the heat is gone; hot air warms it with no flux at all);
+    # one with no flux in ambient air and an ambient body moves nothing.
     cmb = CFG.combat
-
-    absorption   = float(cmb.unit_absorption)
-    reflectivity = float(cmb.unit_reflectivity)
-    flux_to_temp = float(cmb.heat_flux_to_temp)
-    ambient_ref  = float(cmb.heat_ambient_ref)
-    overtemp_k   = float(cmb.heat_overtemp_scale)
-    temp_max_cfg = float(cmb.temperature_max)
-    env_rate_cfg = float(cmb.environmental_damage_rate)
-
-    dt_tick = 1.0 / float(ticks_per_second)
+    dials_q = heat_dials_q(heat_dials(CFG))
+    amb_q = dials_q[1]
+    q = _unit_fixed.quantize_scalar
+    overtemp_q = q(float(cmb.heat_overtemp_scale))        # p3e-door
+    temp_max_cfg = cmb.temperature_max
+    env_rate_cfg = cmb.environmental_damage_rate
+    tps = int(ticks_per_second)
+    one = _unit_fixed.FP_ONE
+    k_q = _body_temp.k_temp_q()
+    rates = {}                         # capacity -> (a_q, a_rad_q), this call
 
     for u in units:
-        if not u.alive:
+        # arc #63 P5c (Erik, 2026-11-19: "fire and explosion and heat still
+        # damage after death"): a CORPSE runs the same row -- its body keeps
+        # its temperature in the air it lies in, and above the band the same
+        # packet lowers its hp (the body below zero, simulation.corpse) --
+        # uncredited and with no event; a destroyed corpse is left alone.
+        corpse = not u.alive
+        if corpse and (not hasattr(u, "infest_q") or _corpse.destroyed(u)):
             continue
 
-        # max-over-footprint incident flux (the hottest tile on the body is the
-        # exposure that matters; shadowed tiles read ~0, max picks the burning
-        # side). In-bounds guard for safety against off-grid footprints.
-        peak_raw = 0
-        # #123 credit: the hottest footprint tile and whether its exposure
-        # is the `heat` deposit buffer (a claimable deposit: a jet, a splash,
-        # an igniter's heat) or the radiation sensor (fire light: nobody's).
-        peak_tile = None
-        peak_from_heat = False
-        for (tx, ty) in u.occupied_tiles():
-            if 0 <= ty < h and 0 <= tx < w:
-                v = int(heat[ty, tx])
-                from_heat = True
-                if rad_flux is not None:
-                    # D3: the radiant sensor and the (non-radiative) heat
-                    # writers are two independent exposures at the same tile —
-                    # take the larger, exactly as the footprint loop takes the
-                    # hottest tile. Both are Q16.16 in the same domain --
-                    # once the sensor leaves the sweep's fine currency (#78).
-                    fv = _optics_fx.fine_heat_shr(int(rad_flux[ty, tx]), 0,
-                                                  rad_fine_bits)
-                    if fv > v:
-                        v = fv
-                        from_heat = False
-                if v > peak_raw:
-                    peak_raw = v
-                    peak_tile = (ty, tx)
-                    peak_from_heat = from_heat
-        if peak_raw <= 0:
-            continue  # cold tile: no radiant flux, no heat damage
+        # THE felt temperature (#195 1g (b): one function, the row's own
+        # law, read by the observation too -- never a copy): the hottest
+        # footprint tile's exposure, which tile, and whether it was the
+        # `heat` deposit buffer (#123 credit). With no flux it is ambient.
+        t_felt_q, peak_tile, peak_from_heat = felt_temperature_q(
+            gmap, u, dials_q)
 
-        phi = peak_raw / HEAT_SCALE
-        phi_abs = phi * absorption * (1.0 - reflectivity)
-
-        # Per-unit EnvironmentProfile band / rate, else the global fallback.
+        # Per-unit EnvironmentProfile band / rate / capacity, else the
+        # global fallback (profile constants, quantized at this door).
         env = getattr(u, "environment", None)
-        temp_max = float(getattr(env, "temperature_max", temp_max_cfg))
-        env_rate = float(getattr(env, "environmental_damage_rate", env_rate_cfg))
+        cap = _body_temp.capacity_of(env)
+        ar = rates.get(cap)
+        if ar is None:
+            ar = rates[cap] = _body_temp.rates_q(gmap, cap)
+        body_q = _body_temp.advance(u, gmap, t_felt_q, ar[0], ar[1], amb_q,
+                                    k_q, _body_temp.absorption_q(env))
+        temp_max_q = q(float(getattr(env, "temperature_max",
+                                     temp_max_cfg)))         # p3e-door
+        rate_q = q(float(getattr(env, "environmental_damage_rate",
+                                 env_rate_cfg)))             # p3e-door
 
-        t_felt = ambient_ref + flux_to_temp * phi_abs
-        over = t_felt - temp_max
-        if over <= 0.0:
+        over_q = body_q - temp_max_q
+        if over_q <= 0:
             continue  # within the tolerance band: survivable, no damage
 
-        dmg = env_rate * (1.0 + overtemp_k * over) * dt_tick
+        dmg_q = _unit_fixed.div_round(
+            rate_q * (one + _unit_fixed.mul_q16_round(overtemp_q, over_q)),
+            one * tps)
 
         # The DamagePacket pipeline (mechanics/06 §2) owns everything after
         # the pre-mitigation amount: mitigation applies the unit's resist
@@ -406,12 +507,13 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
         # when the exposure there is the `heat` buffer; radiation, a burning
         # tile's own heat and an unclaimed deposit are the environment's.
         attacker = NO_ATTACKER
-        if peak_from_heat and peak_tile is not None:
+        if peak_from_heat and peak_tile is not None and not corpse:
             attacker = tick_credit(gmap).attacker_at(CREDIT_HEAT, *peak_tile)
-        apply_packet(u, DamagePacket(amount=dmg, dtype=HEAT,
-                                     attacker_id=attacker,
-                                     indirect=True),
-                     events, source="heat")
+        apply_packet(u, DamagePacket(
+                         amount=_unit_fixed.dequantize_scalar(dmg_q),
+                         dtype=HEAT, attacker_id=attacker, indirect=True,
+                         amount_q=dmg_q),
+                     None if corpse else events, source="heat")
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +529,10 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None,
     timed charge, a scripted blast). A self-blast is credited to the
     thrower too (``attacker_id == unit_id``).
 
+    A CORPSE (arc #63 P5c) is hit by the same falloff: its hp is its body
+    (``simulation.corpse``), the packet uncredited and with no event; a
+    destroyed corpse is skipped.
+
     Units below ``CFG.combat.blast_damage_threshold`` damage take none
     (prevents chip damage at the edge of distant blasts). Marks the
     unit dead if HP <= 0. Does NOT set ``killed_by_zombie`` — explosion
@@ -436,15 +542,27 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None,
     :class:`UnitKilledEvent` per kill so the renderer can spawn matching
     visual effects.
     """
+    # #29 P3e: integers -- membership ``d2 <= r^2`` on the Q16 radius, the
+    # damage ``floor(max_damage * (1 - dist/radius))`` exact
+    # (unit_fixed.falloff_floor: what int() of the float falloff computed,
+    # bar float rounding on a boundary).
+    r_q = _unit_fixed.quantize_scalar(float(radius))           # p3e-door
+    r2_q = r_q * r_q
+    max_d = int(max_damage)
     for u in units:
-        if not u.alive:
+        # arc #63 P5c: a CORPSE takes the blast too (its hp, the body below
+        # zero: simulation.corpse), uncredited and with no event; a destroyed
+        # corpse is left alone.
+        corpse = not u.alive
+        if corpse and (not hasattr(u, "infest_q") or _corpse.destroyed(u)):
             continue
         uc_fx = u.center_tile_x()
         uc_fy = u.center_tile_y()
-        dist = math.sqrt((uc_fx - fx) ** 2 + (uc_fy - fy) ** 2)
-        if dist <= radius:
-            falloff = 1.0 - (dist / radius)
-            damage = int(max_damage * falloff)
+        dx_q = _unit_fixed.quantize_scalar(uc_fx - fx)   # tiles: exact
+        dy_q = _unit_fixed.quantize_scalar(uc_fy - fy)
+        d2 = dx_q * dx_q + dy_q * dy_q                    # Q32
+        if r_q > 0 and d2 <= r2_q:
+            damage = _unit_fixed.falloff_floor(max_d, d2, r2_q)
             if damage >= CFG.combat.blast_damage_threshold:
                 # BLAST packet through the pipeline (mechanics/06 §2). The
                 # geometric pre-mitigation amount + the chip-damage threshold
@@ -452,16 +570,24 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None,
                 # through exactly, then the same Q2-lift quantize -> hp ->
                 # hit/kill events as before (source "explosion"; blast
                 # deaths never set killed_by_zombie — only melee converts).
+                # #185: the hit travels detonation tile -> the victim's
+                # centre tile, the geometry the falloff reads; (0, 0) on
+                # the victim's own centre tile (no direction).
                 apply_packet(u,
                              DamagePacket(amount=damage, dtype=BLAST,
-                                          attacker_id=attacker_id,
-                                          indirect=True),
-                             events, source="explosion")
+                                          attacker_id=(NO_ATTACKER if corpse
+                                                       else attacker_id),
+                                          indirect=True,
+                                          dir_x_q=dx_q, dir_y_q=dy_q),
+                             None if corpse else events, source="explosion")
 
 
 # ---------------------------------------------------------------------------
-# Wave impulse push + KNOCKED_DOWN trigger — the `wave_p | grad` coupling row
-# (mechanics/05 §1; the knockdown spec is mechanics/06 §4). NEW in P4.
+# Wind on units -- the `wind | max` coupling row (#140; mechanics/05 §1, the
+# knockdown spec mechanics/06 §4). Replaces the retired `wave_p | grad` push.
+# docs/wind_on_units_design_2026-10-31.md (the read); since #183 G5p-b the
+# wind is a force on the unit impulse law (docs/unit_impulse_design_2026-11-
+# 10.md §4, §7). Research: docs/research/wind_on_a_person_2026-10-31.md.
 # ---------------------------------------------------------------------------
 def _stability_for(unit) -> float:
     """Resolve the unit's knockdown ``stability`` (mechanics/06 §4).
@@ -471,7 +597,10 @@ def _stability_for(unit) -> float:
     exact ``mitigation_for`` pattern. Everyone else reads the species
     :class:`EnvironmentProfile` pointer stamped on the unit at construction
     (``unit.environment.stability``, default 1.0); bare stub units fall back
-    to the human baseline 1.0.
+    to the human baseline 1.0. The unit impulse law reads it
+    (``unit_impulse.stability_q16``): it scales the fall limit, and the
+    effort falls a unit at ``stability^2`` -- so for a steady wind it scales
+    the knockdown WIND SPEED (q goes as v^2), as #140's compare did.
     """
     if getattr(unit, "is_zombie", False):
         return ZOMBIE_STABILITY
@@ -479,214 +608,98 @@ def _stability_for(unit) -> float:
     return float(getattr(env, "stability", 1.0))
 
 
-def _wave_push_dv(u, tiles, gmap, k_push: float, grad_floor_q: int):
-    """The push's velocity change on one unit, tiles/s, from the pressure
-    gradient over the GAS tiles of its footprint ``tiles`` -- or None when
-    the field is quiet there (both axes under the noise floor). Shared by the
-    unit row (:func:`apply_wave_push`) and the creature row
-    (:func:`apply_creature_wave_impulse`), one arithmetic for both."""
-    solid = gmap.solid
-    h, w = solid.shape
-    # #121: a walk-through door tile is solid to gas (it stores
-    # atmosphere 0) but legal to stand on (the wall clamp below says so);
-    # its 0 is no pressure, so the gradient reads only the gas tiles of
-    # the footprint. Without this a footprint whose edge is on a legacy
-    # MAT_DOOR is shoved back off it every tick -- no unit under MOVE_DIR
-    # could cross a door. A real pressure difference across the door
-    # (the two rooms' gas tiles) still pushes, unchanged.
-    gas_tiles = [(tx, ty) for (tx, ty) in tiles
-                 if not (0 <= ty < h and 0 <= tx < w and solid[ty, tx])]
-    gx, gy = reduce_grad(gmap.atmosphere, gas_tiles)
-    if -grad_floor_q <= gx <= grad_floor_q:
-        gx = 0      # #116: under the noise floor -> no push on this axis
-    if -grad_floor_q <= gy <= grad_floor_q:
-        gy = 0
-    if gx == 0 and gy == 0:
-        return None
-    mass = float(u.mass)
-    dvx = k_push * (-gx / 65536.0) / mass    # tiles/s (door 3)
-    dvy = k_push * (-gy / 65536.0) / mass
-    return dvx, dvy
+#: ``W = (N / N_amb) * v^2 * 2^32``, so ``q = 1/2 rho_ref W / 2^32``;
+#: 2^33 = 2 * BULK_ONE * FP_ONE.
+_W_PER_Q_RHO = float(2 * gas_fixed.BULK_ONE * _atm_fx.FP_ONE)
 
 
-def apply_wave_push(units, gmap, ticks_per_second):
-    """The wave_p impulse-push row, BOTH outputs (mechanics/05 §1): the
-    per-tick displacement nudge AND the KNOCKED_DOWN trigger (mechanics/06
-    §4). Runs post-physics at ``Simulation.step`` 9c2, immediately AFTER the
-    heat row (the documented within-tick exchange order: heat damage first,
-    then push — a unit the heat row kills this tick is a corpse and is not
-    displaced).
+def wind_q_pa(gmap, w: int) -> float:
+    """The dynamic pressure in Pa of the wind load ``w`` on ``gmap``:
+    ``rho_ref * W / 2^33`` with ``rho_ref`` the map's ``[materials.air]``
+    density row (the one owner). Display and reports only (the tile
+    inspector, the probe); the law prices the load once, in the impulse
+    table (``unit_impulse.wind_impulse_q``)."""
+    from simulation.materials import MAT_AIR
+    return float(gmap.materials.density[MAT_AIR]) * int(w) / _W_PER_Q_RHO
 
-    Per LIVING unit, in stored order (deterministic; each unit's response
-    reads only the field + its own state, so the result is order-free — the
-    serial loop mirrors :func:`apply_environmental_damage`):
 
-        (gx, gy) = reduce_grad(wave_p, occupied_tiles)     # Q16.16, uphill
-        dvx = k_push * (-gx / 65536) / mass                # tiles/s
-        dvy = k_push * (-gy / 65536) / mass
-        KNOCKED_DOWN if dvx^2 + dvy^2 >= (threshold * stability)^2
-        dx = clamp(dvx * dt, +-push_max_tile_per_tick)     # dt = 1/tps
-        dy = clamp(dvy * dt, +-push_max_tile_per_tick)
-        unit.x += dx ; unit.y += dy                        # wall-clamped
+def _creature_wind(table, gmap, u, creatures) -> None:
+    """The wind row's response on a CREATURE unit (#106 P6d1, design 4.3;
+    moved onto G5p-b's read at the merge of main, 2026-11-20): THE read
+    (``gmap.footprint_wind`` over its footprint) priced by THE table
+    (``unit_impulse.wind_impulse_q``, the standing drag area), one tick of
+    impulse divided by the unit's mass added to the creature body's CROWN
+    velocity -- the next slot 5b integrates it (drag, the floor, the walls),
+    so the animal feels the wind rather than being displaced. No knockdown
+    (an octopus has no feet; recorded, not designed). VETOABLE (Erik):
+    ``creatures=None`` at the 9c2 call leaves a creature unpushed, an
+    accepted gap. The float chain is the creature's door 3 into its Q24
+    velocity, quantized once by ``CreatureBody.add_velocity_m_s``."""
+    from simulation import unit_impulse
+    body = creatures.bodies.get(u.id) if creatures.bodies else None
+    if body is None:
+        return
+    w, vx, vy = gmap.footprint_wind(u.tile_y, u.tile_x, u.footprint)
+    if w <= 0:
+        return
+    vx, vy = int(vx), int(vy)
+    n = math.sqrt(vx * vx + vy * vy)
+    if n == 0.0:
+        return
+    j_q = unit_impulse.wind_impulse_q(table, w, False)
+    if j_q == 0:
+        return
+    # Q16 gram-tiles per tick -> N s, then / the unit's mass -> m/s
+    j_ns = (j_q / 65536.0) / 1000.0 * float(table.tile_size_m) * float(table.tps)
+    dv = j_ns / float(u.mass)
+    body.add_velocity_m_s(dv * vx / n, dv * vy / n)
 
-    Design notes (the P4 decisions, in one place):
 
-    - **Reduction = the vocabulary's ``reduce_grad``** (footprint edge-line
-      mean difference), NOT an inline per-tile Σ∇p. Why: it samples ONLY the
-      unit's own footprint tiles, so a unit hugging a wall picks up no
-      spurious force from solid cells (wave_p is 0 inside walls — an
-      out-of-body stencil would fabricate wall-ward suction); and it is the
-      shipped, integer-exact vocabulary entry the chapter row names. With
-      the one shipped footprint (3x3, every unit) the chapter's
-      area-scaling Σ form differs from this by a constant that ``k_push``
-      absorbs; when footprint sizes diversify, the big-light-units-fly
-      area scaling returns as an explicit footprint-area factor here.
-    - **v1 is stateless**: no persistent velocity on the unit — an
-      instantaneous per-tick nudge while the wave overlaps the footprint.
-      Measured consequence (calibration 2026-07-05, config.toml [exchange]):
-      a passing acoustic pulse pushes on its front and pulls on its tail
-      (linear acoustics — the net impulse at a fixed point largely
-      cancels), so the visible motion is a sharp BUFFET (peak hop 0.3-0.5
-      tile, partial spring-back, net drift +-0.2 tile), not a sustained
-      1-tile carry. The knockdown is the star output; a sustained blast-wind
-      throw would read the atmosphere dome — a separate row, Erik's call.
-    - **Knockdown compares SQUARES** — ``dvx*dvx + dvy*dvy`` against
-      ``(threshold*stability)**2`` computed as a product — no sqrt needed
-      (cheaper, and one fewer op to audit; the chain stays pure ``+ - x /``
-      door 3 on door-2 constants and the door-1 integer gradient).
-    - **Knockdown uses the UNCAPPED, UNCLAMPED dv** — the physical velocity
-      change. The displacement cap and the wall clamp are motion sanity
-      rails; a unit slammed against a wall by a blast still goes down.
-    - **Trigger timing** (status.py P3 semantics): 9c2 sits AFTER this
-      tick's status pass (step 2b), so a knockdown applied here starts
-      suppressing movement/actions NEXT tick and lasts the full
-      ``knockdown_getup_ticks`` from there — the wave visibly bowls the
-      unit over on the spot, and re-knocks REFRESH the timer (P3 stacking).
-    - **Wall clamp, per axis, x then y (fixed order → slide along walls)**:
-      each axis's move is accepted only if the DESTINATION footprint stays
-      in-bounds and enters no solid tile it does not already stand on (the
-      already-standing carve-out covers walk-through door tiles, which are
-      solid to gas but legally occupied). A blocked axis drops its
-      displacement (the unit pins against the wall); the other axis still
-      slides. The y test runs at the already-accepted x, so the final
-      combined footprint is always explicitly checked. Units do NOT block
-      each other (v1: bodies are not walls — overlap is already possible
-      via pathfinding; ``gmap.solid`` is the only barrier).
-    - **Determinism**: gradient is door-1 integer; ``/65536`` is an exact
-      power-of-two scale; k_push / mass / dt / threshold / stability are
-      door-2 constants; the chain is pure ``+ - x /`` float64 (door 3) into
-      today's float positions (the Q16.16 position migration is a later
-      arc). ``gx == gy == 0`` (quiet field / off-grid footprint) is an
-      integer-exact early-out: the pass is a bit-identical no-op when no
-      wave is up — which keeps every wave-free trajectory's digest
-      untouched.
+def apply_wind_force(units, gmap, table=None, creatures=None):
+    """The ``wind | max`` row's 9c2 output (#140's read, G5p-b's law): per
+    LIVING unit, the wind load and its direction through THE read,
+    ``gmap.footprint_wind(...)`` (the max over the footprint's gas tiles of
+    ``N_raw * (v^2 >> 16)`` and that tile's wind), become ONE tick of force
+    on the unit impulse law: ``unit_impulse.add_wind`` -- the impulse ``q *
+    drag_area / tps`` along the wind (``[impulse] drag_area_m2``, the
+    prone body's ``drag_area_prone_m2`` while KNOCKED_DOWN), integrated in
+    the next tick's slot 1a. A blast's wind is wind: a detonation pushes
+    the units its wind reaches through this row and nothing else.
+
+    What a unit then does is the law's (design §5, §6): a force below its
+    hold never moves it (the sway is resisted every tick) and only slows it
+    from ``k_slow`` of body weight (the effort's walking scale); above the
+    hold it is pushed by the excess and floored (effort at stability^2, its
+    pushed speed at the fall limit); prone, it is kept down while the wind
+    it would take standing floors it and slides only past its prone
+    friction. This row writes no position, no status and no speed.
+
+    Runs post-physics at ``Simulation.step`` 9c2, after the heat row (a unit
+    the heat row killed this tick is a corpse); it reads the end-of-tick
+    wind. Determinism: every input is an int; the table's constants are
+    quantized once per map; no RNG; each unit reads only its own footprint.
     """
-    cfg = CFG.exchange
-    k_push = float(cfg.k_push)
-    cap = float(cfg.push_max_tile_per_tick)
-    threshold = float(cfg.knockdown_dv_threshold)
-    getup_ticks = int(cfg.knockdown_getup_ticks)
-    dt_tick = 1.0 / float(ticks_per_second)
-    # #116: the field's integer noise floor, quantized once per pass (door 2).
-    # A footprint gradient at or under it is the quiet field's few-count
-    # jitter, not a wave: it is read as 0 per axis, so a standing unit nobody
-    # pushes stays exactly on its integer (floor() stamps it where it is drawn).
-    grad_floor_q = _atm_fx.quantize_scalar(float(cfg.push_grad_floor_atm))
-
-    # EOS refactor P3 (design §6 "apply_wave_push" row): reads grad(P) — the
-    # derived pressure field (`gmap.atmosphere`, the design's P-alias) —
-    # instead of the retired `wave_p` acoustic anomaly. P now carries BOTH the
-    # acoustic transient and the bulk dome in one field (§3.1's buffet-vs-dome
-    # distinction survives as the field's own time evolution); the zero-mean
-    # fast path is unaffected: grad(P) is baseline-independent regardless of
-    # P's steady-state level (uniform P -> grad == 0, integer-exact).
-    solid = gmap.solid
-    h, w = solid.shape
-
+    from simulation import unit_impulse
+    from simulation.status import composed_flags
+    if table is None:
+        table = unit_impulse.table_for(gmap)
+    if table.wind_k_q == 0 and table.wind_k_prone_q == 0:
+        return                              # the input switched off
     for u in units:
         if not u.alive:
             continue
-        # #106 P6d1: a creature unit is never displaced here -- its anchor is
-        # its body pose's; the push reaches it as a body impulse through the
-        # creature row below (apply_creature_wave_impulse).
+        # #106 P6d1: a creature unit's anchor is its body pose's (slot 5b),
+        # so the unit impulse law never moves it; the same read and price
+        # reach it as an impulse on its BODY (_creature_wind).
         if is_creature(u):
+            if creatures is not None:
+                _creature_wind(table, gmap, u, creatures)
             continue
-        tiles = u.occupied_tiles()
-        dv = _wave_push_dv(u, tiles, gmap, k_push, grad_floor_q)
-        if dv is None:
-            continue    # integer-exact no-op: quiet field or clipped footprint
-        dvx, dvy = dv
-
-        # Output 2 first in text order, but independent of the nudge: the
-        # KNOCKED_DOWN trigger on the raw physical dv (squares — no sqrt).
-        dv2 = dvx * dvx + dvy * dvy
-        thr = threshold * _stability_for(u)
-        if dv2 >= thr * thr:
-            apply_status(u, KNOCKED_DOWN, magnitude=0,
-                         duration_ticks=getup_ticks, source_id=None)
-
-        # Output 1: the displacement nudge — capped, then wall-clamped.
-        dx = dvx * dt_tick
-        dy = dvy * dt_tick
-        if dx > cap:
-            dx = cap
-        elif dx < -cap:
-            dx = -cap
-        if dy > cap:
-            dy = cap
-        elif dy < -cap:
-            dy = -cap
-
-        cur = set(tiles)
-
-        def _free(nx: float, ny: float) -> bool:
-            ax, ay = int(nx), int(ny)
-            for (dxo, dyo) in u.offsets:
-                tx, ty = ax + dxo, ay + dyo
-                if not (0 <= tx < w and 0 <= ty < h):
-                    return False
-                if solid[ty, tx] and (tx, ty) not in cur:
-                    return False
-            return True
-
-        # x first, then y at the accepted x — fixed order, slides along walls.
-        nx = u.x + dx
-        if dx != 0.0 and _free(nx, u.y):
-            u.x = nx
-        ny = u.y + dy
-        if dy != 0.0 and _free(u.x, ny):
-            u.y = ny
-
-
-def apply_creature_wave_impulse(units, gmap, ticks_per_second, creatures):
-    """The CREATURE row of the wave push (#106 P6d1, design 4.3): the same
-    footprint gradient as :func:`apply_wave_push` (``_wave_push_dv``, the
-    body's footprint, the unit's mass), applied as an IMPULSE on the crown's
-    velocity instead of a displacement -- the next slot 5b integrates it
-    (drag, the floor, the walls), so the animal feels the blast rather than
-    being teleported. The per-tick cap is the push's own
-    (``push_max_tile_per_tick`` x tps, as a speed). No KNOCKED_DOWN (an
-    octopus has no feet; recorded, not designed). VETOABLE (Erik): deleting
-    its call at ``Simulation.step`` 9c2 leaves a creature unpushed, an
-    accepted gap. Dormant (one dict check) with no creature body."""
-    if not creatures.bodies:
-        return
-    cfg = CFG.exchange
-    k_push = float(cfg.k_push)
-    vcap = float(cfg.push_max_tile_per_tick) * float(ticks_per_second)
-    grad_floor_q = _atm_fx.quantize_scalar(float(cfg.push_grad_floor_atm))
-    tile_m = float(gmap.tile_size_m)
-    by_id = {u.id: u for u in units}
-    for body in creatures.ordered_bodies():
-        u = by_id.get(body.unit_id)
-        if u is None or not u.alive:
+        w, vx, vy = gmap.footprint_wind(u.tile_y, u.tile_x, u.footprint)
+        if w <= 0:
             continue
-        dv = _wave_push_dv(u, u.occupied_tiles(), gmap, k_push, grad_floor_q)
-        if dv is None:
-            continue
-        dvx = max(-vcap, min(vcap, dv[0]))
-        dvy = max(-vcap, min(vcap, dv[1]))
-        body.add_velocity_m_s(dvx * tile_m, dvy * tile_m)   # tiles/s -> m/s
+        unit_impulse.add_wind(table, u, w, vx, vy,
+                              composed_flags(u).is_prone)
 
 
 # ---------------------------------------------------------------------------
@@ -708,7 +721,7 @@ def apply_teargas_blind(units, gmap):
     REFRESH-stacked: every qualifying tick re-ups the timer, so the blind
     outlasts leaving the cloud by the configured duration.
 
-    Runs post-physics at ``Simulation.step`` 9c3 (after heat + push — the
+    Runs post-physics at ``Simulation.step`` 9c3 (after heat + wind — the
     documented within-tick exchange order), per LIVING unit in stored order
     (order-free anyway: each response reads only the field + its own state).
     Pure door-1 integer reduction + compare on a door-2 threshold; no RNG.
@@ -733,42 +746,48 @@ def apply_teargas_blind(units, gmap):
                      duration_ticks=duration, source_id=None)
 
 
+def poison_immune(u) -> bool:
+    """THE immunity of the poison coupling rows (gas and bite): a unit whose
+    ``resist_mult[POISON]`` is exactly 0 (the zombie; the future robot) takes
+    no dose -- the dose door refuses a zombie itself as well. Resistances
+    between 0 and 1 act on the damage, at the law's packet."""
+    return mitigation_for(u).resist_q[POISON] == 0
+
+
 def apply_poison_dose(units, gmap, ticks_per_second, events=None):
-    """The ``gas[poison]`` coupling row (mechanics/05 §1, W3): footprint-max
-    poison density at or above ``poison_min_density`` emits ONE POISON
-    :class:`DamagePacket` per tick through the mechanics/06 pipeline.
+    """The ``gas[poison]`` coupling row (mechanics/05 §1, W3; #29 PX): the
+    footprint-max poison density at or above ``poison_min_density`` gives the
+    unit a DOSE of the poison law (:func:`simulation.poison.dose`), which
+    hurts later, as it leaves the blood (``poison.tick``, run right after
+    this row in slot 9c3). The row never emits a packet itself.
 
-    The per-tick amount KEEPS THE HEAT ROW'S IDIOM exactly — a door-3
-    float64 chain on the door-1 field read and door-2 constants, quantized
-    once at the HP boundary::
+    The dose per tick, in Q16 units of poison, is ONE rational rounded once
+    (#29 P3e's idiom: the dial quantized once at the poison door, the density
+    in the trace currency)::
 
-        density = dequantize_trace(density_q)          # exact 2^-TRACE_SHIFT
-        amount  = poison_dps * density * (1 / tps)     # pure IEEE * (door 3)
-        applied = dequantize(quantize(mitigated))      # apply_packet's
-                                                       # quantize_hp_delta:
-                                                       # round-half-away onto
-                                                       # the Q16.16 grid
+        dose_q = round(gas_q * density_q / (TRACE_ONE * tps))
 
-    so the applied delta is the integer-rounded (half away from zero)
-    Q16.16 count of ``resist_mult[POISON] × poison_dps × density / tps`` —
-    e.g. a marine (resist 1.0) in full density at 24 tps takes exactly
-    0.25 HP/tick (16384 counts), 6 HP/s.
+    with ``gas_q`` the ``[damage.poison] gas_units_per_second`` -- 0.6 units
+    a second at full density, which at ``hp_per_unit`` 10 keeps the TOTAL
+    harm of breathing the gas what the deleted ``[exchange] poison_dps`` (6
+    HP a second) gave; only its timing changed
+    (``docs/poison_law_design_2026-11-14.md`` §4).
 
-    LAZY EMISSION for the immune: a unit whose ``resist_mult[POISON]`` is
-    exactly 0 (the zombie — they don't breathe; the future robot) draws NO
-    packet at all, mirroring the lazy-roll rule: a packet that cannot matter
-    is not emitted, so a horde standing in gas emits no 0-damage event spam
-    (and takes 0 damage — poison is not the anti-horde answer; fire is).
-    Resistances BETWEEN 0 and 1 still flow through the pipeline normally.
-    Source string ``"poison_gas"``; gas deaths never convert (only melee).
+    The immune breathe nothing: a unit whose ``resist_mult[POISON]`` is
+    exactly 0 (the zombie -- they don't breathe; the future robot) takes no
+    dose, and the dose door refuses a zombie itself. Resistances BETWEEN 0
+    and 1 act on the damage (``apply_packet``'s mitigation, at the law's
+    packet). ``events`` is unused (the law emits); kept for the row's call
+    shape.
     """
     slice_ = gmap.gas[GAS_POISON]
     if not bool(slice_.any()):
         return                              # dormant plane: no poison anywhere
     cfg = CFG.exchange
-    thresh_q = gas_fixed.quantize_trace_scalar(float(cfg.poison_min_density))   # #88 A1
-    dps = float(cfg.poison_dps)
-    dt_tick = 1.0 / float(ticks_per_second)
+    thresh_q = gas_fixed.quantize_trace_scalar(
+        float(cfg.poison_min_density))   # #88 A1; p3e-door
+    gas_q = poison.get_settings().gas_q
+    den = int(gas_fixed.TRACE_ONE) * int(ticks_per_second)
     for u in units:
         if not u.alive:
             continue
@@ -776,13 +795,14 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
         density_q = reduce_max(slice_, tiles)
         if density_q < thresh_q:
             continue
-        if mitigation_for(u).resist_mult[POISON] == 0.0:
+        if poison_immune(u):
             continue                        # immune: no packet, no event (lazy)
-        amount = dps * float(gas_fixed.dequantize_trace(density_q)) * dt_tick
+        dose_q = _unit_fixed.div_round(gas_q * int(density_q), den)
         # CREDIT (#123): the claimant of THIS tick's poison deposit on the
         # densest footprint tile (the first one, in footprint order — the
         # tile reduce_max read): a miasma jet's sprayer, a gas payload's
-        # owner. A cloud that only lingers is the environment's.
+        # owner. A cloud that only lingers is the environment's. The dose
+        # carries it (poison_src); the law's later packets credit it.
         attacker = NO_ATTACKER
         sh, sw = slice_.shape
         for (tx, ty) in tiles:
@@ -790,10 +810,60 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
                     and int(slice_[ty, tx]) == density_q):
                 attacker = tick_credit(gmap).attacker_at(GAS_POISON, ty, tx)
                 break
-        apply_packet(u,
-                     DamagePacket(amount=amount, dtype=POISON,
-                                  attacker_id=attacker, indirect=True),
-                     events, source="poison_gas")
+        poison.dose(u, dose_q, attacker)
+
+
+def apply_bite_dose(units, gmap):
+    """The ``swarm_bite_dose`` coupling row (arc #63 P5a; the boundary of
+    Erik's P6 ruling: a unit law sees the swarm only through a per-tile plane
+    the swarm writes): the SUM of the bite-dose plane over a living unit's
+    footprint is a DOSE of the poison law (:func:`simulation.poison.dose`),
+    uncredited (``attacker_id`` -1) with the cause ``larva_bite``. The row
+    emits no packet; ``poison.tick``, right after it in slot 9c3, does.
+
+    The plane already holds Q16 units of poison per tick (each biting larva's
+    expected dose, ``swarm.bite_tick_q``, summed per tile by the swarm step),
+    so the dose is that sum exactly -- no rounding here. Two units on the same
+    tile EACH read it in full (a larva under two boots bites both). The immune
+    (:func:`poison_immune`) take nothing. Lazy: an all-zero plane (no swarm, or
+    no biting larva) is one integer ``.any()`` and out; no RNG."""
+    from simulation import swarm as _swarm
+    plane = _swarm.bite_plane(gmap)
+    if not bool(plane.any()):
+        return
+    for u in units:
+        if not u.alive:
+            continue
+        dose_q = reduce_sum(plane, u.occupied_tiles())
+        if dose_q <= 0 or poison_immune(u):
+            continue
+        poison.dose(u, dose_q, NO_ATTACKER, Cause.LARVA_BITE)
+
+
+def apply_corpse_infestation(units, gmap):
+    """The ``swarm_count`` coupling row (arc #63 P5b; the boundary of Erik's
+    P6 ruling): the SUM of the swarm's count plane (the living, non-coma
+    swarm units on each tile this tick) over a DEAD unit's footprint is the
+    ``n`` of the corpse law (:func:`simulation.corpse.infest`): its
+    infestation level rises with the swarm on it and decays without. The row
+    only moves the level; the rise itself is the conversion door's
+    (``ai_zombie.convert_marines_to_zombies``, at the tick's end).
+
+    A corpse whose level is 0 and that no swarm unit stands on is skipped
+    (lazy): a match without larvae never touches a level. Two corpses on one
+    tile each read it in full. No RNG."""
+    from simulation import swarm as _swarm
+    plane = _swarm.count_plane(gmap)
+    any_swarm = bool(plane.any())
+    s = None
+    for u in units:
+        if u.alive:
+            continue
+        n = reduce_sum(plane, u.occupied_tiles()) if any_swarm else 0
+        if n <= 0 and not u.infest_q:
+            continue
+        s = s or _corpse.get_settings()
+        _corpse.infest(u, n, s)
 
 
 # ---------------------------------------------------------------------------
@@ -811,22 +881,35 @@ class CouplingRow:
         Name into :data:`REDUCTIONS` — the footprint reduction the row's
         physical read uses. ``None`` marks a shipped response that predates
         the field read and does its own sampling (see the row's ``note``).
-    response : callable
+    response : callable or None
         The response implementation. P1: the shipped functions, invoked at
         their legacy tick positions with their legacy signatures; the
         uniform ``response(sample, unit.profile)`` shape arrives with the
-        named EXCHANGE-READ slot (a later patch).
+        named EXCHANGE-READ slot (a later patch). ``None`` (arc #63 P3): the
+        row is executed outside Python, in a swarm species kernel.
     note : str
         Honest wiring status — what the row does TODAY vs the chapter row.
+    consumer : str
+        ``"unit"`` (the CPU-unit exchange: a callable ``response``) or
+        ``"swarm:<species>"`` (arc #63 P3: ``response`` is None and the row
+        is executed IN that species' kernel, the last stage of slot 7). The
+        future EXCHANGE-READ executor iterates only ``consumer == "unit"``
+        rows.
+    reads : tuple
+        For a swarm row: the species-table fields (``swarm.SPECIES_FIELDS``
+        names) its numbers come from (tests/test_swarm_species.py ties them
+        to the kernel's table rows).
     """
     field: str
     reduction: Optional[str]
-    response: Callable
+    response: Optional[Callable] = None
     note: str = ""
+    consumer: str = "unit"
+    reads: tuple = ()
 
 
 #: THE COUPLING TABLE (mechanics/05 §1) — ordered; it GROWS, one row per new
-#: coupling (impulse push, water, gas, O2, fire, ... — see the chapter).
+#: coupling (wind, water, gas, O2, fire, ... — see the chapter).
 #: Table order is the chapter's row order and becomes the P0 execution order
 #: ("couplings in table order") once the named EXCHANGE-READ slot lands
 #: (P4-era); in P1 the registered rows still run at their legacy tick
@@ -853,35 +936,28 @@ COUPLING_TABLE: tuple[CouplingRow, ...] = (
             "field read: it derives overpressure geometrically (linear radius "
             "falloff from the detonation point) instead of sampling wave_p, "
             "and runs at DETONATION SITES (grenade fuse-out in "
-            "Simulation._update_projectiles; combat.process_door_explosives), "
-            "not at a fixed tick slot. The impulse-push row below is the "
-            "chapter's first true wave_p footprint read."
+            "Simulation._update_grenades; combat.process_door_explosives), "
+            "not at a fixed tick slot."
         ),
     ),
     CouplingRow(
-        field="wave_p",
-        reduction="grad",
-        response=apply_wave_push,
+        field="wind",
+        reduction="max",
+        response=apply_wind_force,
         note=(
-            "Impulse push + KNOCKED_DOWN trigger (mechanics/05 §1 / 06 §4) — "
-            "the first row born INTO the table (P4): dv = k_push*(-grad)/mass "
-            "per tick, displacement wall-clamped, knockdown on dv^2 vs "
-            "(threshold*stability)^2. Runs post-physics at Simulation.step "
-            "9c2, directly after the heat row (documented within-tick order: "
-            "heat damage, then push)."
-        ),
-    ),
-    CouplingRow(
-        field="wave_p",
-        reduction="grad",
-        response=apply_creature_wave_impulse,
-        note=(
-            "Impulse push on a CREATURE (#106 P6d1, design 4.3): the push "
-            "row's footprint gradient -> dv = k_push*(-grad)/mass, capped, "
-            "added to the creature body's crown velocity (the arms move the "
-            "animal, so its anchor is never displaced). Runs at "
-            "Simulation.step 9c2 directly after the unit push row. VETOABLE: "
-            "remove the call and a creature ignores the push (accepted gap)."
+            "Wind on units (#140's read; G5p-b's law): the dynamic pressure "
+            "q = 1/2 rho v^2 at the footprint as the int W = N_raw * "
+            "(v^2 >> 16). The max is over the DERIVED per-tile W "
+            "(GameMap.footprint_wind, with that tile's wind as the "
+            "direction), not REDUCTIONS['max'] over a plane. The force q * "
+            "drag_area (prone: its prone area) is one tick of impulse on "
+            "the unit impulse law (unit_impulse.add_wind), whose outcomes "
+            "are the row's: below the hold no displacement, slowed from "
+            "k_slow, pushed by the excess and floored above it. A blast's "
+            "wind is wind. Runs post-physics at Simulation.step 9c2, "
+            "directly after the heat row. A CREATURE unit (#106 P6d1) "
+            "takes the same read and price as an impulse on its BODY's "
+            "crown (exchange._creature_wind), never the unit impulse law."
         ),
     ),
     CouplingRow(
@@ -892,8 +968,8 @@ COUPLING_TABLE: tuple[CouplingRow, ...] = (
             "Teargas -> BLINDED (mechanics/05 §1, W3): footprint-max density "
             "vs the Q16.16 teargas_blind_density threshold -> refresh-stacked "
             "BLINDED (can_aim off -> snap-cone fire, the owed P3 consumer). "
-            "Runs post-physics at Simulation.step 9c3, after the push row "
-            "(within-tick exchange order: heat, push, teargas, poison). "
+            "Runs post-physics at Simulation.step 9c3, after the wind row "
+            "(within-tick exchange order: heat, wind, teargas, poison). "
             "Lazy: all-zero plane early-outs; no RNG."
         ),
     ),
@@ -902,13 +978,70 @@ COUPLING_TABLE: tuple[CouplingRow, ...] = (
         reduction="max",
         response=apply_poison_dose,
         note=(
-            "Poison -> POISON DoT packets (mechanics/05 §1, W3): footprint-"
-            "max density vs poison_min_density -> one packet/tick of "
-            "poison_dps x density / tps through the mechanics/06 pipeline "
-            "(zombie resist_mult[POISON]=0 -> immune, lazily skipped). Runs "
-            "at Simulation.step 9c3 directly after the teargas row. Lazy: "
-            "all-zero plane early-outs; no RNG."
+            "Poison -> a DOSE of the poison law (#29 PX, simulation.poison): "
+            "footprint-max density vs poison_min_density -> poison.dose of "
+            "[damage.poison] gas_units_per_second x density / tps (zombie "
+            "resist_mult[POISON]=0 -> immune, no dose); the law's own "
+            "poison.tick, right after this row, emits the POISON packets as "
+            "the poison leaves the blood. Runs at Simulation.step 9c3 "
+            "directly after the teargas row. Lazy: all-zero plane "
+            "early-outs; no RNG."
         ),
+    ),
+    # arc #63 P5a (docs/swarm_P5a_impl.md): the swarm's one row on the unit
+    # side -- the units see the larvae only through the plane they write.
+    CouplingRow(
+        field="swarm_bite_dose",
+        reduction="sum",
+        response=apply_bite_dose,
+        note=(
+            "Larva bites -> a DOSE of the poison law (arc #63 P5a): the sum of "
+            "the swarm's bite-dose plane (every larva not in coma adds its "
+            "expected dose bite_dose x bite_rate x dt to its tile) over the "
+            "footprint -> poison.dose, uncredited, cause larva_bite (poison-"
+            "immune units take nothing). Runs at Simulation.step 9c3 after "
+            "the gas poison row, before poison.tick. Lazy: all-zero plane "
+            "early-outs; no RNG."
+        ),
+    ),
+    # arc #63 P5b (docs/swarm_P5b_impl.md): the corpse's row -- the swarm's
+    # count plane under a dead unit raises its infestation level.
+    CouplingRow(
+        field="swarm_count",
+        reduction="sum",
+        response=apply_corpse_infestation,
+        note=(
+            "Swarm units on a corpse -> its INFESTATION LEVEL (arc #63 P5b, "
+            "simulation.corpse): the sum of the swarm's count plane (living, "
+            "non-coma swarm units per tile) over a dead unit's footprint "
+            "raises the level, which decays by a fraction of itself; the "
+            "conversion door raises the corpse as a zombie at the threshold. "
+            "Runs at Simulation.step 9c3 after the bite row. Lazy: an "
+            "all-zero plane and no infested corpse touch nothing; no RNG."
+        ),
+    ),
+    # arc #63 P3 (docs/swarm_P3_impl.md §8): the larva's rows -- executed IN
+    # the larva kernel (cpp/src/swarm_larva.h) as the last stage of slot 7,
+    # through the RAW own-tile reader (exchange.reduce_center over a one-tile
+    # footprint), so within a tick they run BEFORE the unit rows above.
+    CouplingRow(
+        field="temperature", reduction="center", consumer="swarm:larva",
+        reads=("T_prefer",),
+        note=("Thermotaxis head sweep (arc #63 P3): own tile + two sweep points one tile "
+              "ahead at +-sweep_angle; comfort |T - T_prefer| steers the tumble rate and "
+              "side (cpp/src/swarm_larva.h)."),
+    ),
+    CouplingRow(
+        field="temperature", reduction="center", consumer="swarm:larva",
+        reads=("T_lethal_hot",),
+        note=("Contact/ambient heat kill (fork 7b): felt T > T_lethal_hot -> DEAD, post-move, "
+              "any state. Deliberately NOT the heat|max unit row: a marine and a larva in the "
+              "same hot room are damaged by different laws."),
+    ),
+    CouplingRow(
+        field="temperature", reduction="center", consumer="swarm:larva",
+        reads=("T_ctmin", "T_coma_exit"),
+        note="Chill coma with hysteresis: enter below T_ctmin, exit above T_coma_exit.",
     ),
 )
 
@@ -918,7 +1051,8 @@ __all__ = [
     "REDUCTIONS",
     "reduce_center", "reduce_grad", "reduce_max", "reduce_mean", "reduce_sum",
     "CouplingRow", "COUPLING_TABLE",
-    "apply_blast_damage", "apply_environmental_damage", "apply_wave_push",
-    "apply_creature_wave_impulse",
-    "apply_teargas_blind", "apply_poison_dose",
+    "apply_blast_damage", "apply_environmental_damage",
+    "wind_q_pa", "apply_wind_force",
+    "apply_teargas_blind", "apply_poison_dose", "poison_immune",
+    "apply_bite_dose", "apply_corpse_infestation",
 ]

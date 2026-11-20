@@ -42,7 +42,8 @@
 > - **Native breach venting.** Venting emerges from real `−∇P` toward a true-vacuum (`N = 0`)
 >   cell; the geometric `sink_hop` *atmosphere* hack is gone and breach→vacuum generalises beyond
 >   the old edge-hull-only rule.
-> - **Consumers repointed:** `apply_wave_push` reads `grad(P)` (`k_push` recalibrated);
+> - **Consumers repointed:** `apply_wave_push` reads `grad(P)` (`k_push` recalibrated) —
+>   *2026-10-31 (#140): retired; units now read the wind (`GameMap.footprint_wind_load`, q = ½ρv²), never `P`;*
 >   `find_burst_walls` reads the `P` spread through the `atmosphere` alias; the water pressure-head
 >   reads the derived **integer** `P` (the old float bridge removed); combustion/ignition O₂ gates
 >   read real `N_O2` (see ch.06). The over-pressure relief valve, sealed/breach masks, and

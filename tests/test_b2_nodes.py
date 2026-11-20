@@ -550,8 +550,18 @@ def test_b1_dormancy_still_byte_identical():
     # back to 6 on the same build (8 bits, nearest decay) this test reproduces
     # the previous value exactly. Full rationale beside GOLDEN_AGGREGATE in
     # tests/_xarch_perfield_digest.py, same commit. (was 08c962ec444e301cc86a1c8a28ded651a9db2f41172dcdfb5d0d69c1637f331f)
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was a534f0f20bbcdd24fc63a71a65e1406ed1c16784be30d328612907dc283551a8)
     DOORTEST_NOPHYS_TRAJ_DIGEST = \
-        "a534f0f20bbcdd24fc63a71a65e1406ed1c16784be30d328612907dc283551a8"
+        "d3783246229dcbb932d575e23fc4f5e6a3b01588f4ce9f62b77eefe39219c167"
 
     lvl = level_loader.load("door_test", levels_dir=str(ROOT / "levels"))
     sim = Simulation(lvl, seed=42, breach_physics=None, enable_recorder=False)

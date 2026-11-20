@@ -1,12 +1,12 @@
 # Level metadata for the UNHCR Vessel.
 # Source-of-truth tilemap defines walls; all other assets are visual.
 
-version = "2"
+version = "3"
 name = "UNHCR Vessel"
 
 # Tilemap (required): physics tile grid, CSV with int values per cell.
-# v2 codes ARE canon material ids (src/simulation/materials.py):
-#   0=air, 1=hull, 2=wood, 3=door, 4=steel, 5=glass, 9=SPACE (air + vacuum)
+# v3 codes ARE canon material ids (src/simulation/materials.py):
+#   0=air, 1=hull, 2=wood, 3=door, 4=steel, 5=glass, -1=SPACE (air + vacuum)
 tilemap = "tilemap.csv"
 
 # Physical scale
@@ -116,3 +116,48 @@ color = [255, 26, 13]
 intensity = 0.9
 range = 18.0
 kind = "static"
+
+[[entity]]
+id = "door_1"
+class = "door"
+x = 23
+y = 18
+orientation = "h"
+length_m = 1.0
+initial_state = "closed"
+
+[[entity]]
+id = "door_2"
+class = "door"
+x = 23
+y = 42
+orientation = "h"
+length_m = 1.0
+initial_state = "closed"
+
+[[entity]]
+id = "door_3"
+class = "door"
+x = 22
+y = 45
+orientation = "h"
+length_m = 2.0
+initial_state = "closed"
+
+[[entity]]
+id = "door_4"
+class = "door"
+x = 23
+y = 75
+orientation = "h"
+length_m = 1.0
+initial_state = "closed"
+
+[[entity]]
+id = "door_5"
+class = "door"
+x = 22
+y = 95
+orientation = "h"
+length_m = 2.0
+initial_state = "closed"

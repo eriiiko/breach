@@ -29,6 +29,11 @@ exactly one cause bucket and one attacker bucket, so the two tables of a
 victim group have the same total. Measurement only: it reads the sim, never
 writes.
 
+BLASTS (#31, ``--blast-stats``): per match, the explosions, the most tiles
+burning at once, the ticks with any fire, and each marine KNOCKED DOWN within
+``BLAST_WINDOW_TICKS`` of an explosion with its distance from that blast's centre,
+to set beside the bots' ``[bots] danger_radius``.
+
 TIMING (#125, ``--timing``): the wall time of every tick, split into the
 controllers' share (every ``handle_frame`` of the tick plus the runner's
 ``is_terminal`` check: the bots' A* and vision, the horde's law) and
@@ -50,6 +55,27 @@ and ``--resident`` adds field residency. Each timed run also prints one
     C:/Users/steen/anaconda3/python.exe tools/bench_bot_matches.py \\
         --level ship_s1_medium --levels-dir <scratch>/levels --seeds 1 \\
         --timing --sim-seconds 60 --repeat 2
+
+PROFILE (#29, ``--profile``): the per-tick mean and p95 of every conductor
+slot of ``Simulation.step``, of the stages of slot 7 (the resident tick's
+``from_host`` / ``to_host``, water, EOS, trace tail, combustion, sky exchange,
+``step_tail``; or the cpu / per-call path's), and the bus (``from_host`` /
+``to_host`` calls and bytes per tick by field) -- the timers are
+``tools/tick_stage_profile.py``'s, patched at class / module level, no sim
+state touched. ``--profile-sync`` synchronises the device after each device
+stage (so a stage carries the device work it launched; the attributed sum can
+exceed the plain tick, which a run WITHOUT it measures); ``--profile-skip K``
+leaves the first K ticks out (default 2); ``--nvtx`` adds NVTX ranges and a
+``cudaProfilerStart`` / ``Stop`` window of ``--nvtx-ticks`` ticks for
+``nsys profile --capture-range=cudaProfilerApi``. ``--build DIR`` imports
+``breach_physics`` from DIR (a CUDA build's DLLs registered): without
+``--cuda`` every backend stays OFF, so the CPU path runs from that module.
+Each profiled run prints one ``PROFILE_JSON`` line. The #29 benchmark:
+
+    C:/Users/steen/anaconda3/envs/data/python.exe tools/bench_bot_matches.py \\
+        --level ship_s1_medium --levels-dir <scratch>/levels --seeds 1 \\
+        --timing --sim-seconds 60 --build <main>/cpp/build_cuda \\
+        [--cuda [--resident]] --profile [--profile-sync]
 """
 from __future__ import annotations
 
@@ -69,7 +95,8 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release",
 
 import level_loader  # noqa: E402
 from simulation.events import (  # noqa: E402
-    NO_ATTACKER, ShotFiredEvent, UnitKilledEvent)
+    NO_ATTACKER, ExplosionEvent, ShotFiredEvent, UnitKilledEvent)
+from simulation.status import KNOCKED_DOWN  # noqa: E402
 
 
 INDIRECT_CAUSES = ("explosion", "heat", "poison_gas")
@@ -141,6 +168,45 @@ class DeathLog:
         self._prev = now
 
 
+BLAST_WINDOW_TICKS = 24
+
+
+class BlastLog:
+    """``on_tick`` watcher (#31): explosions, fire, and marines knocked down
+    right after one, with the distance. Reads only."""
+
+    def __init__(self):
+        self.blasts = 0
+        self.fire_peak = 0
+        self.fire_ticks = 0
+        self.knock_d = []
+        self._recent = []        # (tick, fx, fy)
+        self._down = set()
+
+    def __call__(self, sim):
+        import numpy as np
+        for ev in sim.tick_events:
+            if isinstance(ev, ExplosionEvent):
+                self.blasts += 1
+                self._recent.append((sim.tick, ev.pos[0], ev.pos[1]))
+        self._recent = [r for r in self._recent
+                        if sim.tick - r[0] <= BLAST_WINDOW_TICKS]
+        burning = int(np.count_nonzero(sim.gmap.fire))
+        self.fire_peak = max(self.fire_peak, burning)
+        self.fire_ticks += burning > 0
+        down = set()
+        for u in sim.units:
+            if u.alive and not u.is_zombie and any(
+                    st.kind == KNOCKED_DOWN for st in u.statuses):
+                down.add(u.id)
+                if u.id not in self._down and self._recent:
+                    self.knock_d.append(min(
+                        float(np.hypot(u.center_tile_x() - fx,
+                                       u.center_tile_y() - fy))
+                        for _t, fx, fy in self._recent))
+        self._down = down
+
+
 class TickTimer:
     """``on_tick`` watcher (#125): per-tick wall time, split into the
     controllers' share and ``sim.step()``. ``inner`` (another watcher) is
@@ -198,24 +264,33 @@ def _fmt(name, st) -> str:
             f"p95 {st['p95']:7.2f} max {st['max']:8.2f} ms")
 
 
-def setup_cuda(build_dir: Path, resident: bool) -> None:
-    """Import ``breach_physics`` from the CUDA build in ``build_dir`` (before
-    anything imports the CPU build) and turn every live backend on -- the
-    same list and checks as ``tools/run_on_cuda.py``."""
-    import os
-    from cuda_harness import cuda_dll_dir
-    from run_on_cuda import enable_all_backends
-    if not list(Path(build_dir).glob("breach_physics*.pyd")):
-        raise SystemExit(f"no CUDA build in {build_dir}")
-    dll = cuda_dll_dir()
-    if dll is None:
-        raise SystemExit("CUDA runtime DLLs (cudart64_*.dll) not found")
-    os.add_dll_directory(str(dll))
+def import_build(build_dir: Path):
+    """Import ``breach_physics`` from ``build_dir`` (before anything imports
+    the CPU build), registering the CUDA runtime DLL folder when there is
+    one. Every backend is left as the module starts it: OFF."""
+    from cuda_harness import MODULE_GLOB, register_cuda_runtime
+    if not list(Path(build_dir).glob(MODULE_GLOB)):
+        raise SystemExit(f"no breach_physics build in {build_dir}")
+    register_cuda_runtime()
     sys.path.insert(0, str(build_dir))
     import breach_physics as bp
     if Path(bp.__file__).resolve().parent != Path(build_dir).resolve():
         raise SystemExit(f"breach_physics resolved to {bp.__file__}, "
-                         f"not the CUDA build")
+                         f"not {build_dir}")
+    return bp
+
+
+def setup_cuda(build_dir: Path, resident: bool) -> None:
+    """Import ``breach_physics`` from the CUDA build in ``build_dir`` (before
+    anything imports the CPU build) and turn every live backend on -- the
+    same list and checks as ``tools/run_on_cuda.py`` (combustion included since
+    #71 / residency arc #29 P2)."""
+    from cuda_harness import cuda_dll_dir
+    from run_on_cuda import enable_all_backends
+    if cuda_dll_dir() is None:
+        raise SystemExit("CUDA runtime (cudart64_*.dll / libcudart.so*) "
+                         "not found")
+    bp = import_build(build_dir)
     enable_all_backends(bp)
     if resident:
         from simulation import physics_runner
@@ -235,6 +310,8 @@ def main(argv=None) -> int:
     ap.add_argument("--level", required=True)
     ap.add_argument("--seeds", default="1-10", help="'1-10' or '1,4,7'")
     ap.add_argument("--levels-dir", default="levels")
+    ap.add_argument("--blast-stats", action="store_true",
+                    help="explosions, fire and knockdowns after a blast (#31)")
     ap.add_argument("--timing", action="store_true",
                     help="per-tick wall time, controllers vs sim.step (#125)")
     ap.add_argument("--controller", default="bots",
@@ -250,12 +327,39 @@ def main(argv=None) -> int:
     ap.add_argument("--cuda-build", default=str(ROOT / "cpp" / "build_cuda"))
     ap.add_argument("--resident", action="store_true",
                     help="with --cuda: GPU field residency on")
+    ap.add_argument("--build", default=None,
+                    help="import breach_physics from this build dir (without "
+                         "--cuda every backend stays off: the CPU path)")
+    ap.add_argument("--profile", action="store_true",
+                    help="per-tick mean / p95 of every slot and slot-7 stage, "
+                         "and the bus bytes (#29)")
+    ap.add_argument("--profile-sync", action="store_true",
+                    help="with --profile on the GPU: device sync after each "
+                         "device stage (attribution)")
+    ap.add_argument("--profile-skip", type=int, default=2,
+                    help="with --profile: leave the first K ticks out")
+    ap.add_argument("--nvtx", action="store_true",
+                    help="with --profile on the GPU: NVTX ranges + a "
+                         "cudaProfilerStart/Stop window (for nsys)")
+    ap.add_argument("--nvtx-ticks", type=int, default=100,
+                    help="ticks inside the --nvtx capture window")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
+    if (args.profile_sync or args.nvtx) and not (args.profile and args.cuda):
+        ap.error("--profile-sync / --nvtx go with --profile --cuda")
     if args.cuda:
-        setup_cuda(Path(args.cuda_build), args.resident)
+        setup_cuda(Path(args.build or args.cuda_build), args.resident)
+    elif args.build:
+        import_build(Path(args.build))
     from run_match import run_match
     import breach_physics as bp
     from config import CFG
+    prof = None
+    if args.profile:
+        from tick_stage_profile import TickStageProfiler
+        prof = TickStageProfiler(skip=args.profile_skip,
+                                 sync=args.profile_sync, nvtx=args.nvtx,
+                                 nvtx_ticks=args.nvtx_ticks)
+        prof.install(bp, device=args.cuda)
     tps = float(CFG.clock.ticks_per_second)
     level = level_loader.load(args.level, args.levels_dir)
     spec = level.match
@@ -277,18 +381,28 @@ def main(argv=None) -> int:
     ticks, walls = [], []
     marine, zombie = Counter(), Counter()
     marine_by, zombie_by = Counter(), Counter()
+    blasts = []
     for seed in [s for s in _seeds(args.seeds) for _ in range(args.repeat)]:
         log = DeathLog()
-        timer = TickTimer(log) if args.timing else None
+        blast = BlastLog()
+        watch = log
+        if args.blast_stats:
+            def watch(sim, _log=log, _blast=blast):
+                _log(sim)
+                _blast(sim)
+        timer = TickTimer(watch) if args.timing else None
+        if prof is not None:
+            prof.reset()
         t0 = time.perf_counter()
         o = run_match(level, spec, seed=seed,
-                      on_tick=log if timer is None else timer)
+                      on_tick=watch if timer is None else timer)
         wall = time.perf_counter() - t0
         r = o.result
         key = f"team {r.team} wins" if r.outcome == "win" else "draw"
         outcomes[key] += 1
         ticks.append(r.ticks)
         walls.append(wall)
+        blasts.append(blast)
         marine.update(log.marine)
         zombie.update(log.zombie)
         marine_by.update(log.marine_by)
@@ -310,6 +424,15 @@ def main(argv=None) -> int:
                  "controller": args.controller,
                  "zombies_idle": args.zombies_idle, "backend": backend,
                  "ticks": r.ticks, "result": key, **t}), flush=True)
+        if prof is not None:
+            total = timer.summary(tps)["total"]["mean"] if timer else None
+            print(prof.format_report(total_ms=total), flush=True)
+            print("  PROFILE_JSON " + json.dumps(
+                {"level": args.level, "seed": seed,
+                 "controller": args.controller,
+                 "zombies_idle": args.zombies_idle, "backend": backend,
+                 "ticks": r.ticks, "digest": o.tick_digest,
+                 **prof.summary()}), flush=True)
     n = len(ticks)
     print(f"outcomes: {dict(outcomes)}")
     print(f"mean ticks to result: {sum(ticks) / n:.0f} "
@@ -318,6 +441,14 @@ def main(argv=None) -> int:
     print(f"zombie deaths by cause: {dict(zombie)}")
     print(f"marine deaths by attacker team: {dict(marine_by)}")
     print(f"zombie deaths by attacker team: {dict(zombie_by)}")
+    if args.blast_stats:
+        knocks = sorted(d for b in blasts for d in b.knock_d)
+        print(f"blasts per match: {[b.blasts for b in blasts]}")
+        print(f"peak burning tiles: {[b.fire_peak for b in blasts]}, ticks "
+              f"with fire: {[b.fire_ticks for b in blasts]}")
+        print(f"marines knocked down within {BLAST_WINDOW_TICKS} ticks of a "
+              f"blast: {len(knocks)}, distances (tiles): "
+              f"{[round(d, 1) for d in knocks]}")
     print(f"wall per match: mean {sum(walls) / n:.1f} s, max {max(walls):.1f} s")
     return 0
 

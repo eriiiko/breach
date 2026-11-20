@@ -561,7 +561,130 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # wave pulse's sub-floor tail no longer nudges it). UNMOVED over all 30 ticks:
 # every gmap field (the marine stays on the same tiles, so no stamp moves).
 # (was 7b60c8006bd0dcefd38aba68559f5ce1c50d6ae844681414bcfe208faf972ffd)
-GOLDEN_AGGREGATE = "1ff073694cb413601456b5462b4852a24d60eeb3617e1e8a407df1df167676a9"
+# (was 1ff073694cb413601456b5462b4852a24d60eeb3617e1e8a407df1df167676a9)
+#
+# 2026-10-31 -- #140 WIND ON UNITS (docs/wind_on_units_design_2026-10-31.md
+# §6.2): the wave_p|grad impulse push is RETIRED (k_push,
+# push_max_tile_per_tick, push_grad_floor_atm, knockdown_dv_threshold) and the
+# 9c2 row is the wind law (exchange.apply_wind_knockdown: q = 1/2 rho v^2 at
+# the footprint; KNOCKED_DOWN at wind_q_fall_pa = 245 Pa; no displacement).
+# SOLE CAUSE, verified on the same build: (a) the P1a tree (78d3d78, the
+# digest-neutral seam, old golden reproduced) with k_push = 0 and
+# knockdown_dv_threshold = 1e30 gives 1cddfca5...; (b) THIS tree with
+# wind_q_slow_pa / wind_q_fall_pa = 1e15 / 2e15 gives 1cddfca5... too,
+# per-field file byte-identical to (a) -- so removing the push is all of the
+# field change, and the wind law's own effect is the rest: in the canonical
+# scenario its pulse reaches q = 882 Pa at the marine's footprint on tick 1
+# (>= 245), laying it KNOCKED_DOWN (refresh window 36 ticks; it gets up
+# after the scenario's 30).
+# MOVED vs the old golden, first tick: __unit_pos__ (tick 0: the marine stays
+# at (7.0, 7.0), tile 7, where the push had it at x 6.98949, tile 6),
+# __unit_status__ (tick 0: the knockdown), so __unit_state__; atmosphere,
+# wind_x, wind_y, gas, temperature, gas_energy, dyn_heat_atten_q (tick 1 --
+# the body's stamp stays on tile column 7 and the gas answers it); wave_p
+# (tick 2). UNMOVED over all 30 ticks: __unit_hp__, __unit_facing__,
+# __unit_life_events__, dem_acc, fire, flow_vx, flow_vy, heat,
+# ignition_armed, is_vacuum, material, obstacles, wall_hp, water_depth,
+# wave_source, wave_v. vs (a): only __unit_status__ / __unit_state__ move.
+# REPRODUCED: captured twice, byte-identical; the ten cuda_*_check.py readers
+# of GOLDEN_AGGREGATE are green on a fresh CUDA build (cpp/build_cuda.bat).
+#
+# 2026-11-10 -- #183 G5p-a1 THE TURNING LAW, commit 1 (the facing's
+# representation and its routing; docs/unit_impulse_design_2026-11-10.md
+# §13): a unit's synced facing is the int `facing_q` (Q16.16 radians, the
+# trig kit's currency), spawned at quantize(pi/2) = 102944 (it was the float
+# pi/2, which is not dyadic), and the unit record hashes that int (and the
+# turn / omega keys only while non-zero; the canonical marine never turns).
+# SOLE CAUSE, verified: the HEAD tree (743f1adf) reproduces 46750ce2...
+# exactly; this tree differs from it in `__unit_facing__` (every tick: the
+# canonical marine's spawn facing, the int in place of q(pi/2)) and so in
+# `__unit_state__`, and in NOTHING ELSE over all 30 ticks -- every gmap field,
+# __unit_hp__, __unit_pos__, __unit_life_events__ and __unit_status__ are
+# byte-identical per (tick, field).
+# (was 46750ce2685ea8a11ce1c0cb2037b3d20865a4aa035f3533c2a9d3dbf47179b8)
+#
+# 2026-11-10 -- #183 G5p-b THE WIND AND THE BLAST ONTO THE UNIT IMPULSE LAW
+# (docs/unit_impulse_design_2026-11-10.md §4, §7): the 9c2 row is
+# exchange.apply_wind_force -- the dynamic pressure at the footprint is a
+# FORCE q * drag_area on the impulse law (unit_impulse.add_wind) -- and
+# #140's cadence scale and bespoke knockdown are DELETED. SOLE CAUSE,
+# verified on the same build: the HEAD tree (0b57fc6e) with wind_q_slow_pa /
+# wind_q_fall_pa = 1e15 / 2e15 (its wind law off) and THIS tree with
+# [impulse] wind_push_mult = 0 (its wind input off) both give cb6bc7a7...
+# (cb6bc7a774867f60530a97adcf78821f0871fb366a3761c79824ba434f584583), per-
+# field file byte-identical -- the replacement is the whole change. With
+# the force live, the canonical marine's one-tick pulse (q = 882 Pa at its
+# footprint on tick 1, #140's knockdown) is now an impulse of about 33 N s
+# on 100 kg: it overflows the in-place sway and STAGGERS the marine on its
+# feet (pushed a fraction of a tile, no knockdown).
+# MOVED vs wind off: __unit_state__ (tick 0: the impulse keys), __unit_pos__
+# (tick 1), atmosphere, wind_x, wind_y, gas, temperature, gas_energy,
+# dyn_heat_atten_q (tick 1: the body's stamp moves under the gas), wave_p
+# (tick 2). UNMOVED over all 30 ticks: __unit_facing__, __unit_hp__,
+# __unit_life_events__, __unit_status__ (the old golden's knockdown is
+# already gone with the old law), dem_acc, fire, flow_vx, flow_vy, heat,
+# ignition_armed, is_vacuum, material, obstacles, wall_hp, water_depth,
+# wave_source, wave_v.
+# (was e42d8f41998cd289383b48e7ab978008d700ae9fbdf0848d0d4292ff360f0a6a)
+#
+# 2026-11-12 -- #29 P3a THE UNIT SCHEMA (docs/residency_batching_design_
+# 2026-11-07.md §4.4a, §5 item 9): the unit record the digest hashes is now
+# the schema's (simulation.unit_schema.digest_record, as name|int64 rows under
+# UNIT_SECT_V2): WEGO's ap / n_orders and the derived tile_x / tile_y / alive /
+# faction / offsets left it, the hp hashes as its exact Q16 count, the life
+# state as its enum index, and every synced column hashes while it differs
+# from its default (the canonical marine's kit, magazine, grenades, cool-downs
+# enter it). A RE-BASELINE OF THE HASH, NOT OF THE GAME: the same scenario on
+# main edc0d2b1 (58f766f4..., matching the old golden) and on this tree gives
+# per-field files whose EVERY gmap field line is byte-identical over all 30
+# ticks, and __unit_facing__ too (the facing's own int, unchanged); MOVED, by
+# construction, only __unit_hp__, __unit_pos__ (no tile indices),
+# __unit_life_events__ (no alive bool), __unit_status__ (the fixed block,
+# absent while empty) and __unit_state__. The game itself is proven unchanged
+# by tests/_p3a_sole_cause.py (equal per-tick records and field digests over
+# ship_demo bots / bots_v1, the #122 box with conversions and a scripted
+# arena of every verb).
+# (was 58f766f440f4fcbdb6c2003adb7f4d4159f6a98440c334cf14c70a29177b4576)
+#
+# 2026-11-12 -- #29 P3c POSITIONS TO Q16 (design §4.4, §7 P3c, §12.1): a
+# unit's position is the synced Q16 ints x_q / y_q (x / y are read-only float
+# views, written only through Unit.set_pos_q), and the unit record hashes them
+# as plain ints under the keys x_q / y_q instead of round(x * 1e9) under x / y.
+# A RE-BASELINE OF THE HASH, NOT OF THE GAME: the per-field files of main
+# 229f7097 (3646fd0d..., the golden) and of this tree are byte-identical on
+# every gmap field line, __unit_hp__, __unit_facing__, __unit_life_events__
+# and __unit_status__ over all 30 ticks; MOVED, by construction, only
+# __unit_pos__ (the key and its encoding) and __unit_state__. The scenario's
+# unit was already on the Q16 grid at every tick. The game is proven unchanged
+# by tests/_p3c_sole_cause.py (equal per-tick records with x_q := round(x *
+# 65536) and equal field digests over ship_demo bots / bots_v1, the #122 box,
+# the scripted arena, a one-phase WEGO and a TwoPhaseWEGO scenario).
+# (was 3646fd0dd0f8b5b9d1a40b520d41905f99a56ecd7a839f5ed4899546e3df1e28)
+#
+# 2026-11-18 -- #215 BODY TEMPERATURE AND STRESS (docs/body_temperature_
+# design_2026-11-17.md, AGREED; as built docs/body_temperature_impl_2026-11-
+# 17.md): two unit-schema rows, `body_temp_q` (hashed while it differs from
+# ambient) and `stress_q` (while non-zero). The canonical marine's body
+# follows the air of its footprint, which the scenario's pulse moves off
+# ambient, so `body_temp_q` enters the unit record. A RE-BASELINE OF THE UNIT
+# HASH, NOT OF THE FIELDS: the per-field files of the base (215-grenade-bounce
+# 07b13c0c + main 7f7d9e30: 4a13fc72..., the golden) and of this tree are
+# byte-identical on EVERY gmap field line and on __unit_hp__, __unit_facing__,
+# __unit_pos__, __unit_life_events__ and __unit_status__ over all 30 ticks;
+# MOVED only __unit_state__ (30 lines). The marine takes no heat damage here
+# in either tree. No field digest version bump: no plane, dtype or currency
+# changed (the columns are absence-transparent unit rows).
+# (was 4a13fc72353f2686935f1f5397922df533d166fbc436096534dfa3a7c4171fab)
+# The same, once more, after Erik's ruling of 2026-11-18 (the body's
+# protection, env-profile heat_absorption 0.05, scales what reaches it): the
+# body drifts a twentieth as far, so only __unit_state__'s 30 lines move
+# again against the base file (3246b756 on the first version, unreleased);
+# every gmap field line and every other unit sub-hash still byte-identical.
+# And at the lead's protection of 2026-11-18 (heat_absorption 0.1, the doors
+# branch merged): against the base file only __unit_state__'s 30 lines move;
+# every gmap field line and every other unit sub-hash byte-identical.
+# (was cf3c7693a6ae4fafdf1590b45fe7c27d1f4984898dd1856de49c53fb48b7f3de)
+GOLDEN_AGGREGATE = "d5d03433c4894d79922664e14b6a24801d36406ed7c321ad14904c649d2f487b"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
@@ -591,17 +714,22 @@ def _perfield_hash(name: str, arr: np.ndarray) -> str:
 def _unit_subfield_payloads(ustate: dict) -> dict[str, object]:
     """Split one tick's unit-state dict (harness format: id-sorted records +
     emission-ordered synced events) into the four named sub-payloads."""
+    # #29 P3a: the records are the unit schema's (``unit_schema.
+    # digest_record``): the hp is its Q16 count, the position the two Q16
+    # ints ``x_q`` / ``y_q`` (#29 P3c; ``round(v * 1e9)`` before), (the
+    # derived tile indices left the record),
+    # the life its enum index (``alive`` left: a property of it), the status
+    # block present only while a unit holds a status.
     units = ustate.get("units", [])
     return {
         "__unit_hp__":     [(r["id"], r["current_hp"]) for r in units],
         "__unit_facing__": [(r["id"], r["facing"]) for r in units],
-        "__unit_pos__":    [(r["id"], r["tile_x"], r["tile_y"], r["x"], r["y"])
-                            for r in units],
+        "__unit_pos__":    [(r["id"], r["x_q"], r["y_q"]) for r in units],
         "__unit_life_events__": {
-            "life":   [(r["id"], r["alive"], r["life_state"]) for r in units],
+            "life":   [(r["id"], r["life_state"]) for r in units],
             "events": ustate.get("events", []),
         },
-        "__unit_status__": [(r["id"], r["statuses"]) for r in units],
+        "__unit_status__": [(r["id"], r.get("statuses", ())) for r in units],
     }
 
 
@@ -640,6 +768,52 @@ def build_perfield_lines(traj) -> list[str]:
         uhash = ustate.get("hash", "NO_UNIT_STATE")
         lines.append(f"{t}\t{UNIT_FIELD_LABEL}\t{uhash}")
     return lines
+
+
+# arc #63 P3 (docs/swarm_P3_impl.md §11 "The thermal scenario + xarch", R20):
+# the swarm thermal scenario's per-tick swarm section, beside its fields.
+SWARM_N_STEPS = 60
+
+
+def build_swarm_lines(traj) -> list[str]:
+    """Per tick, for each species present in that tick's ``__swarm__``
+    carrier: one ``<tick>\t__swarm__.<sp>.<col>\t<blake2b>`` line per ROSTER
+    column (the column's bytes over [0, hw)) and one ``__swarm__.scalars``
+    line (next_unit_id and each species' hw). Absent carrier: no line."""
+    from simulation.swarm import ROSTER, SWARM_DIGEST_KEY, SWARM_SPECIES
+    lines: list[str] = []
+    for t, snap in enumerate(traj):
+        car = snap.get(SWARM_DIGEST_KEY)
+        if not car or not car.get("present"):
+            continue
+        for sp in SWARM_SPECIES:
+            block = car["blocks"].get(sp)
+            if block is None:
+                continue
+            for c in ROSTER:
+                h = hashlib.blake2b(np.ascontiguousarray(block["columns"][c.name]).tobytes(),
+                                    digest_size=32).hexdigest()
+                lines.append(f"{t}\t__swarm__.{sp}.{c.name}\t{h}")
+        scal = [f"nid={int(car['next_unit_id'])}"] + [
+            f"{sp}.hw={int(car['blocks'][sp]['high_water'])}"
+            for sp in SWARM_SPECIES if sp in car["blocks"]]
+        lines.append(f"{t}\t__swarm__.scalars\t{','.join(scal)}")
+    return lines
+
+
+def interleave_by_tick(field_lines: list[str], swarm_lines: list[str]) -> list[str]:
+    """Per tick, the field lines first and then the swarm lines, so
+    first_divergence reports a FIELD divergence before its swarm consequence."""
+    by_tick: dict = {}
+    for ln in field_lines:
+        by_tick.setdefault(int(ln.split("\t", 1)[0]), ([], []))[0].append(ln)
+    for ln in swarm_lines:
+        by_tick.setdefault(int(ln.split("\t", 1)[0]), ([], []))[1].append(ln)
+    out: list[str] = []
+    for t in sorted(by_tick):
+        out.extend(by_tick[t][0])
+        out.extend(by_tick[t][1])
+    return out
 
 
 def first_divergence(lines_a: list[str], lines_b: list[str]):
@@ -709,6 +883,28 @@ def main() -> int:
             tick = la.split('\t', 1)[0]
             field = la.split('\t')[1] if '\t' in la else '?'
             print(f"      => first diverging (field, tick) = ({field}, tick {tick})")
+
+    # arc #63 P3: the swarm thermal scenario (the canonical block above is
+    # unchanged; GOLDEN_AGGREGATE is the swarm-free canonical's).
+    from field_ab_harness import swarm_thermal_scenario_sim
+    straj = capture_trajectory(make_sim=swarm_thermal_scenario_sim, n_steps=SWARM_N_STEPS)
+    slines = interleave_by_tick(build_perfield_lines(straj), build_swarm_lines(straj))
+    sout = ROOT / "tests" / f"_xarch_swarm_{host}.txt"
+    sheader = [
+        "# X-ARCH swarm thermal scenario: per-tick fields then __swarm__ columns",
+        f"# host={host}",
+        f"# pyd={pyd}",
+        f"# spec_v={DIGEST_SPEC_VERSION}  n_steps={SWARM_N_STEPS}",
+        "# columns: tick<TAB>field<TAB>blake2b256",
+    ]
+    sout.write_text("\n".join(sheader + slines) + "\n", encoding="utf-8")
+    print(f"\nswarm scenario      = {sout} ({len(slines)} lines)")
+    for other in sorted(p for p in (ROOT / "tests").glob("_xarch_swarm_*.txt")
+                        if p.name != sout.name):
+        ol = [ln for ln in other.read_text(encoding="utf-8").splitlines()
+              if ln and not ln.startswith("#")]
+        d = first_divergence(slines, ol)
+        print(f"  {other.name}: " + ("IDENTICAL" if d is None else f"FIRST DIVERGENCE {d}"))
     return 0
 
 

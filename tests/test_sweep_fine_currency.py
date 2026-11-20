@@ -372,7 +372,7 @@ def _marine_hp_loss(fine_bits, ticks):
     return hp0 - float(u.current_hp), flux
 
 
-def test_a_marine_beside_a_fire_loses_the_same_hp_per_second():
+def test_a_marine_beside_a_fire_loses_the_same_hp_per_second(monkeypatch):
     """PROPERTY (brief 5.4): k buys precision, not physics. A marine one tile
     from a held 443-game fire loses the same HP per second -- within 2 % (the brief said 1 %; see the assert) -- with
     the engine's table in the fine currency as with the pre-#78 table: the unit
@@ -387,6 +387,11 @@ def test_a_marine_beside_a_fire_loses_the_same_hp_per_second():
     exchange.py with the conversion removed -- the fine run loses HP many times
     faster and this goes red.
     """
+    # #215: the heat row's UNSCALED law (heat_absorption 1.0): the shipped
+    # protection keeps this marine below the band, and the property compares
+    # two currencies of the same law.
+    from simulation import body_temp
+    monkeypatch.setattr(body_temp, "absorption_q", lambda env: 1 << 16)
     ticks = 72
     fine_loss, fine_flux = _marine_hp_loss(bp.E_FINE_BITS, ticks)
     coarse_loss, coarse_flux = _marine_hp_loss(0, ticks)

@@ -93,6 +93,14 @@ class HoverReadout:
     bulk_n: float = 0.0           # dequantized o2 + inert_n2 (the Dalton N_total)
     wind_vx: float = 0.0          # dequantized wind_x, m/s (true velocity, #51)
     wind_vy: float = 0.0          # dequantized wind_y, m/s
+    # #140: what this tile's air does to a body standing on it -- the wind
+    # load W through THE read (GameMap.footprint_wind_load, footprint 1), q in
+    # Pa (exchange.wind_q_pa) and, since G5p-b, the force it puts on a
+    # standing body, q * [impulse] drag_area_m2 in N (the unit impulse law's
+    # input); nan without a GameMap that carries the read.
+    wind_w: int = 0
+    wind_q_pa: float = float("nan")
+    wind_force_n: float = float("nan")
     water_depth: float = 0.0      # dequantized standing-water depth, metres
     wall_hp: float = 0.0          # dequantized structural HP (the fuel source)
     fuel_frac: float = 0.0        # F = clamp01(wall_hp / this tile's full hp)
@@ -118,26 +126,48 @@ class HoverReadout:
     # P6b: the light at this tile, (r, g, b) in light units, through the light
     # accessor (simulation.light_field) -- 0 while no light is requested.
     light_rgb: tuple = (0.0, 0.0, 0.0)
+    # arc #63 P4: the live larvae standing on this tile (the swarm store's
+    # host mirror; 0 on a map without a store)
+    larvae: int = 0
+    # arc #63 P5a: the bite dose this tile gives a body this tick, units of
+    # poison (the swarm's bite-dose plane; 0 on a map without a store)
+    bite_dose: float = 0.0
     lines: List[str] = field(default_factory=list)   # panel-ready text rows
 
 
 def _material_name(gmap, ty: int, tx: int) -> str:
-    """Tile material label: vacuum (SPACE) overrides; else the material id."""
-    if bool(gmap.is_vacuum[ty, tx]):
+    """Tile material label: EXPOSED vacuum (SPACE) overrides; else the
+    material id. A sealed hull tile keeps ``is_vacuum`` while solid (engine/04
+    §2.3), and reads as its material (#150)."""
+    if bool(gmap.is_vacuum[ty, tx]) and not bool(gmap.solid[ty, tx]):
         return "vacuum"
     mid = int(gmap.material[ty, tx])
     return MATERIAL_NAMES.get(mid, f"mat{mid}")
 
 
+def body_line(unit) -> str:
+    """#215: a unit's two slow states, through their laws' own reads: its
+    body temperature (C), its stress (points) and the heart rate read off the
+    stress (``stress.heart_rate_q``, derived, never stored). Pure."""
+    from simulation import stress as _stress
+    body = int(getattr(unit, "body_temp_q", 0)) / TEMP_SCALE
+    s_pts = int(getattr(unit, "stress_q", 0)) / float(_stress.LEVEL_ONE)
+    hr = _stress.heart_rate_q(unit) / TEMP_SCALE
+    return (f"{getattr(unit, 'name', 'unit')}: body {body:6.1f} C   "
+            f"stress {s_pts:5.1f}   heart {hr:5.1f} bpm")
+
+
 def pack_hover_readout(gmap, tx: int, ty: int,
-                       kelvin_fn: Callable[[float], float]
-                       ) -> Optional[HoverReadout]:
+                       kelvin_fn: Callable[[float], float],
+                       units=None) -> Optional[HoverReadout]:
     """Pack the tile under (tx, ty) into a :class:`HoverReadout`, or None.
 
     ``tx`` / ``ty`` are physics-tile column/row (the ``mouse_to_tile`` order).
     Returns None when the tile is outside the grid — the caller shows a
     "outside map" line. ``kelvin_fn`` maps dequantized game-ΔT to pseudo-Kelvin
-    (pass the black-body ramp's ``_kelvin_from_tgame``).
+    (pass the black-body ramp's ``_kelvin_from_tgame``). ``units`` (#215):
+    a living unit whose footprint holds the tile adds its body line
+    (:func:`body_line`) at the end.
     """
     h, w = gmap.material.shape
     if not (0 <= tx < w and 0 <= ty < h):
@@ -174,6 +204,15 @@ def pack_hover_readout(gmap, tx: int, ty: int,
     pressure = _atmo_fx.dequantize(gmap.atmosphere[ty, tx]).item()
     wind_vx = _atmo_fx.dequantize(gmap.wind_x[ty, tx]).item()
     wind_vy = _atmo_fx.dequantize(gmap.wind_y[ty, tx]).item()
+    wind_w, wind_q_pa, wind_force_n = 0, float("nan"), float("nan")
+    if (hasattr(gmap, "footprint_wind_load")
+            and hasattr(getattr(gmap, "materials", None), "density")):
+        from simulation import exchange as _exchange
+        from simulation import unit_impulse as _unit_impulse
+        wind_w = int(gmap.footprint_wind_load(ty, tx, 1))
+        wind_q_pa = _exchange.wind_q_pa(gmap, wind_w)
+        wind_force_n = wind_q_pa * float(
+            _unit_impulse.table_for(gmap).settings.drag_area_m2)
 
     # Bulk N — the Dalton N_total the EOS derives pressure from: o2 +
     # inert_n2, the two CONSERVATIVE bulk gas planes (gamemap._gas_bulk_n_raw
@@ -280,6 +319,19 @@ def pack_hover_readout(gmap, tx: int, ty: int,
         _lfb = _optics_fx.light_fine_bits(gmap)
         light_rgb = tuple(float(_optics_fx.dequantize_light(v, _lfb)) for v in _lq)
 
+    # arc #63 P4: the larvae on this tile, through the store's one read (a
+    # stub map without the store shows 0)
+    larvae = 0
+    if hasattr(gmap, "swarm_species"):
+        from simulation import swarm as _swarm
+        larvae = _swarm.count_on_tile(gmap, "larva", tx, ty)
+    # arc #63 P5a: the tile's bite dose this tick (a pure read of the plane)
+    bite_dose = 0.0
+    if getattr(gmap, "swarm_bite_dose", None) is not None:
+        from simulation import swarm_fixed as _swarm_fx
+        bite_dose = float(_swarm_fx.dequantize(
+            int(gmap.swarm_bite_dose[ty, tx])))   # p3e-view: a readout
+
     lines = [
         f"tile ({tx}, {ty})  {material}",
         f"T: {t_game:8.1f} u   ({kelvin:6.0f} {kelvin_label})",
@@ -296,16 +348,28 @@ def pack_hover_readout(gmap, tx: int, ty: int,
         + (f"  (smoke {a_gas:5.3f})" if (not is_ts and a_gas == a_gas) else ""),
         f"f: {fleck_f:9.6f}   E_inv(Phi): {t_rad:8.1f} u   clamp cap: {t_cap:8.1f} u",
         f"light: {light_rgb[0]:8.5f} {light_rgb[1]:8.5f} {light_rgb[2]:8.5f} lu",
+        # #140: what this tile's air does to a body (appended: the panel's
+        # earlier rows keep their places)
+        f"wind q: {wind_q_pa:8.1f} Pa  W {wind_w:.3e}  F {wind_force_n:6.1f} N",
+        f"larvae on this tile: {larvae}",
+        f"bite dose this tick: {bite_dose:8.5f} units of poison",
     ]
+    # #215: a living unit standing on the tile shows its body (appended).
+    for u in units or ():
+        if getattr(u, "alive", False) and (tx, ty) in u.occupied_tiles():
+            lines.append(body_line(u))
     return HoverReadout(tx=int(tx), ty=int(ty), material=material,
                         t_game=t_game, kelvin=kelvin, fire=fire, gases=gases,
                         pressure=pressure, bulk_n=bulk_n,
                         wind_vx=wind_vx, wind_vy=wind_vy,
+                        wind_w=wind_w, wind_q_pa=wind_q_pa,
+                        wind_force_n=wind_force_n,
                         water_depth=water_depth, wall_hp=wall_hp,
                         fuel_frac=fuel_frac, gas_energy=gas_energy,
                         phi=phi, atten_a=atten_a, atten_d=atten_d,
                         a_gas=a_gas, fleck_f=fleck_f, t_cap=t_cap, t_rad=t_rad,
-                        light_rgb=light_rgb, lines=lines)
+                        light_rgb=light_rgb, larvae=larvae,
+                        bite_dose=bite_dose, lines=lines)
 
 
-__all__ = ["HoverReadout", "pack_hover_readout", "TEMP_SCALE"]
+__all__ = ["HoverReadout", "pack_hover_readout", "body_line", "TEMP_SCALE"]

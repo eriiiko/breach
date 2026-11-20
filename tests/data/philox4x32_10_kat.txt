@@ -1,0 +1,49 @@
+# philox4x32_10_kat.txt -- VENDORED verbatim, do not hand-edit.
+#
+# Source: github.com/eriiiko/philox32 (MIT), tests/kat_philox4x32_10.txt,
+# commit 6c33a3d0737e1f9f64b7dd84bdbda02fbbc863d2. SHA-256 of the vendored file at that commit: bf30ca4da4de8e649e7db231ca19c60b0bb62de3c82d0059eedf20bc475edabc
+#
+# That file is itself a verbatim copy of the "philox4x32 10" lines of
+# tests/kat_vectors from Random123 (https://github.com/DEShawResearch/random123,
+# branch main). Random123 is Copyright 2010-2012 D. E. Shaw Research,
+# distributed under the 3-clause BSD license reproduced below; only these
+# vectors are Random123's, the philox32 implementation under test is an
+# independent re-implementation.
+#
+# Copyright 2010-2012, D. E. Shaw Research. All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice,
+#   this list of conditions, and the following disclaimer.
+# * Redistributions in binary form must reproduce the above copyright notice,
+#   this list of conditions, and the following disclaimer in the
+#   documentation and/or other materials provided with the distribution.
+# * Neither the name of D. E. Shaw Research nor the names of its contributors
+#   may be used to endorse or promote products derived from this software
+#   without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+#
+# ---- vendored body (byte-for-byte from upstream) begins below ----
+# Known-answer vectors for Philox-4x32-10.
+#
+# Origin: tests/kat_vectors in Random123, https://github.com/DEShawResearch/random123
+# (branch main; the philox4x32-10 lines, copied verbatim).  Random123 is
+# Copyright 2010-2012 D. E. Shaw Research, BSD-3-Clause -- see THIRD_PARTY_NOTICES.md.
+#
+# Line format:  philox4x32 10  ctr0 ctr1 ctr2 ctr3  key0 key1   out0 out1 out2 out3   (all hex)
+philox4x32 10 00000000 00000000 00000000 00000000 00000000 00000000   6627e8d5 e169c58d bc57ac4c 9b00dbd8
+philox4x32 10 ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff   408f276d 41c83b0e a20bc7c6 6d5451fd
+philox4x32 10 243f6a88 85a308d3 13198a2e 03707344 a4093822 299f31d0   d16cfe09 94fdcceb 5001e420 24126ea1

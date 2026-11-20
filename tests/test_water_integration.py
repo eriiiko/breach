@@ -55,7 +55,7 @@ SEED = 42
 
 
 # ---------------------------------------------------------------------------
-# helpers (deterministic — the only RNG is the seeded sim.rng inside flush)
+# helpers (deterministic — the only draws are the keyed sim.draws inside flush)
 # ---------------------------------------------------------------------------
 def _sealed_room_level(n: int = 9, tile_size_m: float = 0.333) -> LevelData:
     """An n x n hull-ringed room, interior air, NO vacuum anywhere — the

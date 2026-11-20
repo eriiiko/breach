@@ -35,18 +35,23 @@ The rules every primitive keeps
 
 The goal table (what the intents ask for -> which primitive runs)
 ----------------------------------------------------------------
-A MOVE_DIR carries a direction AND an analog speed ``s = speed_q`` (Q16, 0 ..
-ONE of the row's ``locomotion.v_max``; #106 P6f, Erik's ruling of 2026-10-31:
-"assume we can control the speed from 0 to its max speed, as if we had an
-Xbox controller"). The HUB picks the gait from the speed -- THE SPEED LAW,
-over the row's ``[locomotion]`` band tops ``c = crawl_until`` and ``w =
-swim_until`` (``speed_band``); ``speed_mode`` is the marines' law and is
-never read here:
+A MOVE_DIR carries a direction AND the move THROTTLE ``throttle_q`` (Q16,
+0 .. ONE; main's G1p seam, ``Simulation.set_move_dir``). For a creature the
+throttle IS the analog speed ``s`` (Q16, 0 .. ONE of the row's
+``locomotion.v_max``; #106 P6f, Erik's ruling of 2026-10-31: "assume we can
+control the speed from 0 to its max speed, as if we had an Xbox
+controller") -- ``creature_speed_q16``, with ONE exception at the merge of
+main (2026-11-20): a throttle of exactly 0 is main's WALK (a keyboard's WASD
+without the full-speed key), so it asks for the creature's walk, the crawl
+at its full tempo (``s = crawl_until``) -- the absence of a MOVE_DIR is the
+stop. The HUB picks the gait from the speed -- THE SPEED LAW, over the row's
+``[locomotion]`` band tops ``c = crawl_until`` and ``w = swim_until``
+(``speed_band``):
 
 ==========================================  ==============================
 intent on the creature unit                 primitive (its tempo)
 ==========================================  ==============================
-none, or MOVE_DIR at s = 0                  idle (seated; explore, touch, limp)
+none                                        idle (seated; explore, touch, limp)
 MOVE_DIR at 0 < s <= c                      crawl toward the direction;
                                             ``p_recruit`` x (s / c)^2
 MOVE_DIR at c < s <= w                      swim: the umbrella (the cruise);
@@ -380,6 +385,15 @@ def speed_law(speed_q16: int, medium_factor_q16: int = ONE) -> int:
     return max(0, min(ONE, s))
 
 
+def creature_speed_q16(throttle_q16: int, d) -> int:
+    """A MOVE_DIR's throttle (Q16, ``[0, ONE]``) -> the creature's analog
+    speed (Q16 of ``v_max``): the throttle itself, except main's WALK
+    (throttle exactly 0, merge of main 2026-11-20) -> the crawl band's top
+    ``crawl_until`` (the crawl at its full P2 tempo). Pure integer."""
+    t = int(throttle_q16)
+    return int(d.crawl_until) if t <= 0 else t
+
+
 def speed_band(speed_q16: int, d) -> int:
     """The travel goal a speed asks for (the goal table): 0 -> none, up to
     ``crawl_until`` -> the crawl, up to ``swim_until`` -> the umbrella,
@@ -462,7 +476,8 @@ def route_intents(body, unit, medium_factor_q16: int = ONE) -> None:
     mv = getattr(unit, "live_move_dir", None)
     aim = getattr(unit, "live_aim", None)
     old = body.goal_kind
-    s = speed_law(getattr(mv, "speed_q", ONE), medium_factor_q16) if mv is not None else 0
+    s = (speed_law(creature_speed_q16(mv.throttle_q, d), medium_factor_q16)
+         if mv is not None else 0)
     g = _unit_q16(mv.dx_q, mv.dy_q) if (mv is not None and (mv.dx_q or mv.dy_q)) else None
     want = speed_band(s, d) if g is not None else GOAL_NONE
     if want == GOAL_NONE:
@@ -1100,7 +1115,7 @@ __all__ = [
     "ARM_GRAB_WRAP", "ARM_GRAB_HOLD", "ARM_CARRY", "ARM_STATE_NAMES", "GRAB_STATES",
     "GAIT_LIMP", "GAIT_IDLE", "GAIT_CRAWL", "GAIT_SWIM", "GAIT_NAMES",
     "GOAL_NONE", "GOAL_CRAWL", "GOAL_CRUISE", "GOAL_ESCAPE", "GOAL_NAMES",
-    "speed_law", "speed_band", "crawl_tempo", "crawl_p_recruit", "stroke_tempo",
+    "speed_law", "creature_speed_q16", "speed_band", "crawl_tempo", "crawl_p_recruit", "stroke_tempo",
     "SWIM_OPEN", "SWIM_CLOSE", "SWIM_JET", "SWIM_COAST",
     "PrimDials", "route_intents", "hub_step", "after_solver",
 ]

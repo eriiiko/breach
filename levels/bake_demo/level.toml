@@ -9,11 +9,11 @@
 #
 # (the [art.*] and [bake] blocks below are written by the baker.)
 
-version = "2"
+version = "3"
 name = "Bake Demo"
 
-# v2 codes ARE canon material ids (src/simulation/materials.py):
-#   0=air, 1=hull, 2=wood, 3=door, 4=steel, 5=glass, 6=furniture, 9=SPACE
+# v3 codes ARE canon material ids (src/simulation/materials.py):
+#   0=air, 1=hull, 2=wood, 3=door, 4=steel, 5=glass, 6=furniture, -1=SPACE
 tilemap = "tilemap.csv"
 
 tile_size_m = 0.333
@@ -30,3 +30,12 @@ px_per_tile = [64.00, 64.00]
 tileset = "art/tilesets/greybox"
 px_per_tile = 64
 seed = 0
+
+[[entity]]
+id = "door_1"
+class = "door"
+x = 11
+y = 7
+orientation = "h"
+length_m = 0.333
+initial_state = "closed"

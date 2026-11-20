@@ -27,6 +27,8 @@ from simulation import vision as V  # noqa: E402
 from simulation.ruleset import OnePhaseWEGO, TwoPhaseWEGO  # noqa: E402
 from simulation.simulation import Simulation  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 
 EAST = 0.0
 NORTH = math.pi / 2
@@ -52,7 +54,7 @@ def _sim():
 def _unit(sim, x, y, team=0, facing=EAST, name=None):
     u = Unit(name or f"u{len(sim.units)}", x=x, y=y, team=team)
     sim.add_unit(u)
-    u.facing = facing
+    _place_facing(u, _q_rad(facing))
     return u
 
 
@@ -94,7 +96,7 @@ def test_turning_around_acquires_the_target():
     m = _unit(sim, 30.0, 30.0, team=0, facing=EAST)
     z = _unit(sim, 6.0, 30.0, team=ZOMBIE_TEAM)
     assert V.can_see(sim, m, z) is False
-    m.facing = WEST
+    _place_facing(m, _q_rad(WEST))
     assert V.can_see(sim, m, z) is True
 
 
@@ -205,7 +207,7 @@ def test_discovered_is_entering_an_enemys_vision():
     m = _unit(sim, 30.0, 30.0, team=0, facing=EAST)
     z = _unit(sim, 45.0, 30.0, team=ZOMBIE_TEAM, facing=WEST)
     assert V.is_discovered(sim, m) is True      # the zombie is looking at him
-    z.facing = EAST
+    _place_facing(z, _q_rad(EAST))
     sim._vision_cache = None
     assert V.is_discovered(sim, m) is False
 

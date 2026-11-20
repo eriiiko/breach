@@ -41,7 +41,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 
-from level_loader import load, materials_from_tilemap, tile_to_art_px  # noqa: E402
+from level_loader import (  # noqa: E402
+    SPACE_CODE, load, materials_from_tilemap, tile_to_art_px,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -69,12 +71,12 @@ def _make_level(tmp_path: Path, name: str, toml_text: str,
     """Build a level folder under tmp_path; returns the folder path.
 
     ``art_files`` is an iterable of (relative_path, (w, h)) PNGs to create.
-    ``grid`` is (rows, cols) for a v2-coded tilemap (SPACE border, air core).
+    ``grid`` is (rows, cols) for a v3-coded tilemap (SPACE border, air core).
     """
     folder = tmp_path / name
     folder.mkdir(parents=True, exist_ok=True)
     rows, cols = grid
-    tm = np.full((rows, cols), 9, dtype=int)
+    tm = np.full((rows, cols), SPACE_CODE, dtype=int)
     tm[1:-1, 1:-1] = 0
     np.savetxt(folder / "tilemap.csv", tm, fmt="%d", delimiter=",")
     for rel, (w, h) in art_files:
@@ -156,7 +158,7 @@ def test_freeze_version_1_level(tmp_path):
 # ---------------------------------------------------------------------------
 
 _V2_FULL_TOML = """
-version = "2"
+version = "3"
 name = "Art Block"
 tilemap = "tilemap.csv"
 
@@ -213,7 +215,7 @@ def test_v2_art_block_parses(tmp_path):
 def test_v2_bare_wins_over_flat_duplicate(tmp_path):
     """[art.bare] is the new spelling; a leftover flat key loses to it."""
     toml = (
-        'version = "2"\n'
+        'version = "3"\n'
         'tilemap = "tilemap.csv"\n'
         'diffuse = "old_d.png"\n'
         'normal = "old_n.png"\n'
@@ -232,13 +234,13 @@ def test_v2_bare_wins_over_flat_duplicate(tmp_path):
 def test_v2_missing_files_still_raise(tmp_path):
     # Bare diffuse declared but absent.
     _make_level(tmp_path, "a", (
-        'version = "2"\ntilemap = "tilemap.csv"\n'
+        'version = "3"\ntilemap = "tilemap.csv"\n'
         '[art.bare]\ndiffuse = "nope.png"\n'))
     with pytest.raises(ValueError, match="Diffuse texture not found"):
         _load_from(tmp_path, "a")
     # Furniture diffuse declared but absent — error names the toml location.
     _make_level(tmp_path, "b", (
-        'version = "2"\ntilemap = "tilemap.csv"\n'
+        'version = "3"\ntilemap = "tilemap.csv"\n'
         '[art.bare]\ndiffuse = "d.png"\n'
         '[art.furniture]\ndiffuse = "nope.png"\n'),
         [("d.png", (8, 8))])
@@ -246,7 +248,7 @@ def test_v2_missing_files_still_raise(tmp_path):
         _load_from(tmp_path, "b")
     # [art] present but no diffuse in either spelling.
     _make_level(tmp_path, "c", (
-        'version = "2"\ntilemap = "tilemap.csv"\n'
+        'version = "3"\ntilemap = "tilemap.csv"\n'
         '[art.bare]\nnormal = "n.png"\n'),
         [("n.png", (8, 8))])
     with pytest.raises(ValueError, match=r"\[art.bare\] 'diffuse'"):
@@ -256,7 +258,7 @@ def test_v2_missing_files_still_raise(tmp_path):
 def test_align_defaults_and_validation(tmp_path):
     # No [art.align]: offset (0,0), px_per_tile = art_w / grid_w, not explicit.
     _make_level(tmp_path, "a", (
-        'version = "2"\ntilemap = "tilemap.csv"\n'
+        'version = "3"\ntilemap = "tilemap.csv"\n'
         '[art.bare]\ndiffuse = "d.png"\n'),
         [("d.png", (64, 96))], grid=(6, 4))
     lvl = _load_from(tmp_path, "a")
@@ -265,7 +267,7 @@ def test_align_defaults_and_validation(tmp_path):
     assert lvl.art_px_per_tile == pytest.approx((64 / 4, 96 / 6))
     # [art.align] with offset only: px_per_tile still defaults, but explicit.
     _make_level(tmp_path, "b", (
-        'version = "2"\ntilemap = "tilemap.csv"\n'
+        'version = "3"\ntilemap = "tilemap.csv"\n'
         '[art.bare]\ndiffuse = "d.png"\n'
         '[art.align]\noffset_px = [10, 20]\n'),
         [("d.png", (64, 96))], grid=(6, 4))
@@ -275,14 +277,14 @@ def test_align_defaults_and_validation(tmp_path):
     assert lvl.art_px_per_tile == pytest.approx((16.0, 16.0))
     # Malformed offset_px / px_per_tile raise.
     _make_level(tmp_path, "c", (
-        'version = "2"\ntilemap = "tilemap.csv"\n'
+        'version = "3"\ntilemap = "tilemap.csv"\n'
         '[art.bare]\ndiffuse = "d.png"\n'
         '[art.align]\noffset_px = [1, 2, 3]\n'),
         [("d.png", (8, 8))])
     with pytest.raises(ValueError, match="offset_px"):
         _load_from(tmp_path, "c")
     _make_level(tmp_path, "d", (
-        'version = "2"\ntilemap = "tilemap.csv"\n'
+        'version = "3"\ntilemap = "tilemap.csv"\n'
         '[art.bare]\ndiffuse = "d.png"\n'
         '[art.align]\npx_per_tile = 0\n'),
         [("d.png", (8, 8))])
@@ -294,7 +296,7 @@ def test_align_px_per_tile_pair_parses(tmp_path):
     """F2.1: px_per_tile accepts a per-axis [x, y] pair (the v2 art's
     proportions differ from the tilemap per axis)."""
     _make_level(tmp_path, "p", (
-        'version = "2"\ntilemap = "tilemap.csv"\n'
+        'version = "3"\ntilemap = "tilemap.csv"\n'
         '[art.bare]\ndiffuse = "d.png"\n'
         '[art.align]\noffset_px = [1.0, -38.4]\n'
         'px_per_tile = [77.40, 54.44]\n'),
@@ -309,7 +311,7 @@ def test_align_px_per_tile_pair_validation(tmp_path):
     """Malformed pairs raise: wrong arity, non-numbers, non-positive axis."""
     for bad in ("[1.0, 2.0, 3.0]", '["a", 2.0]', "[12.5, 0]", "[-1.0, 2.0]"):
         _make_level(tmp_path, "bad", (
-            'version = "2"\ntilemap = "tilemap.csv"\n'
+            'version = "3"\ntilemap = "tilemap.csv"\n'
             '[art.bare]\ndiffuse = "d.png"\n'
             f'[art.align]\npx_per_tile = {bad}\n'),
             [("d.png", (8, 8))])
@@ -329,7 +331,7 @@ _VESSEL2 = ROOT / "prototypes" / "unhcr_vessel_2"
                            "(present only on the authoring machine)")
 def test_unhcr_vessel_2_loads_end_to_end():
     lvl = load("unhcr_vessel_2", levels_dir="prototypes")
-    assert lvl.version == "2"
+    assert lvl.version == "3"
     # Which layer fills the displayed (bare) slot is an authoring choice on
     # the untracked toml (currently the furnished interim until F3 composes
     # per tile) — pin structure, not the filename.
@@ -433,7 +435,7 @@ def test_art_src_and_uv_rect_per_axis():
 sys.path.insert(0, str(ROOT / "tools"))
 
 _ALIGN_TOML = """\
-version = "2"
+version = "3"
 name = "Save Roundtrip"   # stays byte-identical
 tilemap = "tilemap.csv"
 
@@ -488,7 +490,7 @@ def test_save_align_appends_missing_block(tmp_path):
     loads (valid TOML; values round-trip)."""
     from align_level_art import save_align
 
-    toml = ('version = "2"\ntilemap = "tilemap.csv"\n'
+    toml = ('version = "3"\ntilemap = "tilemap.csv"\n'
             '[art.bare]\ndiffuse = "d.png"\n')
     folder = _make_level(tmp_path, "nb", toml, [("d.png", (64, 96))])
     toml_path = folder / "level.toml"

@@ -84,7 +84,7 @@ def main() -> None:
         if t == BLAST_TICK:
             execute_payload(g, sim.edit_queue, sim.units, cy, cx,
                             sim.weapons_tables.payloads.by_name[PAYLOAD],
-                            sim.rng)
+                            sim.draws)
         sim.set_paused(False)
         sim.step()
         T = g.temperature.astype(np.int64) / Q

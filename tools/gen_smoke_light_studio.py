@@ -145,8 +145,7 @@ HEADER_COMMENTS = (
     "through level_lib on the explosion studio's geometry. Three charges fire",
     "once (1.0 / 1.5 / 2.0 s); launch with --warp to freeze a moment (README.md).",
     "",
-    "v2 codes ARE canon material ids (src/simulation/materials.py):",
-    "  0=air 1=hull 6=furniture 9=SPACE",
+    *studio.CODE_LEGEND,
 )
 
 

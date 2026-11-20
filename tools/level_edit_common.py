@@ -36,6 +36,21 @@ from level_loader import SPACE_CODE
 from simulation.materials import MATERIAL_NAMES
 
 BRUSH_MIN, BRUSH_MAX = 1, 9
+
+#: The keyboard digit that selects SPACE in both editors' palettes. A KEY,
+#: not a CSV code: SPACE's code is ``level_loader.SPACE_CODE`` (-1, level
+#: format v3), outside the material ids. Digits 0-8 select the material of
+#: that id; ids from 9 up are eyedropper-only.
+SPACE_KEY = 9
+
+
+def palette_key(pid):
+    """The digit key that selects palette entry ``pid`` (SPACE_KEY for
+    SPACE_CODE, the id itself for ids 0-8), or None when no key does."""
+    pid = int(pid)
+    if pid == SPACE_CODE:
+        return SPACE_KEY
+    return pid if 0 <= pid < SPACE_KEY else None
 UNDO_CAPACITY = 100
 
 # Curated overlay colours for the shipped materials, keyed by canon NAME (the

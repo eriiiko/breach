@@ -47,6 +47,7 @@ from _radiation_sweep_harness import ONE, R, cpp_sweep, live_table  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import LevelData, load as load_level  # noqa: E402
 from simulation.factions import ZOMBIE_TEAM  # noqa: E402
+from simulation.draws import MatchDraws  # #29 P3b: the keyed draws
 from simulation import gas_fixed, unit_fixed  # noqa: E402
 from simulation.gases import (  # noqa: E402
     GAS_NAMES, INERT_N2, N_GASES, N_TRACE_GASES, O2, POISON, SMOKE, STEAM,
@@ -148,7 +149,8 @@ def _unit_on(g, x=5, y=5):
 
 def reader_exchange_gates():
     """src/simulation/exchange.py::apply_teargas_blind / apply_poison_dose --
-    gated by their REAL-UNIT law (A1); the poison amount is float-identical."""
+    gated by their REAL-UNIT law (A1); the poison dose (#29 PX) is the
+    pre-#88 currency's exactly."""
     from simulation.exchange import apply_poison_dose, apply_teargas_blind
     from simulation.status import BLINDED
     tps = int(CFG.clock.ticks_per_second)
@@ -169,27 +171,33 @@ def reader_exchange_gates():
             else:
                 events = []
                 apply_poison_dose([u], g, tps, events=events)
-                fired = u.current_hp < 1000.0
+                # #29 PX: the row doses the poison law (no damage here)
+                fired = u.poison_x0 > 0
                 if fired:
-                    want = unit_fixed.quantize_hp_delta(
-                        float(CFG.exchange.poison_dps) * (s / gas_fixed.TRACE_ONE) / tps)
-                    assert 1000.0 - u.current_hp == want, s
+                    want = unit_fixed.div_round(
+                        _poison_gas_q() * s, gas_fixed.TRACE_ONE * tps)
+                    assert u.poison_x0 == want, s
             assert fired == (s >= th), (GAS_NAMES[gas_id], s, th)
             assert fired >= prev, "the gate is not monotone in S"
             prev = fired
             checked += 1
-    # the poison amount on S_old << k is float-identical to the pre-#88 law
+    # the poison dose on S_old << k is the dose of the pre-#88 currency's
+    # density, exactly (the same rational: the lift cancels)
     for s_old in (_PO, _PO + 1, OLD_ONE, 3 * OLD_ONE):
         g = _box_gmap(16, 16)
         u = _unit_on(g)
         for (tx, ty) in u.occupied_tiles():
             g.gas[POISON][ty, tx] = trace_lift(s_old)
         apply_poison_dose([u], g, tps, events=[])
-        want = unit_fixed.quantize_hp_delta(
-            float(CFG.exchange.poison_dps) * (s_old / 65536.0) * (1.0 / tps))
-        assert 1000.0 - u.current_hp == want, s_old
+        want = unit_fixed.div_round(_poison_gas_q() * s_old, 65536 * tps)
+        assert u.poison_x0 == want, s_old
         checked += 1
     return checked
+
+
+def _poison_gas_q():
+    from simulation import poison
+    return poison.get_settings().gas_q
 
 
 def reader_fire_beam():
@@ -214,7 +222,7 @@ def reader_fire_beam():
         shooter.id, z.id = 1, 2
         events = []
         fire_beam(g, [shooter, z], shooter, 3, 9, 25, 9, tick=0, shots=[],
-                  real_time=0.0, rng=np.random.default_rng(1), events=events,
+                  real_time=0.0, rng=MatchDraws(1), events=events,
                   weapon=weapon, ammo=ammo, spread_deg=0.0)
         # the pre-#88 law on S_old (combat.fire_beam before #88, per term >> 16)
         energy = int(ammo.damage) << 16
@@ -317,6 +325,31 @@ def reader_engine_sweep():
     return checked
 
 
+def reader_obs_spec_v1():
+    """src/simulation/obs_spec_v1.py::FieldPlanes -- the observation's poison /
+    teargas / smoke planes (#195 1g (b)): the one trace dequantize per plane,
+    float-identical to S_old / 2^16 on every cell; the far reduce is the max
+    of those floats, so a block's value is the same number."""
+    from simulation import unit_impulse as ui
+    from simulation.obs_spec_v1 import FieldPlanes
+    g = _box_gmap()
+    table = ui.table_for(g)
+    y, x = 5, 5
+    checked = 0
+    for s_old in S_OLD + [S_NEG]:
+        olds = {POISON: s_old, TEARGAS: max(0, s_old - 7), SMOKE: 2 * s_old}
+        for gas_id, so in olds.items():
+            g.gas[gas_id][y, x] = trace_lift(so)
+        P = FieldPlanes(g, (), table)
+        for name, gas_id in (("poison", POISON), ("teargas", TEARGAS),
+                             ("smoke", SMOKE)):
+            assert P.raw[name][y, x] == olds[gas_id] / float(OLD_ONE), (name, s_old)
+            assert P.far_raw[name][y // 4, x // 4] == max(
+                0.0, olds[gas_id] / float(OLD_ONE)) or olds[gas_id] < 0, name
+        checked += 1
+    return checked
+
+
 # The REGISTRY: every src/ and renderer/ module that reads a trace slice, with
 # the public entry point(s) this file drives -- or, for a module that only
 # MOVES trace (scale-free by construction, §2.5) or hands it on unread, the
@@ -330,6 +363,7 @@ REGISTRY = {
     "src/simulation/combat.py": reader_fire_beam,
     "src/simulation/recorder.py": reader_recorder,
     "src/simulation/physics_runner.py": reader_engine_sweep,   # hands gas to the sweep
+    "src/simulation/obs_spec_v1.py": reader_obs_spec_v1,       # the observation planes
 }
 NOT_READERS = {
     "src/simulation/gamemap.py": "movers only: seal/unseal divmod, inject, the "

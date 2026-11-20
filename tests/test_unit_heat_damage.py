@@ -7,9 +7,17 @@ past its tolerance band it loses HP this tick. This module exercises the
 consumer directly (heat injected into ``gmap.heat`` — no renderer, no ray pass)
 and through a full ``Simulation.step()`` to assert the heat-clear ordering.
 
+#215 (docs/body_temperature_design_2026-11-17.md section 2): the felt
+temperature is now the FLOW into the unit's own body temperature
+(simulation.body_temp), so the per-tick law below holds in the STEADY STATE:
+a held flux in still air at one atmosphere and 20 C settles the body at the
+felt temperature, where the row bills the old amount to a count
+(``_settle``). The burst, the split and the vacuum are
+tests/test_body_temp.py's.
+
 Verifies:
   - a unit on a HOT tile loses HP, scaled by absorption * (1 - reflectivity)
-    and the over-temperature ramp;
+    and the over-temperature ramp (once its body has settled);
   - a unit on a COLD tile takes EXACTLY zero;
   - a ZOMBIE takes ``zombie.fire_damage_multiplier`` (4x) more than a marine
     for the same flux;
@@ -54,9 +62,44 @@ from simulation.unit import Unit  # noqa: E402
 # + indexing). A real GameMap works too, but the stub keeps the consumer tests
 # fast and free of level geometry.
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _unprotected_body(monkeypatch):
+    """#215: this module holds the heat row's UNSCALED law (heat_absorption
+    1.0); the shipped protection only scales what reaches the body
+    (tests/test_body_temp.py::test_the_protection_scales_both_inflows_alike)."""
+    from simulation import body_temp
+    monkeypatch.setattr(body_temp, "absorption_q", lambda env: 1 << 16)
+
+
 class _HeatStub:
-    def __init__(self, h, w):
+    """#215: the body law also reads the air on the footprint (one
+    atmosphere, the engine's ambient: the steady-state anchor's conditions)
+    and the tile size (the heat unit's joules)."""
+    def __init__(self, h, w, tile_size_m=0.333):
         self.heat = np.zeros((h, w), dtype=np.int32)
+        self.atmosphere = np.full((h, w), 1 << 16, dtype=np.int32)
+        self.temperature = np.zeros((h, w), dtype=np.int32)
+        self.solid = np.zeros((h, w), dtype=bool)
+        self.tile_size_m = tile_size_m
+
+
+#: Seconds enough for a body to settle at a held flux (#215): the time
+#: constant is 2 s at 24 tps (4 s at 12: the felt scale is per tick), and 20
+#: of them close any gap these fixtures open to below the law's rounding.
+SETTLE_S = 80
+
+
+def _settle(units, stub, tps, events=None):
+    """Hold the injected flux for SETTLE_S seconds (the stub's heat buffer is
+    never cleared), then run ONE more tick: each unit's damage of that last
+    tick, the steady state's per-tick bill. The units carry hit points enough
+    to live through it."""
+    for _ in range(SETTLE_S * tps):
+        apply_environmental_damage(units, stub, ticks_per_second=tps)
+    before = [u.current_hp for u in units]
+    apply_environmental_damage(units, stub, ticks_per_second=tps, events=events)
+    return [b - u.current_hp for b, u in zip(before, units)]
 
 
 def _expected_marine_dmg_raw(phi, tps):
@@ -71,16 +114,52 @@ def _expected_marine_dmg_raw(phi, tps):
     return 1.0 * (1.0 + float(cmb.heat_overtemp_scale) * over) * (1.0 / tps)
 
 
+def _q(v):
+    return unit_fixed.quantize_scalar(float(v))
+
+
+def _expected_marine_dmg_q(phi, tps, mult_q=1 << 16):
+    """THE row's law in Q16 (#29 P3e), written by hand: the gain and the
+    dials quantized once, every product / quotient the real value rounded
+    once (half away) -- for a default-human marine (temperature_max 60,
+    environmental_damage_rate 1.0); ``mult_q`` a resist (the zombie's)."""
+    cmb = CFG.combat
+    one = 1 << 16
+    peak = int(round(phi * HEAT_SCALE))
+    gain_q = _q(float(cmb.heat_flux_to_temp) * float(cmb.unit_absorption)
+                * (1.0 - float(cmb.unit_reflectivity)))
+    t_q = _q(cmb.heat_ambient_ref) + unit_fixed.mul_q16_round(gain_q, peak)
+    over_q = t_q - _q(60.0)
+    if over_q <= 0:
+        return 0
+    k_q = _q(cmb.heat_overtemp_scale)
+    dmg_q = unit_fixed.div_round(
+        _q(1.0) * (one + unit_fixed.mul_q16_round(k_q, over_q)), one * tps)
+    return unit_fixed.mul_q16_round(dmg_q, mult_q)
+
+
 def _expected_marine_dmg(phi, tps):
-    """The APPLIED per-tick HP loss: the §4.2 model snapped to the Q16.16 grid
-    (Q2-lift — combat.py quantizes every damage delta before it touches HP;
-    change vs the raw model <= 1/131072 ~= 7.6e-6, the documented contract)."""
-    return unit_fixed.quantize_hp_delta(_expected_marine_dmg_raw(phi, tps))
+    """The APPLIED per-tick HP loss: the integer law's Q16 count as HP. It
+    stays within 1e-4 (relative) of the float model above -- the Q16
+    quantization of the dials, the documented #29 P3e re-baseline (held by
+    ``test_the_integer_law_tracks_the_float_model``)."""
+    return _expected_marine_dmg_q(phi, tps) / 65536.0
+
+
+def test_the_integer_law_tracks_the_float_model():
+    """PROPERTY (#29 P3e): over the fixtures' flux range the integer row is
+    the float model to within 1e-4 relative + one Q16 count. BREAKS IF a
+    dial is quantized to a coarser grid or a rounding is dropped."""
+    for phi in (phi_of(2.5), phi_of(3.0), phi_of(5.0), phi_of(10.0),
+                phi_of(20.0), 1.0, 20.0, 50.0, 200.0):
+        for tps in (12, 24):
+            raw = _expected_marine_dmg_raw(round(phi * HEAT_SCALE) / HEAT_SCALE, tps)
+            got = _expected_marine_dmg(phi, tps)
+            assert abs(got - raw) <= 1e-4 * raw + 1.0 / 65536, (phi, tps)
 
 
 def _place(unit, x, y):
-    unit.x = float(x)
-    unit.y = float(y)
+    unit.set_pos(float(x), float(y))
     return unit
 
 
@@ -115,18 +194,21 @@ def phi_of(kw_m2):
 # Consumer tests (heat injected directly)
 # ---------------------------------------------------------------------------
 def test_hot_tile_damages_with_absorption_and_ramp():
-    """A unit on a hot tile loses exactly the §4.2 model amount."""
+    """A unit on a hot tile loses the §4.2 model amount once its body has
+    settled (#215: the steady state IS the old law, to a count). BREAKS IF
+    the derived loss stops matching heat_flux_to_temp (the body settles
+    elsewhere) or the band stops reading the body."""
     stub = _HeatStub(40, 40)
     m = _place(Unit("M1", x=10, y=10, team=0), 10, 10)
-    m.current_hp = 100.0
+    m.current_hp = 1e9
     phi = 50.0
     _inject(stub, m, phi)
 
-    apply_environmental_damage([m], stub, ticks_per_second=24)
+    (dmg,) = _settle([m], stub, 24)
 
     expected = _expected_marine_dmg(phi, 24)
     assert expected > 0.0
-    assert abs((100.0 - m.current_hp) - expected) < 1e-9
+    assert abs(dmg - expected) <= 1.0 / 65536
 
 
 def test_cold_tile_zero_damage():
@@ -189,30 +271,31 @@ def test_zombie_takes_fire_multiplier_more():
     stub = _HeatStub(40, 40)
     m = _place(Unit("M1", x=10, y=10, team=0), 10, 10)
     z = _place(Unit("Z1", x=20, y=20, team=ZOMBIE_TEAM), 20, 20)
-    base_hp = 1000.0
+    base_hp = 1e9
     m.current_hp = z.current_hp = base_hp  # avoid death, isolate the per-tick amount
     phi = 50.0
     _inject(stub, m, phi)
     _inject(stub, z, phi)
 
-    apply_environmental_damage([m, z], stub, ticks_per_second=24)
-
-    marine_dmg = base_hp - m.current_hp
-    zombie_dmg = base_hp - z.current_hp
+    # #215: the per-tick amount of the settled bodies (both settle at the
+    # same felt temperature; the x4 stays in the damage pipeline).
+    marine_dmg, zombie_dmg = _settle([m, z], stub, 24)
     assert marine_dmg > 0.0
     # Exact applied deltas (Q2-lift): each snapped to the Q16.16 grid AFTER
     # the zombie multiplier, mirroring combat.py's operation order — sharp.
-    raw = _expected_marine_dmg_raw(phi, 24)
     mult = float(CFG.zombie.fire_damage_multiplier)
-    assert abs(marine_dmg - unit_fixed.quantize_hp_delta(raw)) < 1e-9
-    assert abs(zombie_dmg - unit_fixed.quantize_hp_delta(raw * mult)) < 1e-9
+    # #29 P3e: the marine's Q16 damage, the zombie's its resist product
+    # rounded once (mitigate_q).
+    assert abs(marine_dmg - _expected_marine_dmg_q(phi, 24) / 65536.0) <= 1 / 65536
+    assert abs(zombie_dmg - _expected_marine_dmg_q(phi, 24, _q(mult)) / 65536.0) \
+        <= mult / 65536
     ratio = zombie_dmg / marine_dmg
     # The two INDEPENDENT Q16.16 snaps (Q2-lift) perturb the exact multiplier
     # ratio by up to (|dz| + mult*|dm|)/marine ~= (1+mult)*(0.5/65536)/marine
     # — derive the tolerance from the actual magnitudes (x1.5 margin) instead
     # of a magic number, so a config change keeps the bound honest.
     snap = 0.5 / 65536.0
-    assert abs(ratio - mult) < 1.5 * (1.0 + mult) * snap / marine_dmg
+    assert abs(ratio - mult) < 1.5 * (1.0 + mult) * 3 * snap / marine_dmg
     # Report-quality numbers (visible with `pytest -s`).
     print(f"\n[marine vs zombie @ phi=50, 24tps] marine={marine_dmg:.6f} "
           f"zombie={zombie_dmg:.6f} ratio={ratio:.3f}")
@@ -224,23 +307,20 @@ def test_damage_scales_with_overtemperature():
     stub = _HeatStub(40, 40)
     weak = _place(Unit("W", x=5, y=5, team=0), 5, 5)
     strong = _place(Unit("S", x=20, y=20, team=0), 20, 20)
-    base_hp = 1000.0
+    base_hp = 1e9
     weak.current_hp = strong.current_hp = base_hp
     _inject(stub, weak, 20.0)
     _inject(stub, strong, 200.0)
 
-    apply_environmental_damage([weak, strong], stub, ticks_per_second=24)
-
-    weak_dmg = base_hp - weak.current_hp
-    strong_dmg = base_hp - strong.current_hp
+    weak_dmg, strong_dmg = _settle([weak, strong], stub, 24)
     assert weak_dmg > 0.0
     # 10x the flux -> well MORE than 10x the damage, because the (1 + k_over*over)
     # ramp grows with over-temperature on top of the linear flux term.
     assert strong_dmg > 10.0 * weak_dmg
     # And matches the closed-form model exactly (the Q16.16-snapped applied
     # delta — Q2-lift; _expected_marine_dmg snaps like combat.py does).
-    assert abs(weak_dmg - _expected_marine_dmg(20.0, 24)) < 1e-9
-    assert abs(strong_dmg - _expected_marine_dmg(200.0, 24)) < 1e-9
+    assert abs(weak_dmg - _expected_marine_dmg(20.0, 24)) <= 1 / 65536
+    assert abs(strong_dmg - _expected_marine_dmg(200.0, 24)) <= 1 / 65536
 
 
 def test_heat_death_sets_source_and_no_conversion():
@@ -248,7 +328,9 @@ def test_heat_death_sets_source_and_no_conversion():
     killed_by_zombie (a burned corpse must not convert)."""
     stub = _HeatStub(40, 40)
     m = _place(Unit("M1", x=10, y=10, team=0), 10, 10)
-    m.current_hp = 0.01  # one strong tick kills it
+    # One strong tick kills it. #29 P3a: an hp is an exact n/65536 (the
+    # setter refuses anything else), so 1/128, not the old 0.01.
+    m.current_hp = 1.0 / 128
     _inject(stub, m, 200.0)
     events = []
 
@@ -267,34 +349,33 @@ def test_tick_rate_independent_dps():
     dmg*tps (the per-second rate) matches."""
     phi = 50.0
 
-    base_hp = 1000.0
+    base_hp = 1e9
 
     stub12 = _HeatStub(40, 40)
     m12 = _place(Unit("M", x=10, y=10, team=0), 10, 10)
     m12.current_hp = base_hp
     _inject(stub12, m12, phi)
-    apply_environmental_damage([m12], stub12, ticks_per_second=12)
-    dmg12 = base_hp - m12.current_hp
+    (dmg12,) = _settle([m12], stub12, 12)
 
     stub24 = _HeatStub(40, 40)
     m24 = _place(Unit("M", x=10, y=10, team=0), 10, 10)
     m24.current_hp = base_hp
     _inject(stub24, m24, phi)
-    apply_environmental_damage([m24], stub24, ticks_per_second=24)
-    dmg24 = base_hp - m24.current_hp
+    (dmg24,) = _settle([m24], stub24, 24)
 
-    # Each applied delta matches its snapped model exactly (sharp).
-    assert abs(dmg12 - _expected_marine_dmg(phi, 12)) < 1e-9
-    assert abs(dmg24 - _expected_marine_dmg(phi, 24)) < 1e-9
+    # Each settled delta matches its snapped model to a count (#215).
+    assert abs(dmg12 - _expected_marine_dmg(phi, 12)) <= 1 / 65536
+    assert abs(dmg24 - _expected_marine_dmg(phi, 24)) <= 1 / 65536
     dps12 = dmg12 * 12
     dps24 = dmg24 * 24
     # Q2-lift: the RAW model is exactly tick-rate independent (x/12 == 2*(x/24)
     # in IEEE), but the two deltas snap to the Q16.16 grid INDEPENDENTLY, so
     # the per-second rates may differ by up to (12+24)*0.5/65536 ~= 2.7e-4 —
     # the documented quantization tolerance, imperceptible at DPS ~450.
-    assert abs(dps12 - dps24) < 3e-4
-    # 24-tps per-tick hit is half the 12-tps per-tick hit, to within one snap.
-    assert abs(dmg12 - 2.0 * dmg24) <= (1.0 / 65536) + 1e-9
+    assert abs(dps12 - dps24) < 3 * 3e-4
+    # 24-tps per-tick hit is half the 12-tps per-tick hit, to within a snap
+    # of each settled body (#215).
+    assert abs(dmg12 - 2.0 * dmg24) <= (3.0 / 65536) + 1e-9
     print(f"\n[tick-rate independence @ phi=50] "
           f"dmg/tick 12tps={dmg12:.6f} 24tps={dmg24:.6f} | "
           f"DPS 12tps={dps12:.4f} 24tps={dps24:.4f}")
@@ -305,16 +386,16 @@ def test_max_over_footprint():
     even if the rest of the footprint is cold."""
     stub = _HeatStub(40, 40)
     m = _place(Unit("M1", x=10, y=10, team=0), 10, 10)
-    base_hp = 1000.0
+    base_hp = 1e9
     m.current_hp = base_hp
     # Only ONE of the 9 footprint tiles is hot.
     tiles = m.occupied_tiles()
     tx, ty = tiles[len(tiles) // 2]
     stub.heat[ty, tx] = int(round(50.0 * HEAT_SCALE))
 
-    apply_environmental_damage([m], stub, ticks_per_second=24)
+    (dmg,) = _settle([m], stub, 24)
 
-    assert abs((base_hp - m.current_hp) - _expected_marine_dmg(50.0, 24)) < 1e-9
+    assert abs(dmg - _expected_marine_dmg(50.0, 24)) <= 1 / 65536
 
 
 def test_determinism_fixed_order():

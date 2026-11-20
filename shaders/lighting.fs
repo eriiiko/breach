@@ -134,7 +134,12 @@ void main() {
 
     // Diffuse: albedo x incoming RGB (a red lamp lights surfaces red).
     // ndotl modulates the directional contribution; ambient is a flat floor.
-    vec3 lit = diffuse * (u_ambient + incoming_rgb * u_light_gain * ndotl);
+    // G5: the light curve acts on the light, before albedo and N.L (lit3d's
+    // block, spliced at the marker; off leaves this line's light untouched).
+    vec3 light_rgb = incoming_rgb * u_light_gain;
+    light_rgb *= lightCurveGain(light_rgb);
+    vec3 lit = lightCurveAlbedo(diffuse, light_rgb)
+             * (u_ambient + light_rgb * ndotl);
     // Linear HDR out: the world resolve tone-maps (ACES) and encodes, once,
     // for every layer together (G0 P1).
     finalColor = vec4(lit, 1.0);

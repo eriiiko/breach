@@ -121,7 +121,9 @@ The rest of the relief is the `smoke-tuning` skill.
 **Air:**
 - Drag (`[physics.eos] k_drag` 0.01 / `k_drag2` 0.225) was re-checked. 0.1 was
   tried and reverted.
-- The heat-only grenade (`frag_standard`) pushes little air. That belongs to #31,
+- `frag_standard` is the generic explosion since #31 (`[blast]`, strength 1): its
+  air comes from a divergence source, its heat is a fixed total over the tiles it
+  reaches. Before #31 the row was heat-only and pushed little air; that belonged to #31,
   not to drag.
 - Vents: `q_circ` (16 in the studio) and the duct `filter` (`hepa_basic`
   removes smoke, `derelict` only moves it).

@@ -105,7 +105,7 @@ import numpy as np
 from PIL import Image
 
 import level_lib  # noqa: E402
-from level_loader import SPACE_CODE  # noqa: E402
+from level_loader import LEVEL_FORMAT_VERSION, SPACE_CODE  # noqa: E402
 from simulation.materials import MATERIAL_NAMES  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -508,10 +508,11 @@ def compute_bake_replacements(level_dir, tileset=None, px_per_tile=None,
     with open(toml_path, "rb") as f:
         raw = tomllib.load(f)
     version = str(raw.get("version", "")).strip()
-    if version != "2":
+    if version != LEVEL_FORMAT_VERSION:
         raise ValueError(
-            f"{toml_path}: the baker speaks level format v2 only (codes ARE "
-            f"canon material ids); this level is version {version!r}")
+            f"{toml_path}: the baker speaks level format "
+            f"v{LEVEL_FORMAT_VERSION} only (codes ARE canon material ids); "
+            f"this level is version {version!r}")
     tilemap_rel = raw.get("tilemap")
     if not tilemap_rel:
         raise ValueError(f"{toml_path}: missing required 'tilemap' field")

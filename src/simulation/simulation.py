@@ -18,14 +18,13 @@ and ``is_terminal`` for the Gymnasium contract.
 
 Determinism / RNG plumbing
 --------------------------
-A single :class:`numpy.random.Generator` lives on ``sim.rng``. It is
-plumbed through the three known nondeterminism sites:
-
-- :func:`simulation.combat.fire_burst` — bullet cone offsets
-- :func:`simulation.physics.add_explosion_smoke` — per-tile noise
-- (gone) the old render march's per-source ``jitter`` — pinned 0.0 for
-  every light and then deleted with the C++ Raycaster at ray-engine-v2 P6c;
-  the radiation sweep that lights the game draws no random numbers.
+Every random number the sim draws is a KEYED draw on ``sim.draws``
+(:class:`simulation.draws.MatchDraws`, #29 P3b): Philox-4x32-10 keyed by the
+seed, counter ``(tick, index, salt, id)`` -- the shot and beam cones, the
+exposure and crit rolls, the FieldEdit noise at the flush. No draw depends on
+a stream position. ``sim.rng`` (a numpy Generator) is drawn from by nothing in
+the sim; a match replaces it with a stand-in that refuses any use
+(:class:`simulation.draws.RefusingRng`, installed by ``spawn_match``).
 
 The same seed gives the same trajectory for any sequence of
 ``apply_action / step`` calls — assuming the C++ physics is
@@ -58,6 +57,8 @@ added; the snapshot contract is forward-compatible.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
+from numbers import Integral
 from typing import List, Optional
 
 import numpy as np
@@ -67,10 +68,21 @@ from simulation.ai_zombie import update_zombies_tick, convert_marines_to_zombies
 from simulation.generation import predefined_unit_attributes
 from simulation.species import get_species
 from simulation.combat import (
-    apply_temperature_ignition,
-    process_shooting, process_sprays,
-    Projectile,
+    apply_temperature_ignition, ignition_params,
+    process_shooting, process_sprays, process_melee_intents,
+    Projectile, detonation_tile, release_point,
+    mag_settle, reload_begin,
 )
+# Simultaneous resolution of an attack slot (#169): phase A records, phase B
+# (``resolve``) applies. Bare name: the lockstep test rebinds it.
+from simulation.simultaneous import SimultaneousEffects
+# The focus-fire law (G4p): its dials (built at construction) and its decay.
+from simulation import exposure
+from simulation import horde
+from simulation import noise
+from simulation import poison
+from simulation import stress
+from simulation import corpse  # arc #63 P5b
 # The two shipped physics->unit couplings — rows in the mechanics/05 coupling
 # table — are invoked through the exchange module (P1 refactor). Imported as
 # BARE NAMES (not module-qualified calls) deliberately: the call sites read
@@ -80,16 +92,19 @@ from simulation.combat import (
 # Execution positions are UNCHANGED (heat at step 9c, blast at the grenade
 # fuse-out below); the consolidated named EXCHANGE-READ slot is a later patch.
 from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-export — the executor calls it now)
-    apply_blast_damage, apply_creature_wave_impulse, apply_environmental_damage,
-    apply_poison_dose, apply_teargas_blind, apply_wave_push,
+    apply_bite_dose, apply_blast_damage, apply_corpse_infestation, apply_environmental_damage, apply_poison_dose,
+    apply_teargas_blind, apply_wind_force,
 )
 # Creature bodies (#106 P6d1): the slot-5b runtime. `is_creature` is the ONE
 # creature key (species.creature is not None) for the position-writer routing.
 from simulation.creature_system import (CreatureSystem, is_creature,
                                         spawn_creature_units)
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
-    DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
+    DoorDestroyedEvent, ExplosionEvent, PlantEvent, ThrowEvent,
+    WallDestroyedEvent,
 )
+from simulation.unit import THROW_NO_REACH
+from simulation.unit_schema import MAG_UNBOUND
 from simulation.cover_system import attach_cover
 from simulation.door_system import build_runtime_entities, sweep_doors
 from simulation.entities.door import DOOR_OPEN
@@ -101,11 +116,18 @@ from simulation.logic_nodes import (
 from simulation.sensor_system import build_sensors, sample_sensors
 from simulation.pump_system import build_pumps, sweep_pumps
 from simulation.vent_system import build_vents, sweep_vents
+from simulation.swarm import SwarmUnits, reload_species  # arc #63 P2
+from simulation import swarm_brood  # arc #63 P4
+from simulation.swarm import death_events as swarm_death_events  # arc #63 P3
 from simulation.timed_charge_system import (build_timed_charges,
                                             sweep_timed_charges)
+from simulation.heat_source_system import (build_heat_sources,
+                                           sweep_heat_sources)
 from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
-from simulation.movement import FootprintSamples, default_speed
+from simulation.movement import (default_speed, facing_cos_q16,
+                                 footprint_samples, move_speed_q16,
+                                 THROTTLE_ONE)
 from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
     ORDER_MOVE_COVER, ORDER_SPRINT, MOVE_ORDER_TYPES,
@@ -116,8 +138,16 @@ from simulation.orders import (
 # TwoPhaseWEGO: WEGO control sources never call the intent facade, so no unit
 # ever carries a ``live_*``/``pending_*`` field and every consumer short-circuits
 # on a ``getattr(..., default)`` (the dormancy guarantee).
+from simulation import charges
+from simulation import draws as _draws
 from simulation import intents as _intents
+from simulation import speeds
+from simulation import turning
 from simulation import unit_fixed
+from simulation import unit_impulse
+from simulation import unit_orders
+from simulation import unit_traits
+from simulation import verb_gates
 # The Ruleset seam (control-modularity P1, docs/control_modularity_design_
 # 2026-07-22.md §3a): TwoPhaseWEGO is the current round-clock/AP policy,
 # extracted verbatim. Simulation owns one Ruleset instance, chosen at
@@ -140,7 +170,8 @@ from simulation.damage import tick_credit
 # bundle, rebuilt fresh at every construction/reset (the GameMap material/gas
 # table pattern) so it always reflects the current CFG.
 from simulation.weapons import (
-    FIRE_ORDER_ARCHETYPES, rebuild_tables as rebuild_weapon_tables,
+    FIRE_ORDER_ARCHETYPES, PLANT_WEAPON, fuse_ticks_from_seconds,
+    rebuild_tables as rebuild_weapon_tables,
 )
 # The action registry (onephase_wego design §5) — OnePhaseWEGO's verb table,
 # rebuilt beside the weapon tables at every construction/reset.
@@ -275,11 +306,29 @@ class Simulation:
         """
         self._reset_internal(seed)
 
+    def on_config_reload(self) -> None:
+        """THE config-reload seam: the Ctrl+R path calls this right after
+        CFG.reload() (src/debug_keys.py). Re-binds every live table from the
+        fresh CFG; applies from the next tick. Today: the swarm species table
+        (arc #63 P2). Chapter 12's material/physics re-binds may join here."""
+        reload_species(self.gmap)
+
     def _reset_internal(self, seed: Optional[int]) -> None:
         # Fresh map (allocates grids), fresh RNG, fresh entity lists.
         self.gmap = GameMap(self.level)
         self.rng = np.random.default_rng(seed)
         self._seed = seed
+        # #29 P3b (design §4.7): THE draws -- keyed Philox, key = the seed,
+        # counter (tick, index, salt, id) on this sim's clock. An unseeded
+        # sim takes its key once from its (entropy-seeded) generator, so it
+        # stays unseeded; a seeded one is keyed by its seed itself.
+        self.draws = _draws.MatchDraws(
+            seed if seed is not None
+            else int(self.rng.integers(0, 2 ** 63)),
+            clock=lambda: self.tick)
+        # arc #63 P2: rebuild the swarm facade against the fresh GameMap.
+        # Structural — "reset" needs no swarm-specific method beyond this.
+        self.swarm = SwarmUnits(self.gmap)
 
         # A6 (a6 doors design §6.1): the sim's RUNTIME entity list — the
         # level's parsed instances with door entries replaced by fresh
@@ -336,6 +385,15 @@ class Simulation:
         # Loadouts + env profiles (#119): validated against the weapon table
         # just built (an unknown weapon / profile is a load error here).
         self.loadout_tables = rebuild_loadout_tables()
+        # The focus-fire law's dials (G4p, [damage.exposure] + [zombie]
+        # expose_resist), quantized once through their refusing door.
+        self.exposure_settings = exposure.rebuild_settings()
+        # The poison law's dials (#29 PX, [damage.poison]), the same.
+        self.poison_settings = poison.rebuild_settings()
+        # The stress level's dials (#215, [damage.stress]), the same.
+        self.stress_settings = stress.rebuild_settings()
+        # The corpse law's dials (arc #63 P5b, [corpse]), the same.
+        self.corpse_settings = corpse.rebuild_settings()
         # The ACTION REGISTRY (onephase_wego design §5) — the same
         # construction-bound, config-static contract as the weapon tables
         # above, and built AFTER them because its item rows are generated from
@@ -349,6 +407,11 @@ class Simulation:
         # self.entities with its runtime (the countdown row serializes). A
         # charge-free level builds an empty list (dormancy).
         self._timed_charges = build_timed_charges(self)
+        # Heat sources (levelgen vocabulary E.2 row 3): built after the
+        # weapon tables for the same reason (death_payload is validated
+        # here). Replaces each heat_source row with its runtime (the `hp`
+        # row serializes). A source-free level builds an empty list.
+        self._heat_sources = build_heat_sources(self)
 
         # Creature bodies (#106 P6d1): one CreatureBody per creature unit,
         # built by spawn_creatures; empty (and slot 5b a dict check) on every
@@ -387,12 +450,45 @@ class Simulation:
         self._fired_between = False
         self._fired_end_p2 = False
 
+        # arc #63 P4: THE brood spawn -- every swarm_brood zone scatters its
+        # units into the store at load, before tick 0, from this sim's own
+        # draws (tick 0; after the door stamps, so a closed door is solid).
+        # Every path a match starts through constructs here. A brood-free
+        # level draws and spawns nothing.
+        swarm_brood.spawn_broods(self)
+
         # Direct-control possession set (control-modularity P3, §3b/§3c): the
         # unit ids a ControlSource has issued at least one per-tick intent for.
         # Empty under WEGO (no control source ever calls the intent facade), so
         # ``_consume_direct_intents`` short-circuits and the whole continuous
         # path stays dormant — the dormancy guarantee for the digest gate.
         self._possessed_ids: set = set()
+        # G1p / G5p-a1: the marine turning law's dials, quantized ONCE here
+        # through the refusing doors (simulation/turning.py): the top speed
+        # (Q16.16 radians per tick, [marine] turn_rate_deg_per_s) and the
+        # acceleration (per tick^2, [marine] turn_accel_rad_per_s2).
+        self._marine_turn_rate_q16 = turning.turn_rate_q16(CFG)
+        self._marine_turn_accel_q16 = turning.turn_accel_q16(CFG)
+        # G1p-c: the [speeds] table (m/s) quantized ONCE here with this map's
+        # tile size (the refusing door, simulation/speeds.py): the marine's
+        # walk / full costs in Q16 ticks per tile, the direction factors, the
+        # zombie's integer shamble cadence.
+        self.speed_table = speeds.speed_table(CFG, self.gmap.tile_size_m)
+        # G9p: the horde field's dials ([zombie], the refusing door
+        # simulation/horde.py), quantized ONCE for this map, and the map's
+        # field cache (derived, never synced: re-flooded every
+        # field_refresh_ticks and whenever the topology moves).
+        self.horde_settings = horde.horde_settings(CFG,
+                                                   self.gmap.tile_size_m)
+        self.horde_state = horde.HordeState()
+        # G5p-a2: the unit impulse law's dials ([impulse], the ammo rows'
+        # momentum) quantized ONCE here with this map's tile size (the
+        # refusing door, simulation/unit_impulse.py), and handed to the map
+        # so the combat helpers that take only the map read the same table.
+        self.impulse_table = unit_impulse.impulse_table(
+            CFG, self.gmap.tile_size_m,
+            rho_air=unit_impulse.map_air_density(self.gmap))
+        self.gmap._impulse_table = self.impulse_table
 
         # Who drives the horde (#122, rl-ready §5 item 1): ``None`` = the
         # conductor's zombie slot runs the shipped law over every zombie (every
@@ -402,6 +498,22 @@ class Simulation:
         # controller requested this tick (:meth:`drive_zombies`), so no unit is
         # ever driven twice, and an idle zombie controller leaves it standing.
         self._zombie_requests: set | None = None
+
+        # The commander's orders latched this tick (#195 1f, the
+        # ``drive_zombies`` precedent): unit id -> (what, where, until,
+        # target), the last ``order_intent`` of the tick per unit; written
+        # onto the units at slot 1b' (``unit_orders.apply_requests``) and
+        # emptied there. Never synced, never digested; empty between ticks.
+        self._order_requests: dict = {}
+
+        # The intent tap (#126, replay by re-simulation): ``None`` = dormant
+        # (every path but a recorded match; each intent entry point pays one
+        # ``is None`` check). Attached by :meth:`attach_intent_log`, it is
+        # handed EVERY call of the ten intent entry points, with the tick it
+        # was issued at, BEFORE the call acts -- the one recording seam; no
+        # controller logs anything itself. Never synced, never digested;
+        # dropped by reset().
+        self._intent_log = None
 
         # Target marking (onephase_wego design §11): ``{team: {unit_id, ...}}``
         # — a TEAM fact, not a unit's, consulted by every targeting function
@@ -418,6 +530,19 @@ class Simulation:
         # every consumer in a tick sees ONE consistent answer.
         self._vision_cache = None
 
+        # The sight rule (#195 1a): "cone" on every path that is not a match;
+        # ``spawn_match`` sets it from the match's spec. Read by
+        # ``vision.can_see`` from here, never from a caller. Constant for a
+        # sim, so the per-tick cache above needs no key for it.
+        self.sight = "cone"
+
+        # The team picture (#195 1d, ``simulation/team_picture.py``): what
+        # each marine team knows of the enemy. None off a match;
+        # ``start_team_picture`` (called by ``spawn_match``) switches it on
+        # and the conductor's slot 11 updates it once per tick. Not synced,
+        # not hashed: rebuilt by re-simulation only.
+        self.team_picture = None
+
         # Ambush barriers (design §10): ``{target_unit_id: release_tick}``.
         # A per-group readiness counter in the sim — NO SignalBus is needed in
         # v1, though the action registry's ``start_condition`` field keeps that
@@ -429,6 +554,9 @@ class Simulation:
         # because the ruleset's clock is monotonic: "1.8 s into the round" and
         # "t=0 of the next round" are the same kind of number.
         self.planted_charges: list = []
+        # Plants refused because the table held unit_schema.CHARGE_CAPACITY
+        # live charges (#29 P3a, charges.place); a diagnostic counter.
+        self.charges_refused = 0
 
         # Physics runner (created once, re-bound on reset only if bp present).
         if self._bp is not None:
@@ -438,6 +566,7 @@ class Simulation:
             # path (the runner owns the engine). A bare GameMap with no engine
             # bound falls back to the Python reference path automatically.
             self.gmap.bind_physics_engine(self.physics_runner.engine)
+            self.physics_runner.bind_draws(self.draws)   # arc #63 P3: the swarm's draws
             self._apply_light()             # P6b: the renderer's light survives a reset
         else:
             self.physics_runner = None
@@ -448,6 +577,7 @@ class Simulation:
                 fh=self.gmap.material.shape[0],
                 fw=self.gmap.material.shape[1],
                 capacity=CFG.recorder.capacity,
+                swarm_units_cap=CFG.recorder.swarm_units_cap,  # arc #63 P2
             )
         else:
             self.recorder = None
@@ -462,21 +592,22 @@ class Simulation:
     # ------------------------------------------------------------------
     # Unit management
     # ------------------------------------------------------------------
-    def add_unit(self, unit, position=None) -> int:
+    def add_unit(self, unit, position=None, *, hooks=None) -> int:
         """Register ``unit`` with the sim, assign it a stable id.
 
         ``position`` is optional — if provided as ``(x, y)`` in
         physics-tile coords, the unit is teleported there before its
         first tick. Otherwise the unit keeps its constructor-set position.
 
-        Re-samples the unit's BaseStats using ``self.rng`` so that spawns
-        are deterministic when the Simulation was constructed with a seed.
-        This overwrites the random-seeded stats drawn at Unit construction.
+        Re-assigns the unit's predefined BaseStats (the species means), then
+        COMPILES it (#29 U1, ``unit_traits.compile_unit``: the hook block --
+        all ONE bar the sheet overrides ``hooks``, ``{hook name: Q16 int}`` --
+        and ``mass_g``) and sets its hp to its full health
+        (``unit_traits.max_hp_q``).
         """
         if position is not None:
             x, y = position
-            unit.x = float(x)
-            unit.y = float(y)
+            unit.set_pos(x, y)            # #29 P3c: the float door
 
         # Deterministic predefined attributes (ingress door 2 — quantized
         # species means; see generation.py). The sim RNG no longer touches
@@ -487,7 +618,11 @@ class Simulation:
         unit.base_stats = base_stats
         unit.mass = mass
         unit.base_speed = base_speed
-        unit.current_hp = float(base_stats.vitality)
+        # #29 U1: THE compile step -- the hooks (unit_traits.compile_unit,
+        # their only writer) and mass_g (body + kit, grams, G5p-a2) -- then
+        # the full health of the class times the HP hook.
+        unit_traits.compile_unit(self, unit, hooks)
+        unit.hp_q = unit_traits.max_hp_q(unit)
 
         unit.id = self._next_unit_id
         self._next_unit_id += 1
@@ -544,6 +679,20 @@ class Simulation:
         Empty without creatures."""
         from simulation.creature_system import read_chains
         return read_chains(self._creature_system, self.units)
+    def start_team_picture(self, teams, memory_ticks: int | None = None):
+        """Switch on the team picture (#195 1d) for the marine ``teams`` and
+        take its first update now; from then on the conductor's slot 11
+        updates it every tick. ``spawn_match`` calls it for a match; a
+        hand-built sim (a test) calls it itself. ``memory_ticks`` defaults
+        to ``[team_picture] memory_s`` quantized once (tests may pass a
+        short one). Returns the picture."""
+        from simulation import team_picture as tp
+        if memory_ticks is None:
+            memory_ticks = tp.memory_ticks(tp.picture_settings(CFG),
+                                           float(self._tps))
+        self.team_picture = tp.TeamPicture(self, teams, int(memory_ticks))
+        self.team_picture.update(self)
+        return self.team_picture
 
     def hand_zombies_to_controller(self) -> None:
         """Give the horde to a match's zombie controller (#122): from now on
@@ -555,10 +704,24 @@ class Simulation:
         if self._zombie_requests is None:
             self._zombie_requests = set()
 
+    def attach_intent_log(self, log) -> None:
+        """Attach the intent tap's sink (#126): from now on every call of
+        ``set_move_dir`` / ``clear_move_dir`` / ``set_aim`` / ``set_trigger``
+        / ``throw_grenade_intent`` / ``use_intent`` / ``reload_intent`` /
+        ``shove_intent`` / ``melee_intent`` / ``set_flashlight`` /
+        ``plant_charge_intent`` / ``order_intent`` / ``drive_zombies`` /
+        ``apply_action`` is handed to ``log.record(tick, kind, args)`` (``kind``
+        the method name, ``args`` its arguments normalised exactly as the
+        method itself normalises them) before it acts. ``None`` detaches.
+        The sink may refuse a call by raising (``match_replay`` refuses
+        ``apply_action`` orders). Changes no sim behaviour."""
+        self._intent_log = log
+
     def drive_zombies(self, unit_ids) -> None:
         """ZOMBIE intent (#122): the zombie law (``ai_zombie.
-        update_zombies_tick`` — trigger, chain activation, nearest prey,
-        melee, A*) drives these units at this tick's zombie slot. Requests in
+        update_zombies_tick`` — trigger, chain activation, the horde field's
+        descent (G9p), the bite) drives these units at this tick's zombie
+        slot. Requests in
         one tick UNION (a unit named twice is still driven once); the request
         is consumed by the slot. Refused unless the horde was handed to a
         controller (:meth:`hand_zombies_to_controller`) — on a game path the
@@ -567,7 +730,10 @@ class Simulation:
             raise RuntimeError("drive_zombies: the horde is driven by the "
                                "conductor (no zombie controller attached; "
                                "see hand_zombies_to_controller)")
-        self._zombie_requests.update(int(i) for i in unit_ids)
+        ids = [int(i) for i in unit_ids]
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "drive_zombies", (ids,))
+        self._zombie_requests.update(ids)
 
     def _run_zombie_slot(self) -> None:
         """Tick slot 5: the zombie law, run ONCE per tick by its one driver —
@@ -577,6 +743,9 @@ class Simulation:
         so a controller naming the whole horde reproduces the conductor's
         call exactly). A bite's hit / kill events ride ``tick_events``
         with source ``"melee"`` (#122), like a bullet's."""
+        # G9p: the noises made since the last slot are drained HERE, every
+        # tick, whether or not any zombie is driven (simulation/noise.py).
+        noises = noise.take(self.gmap)
         reqs = self._zombie_requests
         if reqs is None:
             units = self.units
@@ -587,7 +756,15 @@ class Simulation:
                      if not u.is_zombie or u.id in reqs]
             reqs.clear()
         update_zombies_tick(self.gmap, units, self.tick,
-                            events=self.tick_events)
+                            events=self.tick_events,
+                            # the class cadences, handed to the zombie walk's
+                            # default_speed with each zombie's own WALK / SPRINT
+                            # hook (ai_zombie._walk, #29 U1)
+                            shamble_ticks=self.speed_table.zombie_shamble_ticks,  # traits-class: WALK
+                            settings=self.horde_settings,
+                            state=self.horde_state, noises=noises,
+                            doors=self._doors,
+                            sprint_ticks=self.speed_table.zombie_sprint_ticks)  # traits-class: SPRINT
 
     def controlled_units(self) -> list:
         """The living units of :attr:`player_team` — the human's squad."""
@@ -624,6 +801,9 @@ class Simulation:
         :meth:`_compute_player_paths` recompute for the affected unit so
         the planning overlay and execution can both read the same path.
         """
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "apply_action",
+                                    (int(unit_id), order))
         u = self.get_unit(unit_id)
         if u is None or not u.alive:
             return False
@@ -900,31 +1080,46 @@ class Simulation:
     # possessed, which arms ``_consume_direct_intents`` (dormant while empty).
 
     def set_move_dir(self, unit_id: int, dx_q: int, dy_q: int,
-                     speed_mode: int, speed_q: int = _intents.FP_ONE) -> None:
-        """MOVE_DIR: hold a Q16.16 unit-vector move direction + speed mode for
-        ``unit_id`` (§3c). Overwrites each call; :meth:`clear_move_dir` (stick
-        inside the deadzone) stops the unit. ``speed_q`` (#106 P6f) is the
-        ANALOG speed, Q16.16 in ``[0, FP_ONE]`` (clamped here): a creature's
-        hub chooses its gait from it; the marines' law never reads it."""
+                     throttle_q: int) -> None:
+        """MOVE_DIR: hold a Q16.16 unit-vector move direction + a THROTTLE
+        for ``unit_id`` (§3c; gameplay pack G1p). ``throttle_q`` is Q16 in
+        ``[0, ONE]`` -- 0 the walk, ONE the full speed, continuous between,
+        the extra speed forward only (``movement.move_speed_tiles_per_tick``,
+        the ``[speeds]`` table in m/s) -- CLAMPED here, as a throw's
+        reach is clamped (the neighbouring intents refuse nothing), and the
+        clamped value is what the tap records. Overwrites each call;
+        :meth:`clear_move_dir` (stick inside the deadzone) stops the unit."""
+        throttle_q = min(max(int(throttle_q), 0), THROTTLE_ONE)
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "set_move_dir",
+                                    (int(unit_id), int(dx_q), int(dy_q),
+                                     throttle_q))
         u = self.get_unit(unit_id)
         if u is None:
             return
-        sq = max(0, min(_intents.FP_ONE, int(speed_q)))
         u.live_move_dir = _intents.MoveDirIntent(int(dx_q), int(dy_q),
-                                                 int(speed_mode), sq)
+                                                 throttle_q)
         self._possessed_ids.add(unit_id)
 
     def clear_move_dir(self, unit_id: int) -> None:
         """Drop ``unit_id``'s live MOVE_DIR (stick centered) — it holds position
         and replays no WEGO path (direct control owns it)."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "clear_move_dir",
+                                    (int(unit_id),))
         u = self.get_unit(unit_id)
         if u is not None:
             u.live_move_dir = None
 
     def set_aim(self, unit_id: int, dx_q: int, dy_q: int) -> None:
-        """AIM: hold a Q16.16 unit-vector facing for ``unit_id`` (§3c). The
-        sim turns it into ``Unit.facing`` via the deterministic integer atan2
-        kit at the next tick."""
+        """AIM: hold a Q16.16 unit-vector facing ``unit_id`` WANTS (§3c). Each
+        tick the sim turns ``Unit.facing`` toward it (the deterministic
+        integer atan2 kit) by at most the unit's turn rate, the shorter way,
+        reaching it exactly (G1p, ``simulation/turning.py``); a shot leaves
+        along the CURRENT facing."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "set_aim",
+                                    (int(unit_id), int(dx_q), int(dy_q)))
         u = self.get_unit(unit_id)
         if u is None:
             return
@@ -937,10 +1132,50 @@ class Simulation:
         u = self.get_unit(unit_id)
         if u is not None:
             u.live_aim = None
+    def unit_turn_rate_q16(self, u) -> int:
+        """The top turning speed of unit ``u`` in Q16.16 radians per tick
+        (G1p's cap; the turning law's ``w``): THE accessor of the TURN hook
+        (#29 U1) -- the class value, the marine row's ``[marine]
+        turn_rate_deg_per_s`` (every unit's: a zombie too, a copy of the
+        unit it infected), times ``u``'s TURN hook, rounded once. The law,
+        the predictor, the bots and the observation read it; never the
+        cached class value. int64: w < 2^18 x 2^19."""
+        return unit_traits.scaled(u, unit_traits.TURN,
+                                  self._marine_turn_rate_q16)
+
+    def unit_turn_accel_q16(self, u) -> int:
+        """The own angular acceleration of unit ``u`` in Q16.16 radians per
+        tick^2 (G5p-a1, the turning law's ``a``; ``[marine]
+        turn_accel_rad_per_s2``) times its TURN hook, read per unit as the
+        top speed is (#29 U1; the compile door refuses a hook that takes the
+        law past its trial bound). int64: a < 2^18 x 2^19."""
+        return unit_traits.scaled(u, unit_traits.TURN,
+                                  self._marine_turn_accel_q16)
+
+    def facing_after_turn_q16(self, u, dx_q: int, dy_q: int) -> int:
+        """The facing (Q16.16 radians) ``u`` has after this tick's turn
+        toward the Q16.16 aim vector ``(dx_q, dy_q)``: the pure evaluation of
+        exactly slot 1a's step (``turning.predict``: the law at the unit's
+        facing, angular velocity and dials), also what a controller reads to
+        know where a shot it fires this tick will go (the bots' trigger
+        discipline). Exact when read after the aim is set and before
+        :meth:`step`. World Y runs down and facing is math-style, hence
+        ``-dy`` -- the convention of ``Unit.face_towards``."""
+        target = unit_fixed.atan2_q16(-int(dy_q), int(dx_q))
+        # G5p-a2: slot 1a adds the outside spin integrated from the unit's
+        # angular accumulator before it turns (every producer of it -- slot
+        # 2, 4c, the previous tick's shoves -- has run when a controller's
+        # handle_frame reads this).
+        return turning.predict(u, target, self.unit_turn_accel_q16(u),
+                               self.unit_turn_rate_q16(u),
+                               unit_impulse.pending_dw(self.impulse_table, u))
 
     def set_trigger(self, unit_id: int, held: bool) -> None:
         """TRIGGER: hold/release ``unit_id``'s weapon trigger (§3c). While held,
         the unit auto-fires along its facing at its weapon cadence."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "set_trigger",
+                                    (int(unit_id), bool(held)))
         u = self.get_unit(unit_id)
         if u is None:
             return
@@ -948,29 +1183,224 @@ class Simulation:
         self._possessed_ids.add(unit_id)
 
     def throw_grenade_intent(self, unit_id: int, dx_q: int, dy_q: int,
-                             fuse_seconds: float,
-                             reach_q: int | None = None) -> None:
-        """THROW: latch a grenade lob along a Q16.16 unit vector (§3c). Consumed
-        (and cleared) at the next tick; ignored if the unit is out of
-        grenades then. ``reach_q`` (#121) is the lob distance in Q16.16
-        tiles, clamped to the hand grenade's ``max_throw_range`` at
-        consumption; ``None`` keeps the fixed v0.1 reach (the gamepad)."""
+                             fuse_ticks: int,
+                             reach_q: int | None = None,
+                             kind: int = 0) -> None:
+        """THROW: latch a grenade lob along a Q16.16 unit vector (§3c).
+        Consumed (and cleared) at the next tick by :meth:`_start_throw`.
+
+        ``kind`` (G3p) is the index of the hand-grenade ``[ammo.*]`` row
+        thrown (``self.weapons_tables.hand_grenade_rows``; 0 = the frag),
+        refused by name here when it names none. ``fuse_ticks`` is the fuse
+        in INTEGER ticks (was float seconds: every caller converts once at
+        its own door, ``weapons.fuse_ticks_from_seconds``), counted from the
+        tick the grenade LEAVES the hand and clamped at release to the hand
+        grenade row's fuse range. ``reach_q`` (#121) is the lob distance in
+        Q16.16 tiles, clamped to the hand grenade's ``max_throw_range`` at
+        release; ``None`` keeps the fixed v0.1 reach (the gamepad).
+
+        The verb starts a WIND-UP (``[weapons.hand_grenade]
+        throw_windup_seconds``): ignored if the unit has none of that kind,
+        is already winding up, or cannot act; otherwise a render-only
+        :class:`~simulation.events.ThrowEvent` is emitted and the grenade
+        leaves the hand that many ticks later (the count is spent then)."""
+        self.weapons_tables.hand_grenade_kind(kind)         # refuses by name
+        if isinstance(fuse_ticks, bool) or not isinstance(fuse_ticks, Integral):
+            raise TypeError(
+                f"throw_grenade_intent: fuse_ticks must be an integer number "
+                f"of ticks (G3p: it was float seconds), got {fuse_ticks!r}")
+        if self._intent_log is not None:
+            self._intent_log.record(
+                self.tick, "throw_grenade_intent",
+                (int(unit_id), int(dx_q), int(dy_q), int(fuse_ticks),
+                 None if reach_q is None else int(reach_q), int(kind)))
         u = self.get_unit(unit_id)
         if u is None:
             return
         u.pending_throw = _intents.ThrowIntent(
-            int(dx_q), int(dy_q), float(fuse_seconds),
-            None if reach_q is None else int(reach_q))
+            int(dx_q), int(dy_q), int(fuse_ticks),
+            None if reach_q is None else int(reach_q), int(kind))
+        self._possessed_ids.add(unit_id)
+
+    def plant_charge_intent(self, unit_id: int, fuse_ticks: int) -> None:
+        """PLANT (#193): latch planting the unit's charge on the floor at its
+        feet with a timer of ``fuse_ticks`` INTEGER ticks (every caller
+        converts once at its own door, ``weapons.fuse_ticks_from_seconds``),
+        CLAMPED here to the plant row's fuse range (``[weapons.c4_satchel]
+        fuse_min_seconds`` .. ``fuse_max_seconds``, 5 .. 60 s), as a
+        throttle is clamped; the clamped value is what the tap records.
+        Consumed (and cleared) at the next tick's slot 1b by
+        :meth:`_start_plant`.
+
+        The plant takes ``[weapons.c4_satchel] plant_seconds``: ignored,
+        with no event, if the unit carries no charge, is already planting
+        or winding up a throw, or cannot act; otherwise a render-only
+        :class:`~simulation.events.PlantEvent` is emitted and, that many
+        ticks later, the charge lies on the unit's centre tile as it stands
+        THEN, owned by the unit (the blast's credit), detonating ``fuse``
+        ticks after that (the conductor's slot 9e, ``charges.tick``); the
+        count is spent then. A unit that dies or is stunned meanwhile plants
+        nothing and keeps its count. Integer, no random number. Bots never
+        call it (yet); an RL agent and the human do."""
+        if isinstance(fuse_ticks, bool) or not isinstance(fuse_ticks, Integral):
+            raise TypeError(
+                f"plant_charge_intent: fuse_ticks must be an integer number "
+                f"of ticks, got {fuse_ticks!r}")
+        row = self.weapons_tables.weapons.by_name[PLANT_WEAPON]
+        lo = fuse_ticks_from_seconds(row.fuse_min_seconds, self._tps)
+        hi = fuse_ticks_from_seconds(row.fuse_max_seconds, self._tps)
+        fuse_ticks = min(max(int(fuse_ticks), lo), hi)
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "plant_charge_intent",
+                                    (int(unit_id), fuse_ticks))
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.pending_plant = fuse_ticks
         self._possessed_ids.add(unit_id)
 
     def use_intent(self, unit_id: int) -> None:
         """USE: latch a context interaction (toggle an adjacent door's latch,
         §3c). Consumed (and cleared) at the next tick."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "use_intent", (int(unit_id),))
         u = self.get_unit(unit_id)
         if u is None:
             return
         u.pending_use = True
         self._possessed_ids.add(unit_id)
+
+    def reload_intent(self, unit_id: int) -> None:
+        """RELOAD (gameplay pack G2p): latch a manual reload. Consumed (and
+        cleared) at the next tick by :meth:`_reload`: if the unit's weapon
+        tracks a magazine, a spare magazine exists, the unit is not already
+        reloading and the magazine in the gun is not full, that magazine is
+        DISCARDED with every round in it, one spare is used and the stall
+        runs ``reload_seconds``; otherwise nothing happens. Hand-written
+        bots never call it (they rely on the automatic reload when the
+        magazine empties); an RL agent reloads when it chooses."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "reload_intent",
+                                    (int(unit_id),))
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.pending_reload = True
+        self._possessed_ids.add(unit_id)
+
+    def shove_intent(self, unit_id: int) -> None:
+        """SHOVE (gameplay pack G5p-a2, ``docs/unit_impulse_design_
+        2026-11-10.md`` §4, §13): latch a shove. Consumed (and cleared) at
+        the next tick's slot 1b by ``unit_impulse.shove``: if the unit can
+        act and its cooldown (``[impulse.shove] cooldown_seconds``) has run,
+        the adjacent living unit of ANY team nearest its facing (within the
+        shove's cone) takes the shove's impulse (``[impulse.shove]
+        impulse_ns``) along that facing through the unit impulse law -- it
+        is pushed by its mass, staggers, or falls -- and a render-only
+        ``ShoveEvent`` is emitted; with no such unit nothing happens and the
+        cooldown is not spent. A zombie does not shove. Hand-written bots
+        never call it yet (G8p); an RL agent and the human do."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "shove_intent",
+                                    (int(unit_id),))
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.pending_shove = True
+        self._possessed_ids.add(unit_id)
+
+    def melee_intent(self, unit_id: int) -> None:
+        """MELEE (gameplay pack G6p, ``docs/gameplay_pack_v1_design_
+        2026-11-10.md`` §3): latch a blow. Consumed (and cleared) at the next
+        slot 4 by ``combat.process_melee_intents``, in phase A against the
+        slot's start state: if the unit is a living marine with a melee row
+        (its loadout's ``melee``), can act, is not winding up a throw, its
+        row's cadence has run and an ENEMY (another team, zombies included,
+        never a teammate) is melee-adjacent within the row's facing arc
+        (``melee_arc_half_deg``), the one nearest the facing (ties to the
+        lower id) takes the row's blow -- a ``DamagePacket`` credited to the
+        striker with the ``melee`` cause, the row's short STUNNED and its
+        push along striker -> target through the unit impulse law, all
+        landing at the slot's phase B -- and a render-only ``MeleeEvent`` is
+        emitted. With no such target nothing happens and no cadence is
+        spent. A zombie does not use the verb (its bite is its own law).
+        Hand-written bots never call it yet (G8p); an RL agent and the human
+        do."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "melee_intent",
+                                    (int(unit_id),))
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.pending_melee = True
+        # Possessed like every other hand verb (#29 reference debt): slot 1b
+        # consumes none of melee's state (4a does), so this only makes
+        # possession mean "the unit has issued a hand verb", with no
+        # exception for the device port of slot 1b (P6.4) to model.
+        self._possessed_ids.add(unit_id)
+
+    def set_flashlight(self, unit_id: int, off: bool) -> None:
+        """FLASHLIGHT (gameplay pack G7p): hold ``unit_id``'s flashlight bit
+        ``off`` (True) or on (False; every unit starts on). A HOLD verb,
+        like :meth:`set_trigger`: the sim overwrites the bit on every call.
+        The argument is the OFF sense so that a zero action row (a policy's
+        do-nothing stance) leaves the light as it was and every pinned
+        digest as it is. SYNCED (hashed in the unit digest only while off),
+        read by nothing in the sim (light as game state is #81): the frame
+        lights draw the unit's cone from it
+        (``ui.model.flashlight_cones``)."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "set_flashlight",
+                                    (int(unit_id), bool(off)))
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.flashlight_on = not bool(off)
+
+    def order_intent(self, unit_id: int, what: int, where: int, ticks: int,
+                     target_id: int) -> None:
+        """ORDER (#195 1f, ``simulation.unit_orders``): the COMMANDER's
+        verb, not a soldier's -- give ``unit_id`` the order ``what``
+        (``unit_orders.ORDER_WHAT``'s code: 1 go to, 2 hold, 3 clear, 4 fall
+        back to; 0 = none, which CLEARS the unit's order and takes no other
+        field) at the place ``where`` on the level's room graph (a room id,
+        or ``ORDER_OPENING_BASE`` + an opening id), for ``ticks`` INTEGER
+        ticks (0 = until told otherwise; every caller converts seconds once
+        at its own door), with the priority target ``target_id`` (an enemy's
+        unit id, or -1).
+
+        Refused by name at :func:`unit_orders.check` BEFORE the tap (so a
+        recording never holds a refused call); then recorded and LATCHED on
+        the sim (a second call for the unit in one tick replaces the first)
+        and written onto the unit at the next slot 1b'. Cleared at death, at
+        conversion and when its tick comes (``order_until``, after the tick
+        advance). Does not possess the unit. INFORMATION ONLY until rung 4:
+        nothing in the game reads an order for a decision."""
+        args = unit_orders.check(self, unit_id, what, where, ticks,
+                                 target_id)
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "order_intent", args)
+        uid, what, where, ticks, target = args
+        until = unit_orders.NO_LIMIT if ticks == 0 else self.tick + ticks
+        self._order_requests[uid] = (what, where, until, target)
+
+    def _reload(self, u) -> None:
+        """RELOAD consumption (the law of :meth:`reload_intent`): integer
+        state only, no random number. A unit whose weapon has no magazine
+        (``mag_size`` 0), and any reload the gate refuses, leave the unit
+        UNTOUCHED: the decision is the gate's (``verb_gates.can_reload``, a
+        pure read of the settled magazine, ``mag_status``), and the lazy
+        settle (binding a never-bound magazine, completing a stall that has
+        run out) is bookkeeping the next trigger pull or ``mag_status`` does
+        anyway -- so a refused reload writes nothing, and a forced one leaves
+        the digests where a do-nothing tick leaves them (#195 1e, the 1h
+        gate)."""
+        if not verb_gates.can_reload(self, u):
+            return
+        weapon = self.weapons_tables.weapons.by_name[u.weapon_id]
+        mag_settle(u, weapon, self.tick)          # a no-op when ready; the
+        reload_begin(u, weapon, self.tick,         # begin's own precondition
+                     events=self.tick_events)
 
     def _consume_direct_intents(self) -> None:
         """Apply the possessed units' latched/held per-tick intents (§3c),
@@ -980,9 +1410,11 @@ class Simulation:
         under TwoPhaseWEGO ``_possessed_ids`` is always empty, so this is a
         single set-empty check and the digest is byte-identical.
 
-        AIM sets facing (deterministic integer atan2); THROW spawns a grenade
+        AIM is NOT consumed here: slot 1a turns toward a held aim
+        (``unit_impulse.integrate_all``, G5p-a1); THROW spawns a grenade
         BEFORE the projectile-advance slot so a freshly-lobbed grenade travels
-        this tick like a WEGO one; USE toggles a door latch. TRIGGER is not
+        this tick like a WEGO one; USE toggles a door latch; RELOAD discards
+        the magazine and starts the stall (G2p). TRIGGER is not
         consumed here — a held ``live_trigger`` is read directly by the shooting
         slot (slot 4), where ``combat._directional_fire`` marches a free-aim
         shot along ``u.facing`` (free_aim_shooting_design §4b). MOVE_DIR is
@@ -994,29 +1426,37 @@ class Simulation:
         for u in self.units:
             if u.id not in self._possessed_ids or not u.alive or u.is_zombie:
                 # A now-invalid possessor (dead / unpossessed / wrong team)
-                # releases a held trigger, so a later rebind starts clean.
+                # releases a held trigger, so a later rebind starts clean,
+                # and drops a throw wind-up (G3p: nothing leaves the hand,
+                # the count was never spent).
                 if getattr(u, "live_trigger", False):
                     u.live_trigger = False
+                if getattr(u, "throw_release_tick", -1) >= 0:
+                    u.throw_release_tick = -1
+                # ... and a plant under way (#193): nothing is planted, the
+                # count was never spent.
+                if getattr(u, "plant_done_tick", -1) >= 0:
+                    u.plant_done_tick = -1
                 continue
 
-            # AIM -> facing (synced state via the deterministic atan2 kit; a
-            # zero vector leaves facing untouched).
-            aim = getattr(u, "live_aim", None)
-            # #106: a creature's AIM is its hub's goal (slot 5b), never a
-            # facing write -- its facing is the body pose's.
-            if (aim is not None and (aim.dx_q != 0 or aim.dy_q != 0)
-                    and not is_creature(u)):
-                dx = _intents.dequantize(aim.dx_q)
-                dy = _intents.dequantize(aim.dy_q)
-                # World Y increases downward; facing is math-style (Y-up), so
-                # negate dy — the same convention as Unit.face_towards.
-                u.facing = unit_fixed.atan2_rad(-dy, dx)
+            # AIM: already turned toward in slot 1a (the turning law, G5p-a1;
+            # a zero vector holds the last target).
 
-            # THROW -> spawn a grenade now (edge; latched until consumed).
+            # THROW -> start the wind-up (edge; latched until consumed); a
+            # wind-up under way is carried to its release tick (G3p).
             throw = getattr(u, "pending_throw", None)
             if throw is not None:
                 u.pending_throw = None
-                self._spawn_direct_grenade(u, throw)
+                self._start_throw(u, throw)
+            self._advance_throw(u)
+
+            # PLANT -> start planting the charge (edge; latched); a plant
+            # under way is carried to its last tick (#193).
+            plant = getattr(u, "pending_plant", None)
+            if plant is not None:
+                u.pending_plant = None
+                self._start_plant(u, plant)
+            self._advance_plant(u)
 
             # USE -> toggle an adjacent door latch (edge; latched). #106 P6d2:
             # a creature's USE is its hub's grab request -- left latched for
@@ -1024,6 +1464,23 @@ class Simulation:
             if getattr(u, "pending_use", False) and not is_creature(u):
                 u.pending_use = False
                 self._direct_use(u)
+
+            # RELOAD -> discard the magazine, run the stall (edge; latched).
+            if getattr(u, "pending_reload", False):
+                u.pending_reload = False
+                self._reload(u)
+
+            # SHOVE -> push the adjacent unit nearest the facing (edge;
+            # latched; G5p-a2). It ADDS to the target's accumulators only
+            # (integrated next tick's 1a), reading the slot-start positions
+            # and the shover's 1a-turned facing: every shove of a tick reads
+            # the same state and integer sums commute, so shovers' ids
+            # change nothing.
+            if getattr(u, "pending_shove", False):
+                u.pending_shove = False
+                if verb_gates.can_shove(self, u):
+                    unit_impulse.shove(self.impulse_table, self.units, u,
+                                       self.tick, events=self.tick_events)
 
             # TRIGGER is NOT consumed here: a held ``live_trigger`` (set by
             # set_trigger) is read directly by the shooting slot (slot 4),
@@ -1033,58 +1490,162 @@ class Simulation:
             # the tile-target band-aid (_aim_fire_order / live_fire_order) is
             # gone, and with it the unbounded-phase landmine (design §8).
 
-    def _spawn_direct_grenade(self, u, throw) -> None:
-        """THROW consumption: lob a grenade from ``u`` along the intent's
-        Q16.16 unit vector, fusing after ``throw.fuse_seconds``. Reuses the
-        shipped :class:`~simulation.combat.Projectile` (the WEGO grenade path);
-        the target tile is derived deterministically from the fixed-point
-        direction. No-op if the unit has no grenade left."""
-        if getattr(u, "has_grenade", 0) <= 0:
+    def _start_throw(self, u, throw) -> None:
+        """THROW consumption (the law of :meth:`throw_grenade_intent`, G3p).
+        Integer state only, no random number. A throw of a kind the unit
+        does not carry, one arriving while the unit is already winding up,
+        and one from a unit whose statuses forbid acting, do nothing and
+        emit nothing. Otherwise a :class:`~simulation.events.ThrowEvent` is
+        emitted and the wind-up starts; with a wind-up of 0 ticks the
+        grenade leaves the hand NOW, along the intent's own vector -- the
+        pre-G3p same-tick throw, bit for bit."""
+        # The decision is the gate's (verb_gates.can_throw, #195 1e): already
+        # winding up, planting (#193), none of that kind, stunned / paralysed.
+        if not verb_gates.can_throw(self, u, throw.kind):
             return
+        # #29 U1: the unit's own wind-up, the HANDLING hook's accessor
+        ticks = unit_traits.throw_windup_ticks(
+            u, self.weapons_tables.weapons.by_name)
+        self.tick_events.append(ThrowEvent(unit_id=int(u.id),
+                                           kind=int(throw.kind),
+                                           ticks=int(ticks)))
+        if ticks == 0:
+            self._release_grenade(u, throw.kind, throw.fuse_ticks,
+                                  throw.reach_q, throw.dx_q, throw.dy_q)
+            return
+        u.throw_release_tick = self.tick + ticks
+        u.throw_kind = int(throw.kind)
+        u.throw_fuse_ticks = int(throw.fuse_ticks)
+        u.throw_reach_q = (THROW_NO_REACH if throw.reach_q is None
+                           else int(throw.reach_q))
+
+    def _advance_throw(self, u) -> None:
+        """One tick of a wind-up under way: a unit that can no longer act
+        throws NOTHING and keeps its count (the wind-up is dropped); at the
+        release tick the grenade leaves the hand along the facing the unit
+        has THEN (Q16 ``cos`` / ``sin`` of its facing, world y down), at the
+        reach the intent named. (A dead unit never gets here: the consume
+        loop drops its wind-up.)"""
+        if u.throw_release_tick < 0:
+            return
+        if not composed_flags(u).can_act:
+            u.throw_release_tick = -1
+            return
+        if self.tick < u.throw_release_tick:
+            return
+        u.throw_release_tick = -1
+        facing_q = int(u.facing_q)          # #29 P3e: the int, no round trip
+        self._release_grenade(
+            u, u.throw_kind, u.throw_fuse_ticks,
+            None if u.throw_reach_q == THROW_NO_REACH else u.throw_reach_q,
+            unit_fixed.cos_q16(facing_q), -unit_fixed.sin_q16(facing_q))
+
+    def _start_plant(self, u, fuse_ticks) -> None:
+        """PLANT consumption (the law of :meth:`plant_charge_intent`, #193).
+        Integer state only, no random number. A unit carrying no charge,
+        already planting or winding up a throw, or whose statuses forbid
+        acting, does nothing and emits nothing; otherwise a
+        :class:`~simulation.events.PlantEvent` is emitted and the plant runs
+        until ``plant_done_tick`` (with a 0-tick plant the charge lies down
+        this very tick, :meth:`_advance_plant` being called next)."""
+        # The decision is the gate's (verb_gates.can_plant, #195 1e): hands
+        # busy, no charge carried, stunned / paralysed.
+        if not verb_gates.can_plant(self, u):
+            return
+        # #29 U1: the unit's own plant, the HANDLING hook's accessor
+        ticks = unit_traits.plant_ticks(u, self.weapons_tables.weapons.by_name)
+        self.tick_events.append(PlantEvent(unit_id=int(u.id),
+                                           ticks=int(ticks)))
+        u.plant_done_tick = self.tick + ticks
+        u.plant_fuse_ticks = int(fuse_ticks)
+
+    def _advance_plant(self, u) -> None:
+        """One tick of a plant under way: a unit that can no longer act
+        plants NOTHING and keeps its count; on the plant's last tick the
+        charge lies on the unit's centre tile as it stands now, owned by the
+        unit, detonating ``plant_fuse_ticks`` after this tick, and one
+        charge is spent. (A dead unit never gets here: the consume loop
+        drops its plant.)"""
+        if u.plant_done_tick < 0:
+            return
+        if not composed_flags(u).can_act:
+            u.plant_done_tick = -1
+            return
+        if self.tick < u.plant_done_tick:
+            return
+        u.plant_done_tick = -1
+        ty, tx = u.center_tile_y(), u.center_tile_x()
+        if not charges.place(self, charges.PlantedCharge(
+                tx, ty, u.charge_ammo, u.id,
+                det_tick=self.tick + int(u.plant_fuse_ticks),
+                approach=(ty, tx))):
+            return        # the charge table is full (#29 P3a): count kept
+        u.has_explosive -= 1
+
+    def _release_grenade(self, u, kind, fuse_ticks, reach_q, dx_q,
+                         dy_q) -> None:
+        """The grenade of throw kind ``kind`` leaves ``u``'s hand: lob it
+        along the Q16.16 vector ``(dx_q, dy_q)``, fusing ``fuse_ticks`` ticks
+        (clamped to the hand grenade row's fuse range) later, and spend one
+        of that kind. Reuses the shipped
+        :class:`~simulation.combat.Projectile` (the WEGO grenade path); the
+        target tile is derived deterministically from the fixed-point
+        direction."""
+        if u.grenade_counts[kind] <= 0:
+            return
+        hand = self.weapons_tables.weapons.by_name["hand_grenade"]
         cx = u.center_tile_x()
         cy = u.center_tile_y()
-        dirx = _intents.dequantize(throw.dx_q)
-        diry = _intents.dequantize(throw.dy_q)
         # v0.1 throw reach: a fixed tile distance along the aim (feel dial for
         # Erik; the grenade's own fuse/blast are the shipped numbers). A
         # controller throwing at a point (#121, the bots) names its reach in
         # Q16.16 tiles, clamped to [0, the hand grenade's max_throw_range].
-        if throw.reach_q is None:
-            reach = 6.0  # tiles
+        if reach_q is None:
+            reach_q = 6 << _intents.FP_SHIFT  # tiles
         else:
-            max_q = int(self.weapons_tables.weapons.by_name[
-                "hand_grenade"].max_throw_range) << _intents.FP_SHIFT
-            reach = _intents.dequantize(min(max(0, int(throw.reach_q)),
-                                            max_q))
-        tgt_fx = cx + dirx * reach
-        tgt_fy = cy + diry * reach
+            max_q = int(hand.max_throw_range) << _intents.FP_SHIFT
+            reach_q = min(max(0, int(reach_q)), max_q)
+        # #29 P3e: the target in Q16 integers -- the centre plus the Q16
+        # direction times the Q16 reach (the float product of two n/65536
+        # values was exact; this is its Q16 rounding, half away), plus the
+        # half tile; the Projectile reads it exactly.
+        half = 1 << (_intents.FP_SHIFT - 1)
+        tgt_x_q = ((cx << _intents.FP_SHIFT) + half
+                   + unit_fixed.mul_q16_round(int(dx_q), reach_q))
+        tgt_y_q = ((cy << _intents.FP_SHIFT) + half
+                   + unit_fixed.mul_q16_round(int(dy_q), reach_q))
+        lo = fuse_ticks_from_seconds(hand.fuse_min_seconds, self._tps)
+        hi = fuse_ticks_from_seconds(hand.fuse_max_seconds, self._tps)
+        # #215: the grenade leaves the HAND -- the thrower's Q16 centre plus
+        # the hand row's offset turned by the throw's vector, never beyond a
+        # wall (combat.release_point); the target stays the centre tile's
+        # point at the reach, so an aimed point is still where it lands.
+        sx_q, sy_q = release_point(
+            self.gmap, u.x_q, u.y_q, u.footprint, int(dx_q), int(dy_q),
+            hand.release_forward_q, hand.release_side_q)
         proj = Projectile(
             ORDER_GRENADE,
-            cx, cy,
-            tgt_fx + 0.5, tgt_fy + 0.5,
-            fuse_seconds=throw.fuse_seconds,
+            unit_fixed.dequantize_scalar(sx_q),
+            unit_fixed.dequantize_scalar(sy_q),
+            unit_fixed.dequantize_scalar(tgt_x_q),
+            unit_fixed.dequantize_scalar(tgt_y_q),
+            fuse_seconds=0.0,
             thrown_tick=self.tick,
-            ammo_name="grenade_frag",
+            ammo_name=self.weapons_tables.hand_grenade_kind(kind),
             owner_id=getattr(u, "id", -1),
+            fuse_ticks=min(max(int(fuse_ticks), lo), hi),
         )
         self.projectiles.append(proj)
-        u.has_grenade -= 1
+        u.grenade_counts[kind] -= 1
 
     def _direct_use(self, u) -> None:
         """USE consumption: flip the ``want_open`` latch of the first live door
         whose span touches the unit's footprint or its immediate ring (§3c).
         Reuses :meth:`door_at`; the slot-9e door sweep applies/retries the
         latch, exactly like the dev O-key."""
-        x0, y0 = u.tile_x, u.tile_y
-        fp = u.footprint
-        # Footprint tiles plus a one-tile ring so a marine standing beside a
-        # door can open it without overlapping it.
-        for ty in range(y0 - 1, y0 + fp + 1):
-            for tx in range(x0 - 1, x0 + fp + 1):
-                door = self.door_at(ty, tx)
-                if door is not None and door.alive:
-                    door.want_open = not door.want_open
-                    return
+        door = verb_gates.use_door(self, u)         # the scan is the gate's
+        if door is not None:
+            door.want_open = not door.want_open
 
     def get_legal_actions(self, unit_id: int) -> list:
         """Stub for the AI training contract — minimal v1.
@@ -1142,7 +1703,7 @@ class Simulation:
         idx = rows.index(cur) if cur in rows else -1
         u.weapon_id = rows[(idx + 1) % len(rows)]
         # Fresh-magazine + dead-burst state (see docstring).
-        u.current_mag = None
+        u.current_mag = MAG_UNBOUND
         u.reload_done_tick = -1
         u.spray_ticks_left = 0
         u.spray_order = None
@@ -1189,9 +1750,11 @@ class Simulation:
                     tile_path = []
                     cx, cy = current_x, current_y
                     speed = _ticks_per_tile(move_orders[0].order_type)
+                    mo_type = move_orders[0].order_type     # #29 U1
 
                     for mo in move_orders:
                         speed = _ticks_per_tile(mo.order_type)
+                        mo_type = mo.order_type
                         if HAS_PATHFINDING:
                             segment = astar(cx, cy, mo.target_fx, mo.target_fy,
                                             is_blocked, w, h)
@@ -1211,8 +1774,21 @@ class Simulation:
                             # into the ticks this tile-step actually costs (a
                             # furniture tile is 2.5x slower). A* is speed-blind;
                             # this composes the multiplier at execution only.
-                            samples = FootprintSamples(
-                                mobility=gmap.footprint_mobility(tile_y, tile_x, fp))
+                            # #140: the builder adds the wind's cadence
+                            # scale, sampled here at ORDER time (WEGO's
+                            # plan-time precompute -- an accepted gap).
+                            # G5p-a2: the unit's effort scale, read at
+                            # order time like the wind.
+                            samples = footprint_samples(
+                                gmap, tile_y, tile_x, fp,
+                                effort_scale_q16=unit_impulse.effort_scale_q16(
+                                    unit_impulse.table_for(gmap), u),
+                                # #29 U1: a sprint order is the full speed,
+                                # every other order the walk
+                                speed_hook_q16=unit_traits.hook(
+                                    u, unit_traits.SPRINT
+                                    if mo_type == ORDER_SPRINT
+                                    else unit_traits.WALK))
                             step_ticks = default_speed(samples, speed)
                             for st in range(step_ticks):
                                 frac = (st + 1) / step_ticks
@@ -1518,24 +2094,49 @@ class Simulation:
         for the human player's planning UI. AI training rollouts ignore
         pause (they never call set_paused).
 
-        Tick ordering — load-bearing! Matches the legacy
-        ``Game._process_tick`` (game.py:1696-1747), with the status pass
-        (2b) added at the top of the unit-simulation section (P3):
-          1. Clear tick_events (this tick is a fresh slate)
-          2. Update projectiles (advance position, detonate)
-          2b. Tick unit statuses (durations count down; DoT/HoT emit)
-          3. Update player movement (read precomputed path)
-          4. Process shooting (auto-fire on move, fire orders)
-          5. Zombie AI
-         5b. Creature bodies (the arm chains; the pose -> the unit's anchor)
-          6. Re-stamp obstacles (so physics sees the new unit positions)
-          7. Physics step (atmosphere, smoke, fire)
-          8. Door explosives at phase boundary or end of round
-          9. Process burn-through walls (fire destroyed)
-         10. Increment tick + auto-pause check
+        Tick ordering — load-bearing! The numbered slots, each a call
+        below with its own comment (the P6 slot inventory,
+        ``docs/residency_p6_slot_inventory_2026-11-14.md``, is the long form):
+          1.   Clear tick_events; the ruleset's round-clock head
+          1a.  Impulse integration + the turn (every living unit)
+          1b.  Direct-control intents (the possessed units' latches)
+          1b'. The commander's orders written onto their units
+          1c.  Exposure decays
+          2.   Projectiles: grenades (move, detonate), then rounds in flight
+          2b.  Unit statuses tick (durations count down; DoT/HoT emit)
+          3.   Movement (the displacement loop)      } or the ruleset's
+          4.   Shooting, phase A                     } ``drive_units``
+          4a.  Melee blows, phase A
+          4b.  Spray deposits
+          4c.  The attack slot's phase B (``resolve``)
+          5.   Zombie AI (the horde field)
+          5b.  Creature bodies (the arm chains; the pose -> the unit's
+               anchor and facing)
+          6.   Re-stamp obstacles; 6b. flush the field-edit queue
+          7.   Physics step
+          9.   Burn-through walls; 9b. over-pressure walls
+          9c.  Heat on units; 9c2. wind; 9c3. teargas + poison dose +
+               the larvae's bite dose + the corpses' infestation; 9c3'. the
+               poison law; 9c3''. stress clears; 9d. ignition
+          9e.  Entities (signals, pumps, vents, doors, timed and planted
+               charges, heat sources); recorder snapshot; tick-end clears
+         10.   Tick advance; 10'. orders expire; the ruleset's tick end
+               (conversion: zombie kills and infested corpses rise; WEGO's
+               phase / round boundary and door
+               explosives; on the continuous path, spent grenades dropped)
+         11.   The team picture (a match only)
         """
-        if self.paused:
+        if not self._step_pre_physics():
             return
+        self._step_post_physics(self._step_physics())
+
+    # #29 P5: the tick in three parts (pure code motion), so a ResidentBatch
+    # (simulation/resident_batch.py) runs every env's host slots around ONE
+    # batched slot 7. step() is the three in order; nothing else calls them.
+    def _step_pre_physics(self) -> bool:
+        """Slots 1 .. 6b. False (and nothing done) while paused."""
+        if self.paused:
+            return False
 
         # 1. Fresh event buffer.
         self.tick_events.clear()
@@ -1551,6 +2152,19 @@ class Simulation:
         # simulation.ruleset.TwoPhaseWEGO.on_round_start.
         self.ruleset.on_round_start(self)
 
+        # 1a. Integrate + turn (G5p-a2 / G5p-a1, simulation.unit_impulse and
+        # simulation.turning): every living unit, in id order, integrates the
+        # impulses it received since last tick (its sway, pushed velocity,
+        # effort, reaction delay and the knockdown checks; the displacement
+        # itself is slot 3's), then takes one tick of the turning law toward
+        # its target (the live aim while one is held) with the outside spin
+        # added -- the ONLY writer of a facing. BEFORE 1b (a throw leaves
+        # along the turned facing; a shove reads it), the movement slot (the
+        # Speed table's direction rule reads THIS tick's facing) and the
+        # shooting slot (a shot leaves along it; the bots' predictor
+        # evaluates exactly this step before the tick).
+        unit_impulse.integrate_all(self)
+
         # 1b. Direct-control intents (control-modularity P3, §3c): consume the
         # possessed units' held/latched per-tick verbs (AIM/THROW/USE/TRIGGER)
         # BEFORE projectiles advance, so a THROW lobbed this tick travels this
@@ -1558,8 +2172,25 @@ class Simulation:
         # Dormant under WEGO (no possessed units) — a single set-empty check.
         self._consume_direct_intents()
 
-        # 2. Update projectiles.
-        self._update_projectiles()
+        # 1b'. The commander's orders (#195 1f): this tick's latched
+        # ``order_intent`` requests are written onto their units (the ONE
+        # writer of the order columns, unit_orders). Information only: no
+        # slot reads an order. Dormant on an empty request dict.
+        unit_orders.apply_requests(self)
+
+        # 1c. Exposure decays one tick (G4p, simulation.exposure) -- before
+        # every attack of this tick, so each hit reads the level left by the
+        # hits up to last tick, decayed exactly once since.
+        exposure.decay_units(self.units)
+
+        # 2. Projectiles (#29 P7.0b: two calls, so the device port can take
+        # them one at a time). FIRST the grenades: every grenade flies, and
+        # each that fuses out detonates AT ONCE, in list (spawn) order ...
+        self._update_grenades()
+        # 2'. ... THEN the in-flight rounds: each marches against the state
+        # the grenades left and records its hit / chew / detonation; the
+        # landing resolves them together, in list order.
+        self._update_rounds()
 
         # 2b. Tick unit statuses/conditions (mechanics/06 §4) — the TOP of
         # the unit-simulation section, per the ch. 05 §4 pipeline (phase 3:
@@ -1577,6 +2208,12 @@ class Simulation:
         # synced, digest-hashed, in emission order.
         tick_statuses(self.units, events=self.tick_events)
 
+        # 4's phase-B record (#169): every attack of slot 4 -- shots, strikes,
+        # beams and 4b's spray deposits -- is decided against the slot-start
+        # state and recorded here; ``resolve()`` after 4b applies them in the
+        # walk's order, so no unit's attack this tick depends on its id.
+        attack_effects = SimultaneousEffects()
+
         # 3 + 4. Unit simulation. A ruleset that owns these slots
         # (OnePhaseWEGO — ``drives_units``) replaces BOTH with one call: its
         # compiled timeline decides movement and shooting together, because
@@ -1584,6 +2221,9 @@ class Simulation:
         # (onephase_wego design §3). The legacy path below is untouched and
         # still runs verbatim for every other ruleset.
         if self.ruleset.drives_units:
+            # G5p-a2: the pushed velocity moves every unit under every
+            # ruleset (slot 3's displacement), then the timeline plays.
+            self._displace_pushed()
             self.ruleset.drive_units(self)
         else:
             # 3. Update player movement.
@@ -1595,9 +2235,18 @@ class Simulation:
             # W3: the edit queue rides along so payload rounds (GL-6) can
             # deposit their detonation; the mag/reload economy gates triggers.
             process_shooting(self.gmap, self.units, self.tick,
-                             self.shots, self.real_time, self.rng,
+                             self.shots, self.real_time, self.draws,
                              events=self.tick_events, bullets=self.bullets,
-                             queue=self.edit_queue)
+                             queue=self.edit_queue, effects=attack_effects)
+
+        # 4a. The MELEE verb (gameplay pack G6p): the units' latched
+        # ``melee_intent`` blows, decided in the same phase A as the shots
+        # (against the slot-start state) and recorded on the same effects, so
+        # a blow and a shot of one tick land together at 4c. Under every
+        # ruleset (the latch is consumed even where slot 4 is the timeline's).
+        process_melee_intents(self.units, self.tick, self.weapons_tables,
+                              self.impulse_table, events=self.tick_events,
+                              effects=attack_effects)
 
         # 4b. SPRAY deposits (mechanics/03 §5, W4) — the shooting slot's
         # second half: every active spray burst enqueues its aimed heat/gas
@@ -1608,7 +2257,9 @@ class Simulation:
         # W6: tick_events rides along for the RENDER-ONLY SprayJetEvent
         # (the flame-jet visual) — not digest-hashed, pure synced-state fn.
         process_sprays(self.gmap, self.units, self.edit_queue,
-                       events=self.tick_events)
+                       events=self.tick_events, effects=attack_effects)
+        # 4c. Phase B of the attack slot (#169): apply what 4 and 4b recorded.
+        attack_effects.resolve()
 
         # 5. Zombie AI — its ONE driver: the conductor, or a match's zombie
         # controller through the ZOMBIE intent (#122, :meth:`drive_zombies`).
@@ -1630,9 +2281,20 @@ class Simulation:
         # solvers run — so the solvers advect / propagate the settled NET deposit
         # for this tick (a laser burn-off and a grenade cloud issued the same
         # tick both land before smoke advection). This is the single RNG consumer
-        # for noise>0 edits, drawing from the seeded sim.rng in sorted order.
-        self.edit_queue.flush(self.gmap, self.rng)
+        # for noise>0 edits, keyed draws (seed, tick, edit key, tile; P3b).
+        # #29 P4c: on the resident path the DEVICE applies this flush (the
+        # device edit queue, applied by slot 7 right after its entry upload):
+        # the runner takes the queue in the same order and packs it, or
+        # flushes here on the host when the device cannot serve the tick.
+        runner = self.physics_runner
+        if runner is not None and runner.serves_edit_queue():
+            runner.serve_edit_queue(self.gmap, self.edit_queue, self.draws)
+        else:
+            self.edit_queue.flush(self.gmap, self.draws)
+        return True
 
+    def _step_physics(self):
+        """Slot 7: the physics step; returns the burn-through walls."""
         # 7. Physics.
         sim_time_per_tick = 1.0 / float(self._tps)
         destroyed = []
@@ -1645,18 +2307,18 @@ class Simulation:
             # lockstep-safe (never a wall-clock or call-count counter).
             destroyed = self.physics_runner.step(
                 self.gmap, sim_time_per_tick, tick=self.tick)
+        return destroyed
 
-        # 9. Process fire burn-through walls. A6: the door-event split keys
-        # on BOTH door materials — legacy painted MAT_DOOR and the entity
-        # door's MAT_DOOR_CLOSED (a6 doors design §1).
-        for (yy, xx) in destroyed:
-            mat = int(self.gmap.material[yy, xx]) if (0 <= yy < self.gmap.material.shape[0]
-                                                      and 0 <= xx < self.gmap.material.shape[1]) else -1
-            self.gmap.destroy_wall(yy, xx)
-            if mat in (MAT_DOOR, MAT_DOOR_CLOSED):
-                self.tick_events.append(DoorDestroyedEvent(pos=(yy, xx)))
-            else:
-                self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
+    def _step_post_physics(self, destroyed) -> None:
+        """Slots 9 .. 10, given slot 7's burn-through walls."""
+        # arc #63 P3 (docs/swarm_P3_impl.md §7): slot 7's swarm deaths enter the
+        # tick here -- both tick paths pass after slot 7, before slot 9's events.
+        if self.physics_runner is not None:
+            self.tick_events.extend(swarm_death_events(self.physics_runner.swarm_death_rows))
+        sim_time_per_tick = 1.0 / float(self._tps)
+        # 9. Process fire burn-through walls (a named call since #29 P6.1, so
+        # the slot has a profiler label; the body is unchanged).
+        self._burn_through_walls(destroyed)
 
         # 9b. Over-pressure wall failure (ch.04 §5) — the emergent pressure
         # relief valve. After physics settles, any wall holding a differential
@@ -1664,69 +2326,87 @@ class Simulation:
         # clusters self-breach in a chain across ticks. Mirrors fire
         # burn-through: scan returns tiles, destroy_wall does the topology edit.
         # Capped per tick so a mistuned threshold can't nuke the whole ship.
-        if getattr(CFG.physics, "burst_enabled", True):
-            cap = int(getattr(CFG.physics, "burst_max_per_tick", 16))
-            for (yy, xx) in self.gmap.find_burst_walls(max_pops=cap):
-                mat = int(self.gmap.material[yy, xx])
-                self.gmap.destroy_wall(yy, xx)
-                if mat in (MAT_DOOR, MAT_DOOR_CLOSED):
-                    self.tick_events.append(DoorDestroyedEvent(pos=(yy, xx)))
-                else:
-                    self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
+        # (A named call since #29 P7e.2, so the slot has a profiler label and
+        # a shadow; the body is unchanged.)
+        self._burst_walls()
 
         # 9c. Unit heat damage (engine/06 §4, proposal §4.2/§6 step 4a). The
         # SECOND consumer of the per-tick `heat` deposit (the C++ heat ->
         # temperature conversion inside physics_runner.step() is the first):
-        # each living unit samples the already-occluded `heat` buffer at its
-        # footprint and takes radiant damage if the felt temperature pushes
-        # past its tolerance band. Runs AFTER physics fills `heat`, BEFORE the
+        # each living unit reads, per footprint tile, the larger of the `heat`
+        # deposit buffer and the radiation sensor `rad_flux_sweep`
+        # (exchange.felt_temperature), takes the hottest tile, and takes
+        # radiant damage if the felt temperature pushes past its tolerance
+        # band. Runs AFTER physics fills `heat`, BEFORE the
         # recorder snapshot (so the snapshot captures post-damage HP) and BEFORE
         # the end-of-tick heat clear below — its existence is precisely what
         # makes wiping `heat` correct (a reader finally consumes it).
         # This is the `heat | max` coupling row (mechanics/05 §1;
         # exchange.COUPLING_TABLE[0]) at its legacy pipeline position.
+        # Swarm units (arc #63 P3; the consumer="swarm:*" rows of exchange.COUPLING_TABLE)
+        # were already judged IN slot 7 (the swarm step is physics' last stage), so
+        # within a tick larva heat/coma happen BEFORE this unit row.
         if self.physics_runner is not None:
             apply_environmental_damage(
                 self.units, self.gmap, self._tps,
                 events=self.tick_events,
             )
 
-        # 9c2. Wave impulse push + KNOCKED_DOWN (mechanics/05 §1 wave_p|grad
-        # row; mechanics/06 §4 trigger — exchange.COUPLING_TABLE[2]). The
-        # first coupling row born INTO the table (P4). Reads the post-physics
-        # wave_p at each living unit's footprint: dv = k_push*(-grad)/mass —
-        # the nudge displaces unit.x/y (wall-clamped) and dv above
-        # threshold*stability lays the unit KNOCKED_DOWN (prone, no move/act,
-        # refresh-stacked get-up timer). WITHIN-TICK EXCHANGE ORDER
-        # (documented contract): heat damage (9c) FIRST, then the push — a
-        # unit the heat row kills this tick is a corpse and is not displaced.
-        # Runs BEFORE the recorder snapshot (it captures post-push positions)
-        # and before the end-of-tick heat clear (irrelevant to wave_p, kept
-        # for the fixed order). The moved position reaches the physics next
-        # tick through the step-6 re-stamp. A status applied here starts
-        # suppressing next tick (the step-2b P3 trigger-position semantics).
+        # 9c2. Wind on units (#140's read, the `wind | max` row, mechanics/05
+        # §1 -- exchange.apply_wind_force; G5p-b): the dynamic pressure
+        # q = 1/2 rho v^2 at each living unit's footprint
+        # (GameMap.footprint_wind) is a FORCE on the unit impulse law: one
+        # tick of impulse q * drag_area along the wind, through
+        # unit_impulse.add_wind, integrated in the next tick's slot 1a (whose
+        # outcomes -- slowed, pushed by the excess, knocked down -- are the
+        # wind's; a blast's wind included). It writes no position, status
+        # or speed. WITHIN-TICK EXCHANGE ORDER (documented contract): heat
+        # damage (9c) FIRST, then wind -- a unit the heat row kills this
+        # tick is a corpse.
         if self.physics_runner is not None:
-            apply_wave_push(self.units, self.gmap, self._tps)
-            # #106 P6d1, the creature row of the push (vetoable: deleting this
-            # line leaves a creature unpushed — an accepted gap): the same
-            # footprint gradient as a BODY impulse, integrated by the next 5b.
-            apply_creature_wave_impulse(self.units, self.gmap, self._tps,
-                                        self._creature_system)
+            # #106 P6d1: a creature unit takes the same read and price as
+            # an impulse on its BODY, integrated by the next 5b (vetoable:
+            # creatures=None leaves a creature unpushed -- an accepted gap).
+            apply_wind_force(self.units, self.gmap, self.impulse_table,
+                             creatures=self._creature_system)
 
         # 9c3. Gas coupling rows (mechanics/05 §1 gas[teargas] / gas[poison]
         # — exchange.COUPLING_TABLE[4..5], W3; [3] is the creature push row).
         # Read the post-physics gas planes at each living unit's footprint: teargas above threshold
         # applies BLINDED (snap-cone fire from next tick — the step-2b
-        # trigger-position semantics); poison above threshold emits one
-        # POISON packet per tick through the mechanics/06 pipeline (zombies
-        # immune). WITHIN-TICK EXCHANGE ORDER (documented contract): heat
-        # (9c), push (9c2), teargas, poison. Lazy: an all-zero plane is one
-        # integer .any() and out — every gas-free trajectory (the canonical
-        # golden included) is bit-identical to pre-W3. No RNG.
+        # trigger-position semantics); poison above threshold gives a DOSE
+        # of the poison law (#29 PX, poison.dose; zombies immune).
+        # WITHIN-TICK EXCHANGE ORDER (documented contract): heat (9c), wind
+        # (9c2), teargas, poison. Lazy: an all-zero plane is one integer
+        # .any() and out — every gas-free trajectory (the canonical golden
+        # included) is bit-identical to pre-W3. No RNG.
         if self.physics_runner is not None:
             apply_teargas_blind(self.units, self.gmap)
             apply_poison_dose(self.units, self.gmap, self._tps,
                               events=self.tick_events)
+            # arc #63 P5a: the larvae's bite (the swarm_bite_dose row): the
+            # bite-dose plane slot 7's swarm step wrote, summed over each
+            # living unit's footprint, into the poison door (uncredited,
+            # cause larva_bite). Lazy: a swarm-free plane is one .any().
+            apply_bite_dose(self.units, self.gmap)
+            # arc #63 P5b: the corpse row (swarm_count): the count plane slot
+            # 7's swarm step wrote, summed over each DEAD unit's footprint,
+            # moves its infestation level (simulation.corpse). TICK ORDER: the
+            # count plane is written in slot 7, the level moves here, and the
+            # corpse rises at the tick's end through the one conversion door
+            # (the ruleset's on_tick_end, ai_zombie.convert_marines_to_zombies).
+            apply_corpse_infestation(self.units, self.gmap)
+        # 9c3'. The poison law (#29 PX, simulation.poison): every living unit
+        # holding poison moves depot -> blood -> out, and what leaves the
+        # blood hurts as one POISON packet (credited to its dose). Outside
+        # the physics guard: a level dosed by any row keeps draining. Dormant
+        # (two int reads per unit) while nobody holds poison.
+        poison.tick(self.units, self.tick, self.tick_events)
+        # 9c3''. Stress clears (#215, simulation.stress): every living unit
+        # holding stress loses its half-life's share -- its own tick, the
+        # only thing that lowers it -- after this tick's damage fed it.
+        # Dormant (one int read per unit) while nobody holds stress.
+        stress.tick(self.units)
 
         # 9d. Ignition from temperature (engine/06 §4, proposal §6 step 4b). The
         # READ side of the temperature substrate: the C++ TemperatureSolver
@@ -1742,15 +2422,14 @@ class Simulation:
         # dormant. Slotted alongside the unit-heat-damage consumer (§6 step 4),
         # after the temperature passes, before the end-of-tick heat clear.
         if self.physics_runner is not None:
-            fire_cfg = getattr(CFG.physics, "fire", None)
-            ignition_seed = float(getattr(fire_cfg, "ignition_seed", 0.1))
             # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.4):
             # ignition and sustain read ONE law — a tile ignites only where the
             # local O2 MOLE FRACTION X exceeds the extinction limit X_ext, the
             # same o2_frac_ext the fire logistic uses. (Retires the old absolute
             # o2_threshold gate so ignition cannot seed a tile the next fire step
-            # would immediately suffocate.)
-            o2_frac_ext = float(getattr(fire_cfg, "o2_frac_ext", 0.13))
+            # would immediately suffocate.) combat.ignition_params is the one
+            # read of the two dials (the device tables read it too, #29 P7.0a).
+            o2_frac_ext, ignition_seed = ignition_params(CFG)
             apply_temperature_ignition(self.gmap, o2_frac_ext, ignition_seed)
 
         # 9e. Entities — the SPLIT GATE (Arc B impl doc §2b, D2). Two
@@ -1802,6 +2481,26 @@ class Simulation:
         # charge's slot-8 latency).
         if self._timed_charges:
             sweep_timed_charges(self)       # (d') timed-charge detonations
+        # Heat sources (vocabulary E.2 row 3): LAST of the actuator
+        # sub-slot, after the timed charges, so every blast of this tick
+        # (slots 2, 8 and the charges just above) is in gmap.blast_log when
+        # the sources read it for damage; then each living source enqueues
+        # its per-tick heat (lands at the next 6b flush). A source-free level
+        # only clears the log, which is empty at every tick boundary.
+        # Planted charges (#193): the continuous path's ONE driver of
+        # ``charges.tick`` -- a ruleset that owns the unit slots
+        # (OnePhaseWEGO, ``drives_units``) ticks them at the head of its own
+        # timeline instead, so no charge is ever ticked twice. Beside the
+        # timed charges and for the same reasons (this tick's door state;
+        # the wall damage before the recorder snapshot; the edits at the
+        # next 6b), and BEFORE the heat sources so its blast is in
+        # gmap.blast_log when they read it.
+        if self.planted_charges and not self.ruleset.drives_units:
+            charges.tick(self)              # (d') planted-charge detonations
+        if self._heat_sources:
+            sweep_heat_sources(self)        # (d'') heat-source blasts + deposits
+        elif self.gmap.blast_log:
+            self.gmap.blast_log.clear()
         if self._signal_bus is not None:
             self._signal_bus.swap_node_signals()   # (e) pub[node-slots] ← stg
 
@@ -1825,8 +2524,66 @@ class Simulation:
             self.recorder.record(self.gmap, self.tick, self.real_time,
                                  self.units, entities=self.entities,
                                  signals=self._digest_signals(),
+                                 swarm=self.swarm.carrier(),  # arc #63 P2
                                  creatures=self._creature_system)
 
+        # The tick-end clears (a named call since #29 P6.1, so they have a
+        # profiler label; the body is unchanged).
+        self._clear_tick_buffers()
+
+        # 10. Advance tick (the clock itself — not WEGO policy, stays here
+        # unconditionally so a future ContinuousRealtime ruleset still
+        # ticks) + route phase-boundary/round-end/auto-pause through the
+        # ruleset (control-modularity P1, §3a). Verbatim body in
+        # simulation.ruleset.TwoPhaseWEGO.on_tick_end.
+        self.tick += 1
+        self.real_time += sim_time_per_tick
+
+        # 10'. An order whose tick has come is cleared (#195 1f) -- right
+        # after the advance, so between ticks a held order has time left.
+        unit_orders.expire(self)
+
+        self.ruleset.on_tick_end(self)
+
+        # 11. The team picture (#195 1d; a match only): each marine team's
+        # records of what it sees at the tick the next controllers run at --
+        # after the tick advance and on_tick_end, so a conversion this step
+        # made is seen. Once per tick, never on demand.
+        if self.team_picture is not None:
+            self.team_picture.update(self)
+
+    def _burn_through_walls(self, destroyed) -> None:
+        """Slot 9: process slot 7's fire burn-through walls. A6: the
+        door-event split keys on BOTH door materials — legacy painted
+        MAT_DOOR and the entity door's MAT_DOOR_CLOSED (a6 doors design
+        §1)."""
+        for (yy, xx) in destroyed:
+            mat = int(self.gmap.material[yy, xx]) if (0 <= yy < self.gmap.material.shape[0]
+                                                      and 0 <= xx < self.gmap.material.shape[1]) else -1
+            self.gmap.destroy_wall(yy, xx)
+            if mat in (MAT_DOOR, MAT_DOOR_CLOSED):
+                self.tick_events.append(DoorDestroyedEvent(pos=(yy, xx)))
+            else:
+                self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
+
+    def _burst_walls(self) -> None:
+        """Slot 9b: the over-pressure walls (``GameMap.find_burst_walls``,
+        capped per tick) destroyed in the scan's order -- worst differential
+        first, ties in row-major order."""
+        if getattr(CFG.physics, "burst_enabled", True):
+            cap = int(getattr(CFG.physics, "burst_max_per_tick", 16))
+            for (yy, xx) in self.gmap.find_burst_walls(max_pops=cap):
+                mat = int(self.gmap.material[yy, xx])
+                self.gmap.destroy_wall(yy, xx)
+                if mat in (MAT_DOOR, MAT_DOOR_CLOSED):
+                    self.tick_events.append(DoorDestroyedEvent(pos=(yy, xx)))
+                else:
+                    self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
+
+    def _clear_tick_buffers(self) -> None:
+        """The tick-end clears: the per-tick deposit planes, the deposit
+        credit and the expired shot tracers -- after every reader of the
+        tick, before the tick advance."""
         # Clear the per-tick `heat` deposit — END OF TICK, AFTER every heat
         # consumer (engine/06 §1.3/§6 step 7). `heat` is a per-tick deposit
         # buffer, not a cross-tick accumulator; it is wiped once both readers
@@ -1838,26 +2595,10 @@ class Simulation:
         # (never reassigned) so any C++ view of the buffer stays valid.
         if self.physics_runner is not None:
             self.gmap.heat.fill(0)
-            # P-R4 (ruling A1.7): `rad_net` is the SIGNED radiation accumulator
-            # and shares `heat`'s per-tick lifetime exactly — filled by the
-            # fire-plane cast at the top of the physics step, consumed by the
-            # temperature solver's Pass-1 fold in the same step, wiped here so
-            # the next tick's cast starts clean. In-place (never reassigned) so
-            # any C++ view of the buffer stays valid.
-            self.gmap.rad_net.fill(0)
-            # P-F1a (rule 4): the SKY LEDGER shares that lifetime exactly — it
-            # is the counterparty half of the same per-tick booking, so the two
-            # planes MUST be cleared together or the identity
-            # `rad_net.sum() + rad_amb.sum() == 0` would be evaluated across
-            # mismatched ticks. Filled by the emission cast at the top of the
-            # physics step, read (pre-fold) by the ledger gate, wiped here.
-            self.gmap.rad_amb.fill(0)
-            # D3: the radiant-flux SENSOR shares the same per-tick lifetime —
-            # filled by the cast at the top of the physics step, consumed by
-            # unit heat damage above, wiped here. (`dem_acc` does NOT belong
-            # in this clear: it is PERSISTENT synced state whose whole job is
-            # to carry a sub-count oxygen debt ACROSS ticks.)
-            self.gmap.rad_flux.fill(0)
+            # #29 P7e.1: the legacy radiation planes `rad_net`, `rad_amb` and
+            # `rad_flux` are no longer cleared here: nothing has written them
+            # since T6 deleted the cast (gamemap.py's field notes), so they
+            # stay the zeros they were born as.
             # Ray-engine-v2 P2a (design v3 row 38): the shadow sweep's FOUR
             # planes are NOT wiped here. `RadiationSweep::run` zeroes them
             # itself before its first ordinate (it accumulates over ordinates,
@@ -1865,8 +2606,7 @@ class Simulation:
             # tick's values at render time — the tile inspector's Φ, `f` and
             # E°⁻¹(Φ) rows were reading a wiped zero while the wipe lived here.
             # Nothing digested changes: none of the four is in DIGEST_FIELDS or
-            # SIM_FIELDS. The three LIVE planes above keep their conductor wipe
-            # because their writer (the old cast) does not clear them.
+            # SIM_FIELDS.
 
         # #123: the per-tick deposit credit (damage.TickCredit) shares the
         # `heat` buffer's lifetime -- it names who put THIS tick's heat / gas
@@ -1882,66 +2622,103 @@ class Simulation:
             self.shots = [s for s in self.shots if
                           self.real_time - s.time < s.duration]
 
-        # 10. Advance tick (the clock itself — not WEGO policy, stays here
-        # unconditionally so a future ContinuousRealtime ruleset still
-        # ticks) + route phase-boundary/round-end/auto-pause through the
-        # ruleset (control-modularity P1, §3a). Verbatim body in
-        # simulation.ruleset.TwoPhaseWEGO.on_tick_end.
-        self.tick += 1
-        self.real_time += sim_time_per_tick
-
-        self.ruleset.on_tick_end(self)
-
     # ------------------------------------------------------------------
     # Tick-step helpers
     # ------------------------------------------------------------------
-    def _update_projectiles(self) -> None:
-        """Tick all projectiles: grenades first (the shipped slot semantics,
-        unchanged), then in-flight kinetic rounds (W2 unified march — tick
-        slot 2, BEFORE movement, preserving the causal pipeline ordering of
-        mechanics/03 §2). Fixed traversal order = spawn order, both lists."""
+    def _update_grenades(self) -> None:
+        """Slot 2: the grenades in flight (``self.projectiles``), BEFORE the
+        rounds (slot 2', :meth:`_update_rounds`) and before movement
+        (mechanics/03 §2). Spawn order, in two passes (#215): every grenade
+        FLIES first (``Projectile.fly``: its leg, the wall walk, a bounce;
+        a fuse-out's rest of the flight resolved at once by ``settle``),
+        all against the map as the slot found it, and each fuse-out's tile
+        decided there (``combat.detonation_tile``: where it rests); THEN the
+        fuse-outs detonate in list order, each at once through the payload
+        executor, so each sees the previous one's blast. (Before #215 the
+        flight asked no wall, so the two passes are the one loop's results
+        for every throw.)"""
+        hand = self.weapons_tables.weapons.by_name["hand_grenade"]
+        rq, bmax = int(hand.bounce_restitution_q), int(hand.bounce_max)
+        fused = []
         for proj in self.projectiles:
             if proj.detonated:
                 continue
-            proj.update_position(self.tick)
+            proj.fly(self.gmap, self.tick, rq, bmax)
             if self.tick >= proj.get_detonate_tick():
+                proj.settle(self.gmap, self.tick, rq, bmax)
                 proj.detonated = True
-                if proj.proj_type == ORDER_GRENADE:
-                    fx = int(proj.target_fx)
-                    fy = int(proj.target_fy)
-                    # W3: the LOBBED detonation goes through the payload
-                    # EXECUTOR via the projectile's round (hand_grenade ->
-                    # proj.ammo_name -> its payload row). The default
-                    # grenade_frag -> payloads.frag_standard sequence is
-                    # byte-identical to the pre-W3 inline triple (the
-                    # replica gate); gas grenades ride the same call with
-                    # their rows. Blast damage (the wave_p coupling row,
-                    # exchange.COUPLING_TABLE[1]) stays a detonation-site
-                    # invocation inside the executor.
-                    payload = self.weapons_tables.payload_for_ammo(
-                        proj.ammo_name)
-                    execute_payload(
-                        self.gmap, self.edit_queue, self.units, fy, fx,
-                        payload, self.rng, events=self.tick_events,
-                        kind="grenade", owner_id=proj.owner_id)
+                fused.append((proj, detonation_tile(
+                    self.gmap, proj.pos_x_q, proj.pos_y_q)))
+        for proj, (fy, fx) in fused:
+            if proj.proj_type != ORDER_GRENADE:
+                continue
+            # W3: the LOBBED detonation goes through the payload EXECUTOR
+            # via the projectile's round (hand_grenade -> proj.ammo_name ->
+            # its payload row). The default grenade_frag ->
+            # payloads.frag_standard sequence is byte-identical to the
+            # pre-W3 inline triple (the replica gate); gas grenades ride the
+            # same call with their rows. Blast damage (the wave_p coupling
+            # row, exchange.COUPLING_TABLE[1]) stays a detonation-site
+            # invocation inside the executor. #215: the approach is the
+            # current leg's start (the thrower's tile when it never bounced).
+            payload = self.weapons_tables.payload_for_ammo(proj.ammo_name)
+            execute_payload(
+                self.gmap, self.edit_queue, self.units, fy, fx,
+                payload, self.draws, events=self.tick_events,
+                kind="grenade", owner_id=proj.owner_id,
+                approach=proj.approach_tile())
 
+    def _update_rounds(self) -> None:
+        """Slot 2': the in-flight kinetic rounds (``self.bullets``; the W2
+        unified march), AFTER the grenades (slot 2) and before movement.
+        Spawn order; survivors stay."""
         # W2: advance in-flight kinetic rounds (the unified march). Each
         # marches this tick's integer step budget; hits/chew/exposure resolve
-        # inside advance() (same rng, fixed spawn order). Survivors stay.
+        # inside advance() (keyed draws, #29 P3b). Survivors stay.
         # W3: the edit queue rides along — an in-flight payload round (the
         # GL-6 40 mm) detonates at its stop through the payload executor.
+        # #169: two rounds landing on one tick land TOGETHER — every round
+        # marches against the slot-start state and records its hit / chew /
+        # detonation; resolve() applies them in list (spawn) order.
+        # #29 P7a.2: the march is its own call (phase A, handed the landing
+        # it records on: the device port's slot), then the landing.
+        landing = SimultaneousEffects()
+        self._march_rounds(landing)
+        landing.resolve()
+
+    def _march_rounds(self, landing) -> None:
+        """Slot 2''s phase A (#29 P7a.2): every round in flight marches this
+        tick's budget against the state the grenades left, in list (spawn)
+        order, recording its hit / push / chew / detonation on ``landing``;
+        the survivors replace ``self.bullets`` (nothing in the landing reads
+        the list)."""
         if self.bullets:
             survivors = []
             for b in self.bullets:
                 if b.advance(self.gmap, self.units, self.shots,
-                             self.real_time, self.rng,
+                             self.real_time, self.draws,
                              events=self.tick_events,
-                             queue=self.edit_queue):
+                             queue=self.edit_queue, effects=landing):
                     survivors.append(b)
             self.bullets = survivors
 
     def _update_player_movement(self) -> None:
-        """Step each player unit along its precomputed path.
+        """Slot 3: THE displacement loop (G5p-a2, design §13) over every
+        living unit in id order, then each player unit's legacy WEGO path.
+
+        - A unit holding a live MOVE_DIR walks (:meth:`_step_move_dir`): its
+          walk and its pushed velocity move it as ONE displacement
+          (``unit_impulse.move``).
+        - Every other unit with a pushed velocity -- standing, prone, a
+          zombie, a WEGO unit -- moves by it alone; the pushed velocity moves
+          a unit whatever its statuses say about moving on its own. A zombie
+          so displaced reads the horde field at its floored tile in slot 5
+          (G9p: no path to drop; its step snaps to the tile grid).
+        - Then the WEGO path step (LEGACY), which overwrites a push (an
+          accepted gap, the Control seams row).
+
+        Each move reads only the map and the unit's own state, so the loop
+        is order-free (units pass through each other, #142).
 
         Status gate (mechanics/06 §4): a unit whose composed ``can_move`` is
         suppressed (knocked down / immobilized / paralyzed) holds position
@@ -1950,10 +2727,12 @@ class Simulation:
         at the next un-walked path index (no catch-up teleport; the round
         may end before the tail is walked — being knocked down costs the
         distance). With no statuses this is a dead path, bit-identical to
-        pre-P3 behavior.
+        pre-P3 behavior. A unit in its reaction delay
+        (``unit_impulse.walk_allowed``) is held the same way.
         """
+        gmap = self.gmap
         for u in self.units:
-            if not u.alive or u.is_zombie:
+            if not u.alive:
                 continue
             if is_creature(u):
                 continue    # #106: its arms move it (slot 5b), never a path
@@ -1964,13 +2743,20 @@ class Simulation:
             # replays a WEGO path. Dormant under WEGO (no unit carries
             # ``live_move_dir``), so the branch below is untouched and
             # byte-identical.
-            move_dir = getattr(u, "live_move_dir", None)
+            move_dir = None if u.is_zombie else getattr(u, "live_move_dir",
+                                                        None)
             if move_dir is not None:
-                if composed_flags(u).can_move:
-                    self._step_move_dir(u, move_dir)
+                self._step_move_dir(u, move_dir)
                 continue
 
-            if not composed_flags(u).can_move:
+            # No walk of its own this slot: the pushed velocity alone.
+            if u.pvx or u.pvy:
+                unit_impulse.move(gmap, u)
+            if u.is_zombie:
+                continue
+
+            if (not composed_flags(u).can_move
+                    or not unit_impulse.walk_allowed(u)):
                 u.path_tick_offset += 1
                 continue
             path_idx = self.tick - u.path_tick_offset
@@ -1992,8 +2778,20 @@ class Simulation:
                     u.path_tick_offset += 1
                     continue
                 u.face_towards(px, py)
-                u.x = px
-                u.y = py
+                # #29 P3c: the precomputed path's interpolated position is
+                # quantized ONCE at the float door (legacy WEGO: its
+                # (st + 1) / step_ticks fractions are off the Q16 grid).
+                u.set_pos(px, py)
+
+    def _displace_pushed(self) -> None:
+        """Slot 3 under a ruleset that drives the units itself (OnePhaseWEGO,
+        ``drives_units``): every living unit with a pushed velocity moves by
+        it (``unit_impulse.move``), before the ruleset's compiled timeline
+        (which then overwrites it: an accepted legacy gap). The same rule as
+        the pushed branch of :meth:`_update_player_movement`."""
+        for u in self.units:
+            if u.alive and (u.pvx or u.pvy):
+                unit_impulse.move(self.gmap, u)
 
     def _step_move_dir(self, u, move_dir) -> None:
         """MOVE_DIR consumption (control-modularity P3, §3c) — the real new
@@ -2002,51 +2800,64 @@ class Simulation:
         SAME predicate A* uses (:meth:`GameMap.is_passable_block`), so direct
         move and A* agree on both speed and what blocks.
 
-        Speed: the unit's per-tile cadence is the WEGO base ticks-per-tile for
-        the intent's ``speed_mode`` (:func:`_ticks_per_tile`), scaled by the
-        footprint's area-average mobility exactly as the WEGO A* replay scales
-        it (:func:`movement.default_speed`) — a furniture tile is 2.5x slower
-        for both. The per-tick advance is ``1 / tick_cost`` tiles.
+        Speed (G1p-c): the ``[speeds]`` table's marine walk and full speed
+        (``self.speed_table``, Q16 ticks per tile, quantized once from m/s),
+        each scaled by the footprint's area-average mobility, the wind and
+        (G5p-a2) the unit's effort exactly as every walker is
+        (:func:`movement.default_speed`) — a furniture tile is 2.5x slower
+        for both — then the direction rule and the intent's throttle
+        (:func:`movement.move_speed_q16`, the rational rounded once to Q16
+        tiles per tick): the walk slows sideways and backward, the throttle's
+        extra speed is forward only. ``theta`` is the angle between the move
+        and the facing THIS tick (slot 1a already turned it, G5p-a1); a unit
+        holding no aim makes its travel direction its facing TARGET and turns
+        there with inertia like everyone else, so for a few ticks after a
+        change of direction it walks at the sideways / backward factor.
 
-        Determinism: the direction arrives as a Q16.16 unit vector; the only
-        floats are the exact power-of-two dequantize and the position math on
-        ``u.x``/``u.y`` (plain IEEE +/-/*/ — no libm, no transcendentals), so
-        the trajectory is bit-reproducible cross-machine (``u.x``/``y`` are
-        synced digest fields — this stays on the same float discipline as the
-        WEGO path).
+        The walk runs only while the unit's statuses let it move
+        (``can_move``) and it is not catching itself after a push
+        (``unit_impulse.walk_allowed``); either way its pushed velocity is
+        applied. Walk and push move it as ONE displacement
+        (``unit_impulse.move``): on the Q16 grid, in sub-tile substeps (one,
+        today's single test, at a walk alone), each the slide rule -- the
+        full move; else along X alone; else along Y alone; else hold -- so
+        pushing diagonally into a wall glides rather than dead-stops.
 
-        Collision: try the full move; if the destination footprint is blocked,
-        slide along each axis independently (still :meth:`is_passable_block`),
-        so pushing diagonally into a wall glides rather than dead-stops. A
-        fully boxed-in unit holds. Facing follows the move direction unless a
-        live AIM overrides it (aim already set facing this tick).
+        Determinism: integers only; ``u.x`` / ``u.y`` leave as exact n/65536
+        doubles (synced digest fields).
         """
-        base_ticks = _ticks_per_tile(move_dir.speed_mode)
-        fp = u.footprint
-        samples = FootprintSamples(
-            mobility=self.gmap.footprint_mobility(u.tile_y, u.tile_x, fp))
-        tick_cost = default_speed(samples, base_ticks)   # ticks per tile
-        tiles_per_tick = 1.0 / tick_cost
-        dx = _intents.dequantize(move_dir.dx_q)
-        dy = _intents.dequantize(move_dir.dy_q)
-        step_x = dx * tiles_per_tick
-        step_y = dy * tiles_per_tick
-        nx = u.x + step_x
-        ny = u.y + step_y
+        walking = (composed_flags(u).can_move
+                   and unit_impulse.walk_allowed(u))
+        wdx = wdy = 0
+        if walking:
+            fp = u.footprint
+            samples = footprint_samples(
+                self.gmap, u.tile_y, u.tile_x, fp,
+                effort_scale_q16=unit_impulse.effort_scale_q16(
+                    self.impulse_table, u),
+                speed_hook_q16=unit_traits.hook(u, unit_traits.WALK))
+            # G1p-c: the walk and the full speed (Q16 ticks per tile), each
+            # reduced by terrain, wind and effort -- and (#29 U1) the unit's
+            # own WALK / SPRINT hook -- then the direction rule and the
+            # throttle as ONE exact rational, rounded once to Q16.
+            table = self.speed_table
+            cos_q = facing_cos_q16(move_dir.dx_q, move_dir.dy_q, u.facing_q)
+            v_q = move_speed_q16(
+                default_speed(samples, table.walk_cost_q),  # traits-class: WALK
+                default_speed(_dc_replace(samples, speed_hook_q16=(
+                    unit_traits.hook(u, unit_traits.SPRINT))),
+                    table.full_cost_q),  # traits-class: SPRINT, the samples' hook
+                table.side_q, table.back_q, move_dir.throttle_q, cos_q)
+            wdx, wdy = unit_impulse.walk_step_q(move_dir, v_q)
+        unit_impulse.move(self.gmap, u, wdx, wdy)
 
-        gmap = self.gmap
-        if gmap.is_passable_block(int(ny), int(nx), fp):
-            u.x, u.y = nx, ny
-        elif gmap.is_passable_block(int(u.y), int(nx), fp):
-            u.x = nx                          # slide along X
-        elif gmap.is_passable_block(int(ny), int(u.x), fp):
-            u.y = ny                          # slide along Y
-        # else fully blocked -> hold position this tick.
-
-        # Facing: aim wins (already applied in _consume_direct_intents this
-        # tick); otherwise face the direction of travel.
-        if getattr(u, "live_aim", None) is None and (dx != 0.0 or dy != 0.0):
-            u.face_towards(u.x + dx, u.y + dy)
+        # Facing: a held aim wins (slot 1a's target); otherwise the
+        # direction of travel becomes the facing TARGET (G5p-a1: turned
+        # toward with inertia from the next tick's 1a, never written here).
+        if walking and getattr(u, "live_aim", None) is None and (
+                move_dir.dx_q != 0 or move_dir.dy_q != 0):
+            turning.set_target(u, unit_fixed.atan2_q16(-int(move_dir.dy_q),
+                                                       int(move_dir.dx_q)))
 
     def _end_round(self) -> None:
         """End-of-round teardown — convert dead-by-zombie marines, reset state.
@@ -2059,14 +2870,21 @@ class Simulation:
         convert_marines_to_zombies(self.units)
 
         for u in self.units:
-            # Snap float position to nearest integer tile boundary -- never a
-            # creature's (#106): its anchor is the body pose's, written by 5b.
+            # Snap the position to the nearest integer tile boundary (the
+            # same round() as before #29 P3c, on the Q16 position's view) --
+            # never a creature's (#106): its anchor is the body pose's,
+            # written by slot 5b.
             if not is_creature(u):
-                u.x = float(round(u.x))
-                u.y = float(round(u.y))
+                u.set_pos_q(round(u.x) << 16, round(u.y) << 16)
             u.clear_orders()
             u.move_path = []
             u.last_fire_tick = -999
+            # G5p-a2: the shove's cooldown rewinds with the tick counter (the
+            # last_fire_tick precedent), and a push does not survive the
+            # round boundary's snap to the tile grid.
+            u.last_shove_tick = -1
+            u.last_blow_tick = -1             # G6p: the melee cadence, same
+            unit_impulse.clear(u)
             # W3 ammo economy: the round boundary tops everyone off (the
             # WEGO planning pause is a between-rounds breather — v1 rule,
             # Erik's dial later). Also REQUIRED for correctness: the tick
@@ -2075,7 +2893,7 @@ class Simulation:
             # next one (the exact hazard last_fire_tick = -999 solves).
             # None = full mag (the lazy first-trigger bind, combat.mag_gate);
             # untracked (mag_size 0) units never read either field.
-            u.current_mag = None
+            u.current_mag = MAG_UNBOUND
             u.reload_done_tick = -1
             # W4: a spray burst does not survive the round boundary — the
             # orders it would ride are cleared above, and burst state is a
@@ -2095,7 +2913,10 @@ class Simulation:
         # In-flight kinetic rounds carry over too (W2): they are physical
         # objects mid-air, tick-counter-free (per-call budget), so the round
         # rewind cannot skew them. Empty for every shipped weapon.
-        # Rewind for the next round.
+        # Rewind for the next round. #29 P3b: the draws' clock carries on
+        # past the rewind (legacy TwoPhaseWEGO), so a round never repeats
+        # the previous one's draws.
+        self.draws.tick_base += self.tick
         self.tick = 0
         self.phase = 0
         self.real_time = 0.0

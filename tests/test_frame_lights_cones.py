@@ -157,12 +157,27 @@ def test_the_cone_row_door_quantizes_once_and_keeps_the_old_conventions():
     assert fl.spec_cone_row(neg, 20, 10, FB)[2] == 0
     assert fl.spec_cone_row(fl.LightSpec(x=25.0, y=1.0, color=(1, 1, 1), intensity=1.0),
                             20, 10, FB) is None
-    huge = [fl.LightSpec(x=1.0, y=1.0, color=(1, 1, 1), intensity=40.0)] * 4
-    with pytest.raises(ValueError, match="LIGHT_CONE_BUDGET"):
-        fl.cone_rows(huge, 20, 10, FB)
     assert fl.CONE_TURN == int(bp.RadiationSweep.CONE_TURN)
     assert fl.LIGHT_CONE_BUDGET == int(bp.RadiationSweep.LIGHT_CONE_BUDGET)
     assert fl.LIGHT_SKY_MAX == int(bp.RadiationSweep.LIGHT_SKY_MAX)
+
+
+def test_a_frame_of_many_lamps_reaches_the_sweep():
+    """PROPERTY (#173): the number of lamps is no limit: 200 lamps at 2.4 light
+    units, 480 in all, far past the 128 of one ordinate, light a real sim
+    through the one assembly, and a single lamp among them still adds its own
+    light (nothing dimmed them to fit). BREAKS IF the frame or the sweep goes
+    back to charging an omni lamp its whole rgb."""
+    sim = Simulation(_room(), seed=1, breach_physics=bp, enable_recorder=False)
+    h, w = sim.gmap.solid.shape
+    sim.set_paused(False)
+    sim.step()
+    spec = lambda i: fl.LightSpec(x=2.5 + i % (w - 4), y=2.5 + (i // (w - 4)) % (h - 4),
+                                  color=(1.0, 1.0, 1.0), intensity=2.4)
+    specs = [spec(i) for i in range(200)]
+    q = _lit(sim, fl.cone_rows(specs, w, h, FB)).copy()
+    q_less = _lit(sim, fl.cone_rows(specs[:-1], w, h, FB))
+    assert q.sum() > q_less.sum() > 0
 
 
 # ---------------------------------------------------------------------------

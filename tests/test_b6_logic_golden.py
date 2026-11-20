@@ -136,8 +136,18 @@ from simulation.entities.registry import registry_content_hash  # noqa: E402
 # back to 6 on the same build (8 bits, nearest decay) this test reproduces
 # the previous value exactly. Full rationale beside GOLDEN_AGGREGATE in
 # tests/_xarch_perfield_digest.py, same commit. (was 412bcbf51a002cb8995c276fb15664b4a2438d3ef8e9a4adf0b2d0503d49e5b3)
+# #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+# the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+# under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+# faction / offsets left it, the hp hashes as its Q16 count, and every
+# synced column hashes while it differs from its default (the kit, the
+# magazine, the grenades, the cool-downs, the throw / plant in progress,
+# the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+# equal per-tick records and identical field digests on main edc0d2b1 and
+# on this tree. Only the hash's definition moved.
+# (was 10671f68656389ba23b0609b20154d1907a5cac45562870e80225b9dcf3c5967)
 LOOP_GOLDEN_TRAJ_DIGEST = \
-    "10671f68656389ba23b0609b20154d1907a5cac45562870e80225b9dcf3c5967"
+    "dcf7189f978aca94e90f17e2b9f77fbfae8ed2d765d62d554b77535c0ffb6a55"
 LOOP_GOLDEN_STEPS = 30
 LOOP_GOLDEN_SEED = 1
 

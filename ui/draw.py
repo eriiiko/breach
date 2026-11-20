@@ -472,3 +472,67 @@ __all__ = [
     "draw_marks", "draw_overwatch_cone", "draw_plan_overlay",
     "draw_planning_clock", "draw_round_banner", "draw_selected_marker",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Light curve panel (graphics G5, #64): decisions in ui.light_curve_panel
+# ---------------------------------------------------------------------------
+def _button(r, label: str, active: bool = False) -> None:
+    rl.draw_rectangle(r.x, r.y, r.w, r.h, TEAL_DIM if active else HUD_EDGE)
+    rl.draw_text(label, r.x + 6, r.y + 2, 14, HUD_TEXT)
+
+
+def draw_light_curve_panel(panel, layout, histogram) -> None:
+    """The curve over this room's light histogram, as an image editor shows
+    it. Screen space, after the resolve: it never touches the picture."""
+    from renderer.light_curve import bake_lut, decode
+    from ui.light_curve_panel import to_screen
+    b, p = layout.panel, layout.plot
+    curve = panel.curve
+    rl.draw_rectangle(b.x, b.y, b.w, b.h, HUD_BG)
+    rl.draw_rectangle_lines(b.x, b.y, b.w, b.h, HUD_EDGE)
+    rl.draw_rectangle(p.x, p.y, p.w, p.h, rl.Color(8, 9, 11, 255))
+
+    # Square-root bar heights: the dim tail stays visible beside a peak.
+    peak = float(histogram.max()) if len(histogram) else 0.0
+    if peak > 0.0:
+        w = p.w / len(histogram)
+        for i, v in enumerate(histogram):
+            h = int(p.h * (float(v) / peak) ** 0.5)
+            if h > 0:
+                rl.draw_rectangle(int(p.x + i * w), p.y + p.h - h,
+                                  max(1, int(w)), h, HUD_DIM)
+    for k in (1, 2, 3):
+        q = p.w * k // 4
+        rl.draw_line(p.x + q, p.y, p.x + q, p.y + p.h, HUD_EDGE)
+        rl.draw_line(p.x, p.y + q, p.x + p.w, p.y + q, HUD_EDGE)
+    rl.draw_line(p.x, p.y + p.h, p.x + p.w, p.y, HUD_EDGE)      # the identity
+
+    lut = bake_lut(curve.points, p.w)
+    colour = TEAL if curve.enabled else HUD_TEXT
+    for i in range(1, p.w):
+        rl.draw_line_ex(rl.Vector2(p.x + i - 1, p.y + (1.0 - lut[i - 1]) * p.h),
+                        rl.Vector2(p.x + i, p.y + (1.0 - lut[i]) * p.h),
+                        2.0, colour)
+    for x, y in curve.points:
+        sx, sy = to_screen(layout, x, y)
+        rl.draw_circle(int(sx), int(sy), 5.0, colour)
+        rl.draw_circle_lines(int(sx), int(sy), 5.0, rl.BLACK)
+
+    _button(layout.toggle, "on" if curve.enabled else "off", curve.enabled)
+    _button(layout.reset, "reset")
+    _button(layout.save, "save" if not panel.saved else "saved",
+            not panel.saved)
+
+    r = layout.dark_sat
+    rl.draw_rectangle(r.x, r.y, r.w, r.h, HUD_EDGE)
+    rl.draw_rectangle(r.x, r.y, int(r.w * curve.dark_saturation), r.h, TEAL_DIM)
+    rl.draw_text(f"dark colour {curve.dark_saturation:.2f}", r.x + 6, r.y + 2,
+                 14, HUD_TEXT)
+
+    mx, my = rl.get_mouse_x(), rl.get_mouse_y()
+    if p.contains(mx, my):
+        x = (mx - p.x) / p.w
+        text = (f"light {float(decode(x, curve.range)):.3f}  ->  "
+                f"{float(decode(lut[min(p.w - 1, int(x * p.w))], curve.range)):.3f}")
+        rl.draw_text(text, p.x + 6, p.y + 6, 14, HUD_TEXT)
