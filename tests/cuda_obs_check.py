@@ -159,9 +159,10 @@ class Played:
     """One reference match: its level, spec, seed, (T, S), per tick its
     intents, per decision tick the owned arrays of the host observation."""
 
-    def __init__(self, name, level, spec, seed, T, S):
+    def __init__(self, name, level, spec, seed, T, S, setup=None):
         self.name, self.level, self.spec, self.seed = name, level, spec, seed
         self.T, self.S = T, S
+        self.setup = setup                    # corpus (d): the hand state at tick 0
         self.intents = []                     # per tick k: [(kind, args)]
         self.obs = {}                         # tick -> {(key, name): array}
         self.end = 0
@@ -204,9 +205,13 @@ def host_observation(session, ctx, T, S) -> dict:
     return out
 
 
-def play(name, level, spec, seed) -> Played:
+def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Played:
     """Play the match on the host once (cached): its intents per tick, the
-    owned host observation at every decision tick."""
+    owned host observation at every decision tick. Corpus (d): ``setup``
+    (session) puts the hand state in at tick 0 (the twin gets the same);
+    ``script`` (sim) issues hand intents before each tick (the tap records
+    them with the controllers', so the twin is fed them); ``max_ticks`` ends
+    the play early."""
     key = (name, seed)
     if key in _PLAYED:
         return _PLAYED[key]
@@ -215,9 +220,11 @@ def play(name, level, spec, seed) -> Played:
     from simulation.obs_spec_v1 import ObsContext
     t0 = time.perf_counter()
     s = MatchSession(level, spec, seed=seed, breach_physics=bp)
+    if setup is not None:
+        setup(s)
     sp = s.spec
     T, S = len(sp.teams), max(rl_env._team_slots(level))
-    p = Played(name, level, spec, seed, T, S)
+    p = Played(name, level, spec, seed, T, S, setup=setup)
     ctx = ObsContext.build(s.sim, sp, S, n_teams=T)
     own = owned()
     tap = cc.Tap()
@@ -231,7 +238,10 @@ def play(name, level, spec, seed) -> Played:
         t_obs += time.perf_counter() - ts
 
     observe()
-    while not s.is_terminal():
+    tap.take()                                # the setup's own calls are no intents
+    while not s.is_terminal() and (max_ticks is None or int(s.sim.tick) < max_ticks):
+        if script is not None:
+            script(s.sim)
         s.tick()
         p.intents.append(tap.take())
         if int(s.sim.tick) % DECIMATION == 0:
@@ -247,7 +257,10 @@ def play(name, level, spec, seed) -> Played:
 
 def twin(p: Played):
     from simulation.match_session import MatchSession
-    return MatchSession(p.level, p.spec, seed=p.seed, breach_physics=bp)
+    s = MatchSession(p.level, p.spec, seed=p.seed, breach_physics=bp)
+    if p.setup is not None:
+        p.setup(s)
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -393,20 +406,107 @@ def corpus_b():
     return [play(ROOM, lv, None, None)]
 
 
+# -- corpus (d): the smallest hand match for the owned columns (a) and (b)
+# never move (P8.1: a second weapon, no loadout, no melee row, every status
+# kind, the hand-grenade kinds the shipped loadout lacks, a plant, a blow's
+# cooldown). A ship_demo bots match, cut short, with a hand state at tick 0
+# (both the reference and the twin get it) and hand intents (tapped, so the
+# twin is fed them).
+HAND_SEED = 31
+HAND_TICKS = 320
+#: The hand loadout: the [marine] loadout row with every hand-grenade kind of
+#: the weapon table's family (these counts, in the family's order).
+HAND_GRENADES = (2, 1, 2, 1, 1, 3)
+
+
+def hand_kit():
+    """Corpus (d)'s loadout: the reference loadout row replaced IN THE LIVE
+    TABLES by one carrying every hand-grenade kind (a frozen row: a
+    ``dataclasses.replace``). ``Simulation`` construction rebuilds the
+    loadout tables from the config (``loadouts.rebuild_tables``), so the
+    row is put in after each build (the reference's and the twin's) and is
+    gone at the next one: the host builders and the obs table read it while
+    the session plays."""
+    from dataclasses import replace
+    from config import CFG
+    from simulation.loadouts import get_tables
+    from simulation.weapons import get_tables as wt
+    by_name = get_tables().loadouts.by_name
+    name = str(CFG.marine.loadout)
+    rows = wt().hand_grenade_rows
+    by_name[name] = replace(by_name[name],
+                            grenades={r: HAND_GRENADES[k] for k, r in enumerate(rows)})
+
+
+def _marines(sim):
+    return sorted((u for u in sim.units if not u.is_zombie), key=lambda u: int(u.id))
+
+
+def hand_setup(session):
+    """Corpus (d)'s state at tick 0: the hand loadout (:func:`hand_kit`) and
+    its grenades in every marine's hands; marine 0 without a loadout or a
+    melee row (class -1, no charge kind, no grenade kinds, no melee); marine
+    1 with a second weapon (its magazines belong to the loadout's weapon:
+    spares untracked) and a blow just struck (the melee cooldown); marine 4
+    with a third; every status kind 1..8 on a marine of its own, durations
+    apart (DoTs gentle)."""
+    from simulation import status as stt
+    hand_kit()
+    m = _marines(session.sim)
+    for u in m:
+        u.grenade_counts = list(HAND_GRENADES)
+    m[0].loadout_name = None
+    m[0].melee_id = ""
+    m[1].weapon_id = "mp11_pdw"
+    m[1].last_blow_tick = 0
+    m[4].weapon_id = "lr50"
+    for k in range(1, stt.N_STATUS_KINDS):
+        stt.apply_status(m[k % len(m)], k, 0.05, 40 + 30 * k)
+
+
+def hand_script(sim):
+    """Corpus (d)'s hand intents: a plant, throws of every kind but the frag,
+    a reload, a shove."""
+    from simulation import unit_fixed
+    m = _marines(sim)
+    t = int(sim.tick)
+    one = unit_fixed.FP_ONE
+    alive = lambda u: u.alive and not u.is_zombie  # noqa: E731
+    if t == 2 and alive(m[6]):
+        sim.plant_charge_intent(int(m[6].id), 10 ** 6)
+    for tk, who, kind in ((6, 7, 2), (10, 5, 3), (14, 4, 5), (30, 7, 1), (44, 5, 4)):
+        if t == tk and alive(m[who]):
+            sim.throw_grenade_intent(int(m[who].id), one, 0, 60, kind=kind)
+    if t == 20 and alive(m[5]):
+        sim.reload_intent(int(m[5].id))
+    if t == 24 and alive(m[7]):
+        sim.shove_intent(int(m[7].id))
+
+
+def corpus_d():
+    lv = ship_level()
+    import _pinned_matches as pm
+    return [play("hand", lv, pm.spec_of(lv, "bots"), HAND_SEED, setup=hand_setup,
+                 script=hand_script, max_ticks=HAND_TICKS)]
+
+
 def part_gate():
-    ca, cb = Census(), Census()
+    ca, cb, cdn = Census(), Census(), Census()
     for p in corpus_a():
         gate(f"(a) {p.name}", [p], ca)
     for p in corpus_b():
         gate(f"(b) {p.name}", [p], cb)
+    for p in corpus_d():
+        gate(f"(d) {p.name}", [p], cdn)
     ca.judge("census (a)", strict=False)
     cb.judge("census (b)", strict=False)
+    cdn.judge("census (d)", strict=False)
     both = Census()
-    for src in (ca, cb):
+    for src in (ca, cb, cdn):
         for k, n in src.nondefault.items():
             both.nondefault[k] = both.nondefault.get(k, 0) + n
             both.values.setdefault(k, set()).update(src.values.get(k, set()))
-    both.judge("census (a)+(b)")
+    both.judge("census (a)+(b)+(d)")
 
 
 def part_batch(n_list=(2, 4)):
