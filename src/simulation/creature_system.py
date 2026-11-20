@@ -29,18 +29,24 @@ writer                                 what it does to a creature unit
                                        ``creature_fixed``), once
 slot 5b, ``CreatureSystem.tick``       THE per-tick writer: anchor + facing
                                        from the integer body pose
-                                       (``pose_to_unit_anchor``,
-                                       ``heading_rad_to_facing``)
+                                       (``pose_to_unit_anchor`` ->
+                                       ``Unit.set_pos``;
+                                       ``heading_q24_to_facing_q16`` ->
+                                       ``turning.place``)
+slot 1a (impulse + the turning law)    skips it (``unit_impulse.
+                                       integrate_all``): no integration, no
+                                       turn toward a live aim
 slot 3 / ``OnePhaseWEGO.drive_units``  SKIP it (MOVE_DIR / AIM are recorded as
                                        the hub's goal instead, slot 5b)
-slot 1b AIM (``live_aim``)             skips its facing write
+slot 1b AIM (``live_aim``)             the hub's reach goal, never a facing
 slot 1b USE (``pending_use``)          skips it: a creature's USE is the hub's
                                        grab request (consumed at slot 5b)
-slot 9c2 wave push                     never displaces it: the coupling row
-                                       ``apply_creature_wave_impulse`` adds the
-                                       push to the BODY's velocity instead
-                                       (``exchange.py``; vetoable -- deleting
-                                       that row's call leaves the push ignored)
+slot 9c2 wind                          never displaces it: the ONE wind row
+                                       (``exchange.apply_wind_force``,
+                                       ``creatures=``) adds THE read's priced
+                                       impulse to the BODY's velocity
+                                       (``_creature_wind``; vetoable --
+                                       ``creatures=None`` leaves it ignored)
 ``Simulation._end_round`` snap         skips it (the pose is not tile-snapped)
 zombie conversion                      never (``can_become_zombie = false``)
 =====================================  =========================================
