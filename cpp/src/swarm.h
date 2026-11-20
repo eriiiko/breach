@@ -403,7 +403,13 @@ int resident_species(int law, const StoreView& st_dev, int max_units, int n_env,
                      int w, const int32_t* d_T, const bool* d_solid,
                      const uint32_t* launch_host, const int64_t* tables_host,
                      int table_width, unsigned long long* d_counters, void* stream,
-                     int32_t* d_bite, int32_t* d_count);
+                     int32_t* d_bite, int32_t* d_count,
+                     const int64_t* d_tick_row = nullptr);
+// #29 P7e.5: d_tick_row (nullable) is the device conductor's TICK ROW
+// ((n_env, TICK_ROW_W) int64, unit_draws_layout.h): given, each env's launch
+// words (tick, seed lo, seed hi) are written ON THE DEVICE from the row's
+// draw tick and key after the launch block's upload, so the swarm reads the
+// same tick and key every device unit kernel reads (never the host's clock).
 // The species' pinned host records (n_env, max_units, DEATH_WORDS), valid
 // after the tick's books sync for [0, hw[e]) per env.
 const int32_t* resident_records_host(int law);

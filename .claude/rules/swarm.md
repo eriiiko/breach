@@ -49,6 +49,7 @@ two sides meet only through FIELDS.
 ## Swarm step
 - `PhysicsEngine::step_swarm` (host path) and `resident_swarm` (the resident tail's LAST stage, after temperature, before the books D2H) are THE only orchestration of swarm species: dormancy (nothing present in any env: no copy, no launch, no counter), the launch, the (species, env, slot) death compaction. Python only gathers (`swarm.engine_args`: arrays, pointers, env words; it transfers and launches nothing) and turns rows into events: never host-side swarm tick logic.
 - The extent of every loop, launch and compaction is the HOST `high_water` in the launch block; the device copies of `high_water` / `next_unit_id` are never read, so they are neither uploaded nor downloaded.
+- The launch words' tick and key are `sim.draws`' on the played paths (`swarm._env_words`) and the device conductor's TICK ROW on its path (`engine_args(..., tick_row=)`: written on the device by `swarm.cu`, the host's env words zeros): never the host clock in a device tick, never a second key.
 - The draws reach the runner by `PhysicsRunner.bind_draws(sim.draws)` at reset, never a step argument (both tick paths must see them). The death events enter the tick as the first statement of `Simulation._step_post_physics`.
 - A new swarm stage adds no third host sync: its records ride the tail's one books read, its counters are a region of the books arena.
 

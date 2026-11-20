@@ -1614,6 +1614,137 @@ golden, no played-tick behaviour moved (slot 7's chain is code motion).
   identity's `e_solid_seam_sum` and the books snapshot, read by no law; the
   device's twin is the applier's solid book, kept in `last_books`).
 
+**As built (P7e.5, 2026-11-20).** Branch `29-p7e5-batch`. The conductor over
+N envs, `simulation.conductor.DeviceConductor(sims)` (Class T); no physics, no
+golden, no played-tick behaviour moved (the played tail's fold is code motion).
+- THE BATCH: one walk, every face launched once for the N envs (the store
+  `(N, U, W)`, padded to the largest unit count; every record list, object /
+  entity table, the edit door and flush, the horde cache and the tick row per
+  env; slot 7 through `physics_runner.run_resident_conductor(runners, gmaps,
+  ...)`, the one batched chain over `ResidentBatch(sims)`, which refuses a
+  heterogeneous batch by name). N = 1 is one sim (the P7e.4 gate unchanged in
+  what it asserts). `latch(intents, env=e)` per env; every env's column writes
+  land in ONE CuPy scatter at the tick's head. The 9e slots run when ANY env
+  holds the class (an env without rows is a no-op of the face; held by the
+  gate on the hand scenes that share a level). Choice where silent: AN ENDED
+  ENV keeps ticking with no intents (its physics, zombies and timers run on)
+  until the caller replaces it. A per-env reset was NOT built: it needs each
+  per-env table / list / cache / store row / tick row restaged for env e alone
+  (the record lists stage all envs at once today; `EditDoor.reset_env` and
+  `ResidentBatch.reset_env` exist), and a refusal-free proof that nothing of
+  the other envs is touched -- named in the rule file as an accepted gap for
+  P8.
+- REFUSALS PER ENV: `_books_read` reads each deferred block in its per-env
+  layout (the store's counts count-major `(3, N)`, `conductor.counts_by_env`;
+  door / object counts env-major; applier books `(N, B)`; the flush's books
+  `(N, slots)` then N fault words) and raises the first refusal in walk order,
+  lowest env first, with `.env` and "env k" in the message. A refusal REFUSES
+  THE BATCH (choice: no face was shown unable to let one env's fault reach
+  another's state, and the refused env is partly written; letting the others
+  continue needs that proof per face plus the per-env reset).
+- THE SWARM: `swarm.engine_args(..., tick_row=)` hands the conductor's tick
+  row address to the resident swarm stage (`ResidentTickArgs.swarm_tick_row`);
+  `swarm.cu` writes each env's launch words (draw tick, seed lo / hi) from the
+  row ON THE DEVICE after the launch block's upload (`k_launch_from_row`), the
+  host env words zeros. The host `high_water` stays the launch extent (a load
+  constant in a match: nothing on the host spawns during a tick).
+- TWO SYNCS: the physics tail's fold is deferred (`bp.resident_tail_defer`):
+  the tail enqueues its books D2H and returns; the conductor's ONE books read
+  (`conductor_books_end`, one `cudaStreamSynchronize` on the tick stream)
+  waits for it too, then `bp.resident_tail_finish` folds every env's books
+  (`resident_tail_fold`, the played tail's fold moved to a function both
+  call; the conductor's fold builds no burn-through list: slot 9 ranks the
+  fire's own list on the device). A steady conductor tick syncs at
+  `max_n_sub` and the books read: two, at N = 1, 2, 4 alike.
+- THE PROFILE: `bp.conductor_profile_begin / _mark / _end`
+  (`cpp/src/cuda_unit_books.cu`): while open every `conductor_label` and
+  every mark records a CUDA event on the tick stream and the host's steady
+  clock; slot 7's chain marks its stages (`physics_runner._PROFILE_MARK`: EOS
+  substeps, trace tail, combustion) and the resident tail its own (bulk sum +
+  fire, sweep, temperature, swarm, books D2H; a no-op unless open).
+  `tick(profile=True)` lands `(label, GPU ms, host ms)` per call line in
+  `last_profile`. The bench: `tools/bench_conductor.py`.
+- REFUSALS VECTORISED: the books read checks each block whole (numpy) and
+  walks envs only on a hit; `last_books` is `{book: (N,)}`. (The first,
+  per-env Python loop cost about 40 ms a tick at N = 256: found by the
+  bench, the fold is now about 2 ms flat.) The deferred arena is sized per
+  env (`BOOKS_CAP_PER_ENV`, 1024 words; the flat 2^14 was crossed at N = 64,
+  about 257 words an env): a capacity, raised.
+- GATE `tests/cuda_conductor_batch_check.py` (wrapper
+  `tests/test_cuda_conductor_batch.py`): every env played ALONE by the
+  conductor at N = 1, then together; each env's `(field_digest,
+  tick_digest)`, its no-digest state (content hashes of every array) and its
+  swarm death events equal at every tick. SCENES: seven groups, N = 2 and 4,
+  160 ticks each (payloads / sprays / signals / walking with per-env delays of
+  the schedule; hazards 0 + 2, horde with and without its controller, fire 0
+  + 1 side by side). MATCHES: ship_demo recorded at seeds 11 / 12 / 13 / 14
+  (`bots`, `bots_v1`, `bots`, `bots_v1`; ends 1664 / 300 / 970 / 275 ticks),
+  N = 2 and 4 replayed to the longest end, the ended envs ticking on without
+  intents, every tick equal. SWARM: larva_studio seeds 1..4 (the broods'
+  scatter differs), N = 2 and 4, 200 ticks, 600 live larvae an env; env 1
+  alone == the CPU reference every tick (the launch words from the device
+  row). SWAP: three envs in reversed and rotated order == alone (red with
+  `CONDUCTOR_BATCH_BREAK=index`, the index in the draw key: an env differs at
+  tick 5 / 9). SYNCS: 2 per steady tick at N = 1, 2, 4 (`max_n_sub`, the
+  books read; red with `=sync`, a download per env: 3 / 4 / 6). FAULT: a
+  beam trigger in env 2 of 4 refused as `ShotRefused` with `.env == 2` at
+  tick 0, the batch refused (red with `=layout`, the counts read env-major:
+  a `ConductorFault` naming env 0). P7e.4's gate unchanged and green (its S4
+  now counts 2 syncs a tick: the physics books no longer sync).
+- THE PROFILE (`tools/bench_conductor.py`, Home Desktop RTX 3070 8 GB, the
+  machine otherwise idle; one recorded match's intents latched into every
+  env, seeds 1..N; 10 warm-up, 60 timed, 20 profiled ticks; ms/tick is the
+  wall time of `tick()` ending in the books read's stream sync, i.e.
+  GPU-synchronised; GPU columns are CUDA-event time on the tick stream between
+  call lines, host columns the steady clock; "slot 7" holds its head (the
+  SOURCES stage), the EOS substeps, trace tail, combustion and the resident
+  tail; ship_demo 70 x 100 with 12 units, range_hall 26 x 39 with 2):
+| level | N | ms/tick | ms/env-tick | GPU unit side | GPU slot 7 | host unit side | host slot 7 | books read (host wait) | host fold | device MB (marginal per env) | top GPU sub-slots |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| ship_demo | 1 | 10.23 | 10.233 | 3.29 | 4.95 | 4.54 | 3.70 | 0.38 | 1.80 | 1276 | 7 EOS substeps 40%, 7 tail: radiation sweep 8%, 7 physics head (sources) 7% |
+| ship_demo | 2 | 10.86 | 5.430 | 2.76 | 4.63 | 4.12 | 2.97 | 0.68 | 1.78 | 1292 (16.0) | 7 EOS substeps 44%, 7 tail: radiation sweep 9%, 7 physics head (sources) 7% |
+| ship_demo | 4 | 11.40 | 2.851 | 2.94 | 5.13 | 4.25 | 3.16 | 1.06 | 1.80 | 1318 (14.0) | 7 EOS substeps 43%, 7 tail: radiation sweep 11%, 7 physics head (sources) 6% |
+| ship_demo | 8 | 13.08 | 1.635 | 2.89 | 6.97 | 4.32 | 3.07 | 2.91 | 1.83 | 1372 (13.7) | 7 EOS substeps 41%, 7 tail: radiation sweep 22%, 7 physics head (sources) 6% |
+| ship_demo | 16 | 17.79 | 1.112 | 3.03 | 10.30 | 4.56 | 3.20 | 6.05 | 1.83 | 1480 (13.6) | 7 EOS substeps 41%, 7 tail: radiation sweep 29%, 7 physics head (sources) 4% |
+| ship_demo | 32 | 27.39 | 0.856 | 3.23 | 18.34 | 4.58 | 3.23 | 14.32 | 1.87 | 1690 (13.4) | 7 EOS substeps 44%, 7 tail: radiation sweep 36%, 7 physics head (sources) 2% |
+| ship_demo | 64 | 47.08 | 0.736 | 3.76 | 34.29 | 5.60 | 3.98 | 29.22 | 1.98 | 2106 (13.2) | 7 EOS substeps 46%, 7 tail: radiation sweep 40%, 7 combustion 2% |
+| ship_demo | 128 | 87.62 | 0.685 | 5.20 | 66.25 | 7.40 | 5.39 | 59.96 | 2.26 | 2942 (13.1) | 7 EOS substeps 47%, 7 tail: radiation sweep 41%, 7 combustion 2% |
+| ship_demo | 256 | 166.55 | 0.651 | 7.24 | 129.92 | 8.55 | 6.87 | 124.02 | 2.75 | 4532 (12.8) | 7 EOS substeps 47%, 7 tail: radiation sweep 43%, 7 combustion 2% |
+| range_hall | 1 | 8.42 | 8.419 | 2.99 | 2.18 | 4.02 | 1.36 | 0.20 | 1.76 | 1268 | 7 EOS substeps 31%, 5 zombie AI 7%, 1b intents 7% |
+| range_hall | 2 | 7.44 | 3.722 | 2.64 | 2.19 | 3.63 | 1.31 | 0.24 | 1.52 | 1278 (10.0) | 7 EOS substeps 33%, 6 stamp_units 7%, 7 tail: radiation sweep 6% |
+| range_hall | 4 | 8.68 | 2.169 | 2.74 | 2.27 | 3.78 | 1.37 | 0.23 | 1.54 | 1288 (6.7) | 7 EOS substeps 31%, 7 tail: radiation sweep 7%, 6 stamp_units 7% |
+| range_hall | 8 | 7.44 | 0.930 | 2.66 | 2.66 | 3.80 | 1.39 | 0.54 | 1.55 | 1310 (6.0) | 7 EOS substeps 29%, 7 tail: radiation sweep 14%, 6 stamp_units 6% |
+| range_hall | 16 | 8.58 | 0.536 | 2.76 | 3.34 | 3.90 | 1.45 | 1.18 | 1.55 | 1352 (5.6) | 7 EOS substeps 24%, 7 tail: radiation sweep 24%, 1b intents 5% |
+| range_hall | 32 | 10.18 | 0.318 | 3.40 | 4.89 | 5.17 | 2.08 | 1.57 | 1.63 | 1440 (5.5) | 7 tail: radiation sweep 31%, 7 EOS substeps 21%, 1b intents 5% |
+| range_hall | 64 | 14.85 | 0.232 | 3.71 | 7.96 | 5.27 | 2.51 | 4.62 | 1.70 | 1616 (5.5) | 7 tail: radiation sweep 44%, 7 EOS substeps 17%, 7 physics head (sources) 4% |
+| range_hall | 128 | 23.35 | 0.182 | 4.29 | 13.82 | 5.61 | 2.91 | 10.64 | 1.87 | 1974 (5.6) | 7 tail: radiation sweep 56%, 7 EOS substeps 14%, 7 physics head (sources) 4% |
+| range_hall | 256 | 42.06 | 0.164 | 6.14 | 28.36 | 7.91 | 5.13 | 23.70 | 2.45 | 2664 (5.5) | 7 tail: radiation sweep 59%, 7 EOS substeps 15%, 7 physics head (sources) 6% |
+  What dominates: at N = 1 the tick is HOST-bound (about 4.5 ms of Python and
+  launches on the unit side, 3.7 in slot 7's call lines, 1.8 in the fold;
+  the GPU idles between launches); ship_demo turns GPU-bound by N = 8,
+  range_hall by N = 32, and from there slot 7 is 90 to 95 % of the GPU (the
+  EOS substeps about 45 % and the radiation sweep about 40 % on ship_demo; the
+  sweep 59 % on the small room, whose EOS is cheap) while the whole unit side
+  stays 3 to 9 ms a tick for every N (every face is one launch for all envs).
+  The per-env cost flattens at 0.65 ms (ship_demo) and 0.16 ms (range_hall)
+  an env-tick. Device memory: about 1.27 GB fixed at N = 1 (both levels: the
+  conductor's capacity-sized lists and scratch, not the grid; not split
+  further) plus 12.8 to 13.6 MB an env (ship_demo) and 5.5 MB (range_hall).
+  Largest N on 8 GB: ship_demo N = 384 fits (6.2 GB, 247 ms a tick, 0.643 ms
+  an env-tick); N = 512 allocates (7.1 GB) but pages (10.8 s a tick: WDDM
+  oversubscription), so 384 is the practical ceiling; range_hall N = 256 used
+  2.7 GB. At these rates a 6 GB card holds about 300 ship_demo envs and a
+  12 GB card about 800 (fixed 1.27 GB + 13 MB an env, the CUDA context
+  aside).
+- Host seams left open, by name: the latch (host intents -> one scatter per
+  tick, the order table's H2D on an order tick); the swarm's `high_water`
+  (host, a load constant in a match); the swarm's species rules and tables
+  re-packed on the host per tick (constants per config); the EOS stage's
+  `max_n_sub` read; the books read; the twins' host clocks; the team picture,
+  the recorder and the render-only events (swarm deaths, wall / door events)
+  not run; no per-env reset (above); the 1.27 GB fixed allocation not
+  analysed.
+
 **Systems (additions to §13).** New, each with its ONE index line and its
 constraints in `.claude/rules/device-units.md` when it is built: the device
 table module and each table on it (charges, grenades, rounds, blast sources,

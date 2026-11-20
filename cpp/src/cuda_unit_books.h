@@ -57,4 +57,22 @@ void host_sync_log_begin();
 std::vector<std::string> host_sync_log_end();
 void note_host_sync(const char* what);
 
+// #29 P7e.5 -- THE PROFILE (the bench's instrument, tools/bench_conductor.py).
+// While open (profile_begin), every books_set_label with a non-empty label and
+// every profile_mark records a CUDA event on the tick stream and the host's
+// steady clock under its label; nothing waits. profile_end (after the tick's
+// one books read has synchronised the stream: every event is complete, so
+// reading them is no sync) returns one segment per pair of consecutive marks,
+// (label of the first, GPU ms between the two events, host ms between the
+// two marks). Off, a mark costs nothing.
+struct ProfileSegment {
+    std::string label;
+    double gpu_ms = 0.0;
+    double host_ms = 0.0;
+};
+void profile_begin();
+bool profiling();
+void profile_mark(const char* label);
+std::vector<ProfileSegment> profile_end();
+
 }  // namespace breach_cuda

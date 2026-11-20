@@ -7,6 +7,7 @@
 
 #include <cuda_runtime.h>
 
+#include <chrono>
 #include <sstream>
 #include <stdexcept>
 
@@ -39,7 +40,19 @@ void bk_check(cudaError_t e, const char* what) {
 
 }  // namespace
 
-void books_set_label(const std::string& label) { g_label = label; }
+struct Profile {
+    bool on = false;
+    std::vector<cudaEvent_t> pool;
+    std::vector<std::string> labels;
+    std::vector<std::chrono::steady_clock::time_point> host;
+    size_t used = 0;
+};
+Profile g_prof;
+
+void books_set_label(const std::string& label) {
+    g_label = label;
+    if (g_prof.on && !label.empty()) profile_mark(label.c_str());
+}
 const std::string& books_label() { return g_label; }
 
 void books_defer_begin(size_t cap_words) {
@@ -109,6 +122,51 @@ std::vector<std::string> host_sync_log_end() {
     g_log_on = false;
     std::vector<std::string> out;
     out.swap(g_log);
+    return out;
+}
+
+void profile_begin() {
+    g_prof.on = true;
+    g_prof.used = 0;
+    g_prof.labels.clear();
+    g_prof.host.clear();
+}
+
+bool profiling() { return g_prof.on; }
+
+void profile_mark(const char* label) {
+    if (!g_prof.on) return;
+    if (g_prof.used == g_prof.pool.size()) {
+        cudaEvent_t ev = nullptr;
+        bk_check(cudaEventCreate(&ev), "profile event");
+        g_prof.pool.push_back(ev);
+    }
+    bk_check(cudaEventRecord(g_prof.pool[g_prof.used], tstream()), "profile record");
+    g_prof.labels.emplace_back(label);
+    g_prof.host.push_back(std::chrono::steady_clock::now());
+    ++g_prof.used;
+}
+
+std::vector<ProfileSegment> profile_end() {
+    g_prof.on = false;
+    std::vector<ProfileSegment> out;
+    for (size_t i = 0; i + 1 < g_prof.used; ++i) {
+        ProfileSegment s;
+        s.label = g_prof.labels[i];
+        float ms = 0.0f;
+        const cudaError_t e = cudaEventElapsedTime(&ms, g_prof.pool[i], g_prof.pool[i + 1]);
+        if (e == cudaErrorNotReady)
+            throw std::logic_error("profile_end: an event is not complete (call it after "
+                                   "the tick's books read)");
+        bk_check(e, "profile elapsed");
+        s.gpu_ms = (double)ms;
+        s.host_ms = std::chrono::duration<double, std::milli>(g_prof.host[i + 1] -
+                                                              g_prof.host[i]).count();
+        out.push_back(s);
+    }
+    g_prof.used = 0;
+    g_prof.labels.clear();
+    g_prof.host.clear();
     return out;
 }
 
