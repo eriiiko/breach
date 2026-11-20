@@ -1459,17 +1459,21 @@ caustic_max = 3.0              # the most a focus multiplies the light (> 1): th
 # offsets scaled 1 ± ca_amount per channel. Tiny — a barely-there prismatic
 # fringe. 0 = off (single sample).
 ca_amount = 0.012
-# --- The fine surface that flows (water W1, #97; renderer/water_surface.py) ---
-# A repeating texture of fine wave SLOPES laid on the water in METRES (not
-# tiles) and carried by the simulated flow (Vlachos's two-phase flow map),
-# every lookup hex-tiled so it never repeats. It replaced the ambient sines
-# and their wave_scale / ambient_amp. Starting values (W1's builder); Erik
-# tunes by eye on levels/water_studio (shots still_pool_flashlight,
-# flooding_corridor).
-detail_wavelength_m = 0.12     # the dominant fine wave's length, metres
-detail_strength_still = 0.03   # RMS slope of still water (a faint wobble of the floor seen through it)
-detail_strength_flow = 0.3     # RMS slope at full flow / agitation (sparse sparkles under a lamp)
-detail_drift_mps = 0.03        # still water's slow uniform drift, m/s
+# --- The fine surface that flows (water W1 + W1b, #97; renderer/water_surface.py) ---
+# PROCEDURAL travelling sines (W1b, after Erik: "sines in x and y morph
+# differently all the time"), in two layers through one law -- the fine
+# RIPPLES (detail_*, wave_count) and the longer SWELL (swell_*): sharpened
+# sines (Finch's exponent), every one its own direction, wavelength
+# (incommensurate) and phase, running at water's own dispersion speed, so
+# the pattern morphs; a hex lattice of wave_cell_m turns and shifts the sets
+# per cell so no patch repeats; evaluated at the point the simulated flow
+# advected (Vlachos's two-phase flow map). Starting values (W1b's builder);
+# Erik tunes by eye on levels/water_studio (shots still_pool_flashlight,
+# still_pool_closeup, flooding_corridor).
+detail_wavelength_m = 0.12     # the ripples' dominant wavelength, metres (the band 0.6..1.6 x it)
+detail_strength_still = 0.05   # the ripples' RMS slope on still water
+detail_strength_flow = 0.3     # ... at full flow / agitation
+detail_drift_mps = 0.03        # the foam bubbles' slow drift on still water, m/s (the waves run by dispersion)
 detail_zoom_zero = 6.0         # screen px per tile at and below which the fine surface is off
 detail_zoom_full = 14.0        # ... and from which it is at full strength
 flow_cycle_s = 0.6             # the flow map's cycle: each layer resets this often
@@ -1480,6 +1484,18 @@ flow_phase_noise_m = 3.0       # length (m) of the per-point phase offset (hides
 agitation_ref = 0.1            # the RELATIVE agitation (ripple_v against its wet neighbours', m/s) at which
                                # the fine surface saturates; W2's rough-water foam starts past it. Still rooms'
                                # frozen residue is <= 0.006 (p99), a blast's crests 0.15-0.33 near the charge
+flow_still_mps = 0.05          # the waves ride the flow from this speed on (slower currents leave them to their own speed)
+wave_count = 10                # the ripples' sines (1..16): the cost scales with it
+wave_sharpness = 1.6           # Finch's crest exponent on still water (1 = plain sines)
+wave_sharpness_flow = 2.6      # ... at full flow / agitation (rough water has sharper crests)
+wave_speed = 1.0               # the waves' speed over water's own dispersion (1 = physical)
+wave_cell_m = 2.5              # the hex lattice's cell: the sets are turned and shifted per cell (no repeats)
+swell_wavelength_m = 0.8       # the swell's dominant wavelength, metres (the band 0.8..1.25 x it)
+swell_wave_count = 5           # the swell's sines (1..16)
+swell_strength_still = 0.06    # the swell's RMS slope on still water
+swell_strength_flow = 0.15     # ... at full flow / agitation
+swell_dir_deg = 30.0           # still water's swell direction, degrees clockwise from east (screen)
+swell_spread_deg = 35.0        # the swell's directions within +- this (the flow's direction where it flows)
 # --- Foam with a life (water W2, #97; renderer/water_foam.py) ---
 # A foam AMOUNT per cell (picture state: never synced, never read by the sim)
 # made by four sources, carried by the simulated flow and lost by decay, on

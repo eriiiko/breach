@@ -19,11 +19,18 @@ Each check names the PROPERTY it protects and the change that must break it:
       fast path is lost (a dequantize before ``.any()``, a full-RT quad).
   water_detail_matches_twin -- debug view 1 writes the fine surface's slope
       per pixel; it equals ``water_surface.detail_slope`` (the numpy twin,
-      fed the same packed fp16 textures, the same frame uniforms and the same
-      ripple bake) at every pixel centre within a small tolerance, on a flow
-      that changes tile by tile. Breaks if the shader drifts from the twin
-      (the hex lattice, the hash, the rotation, the slide, the cap, the
-      crossfade, the strength) or a y axis is flipped.
+      fed the same packed fp16 textures and the same frame -- its waves'
+      phases at the sim clock) at every pixel centre within a small
+      tolerance, on a flow that changes tile by tile. Breaks if the shader
+      drifts from the twin (the waves, Finch's shape, the hex lattice, the
+      hash, the turn, the slide, the cap, the crossfade, the strength) or a
+      y axis is flipped.
+  water_swell_matches_twin -- (W1b) the same comparison with the ripples
+      switched off, so the SWELL alone is compared: on still water (its
+      direction swell_dir_deg) and on the tile-by-tile flow (each lattice
+      vertex turning it to the flow's direction there, read from the flow
+      texture). Breaks if the swell drifts from the twin: its waves, its
+      vertex direction (the sign of the turn, the spread), its strength.
   water_picture_is_finite -- the full picture over a lit, flowing pool
       (light curve on, no smoke product) is finite everywhere, with alpha in
       the ``[alpha_min, alpha_max]`` ramp. Breaks on a NaN (a pow of a
@@ -154,9 +161,8 @@ def check_compiles():
     wp = WaterPass(H, W, _settings(), tile_size_m=TILE_M)
     default_id = rl.rl_get_shader_id_default()
     assert wp.shader.id != default_id, "water.fs fell back to the default"
-    assert wp.ripple_tex.mipmaps > 1, "the ripple bake has no mipmaps"
     wp.unload()
-    return f"program {wp.shader.id}, ripple mips {wp.ripple_tex.mipmaps}"
+    return f"program {wp.shader.id}"
 
 
 @check("water_dry_draws_nothing")
@@ -196,9 +202,8 @@ def check_dry():
 @check("water_detail_matches_twin")
 def check_twin():
     from renderer.heat_shimmer import bilinear_tiles
-    from renderer.noise_bake import bake_ripple_rgba
-    from renderer.water import RIPPLE_SIZE, WaterPass
-    from renderer.water_surface import detail_slope
+    from renderer.water import WaterPass
+    from renderer.water_surface import detail_slope, grid_flow_fn
     tex = _textures()
     s = _settings(debug_view=1)
     wp = WaterPass(H, W, s, tile_size_m=TILE_M)
@@ -216,7 +221,7 @@ def check_twin():
     depth = bilinear_tiles(wpk[..., 2], xt, yt)
     agit = bilinear_tiles(wpk[..., 3], xt, yt)    # the relative agitation
     twin = detail_slope(xt * TILE_M, yt * TILE_M, v, depth, agit, wp.frame,
-                        bake_ripple_rgba(RIPPLE_SIZE), s)
+                        s, grid_flow_fn(fp, wpk, TILE_M, s))
     gpu = out[..., :2].astype(np.float64)
     k = float(np.median(out[..., 2]))
     err = np.sqrt(((gpu - twin) ** 2).sum(-1))
@@ -235,6 +240,53 @@ def check_twin():
     return (f"{err.size} px: p99 |err| {p99:.1e} = {p99 / k:.2%} of k "
             f"(rms slope {rms:.3f}, max err {err.max():.1e}, "
             f"{bad:.3%} > 10% k)")
+
+
+def _swell_vs_twin(flowing: bool):
+    from renderer.heat_shimmer import bilinear_tiles
+    from renderer.water import WaterPass
+    from renderer.water_surface import detail_slope, grid_flow_fn
+    tex = _textures()
+    s = _settings(debug_view=1, detail_strength_still=0.0,
+                  detail_strength_flow=0.0, swell_strength_still=0.08,
+                  swell_strength_flow=0.15)
+    wp = WaterPass(H, W, s, tile_size_m=TILE_M)
+    fields = _fields()
+    if not flowing:
+        fields["flow_vx_q"][:] = 0
+        fields["flow_vy_q"][:] = 0
+    wp.update(**fields, sim_tick=4321, alpha=0.61, tps=TPS,
+              zoom_px_per_tile=64.0)
+    drew, _before, out = _render(wp, tex)
+    assert drew
+    yy, xx = np.mgrid[0:H * PPT, 0:W * PPT]
+    xt = (xx + 0.5) / PPT
+    yt = (yy + 0.5) / PPT
+    fp = wp.flow_packed.astype(np.float64)
+    wpk = wp.packed.astype(np.float64)
+    v = np.stack([bilinear_tiles(fp[..., 0], xt, yt),
+                  bilinear_tiles(fp[..., 1], xt, yt)], -1)
+    depth = bilinear_tiles(wpk[..., 2], xt, yt)
+    agit = bilinear_tiles(wpk[..., 3], xt, yt)
+    twin = detail_slope(xt * TILE_M, yt * TILE_M, v, depth, agit, wp.frame,
+                        s, grid_flow_fn(fp, wpk, TILE_M, s))
+    gpu = out[..., :2].astype(np.float64)
+    k = float(np.median(out[..., 2]))
+    err = np.sqrt(((gpu - twin) ** 2).sum(-1))
+    rms = float(np.sqrt((twin ** 2).sum(-1).mean()))
+    p99 = float(np.percentile(err, 99.0))
+    assert k > 0.0 and rms > 0.3 * k, f"vacuous: the swell is flat ({rms})"
+    assert p99 < 0.04 * k, f"GL vs twin: p99 error {p99:.2e} (k {k:.3f})"
+    wp.unload()
+    for t in tex:
+        rl.unload_texture(t)
+    return f"p99 |err| {p99 / k:.2%} of k (rms slope {rms:.3f})"
+
+
+@check("water_swell_matches_twin")
+def check_swell_twin():
+    return (f"still: {_swell_vs_twin(False)}; "
+            f"flowing: {_swell_vs_twin(True)}")
 
 
 @check("water_picture_is_finite")

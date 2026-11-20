@@ -94,11 +94,9 @@ def _unload(tex):
 @check("caustic_matches_twin")
 def check_twin():
     from renderer.heat_shimmer import bilinear_tiles
-    from renderer.noise_bake import (bake_ripple_curvature_rgba,
-                                     bake_ripple_rgba)
-    from renderer.water import RIPPLE_SIZE, WaterPass
+    from renderer.water import WaterPass
     from renderer.water_surface import (caustic_det, caustic_gain,
-                                        detail_surface)
+                                        detail_surface, grid_flow_fn)
     tex = F._textures()
     # a moderate surface (focusing up to the cap, barely folding), so the
     # gain is compared where it is not on the knife edge at det = 0 -- the
@@ -122,8 +120,7 @@ def check_twin():
     agit = bilinear_tiles(wpk[..., 3], xt, yt)
     _slope, hess = detail_surface(
         xt * F.TILE_M, yt * F.TILE_M, v, depth, agit, wp.frame,
-        bake_ripple_rgba(RIPPLE_SIZE), bake_ripple_curvature_rgba(RIPPLE_SIZE),
-        s)
+        s, grid_flow_fn(fp, wpk, F.TILE_M, s))
     det = caustic_det(hess, depth)
     gain = caustic_gain(det, s)
     gpu_h = out[..., :3].astype(np.float64)
@@ -156,7 +153,8 @@ def check_twin():
 @check("caustic_flat_is_nothing")
 def check_flat():
     tex = F._textures()
-    flat = dict(detail_strength_still=0.0, detail_strength_flow=0.0)
+    flat = dict(detail_strength_still=0.0, detail_strength_flow=0.0,
+                swell_strength_still=0.0, swell_strength_flow=0.0)
     on = _picture(F._settings(caustic_strength=1.0, **flat), tex)
     off = _picture(F._settings(caustic_strength=0.0, **flat), tex)
     _unload(tex)

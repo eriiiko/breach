@@ -8,10 +8,15 @@ ambient sheen) + an ADDITIVE GGX glint (reusing the light buffer) that rides on
 top as HDR specular light. The glint is added, not Fresnel-blended at ~2% (which
 crushed it top-down) — see shaders/water.fs.
 
-W1 (#97): THE FINE SURFACE THAT FLOWS. The normal carries, besides the
-simulated tile-scale ripple, a fine surface of wave slopes in METRES carried by
-the simulated flow (Vlachos's two-phase flow map through
-``renderer/advected_noise.py``, every lookup hex-tiled after Mikkelsen 2022).
+W1 + W1b (#97): THE FINE SURFACE THAT FLOWS. The normal carries, besides
+the simulated tile-scale ripple, a fine surface in METRES carried by the
+simulated flow (Vlachos's two-phase flow map through
+``renderer/advected_noise.py``): since W1b PROCEDURAL travelling sines in
+two layers (the ripples, the swell), each wave its own direction, wavelength
+and phase at water's dispersion speed, Finch-sharpened, a hex lattice over
+the wave set (Mikkelsen 2022) so no patch repeats. The frame's waves (their
+wave vectors, their phases at the sim clock wrapped to [0, 2 pi), their
+amplitudes) are uniforms, ``u_waves``; there is no surface texture.
 Its law, its settings door and its packing are ``renderer/water_surface.py``
 (the numpy twin the shader is GL-checked against); this module is the GL face.
 
@@ -28,10 +33,7 @@ Plumbing mirrors LightingPass. Two per-tile RGBA16F textures, bilinear:
              ``water_surface.relative_agitation``, the fine surface's
              strength and the foam both read it)
     u_flow   R, G = flow (m/s, y south)   B = solid   A = previous depth (m)
-plus the static ripple bake (``noise_bake.bake_ripple_rgba``, RGBA32F,
-REPEAT, mipmapped) and its curvature companion (W4,
-``noise_bake.bake_ripple_curvature_rgba``, the same state), the foam image (W2, bilinear for the draw) and the
-static bubble bake (``noise_bake.bake_foam_rgba``, REPEAT, mipmapped). The light textures and the level diffuse need no new
+plus the foam image (W2, bilinear for the draw) and the static bubble bake (``noise_bake.bake_foam_rgba``, REPEAT, mipmapped). The light textures and the level diffuse need no new
 plumbing; the smoke's cast product and the light curve come from the lit-3D
 seam (``lit3d._SMOKE_SHADOW_GLSL`` + ``_LIGHT_CURVE_GLSL``, spliced at the
 shader's ``// <SMOKE_SHADOW>`` marker -- the lighting.py precedent).
@@ -44,8 +46,8 @@ never wall time (critique B2). Its fixed step is the foam's (W2,
 W4 (#97): SHARP CAUSTICS. The floor's source light is multiplied by the
 fine surface's focusing, ``min(1/|det J|, caustic_max)`` of the refraction
 map (Wallace's area method as an analytic Jacobian; the twin's
-``water_surface.caustic_term``), read from the ripple's curvature companion
-through the same hex-tiled, flow-mapped lookup. It replaced the Laplacian
+``water_surface.caustic_term``), from the exact Hessian of the same sines
+(W1b; W4 read a curvature bake). It replaced the Laplacian
 caustic, its procedural detail and the last ``u_time``.
 
 W2 (#97): FOAM WITH A LIFE. A foam amount per cell (``foam_cells_per_tile``
@@ -77,21 +79,21 @@ import pyray as rl
 from . import core
 from . import water_foam
 from .lighting import art_src_and_uv_rect
-from .water_surface import (CAUSTIC_K, FlowFrame, WaterSettings, flow_frame,
-                            pack_flow, relative_agitation, wet_box)
+from .water_surface import (CAUSTIC_K, LAYERS, MAX_WAVES, FlowFrame,
+                            WaterSettings, flow_frame, pack_flow,
+                            relative_agitation, swell_dir0, wave_uniforms,
+                            wet_box)
 
 
 SHADERS_DIR = Path(__file__).resolve().parent.parent / "shaders"
 
 # Sampler units beyond raylib's batch (which binds texture0 + 4): the smoke's
-# cast product, the flow texture, the ripple bake, the foam image, the bubble
-# bake (render-effects rule: samplers from unit 5 up). The foam step's own
+# cast product, the flow texture, the foam image, the bubble bake
+# (render-effects rule: samplers from unit 5 up). The foam step's own
 # direct-GL block binds 8..10 (the water, the flow, the foam front).
-_UNIT_SMOKE, _UNIT_FLOW, _UNIT_RIPPLE = 5, 6, 7
+_UNIT_SMOKE, _UNIT_FLOW = 5, 6
 _UNIT_FOAM, _UNIT_BUBBLES = 8, 9
-_UNIT_CURV = 10                     # W4: the ripple's curvature companion
 _STEP_UNITS = {"u_water": 8, "u_flow": 9, "u_foam": 10}
-RIPPLE_SIZE = 256
 FOAM_TEX_SIZE = 256
 _UNSET = object()
 
@@ -110,21 +112,6 @@ def load_water_fs() -> str:
     return (src.replace("// <SMOKE_SHADOW>",
                         _SMOKE_SHADOW_GLSL + _LIGHT_CURVE_GLSL)
                .replace("// <ADVECTION>", ADVECTION_GLSL))
-
-
-def _ripple_texture() -> rl.Texture:
-    """The ripple bake as an RGBA32F texture: REPEAT, mipmapped, trilinear
-    (critique M8: minified, the slopes average toward flat)."""
-    from .noise_bake import bake_ripple_rgba
-    return _static_texture(bake_ripple_rgba(RIPPLE_SIZE))
-
-
-def _ripple_curvature_texture() -> rl.Texture:
-    """The ripple's curvature companion (W4's caustic,
-    ``noise_bake.bake_ripple_curvature_rgba``): the same size and sampler
-    state as the ripple bake, so the two are read at the same texels."""
-    from .noise_bake import bake_ripple_curvature_rgba
-    return _static_texture(bake_ripple_curvature_rgba(RIPPLE_SIZE))
 
 
 def _bubble_texture() -> rl.Texture:
@@ -170,8 +157,6 @@ class WaterPass:
         self.flow_tex = core.create_dynamic_rgba16f_texture(self.w, self.h)
         for t in (self.water_tex, self.flow_tex):
             rl.set_texture_filter(t, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
-        self.ripple_tex = _ripple_texture()
-        self.ripple_curv_tex = _ripple_curvature_texture()
         self.bubble_tex = _bubble_texture()
         self._prev_depth = np.zeros((self.h, self.w), np.float32)
         self._last_depth = np.zeros((self.h, self.w), np.float32)
@@ -186,6 +171,7 @@ class WaterPass:
         self.clock = SimClock(1.0 / 48.0, cap=water_foam.FOAM_STEP_CAP)
         self._wall_prev: Optional[float] = None
         self.frame = FlowFrame(0.0, 1.0, 0.0, 0.0, 1.0)
+        self._waves = None
         self.last_update_ms = 0.0
 
         # W2: the foam. Its PingPong is allocated on the first wet frame
@@ -322,6 +308,18 @@ class WaterPass:
         self._set_vec("u_caustic", (s.caustic_strength, s.caustic_max,
                                     CAUSTIC_K, 0.0))
         self._set_f("u_agit_ref", s.agitation_ref)
+        # W1b: the swell (strengths, spread), the lattice and the sharpness,
+        # the swell's still direction, the waves per layer
+        self._set_vec("u_swell", (s.swell_strength_still,
+                                  s.swell_strength_flow,
+                                  math.radians(s.swell_spread_deg), 0.0))
+        self._set_vec("u_wave", (s.wave_cell_m, s.wave_sharpness,
+                                 s.wave_sharpness_flow, s.flow_still_mps))
+        cx, cy = swell_dir0(s)
+        self._set_vec("u_swell_dir", (cx, cy, math.radians(s.swell_dir_deg),
+                                      0.0))
+        self._set_vec("u_wave_n", (float(s.wave_count),
+                                   float(s.swell_wave_count)))
         self._set_i("u_debug_view", s.debug_view)
         from .noise_bake import FOAM_CELLS
         self._set_vec("u_foam_a", (s.foam_bubble_m[0] * FOAM_CELLS,
@@ -338,9 +336,20 @@ class WaterPass:
         s, f = self.settings, self.frame
         self._set_vec("u_grid_m", (self.w * self.tile_size_m,
                                    self.h * self.tile_size_m))
-        self._set_vec("u_detail", (s.period_m, s.detail_strength_still,
-                                   s.detail_strength_flow, f.fade))
-        self._set_vec("u_flow_ph", (f.phase, f.cycle_s, f.drift_u, f.drift_v))
+        self._set_vec("u_detail", (s.detail_strength_still,
+                                   s.detail_strength_flow, f.fade, 0.0))
+        self._set_vec("u_flow_ph", (f.phase, f.cycle_s, f.drift_x, f.drift_y))
+        if f.waves is not None:
+            # (kx, ky, phase now, height amplitude) per layer and wave; the
+            # phases are wrapped in float64 (the GPU never sees the time)
+            self._waves = wave_uniforms(f)
+            loc = self._loc("u_waves")
+            if loc >= 0:
+                rl.set_shader_value_v(
+                    self.shader, loc,
+                    rl.ffi.cast("void *", rl.ffi.from_buffer(self._waves)),
+                    rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4,
+                    MAX_WAVES * len(LAYERS))
         self._set_vec("u_flow_lim", (s.flow_max_offset_m, s.flow_edge_depth_m,
                                      s.flow_phase_noise_m, s.flow_speed_ref))
 
@@ -691,8 +700,6 @@ class WaterPass:
         self._set_i("u_foam_on", 1 if self.foam is not None else 0)
         units = ((_UNIT_SMOKE, "u_smoke_cover", cover),
                  (_UNIT_FLOW, "u_flow", self.flow_tex),
-                 (_UNIT_RIPPLE, "u_ripple", self.ripple_tex),
-                 (_UNIT_CURV, "u_ripple_curv", self.ripple_curv_tex),
                  (_UNIT_FOAM, "u_foam",
                   self.foam.front if self.foam is not None else None),
                  (_UNIT_BUBBLES, "u_bubbles", self.bubble_tex))
@@ -718,8 +725,6 @@ class WaterPass:
         rl.unload_shader(self.shader)
         rl.unload_texture(self.water_tex)
         rl.unload_texture(self.flow_tex)
-        rl.unload_texture(self.ripple_tex)
-        rl.unload_texture(self.ripple_curv_tex)
         rl.unload_texture(self.bubble_tex)
         if self.foam is not None:
             self.foam.unload()
