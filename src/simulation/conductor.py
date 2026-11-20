@@ -43,7 +43,9 @@ physics runner, a ruleset that is not the continuous path (the shooting and
 object doors), a map with water (the water pre-step reads the host mirror),
 an ambient map (the sky bracket is a host bracket), requested light, a
 non-empty edit queue window (the device door starts at the host's seq with
-no rows), a unit carrying an optics override (the stamp's table refusal).
+no rows), a unit carrying an optics override (the stamp's table refusal), a
+creature unit (#106: slot 5b, the arm chain and the creature's hub are
+host-side on every path; the unit store does not carry a creature body).
 
 NOT PART OF THE PLAYED TICK.
 """
@@ -287,6 +289,12 @@ class DeviceConductor:
                                    "door starts empty")
         if sim.paused:
             raise ConductorRefused("device conductor: the sim is paused")
+        bodies = getattr(getattr(sim, "_creature_system", None), "bodies", None)
+        if bodies:
+            raise ConductorRefused(
+                f"device conductor: {len(bodies)} creature unit(s) (#106: slot 5b "
+                "-- the arm chain, the hub, the hit seam -- is host-side, with no "
+                "device form; the unit store carries no creature body)")
 
     # ------------------------------------------------------------------
     # THE LATCHES
