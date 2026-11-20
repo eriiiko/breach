@@ -247,7 +247,7 @@ amends the rule file, never this line's length.
 | 3D units | `renderer/unit_model_renderer.py` + `renderer/unit_looks.py` + `renderer/marine_shader.py` | No model/anim state ever on `Unit`; a new look is a table entry, never a second renderer |
 | Held props | `renderer/held_props.py` + `[render.held_props]` | A held prop is a row on a hand socket, drawn through the units' one shader |
 | Pose layer | `renderer/pose_layer.py` (+ `pose_clips.py`, `pose_skinner.py`) | THE only place a 3D unit's pose is composed; skeleton-agnostic; reactions and carriages are rows |
-| Lit-3D seam | `renderer/lit3d.py` | THE shared light-field GLSL, `LightFieldCtx` and top-down `Camera3D`; a second copy is the bug |
+| Lit-3D seam | `renderer/lit3d.py` | THE shared light-field GLSL, `LightFieldCtx` and top-down `Camera3D`; a second copy is the bug. Since #97 W3 it holds THE waterline (`_WATERLINE_GLSL` + `bind_waterline_map`, twin `water_surface.waterline_tint`): a body below the water is seen through it by the water pass's own law, in world height |
 | Prop generator | `renderer/propgen.py` | THE procedural prop / vegetation geometry; new flora = a generator fn + `PALETTES` row |
 | Static props | `renderer/static_props.py` | The ONLY path drawing placed 3D props; no prop render state on a sim entity |
 | Larva bodies | `renderer/larva_bodies.py` + `shaders/larva_body.*` + `propgen.generate_larva` | THE swarm larvae's picture: one grub mesh, every larva an instance in ONE draw, lit through the lit-3D seam; never a second swarm body renderer |
