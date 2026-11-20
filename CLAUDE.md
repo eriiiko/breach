@@ -93,6 +93,7 @@ strategy. Every rule below serves that.
 | `levels.md` | level data layer, generators, recipes, archetype grammar, layout stage, LevelSpec, brood placement |
 | `determinism-gates.md` | tests, field digest, test conventions, E2E driver, benches |
 | `characters.md` | character kit, game-ready step, toon look, worker builder |
+| `creatures.md` | creature table, chain currency, activation table, chain integer reference, arm chain solver, creature bodies, primitives, hit seam, chain accessor, creature render |
 
 ## Canonical systems — check before building anything new
 
@@ -196,6 +197,14 @@ amends the rule file, never this line's length.
 | Swarm dot view | `renderer/swarm_dots.py` + `shaders/swarm_dots.vs` + `shaders/swarm_dots.fs` + `[debug] swarm_dots` | THE diagnostic picture of swarm units and their death flecks, render-only; the sim never reads it |
 | Bite-dose plane | `gmap.swarm_bite_dose` (`swarm.bite_plane`) + `swarm::bites_on` (`cpp/src/swarm.h`) + `exchange.apply_bite_dose` | THE swarm's bite: swarm output rebuilt every tick, read by the unit side only through the one coupling row into `poison.dose`; never a unit law reading a larva |
 | Count plane | `gmap.swarm_count` (`swarm.count_plane`) + `swarm::active_on` (`cpp/src/swarm.h`) | THE swarm's per-tile count of living, non-coma swarm units, built with the bite plane; the unit side reads it only through a coupling row |
+| Creature table | `config.toml` `[creatures.*]` + `src/simulation/creatures.py` | A creature is ONE versioned row through ONE door, joined to a species by `SpeciesDef.creature`; `is_creature` is the one key, never a name in a branch |
+| Chain currency | `src/simulation/creature_fixed.py` + `fixed_point.h` `CHAIN_FINE_BITS` + `src/simulation/fixedpoint_twins.py` | Chain state is Q24, converted ONCE through the kit, rounded half away from zero; never an inline shift or a private rounding helper |
+| Activation table | `cpp/src/activation_table.inc` (`tools/gen_activation_table.py`) | THE stiffening-wave sigmoid, checked in; never a tanh at load or run time |
+| Chain integer reference | `docs/octopus_integer_reference/chain_ref_q.py` | THE executable spec of the arm chain's arithmetic; a change lands THERE FIRST |
+| Arm chain solver | `cpp/src/arm_chain_solver.{h,cpp}` + `src/simulation/arm_chain.py` | THE articulated-body solver for every creature with arms, stateless over caller-owned buffers, held at tol 0 to the reference; host-side on every path |
+| Creature bodies | `src/simulation/creature_system.py` (slot 5b) + `src/simulation/creature_primitives.py` | THE runtime of a creature unit and its hub; the only per-tick writer of a creature unit's anchor and facing; every other writer skips it |
+| Hit seam | `Unit.hit_tiles` / `in_hit_tiles` + `creature_fixed.segment_tiles` | What a round or a beam strikes; everything else tests `occupied_tiles()`; never a third occupancy set |
+| Chain accessor | `creature_system.read_chain` + `Simulation.creature_chains()` | THE read of a creature's chain for renderer, tools and rules; never the buffers |
 
 ### Determinism gates
 
@@ -243,6 +252,7 @@ amends the rule file, never this line's length.
 | Dequantize convention | per-field `*_fixed.dequantize_f32` at `upload_state` | Fresh float copies at the render read, never written back, never `/65536` inline |
 | Tile inspector | `renderer/hover_readout.py::pack_hover_readout` | THE per-tile debug readout; tools and HUD read it, never a parallel field probe |
 | 3D units | `renderer/unit_model_renderer.py` + `renderer/unit_looks.py` + `renderer/marine_shader.py` | No model/anim state ever on `Unit`; a new look is a table entry, never a second renderer |
+| Creature render | `renderer/creature_pose.py` + `renderer/creature_model.py` + `UnitModelRenderer.draw_creatures` | A creature is drawn ONLY from its chain, its look a `[render.creature_looks]` row, in the units' one lit pass |
 | Held props | `renderer/held_props.py` + `[render.held_props]` | A held prop is a row on a hand socket, drawn through the units' one shader |
 | Pose layer | `renderer/pose_layer.py` (+ `pose_clips.py`, `pose_skinner.py`) | THE only place a 3D unit's pose is composed; skeleton-agnostic; reactions and carriages are rows |
 | Lit-3D seam | `renderer/lit3d.py` | THE shared light-field GLSL, `LightFieldCtx` and top-down `Camera3D`; a second copy is the bug |

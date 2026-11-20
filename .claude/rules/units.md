@@ -26,6 +26,7 @@ and who must use it; this file holds the constraints the code cannot say.
 - Facing is the int `facing_q`; `facing` is a READ-ONLY float view written only by the Turning law. Position is the ints `x_q` / `y_q` (Q16 tiles); `x` / `y` are read-only views written only through `Unit.set_pos_q` (the float door `Unit.set_pos` quantizes once, half away from zero); `tile_x` / `tile_y` truncate (`tests/test_unit_positions_q16.py` scans `src/`).
 - Its impulse state is written only through `unit_impulse`, its order columns only by `unit_orders`; its attributes are `__slots__` from the Unit schema (an undeclared attribute raises); the hp is a float held exactly on the Q16 grid.
 - Its full health is `unit_traits.max_hp_q(u)`: the spawn, the conversion, the panel and `bots_v1` read it. The species' vitality is sheet input read by no tick.
+- A CREATURE unit (`creature_system.is_creature`, #106): its anchor and facing are written per tick ONLY by slot 5b from its body pose (through `set_pos` and `turning.place`); slot 1a, slot 3 and every other position or facing writer skip it (`.claude/rules/creatures.md`).
 
 ## Unit schema
 - THE one table of what a unit holds: group S (synced columns: kind, default, digest rule, integer encoding), group D (constants derived from S, never written after spawn), REFERENCE_ONLY (host state never decided on by the continuous match path, each with its reason).
@@ -41,7 +42,7 @@ and who must use it; this file holds the constraints the code cannot say.
 - Every hook is ONE today (no stat formula yet, #199); only HP may differ from ONE on a training run until an observation spec shows hooks.
 
 ## Turning law
-- THE only writer of a unit's facing (`docs/unit_impulse_design_2026-11-10.md` §5.1, §13). A new reason to face somewhere is a TARGET handed to `set_target`, never a facing write; `place` (spawn, test fixtures) is the one other writer.
+- THE only writer of a unit's facing (`docs/unit_impulse_design_2026-11-10.md` §5.1, §13). A new reason to face somewhere is a TARGET handed to `set_target`, never a facing write; `place` (spawn, test fixtures, and a creature's slot 5b pose write, which the law never turns) is the one other writer.
 - The discrete law in slot 1a lands exactly and never overshoots; at `a ≥ 2w` it IS `turn_toward_q16` bit for bit (`tests/test_turning_law.py`). Its top speed bounds the OWN torque only; an incoming omega (the impulse law's outside spin, added first) is clamped below half a turn.
 - The dials are read ONLY through `Simulation.unit_turn_rate_q16` / `unit_turn_accel_q16` (the class dials × the TURN hook); a zombie reads the marine's. The door refuses more than 32 trials.
 - A controller that needs where this tick's shot goes reads `facing_after_turn_q16` (`turning.predict` + `unit_impulse.pending_dw`); `ticks_to_within` is the law iterated. Never a copy of the law.
@@ -70,7 +71,7 @@ and who must use it; this file holds the constraints the code cannot say.
 - Every `footprint_samples` call in `src/` passes the walker's own `effort_scale_q16=` and `speed_hook_q16=` (scanned by `tests/test_unit_impulse.py` and `tests/test_unit_traits.py`); a caller reducing both costs builds the second set with `dataclasses.replace`.
 
 ## Coupling table
-- A row whose effect on a unit is a PUSH hands the unit impulse law an impulse (`unit_impulse.add`) and owns no outcome of its own.
+- A row whose effect on a unit is a PUSH hands the unit impulse law an impulse (`unit_impulse.add`) and owns no outcome of its own. A CREATURE unit is the one exception: the wind row hands its impulse to the creature's BODY (`exchange._creature_wind`), never the unit impulse law (#106).
 - The heat row's felt temperature is ONE function, `exchange.felt_temperature`: the row calls it and so does the observation. Never a copy of the chain.
 - A swarm row names its `consumer` (`"swarm:<species>"`), has no Python response and is executed IN its species kernel (the last stage of slot 7); its `reads` are species-table fields the kernel's table rows carry. The future EXCHANGE-READ executor iterates `consumer == "unit"` rows only.
 - The swarm rows (arc #63) are the unit side's ONLY reads of the swarm: the bite (below) and the count (`swarm_count`, the Corpse law). Never a unit law reading a swarm column.
