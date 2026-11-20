@@ -818,6 +818,18 @@ light_gain = "game"
 note = "the whole pool hall (30 x 20, 0.30 m) at 10 s, 2 s after its first blast (8 s; W4 moved the frame from 7.5 s): lamps off, a flashlight from the west wall across the water; the crate stack (NE) burning since 0.5 s, the blast's smoke drifting. W1 judges the calm surface here; W4 the net of light under the beam and the firelight, none in the dark. The blast agitates only the few tiles around its charge (18, 14), for about a second, under its fireball and smoke: the net in the beam is the still water's. The hall's SW corner is the octopus's, kept empty."
 
 [[shot]]
+name = "still_pool_closeup"
+level = "water_studio"
+frames = 240
+center = [11.0, 15.5]
+zoom = 144.0
+lamps = false
+beacon = false
+flashlight = { pos = [6.5, 15.5], intensity = 2.5, spread = 0.8 }
+light_gain = "game"
+note = "still_pool_flashlight's beam up close (W1b, 2026-11-20): about 11 x 6 tiles (3.7 x 2 m) of still water east of the flashlight at 10 s, 3x the world RT's 48 px per tile (so the picture is magnified, as any close zoom is). Judges the crispness of the wave crests and the caustic net."
+
+[[shot]]
 name = "flooding_corridor"
 level = "water_studio"
 frames = 132
