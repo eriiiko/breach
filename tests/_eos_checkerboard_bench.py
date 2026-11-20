@@ -227,6 +227,367 @@ def step(sim):
     sim.step()
 
 
+# ---------------------------------------------------------------------------
+# per-step attribution (deliverable 2)
+# ---------------------------------------------------------------------------
+# The tick is split from what the engine exposes, never by changing it:
+#   u0, N0, P0, T0   the planes before the tick
+#   u1               step 1a's SL advection of u, replayed EXACTLY by the
+#                    test-only reference `bp.eos_sl_advect_ref` (validated:
+#                    its face-form divergence must equal the solver's cached
+#                    div_u bit for bit)
+#   N1, p*, div_u    the solver's own solve-input caches (`dbg_mg_inputs`):
+#                    N1 is the post-step-1 bulk N (nothing after step 1 moves N)
+#   P                the materialized `atmosphere` after the tick
+#   u2               the stored wind after the tick (kick + absorb / sponge /
+#                    cap / drag; nothing outside eos.step writes wind here)
+#   T2               the mirror after step 6 + 7
+# The step-1 mass flux is re-derived from (u1, N0) with the engine's own
+# integer face law (bulk_transport.cpp: v_face = (u_i + u_j) >> 1, upwind
+# donor, coeff = perm*dt in TILES, one >>32 truncation per plane) and checked
+# against N1, then split into its central part (v_face * face-mean N) and its
+# upwind part.
+#
+# The checkerboard functional. With s = (-1)^(x+y), a face flux F (lo -> hi)
+# changes sum(s*N) by F*(s_hi - s_lo) = -2*s_lo*F, so the checkerboard of N is
+# fed ONLY by the "staggered" component of the face fluxes, sum_f s_lo*F_f.
+# For the central part F ~ coeff * (u_lo + u_hi)/2 * N, that is
+#     Phi(u) = sum_{open faces} s_lo * (u_lo + u_hi) / 2     (m/s)
+# Phi is linear in u, so every step's velocity increment has its own share of
+# the next tick's checkerboard mass drift: Phi(u1 - u0) is step 1a's,
+# Phi(u2 - u1) step 4's, and step 4 is split further into the pressure kick
+# re-derived in float from the ENGINE's stored P (its 1/N with the cell's own N
+# and with the room-mean N: the difference is the N-checkerboard x smooth
+# pressure-gradient coupling), the same kick from a float re-solve of step 3
+# on the engine's own solve inputs (no Q16 rounding of P: the difference
+# between the two is what the stored pressure's quantization drives), and the
+# remainder (drag / cap / the integer kick's floors).
+
+def _open_faces(g):
+    sol = g.solid
+    oe = (~sol[:, :-1]) & (~sol[:, 1:])
+    os_ = (~sol[:-1, :]) & (~sol[1:, :])
+    return oe, os_
+
+
+def phi(u_x, u_y, s, oe, os_):
+    """Staggered-checkerboard content of a velocity field (see above)."""
+    fe = 0.5 * (u_x[:, :-1] + u_x[:, 1:]) * s[:, :-1]
+    fs = 0.5 * (u_y[:-1, :] + u_y[1:, :]) * s[:-1, :]
+    return float(fe[oe].sum() + fs[os_].sum())
+
+
+def _q(v):
+    return int(np.floor(v * Q + 0.5)) if v >= 0 else -int(np.floor(-v * Q + 0.5))
+
+
+def mass_flux_faces(g, ux_raw, uy_raw, n_planes, dt):
+    """The step-1d donor-cell face flux, per conservative plane, in raw Q16
+    (bulk_transport.cpp:133-142 for n_sub == 1). Returns (dq_e, dq_s) summed
+    over the planes, each split (total, central) as float raw counts."""
+    sol = g.solid
+    perm = g.dyn_permeability.astype(np.float64)
+    dt_q = _q(float(np.float32(dt)))
+    oe, os_ = _open_faces(g)
+    pe = np.minimum(perm[:, :-1], perm[:, 1:])
+    ps = np.minimum(perm[:-1, :], perm[1:, :])
+    ce = np.where(oe & (pe > 0), (np.vectorize(_q)(pe).astype(np.int64) * dt_q) >> 16, 0)
+    cs = np.where(os_ & (ps > 0), (np.vectorize(_q)(ps).astype(np.int64) * dt_q) >> 16, 0)
+    ux = ux_raw.astype(np.int64)
+    uy = uy_raw.astype(np.int64)
+    ve = (ux[:, :-1] + ux[:, 1:]) >> 1
+    vs = (uy[:-1, :] + uy[1:, :]) >> 1
+    tot_e = np.zeros(ve.shape, np.int64)
+    tot_s = np.zeros(vs.shape, np.int64)
+    cen_e = np.zeros(ve.shape, np.float64)
+    cen_s = np.zeros(vs.shape, np.float64)
+    for N in n_planes:
+        N = N.astype(np.int64)
+        de = np.where(ve > 0, N[:, :-1], N[:, 1:])
+        ds = np.where(vs > 0, N[:-1, :], N[1:, :])
+        tot_e += (ve * de * ce) >> 32
+        tot_s += (vs * ds * cs) >> 32
+        cen_e += ve * 0.5 * (N[:, :-1] + N[:, 1:]) * ce / 2.0 ** 32
+        cen_s += vs * 0.5 * (N[:-1, :] + N[1:, :]) * cs / 2.0 ** 32
+    return (tot_e, tot_s), (cen_e, cen_s)
+
+
+def apply_div(shape, fe, fs):
+    """N change of a face-flux set (lo loses, hi gains)."""
+    d = np.zeros(shape, np.float64)
+    d[:, :-1] -= fe
+    d[:, 1:] += fe
+    d[:-1, :] -= fs
+    d[1:, :] += fs
+    return d
+
+
+def grad_wide(P, sol):
+    """Step 4's gradient stencil: (P[ir] - P[il]) / (2 dx) with the solid
+    mirror (mirror_idx returns SELF at a wall), eos_solver.cpp:1059-1064.
+    Returned without the 1/(2dx) factor."""
+    h, w = P.shape
+    Pp = np.pad(P, 1, mode="edge")
+    sp = np.pad(sol, 1, constant_values=True)
+    c = P
+    r = np.where(sp[1:-1, 2:], c, Pp[1:-1, 2:])
+    l = np.where(sp[1:-1, :-2], c, Pp[1:-1, :-2])
+    d = np.where(sp[2:, 1:-1], c, Pp[2:, 1:-1])
+    u = np.where(sp[:-2, 1:-1], c, Pp[:-2, 1:-1])
+    return r - l, d - u
+
+
+def float_solve(g, eos, pstar, div_u, n1, dt):
+    """Step 3 in float64 (space map: no ring, no sponge): the level-0 SPD
+    operator of mg_build_levels, eos_solver.cpp:1821-1882, solved exactly.
+        m_i P_i + sum_f g_f (P_i - P_j) = m_i rhs_i
+        m = 1/aK, aK = gamma p* K dt^2/dx^2, rhs = p* - gamma p* dt div u,
+        g_f = perm_f / ((N_i + N_j)/2)."""
+    import scipy.sparse as sp
+    import scipy.sparse.linalg as spl
+    sol = g.solid
+    h, w = sol.shape
+    gam = float(eos.adiabatic_index)
+    K = float(eos.c_max) ** 2 / gam
+    dx = float(eos.dx)
+    perm = g.dyn_permeability.astype(np.float64)
+    idx = -np.ones((h, w), np.int64)
+    cells = np.flatnonzero(~sol.ravel())
+    idx.ravel()[cells] = np.arange(cells.size)
+    aK = np.maximum(gam * pstar * K * dt * dt / (dx * dx), 1e-30)
+    m = 1.0 / aK
+    rhs = pstar - gam * pstar * dt * div_u
+    rows, cols, vals = [], [], []
+    diag = m.copy()
+    for (sl_a, sl_b, pf) in (
+            ((slice(None), slice(None, -1)), (slice(None), slice(1, None)),
+             np.minimum(perm[:, :-1], perm[:, 1:])),
+            ((slice(None, -1), slice(None)), (slice(1, None), slice(None)),
+             np.minimum(perm[:-1, :], perm[1:, :]))):
+        ia, ib = idx[sl_a], idx[sl_b]
+        ok = (ia >= 0) & (ib >= 0) & (pf > 0)
+        nh = np.maximum(0.5 * (n1[sl_a] + n1[sl_b]), float(eos.N_FLOOR_SOLVER))
+        gf = np.where(ok, pf / nh, 0.0)[ok]
+        a, b = ia[ok], ib[ok]
+        rows += [a, b, a, b]
+        cols += [b, a, a, b]
+        vals += [-gf, -gf, gf, gf]
+    n = cells.size
+    A = sp.coo_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+                      shape=(n, n)).tocsr()
+    A = A + sp.diags(diag.ravel()[cells])
+    x = spl.spsolve(A.tocsc(), (m * rhs).ravel()[cells])
+    P = np.zeros((h, w))
+    P.ravel()[cells] = x
+    return P
+
+
+def attribute_tick(sim, pr):
+    """Run ONE tick and split it per step (see the block comment above).
+    Returns a dict of checkerboard projections (relative N amplitude units
+    for the mass terms, m/s for Phi, degrees for T)."""
+    g = sim.gmap
+    eos = sim.physics_runner.eos
+    dt = 1.0 / TPS
+    s = pr.s
+    oe, os_ = _open_faces(g)
+    cons = np.flatnonzero(g.gases.conservative)
+    # --- before ---
+    u0x, u0y = g.wind_x.copy(), g.wind_y.copy()
+    T0 = g.temperature.copy()
+    n_planes0 = [g.gas[gi].copy() for gi in cons]
+    N0 = sum(p.astype(np.int64) for p in n_planes0)
+    pl0 = pr.planes()
+    # --- the tick ---
+    step(sim)
+    n_sub = int(eos.dbg_last_n_sub)
+    h, w = g.solid.shape
+    pstar, div_u, n_tot = (a.reshape(h, w) for a in eos.dbg_mg_inputs())
+    N1 = n_tot.astype(np.int64)
+    pl2 = pr.planes()
+    # --- step 1a replay: u1 ---
+    u1x, u1y, t_scr = u0x.copy(), u0y.copy(), T0.copy()
+    bp.eos_sl_advect_ref(u1x, u1y, t_scr, g.solid, g.is_vacuum,
+                         g.dyn_permeability, float(np.float32(dt)), n_sub,
+                         thermal_solid=g.thermal_solid)
+    # validation 1: the face-form divergence of u1 == the solver's div_u
+    sol = g.solid
+    def f2(u, axis):
+        up = np.pad(u.astype(np.int64), 1)
+        spd = np.pad(sol, 1, constant_values=True)
+        if axis == 1:
+            fe = np.where(spd[1:-1, 2:], 0, up[1:-1, 1:-1] + up[1:-1, 2:])
+            fw = np.where(spd[1:-1, :-2], 0, up[1:-1, 1:-1] + up[1:-1, :-2])
+        else:
+            fe = np.where(spd[2:, 1:-1], 0, up[1:-1, 1:-1] + up[2:, 1:-1])
+            fw = np.where(spd[:-2, 1:-1], 0, up[1:-1, 1:-1] + up[:-2, 1:-1])
+        return fe - fw
+    inv2dx = _q(1.0 / (2.0 * float(eos.dx)))
+    dv = ((f2(u1x, 1).astype(np.int64) * inv2dx) >> 16) + ((f2(u1y, 0).astype(np.int64) * inv2dx) >> 16)
+    live = ~(sol | g.is_vacuum)
+    div_ok = bool(np.array_equal(dv[live], div_u[live].astype(np.int64)))
+    # --- step 1d: the mass flux, re-derived and checked ---
+    mass_ok = None
+    if n_sub == 1:
+        (te, ts), (ce_, cs_) = mass_flux_faces(g, u1x, u1y, n_planes0, dt)
+        dN = apply_div(N0.shape, te, ts)
+        mass_ok = bool(np.array_equal((N0 + dN.astype(np.int64))[live], N1[live]))
+        dN_cen = apply_div(N0.shape, ce_, cs_)
+        dN_up = dN - dN_cen
+    else:
+        dN = (N1 - N0).astype(np.float64)
+        dN_cen = dN_up = np.zeros_like(dN)
+    mean_n = float(N0[pr.acc].mean())
+    d_cbN = pr.cb((N1 - N0).astype(np.float64)) / mean_n
+    d_cbN_cen = pr.cb(dN_cen) / mean_n
+    d_cbN_up = pr.cb(dN_up) / mean_n
+    # --- velocities in m/s ---
+    U0 = (u0x / Q, u0y / Q)
+    U1 = (u1x / Q, u1y / Q)
+    U2 = (g.wind_x / Q, g.wind_y / Q)
+    phi0 = phi(*U0, s, oe, os_)
+    phi1 = phi(*U1, s, oe, os_)
+    phi2 = phi(*U2, s, oe, os_)
+    # --- step 4 split ---
+    gam = float(eos.adiabatic_index)
+    K = float(eos.c_max) ** 2 / gam
+    dx = float(eos.dx)
+    n1f = N1 / Q
+    n1_room = np.zeros_like(n1f)
+    for r in (1, 2):
+        m = pr.rooms == r
+        if m.any():
+            n1_room[m] = n1f[m].mean()
+    n1_room[n1_room == 0] = 1.0
+    P_eng = g.atmosphere / Q
+    gx, gy = grad_wide(P_eng, sol)
+    kick = lambda gx_, gy_, nn: (-dt * K * gx_ / (2 * dx) / nn, -dt * K * gy_ / (2 * dx) / nn)
+    kx, ky = kick(gx, gy, np.maximum(n1f, 1e-3))
+    kxm, kym = kick(gx, gy, n1_room)
+    P_f = float_solve(g, eos, pstar / Q, div_u / Q, n1f, dt)
+    gfx, gfy = grad_wide(P_f, sol)
+    kfx, kfy = kick(gfx, gfy, np.maximum(n1f, 1e-3))
+    for a in (kx, ky, kxm, kym, kfx, kfy):
+        a[sol] = 0.0
+    phi_kick = phi(kx, ky, s, oe, os_)
+    phi_kick_meanN = phi(kxm, kym, s, oe, os_)
+    phi_kick_float = phi(kfx, kfy, s, oe, os_)
+    phi_rest = (phi2 - phi1) - phi_kick
+    # P quantization: the stored P minus the float solve, in counts
+    dq = (P_eng - P_f)[pr.acc] * Q
+    # --- T: step 1 vs steps 6+7 ---
+    t_amb = pr.t_amb
+    with np.errstate(divide="ignore", invalid="ignore"):
+        T1 = np.where(N1 > 0, (pstar / Q) * t_amb / (N1 / Q) - t_amb, 0.0)
+    return dict(
+        n_sub=n_sub, div_ok=div_ok, mass_ok=mass_ok,
+        cbN0=pr.cb(pl0["N"], rel=True), cbN1=pr.cb(N1 / Q, rel=True),
+        d_cbN=d_cbN, d_cbN_cen=d_cbN_cen, d_cbN_up=d_cbN_up,
+        phi0=phi0, d_phi_sl=phi1 - phi0, d_phi_step4=phi2 - phi1,
+        phi_kick=phi_kick, phi_kick_meanN=phi_kick_meanN,
+        phi_kick_float=phi_kick_float, phi_rest=phi_rest,
+        cb_div=pr.cb(div_u / Q), cb_pstar=pr.cb(pstar / Q, rel=True),
+        cbP_float=pr.cb(P_f, rel=True), cbP=pr.cb(P_eng, rel=True),
+        Pq_rms_counts=float(np.sqrt((dq ** 2).mean())),
+        Pf_spread_counts=float((P_f[pr.acc].max() - P_f[pr.acc].min()) * Q),
+        cbT0=pr.cb(pl0["T"]), cbT1=pr.cb(np.where(pr.acc, T1, 0.0)),
+        cbT2=pr.cb(pl2["T"]),
+    )
+
+
+def kick_phi_kernel(g, s):
+    """W with Phi(kick(P)) = -sum(W * P) * (dt K / (2 dx N)): the staggered
+    face-flux content step 4's wide-stencil kick derives from a unit pressure
+    at each cell (N = 1). Interior entries are exactly 0 (the wide gradient
+    is blind to the odd-even mode); only the two cell layers along a wall or
+    a door carry weight, alternating along the wall."""
+    sol = g.solid
+    oe, os_ = _open_faces(g)
+    h, w = sol.shape
+    W = np.zeros((h, w))
+    for i in range(h):
+        for j in range(w):
+            if sol[i, j]:
+                continue
+            P = np.zeros((h, w))
+            P[i, j] = 1.0
+            gx, gy = grad_wide(P, sol)
+            gx[sol] = 0.0
+            gy[sol] = 0.0
+            W[i, j] = phi(gx, gy, s, oe, os_)
+    return W
+
+
+def solve_bias(tiles=(1.0, 0.5, 0.333, 0.25),
+               amps=(0.08, 0.04, 0.02, 0.01, 0.001, -0.001, -0.01, -0.02, -0.04, -0.08)):
+    """Step 3 in isolation (the test-only `bp.eos_mg_solve_ref`, the SAME
+    mg_build_levels + mg_run_solve_cpu the live step runs) against its float
+    twin (`float_solve`), on a synthetic still state: p* = N = 1 + a*s,
+    T ambient, div u = 0, warm start at ambient. Reported: the restoring
+    signal the kick can see, sum(W * P) over the wall layers, in Q16 counts of
+    P. The float solve's signal follows the sign of a (restoring); the
+    integer solve's does not."""
+    print("# step 3 in isolation: sum(W*P) in Q16 counts (W = kick_phi_kernel);"
+          " the float solve is the exact solution of the same operator")
+    print(f"{'tile':>6} {'sigma^2':>8} " + " ".join(f"{a:+8.3f}" for a in amps))
+    for tile in tiles:
+        sim = build(tile, "still", 0.0, eos={"adiabatic_index": 1.0001})
+        step(sim)   # binds eos.dx
+        g = sim.gmap
+        eos = sim.physics_runner.eos
+        pr = Probe(sim)
+        W = kick_phi_kernel(g, pr.s)
+        live = ~g.solid
+        h, w = live.shape
+        sig2 = (float(eos.c_max) / TPS / float(eos.dx)) ** 2
+        ints, flts = [], []
+        for a in amps:
+            ps = np.where(live, np.rint(Q * (1.0 + a * pr.s)), 0).astype(np.int32)
+            dv = np.zeros((h, w), np.int32)
+            pp = np.where(live, int(Q), 0).astype(np.int32)
+            out = np.zeros((h, w), np.int32)
+            bp.eos_mg_solve_ref(eos, ps, dv, ps.copy(), pp, g.solid, g.is_vacuum,
+                                g.dyn_permeability.astype(np.float32),
+                                np.float32(1.0 / TPS), out)
+            Pf = float_solve(g, eos, ps / Q, dv / Q, ps / Q, 1.0 / TPS)
+            ints.append(float((W * out).sum()))
+            flts.append(float((W * Pf).sum() * Q))
+        print(f"{tile:6.3f} {sig2:8.0f} int   " + " ".join(f"{v:+8.2f}" for v in ints))
+        print(f"{'':6} {'':8} float " + " ".join(f"{v:+8.2f}" for v in flts))
+        interior = live & (W == 0)
+        print(f"{'':6} {'':8} (kernel: {int((W != 0).sum())} weighted cells, "
+              f"{int(interior.sum())} interior cells at exactly 0)")
+
+
+def run_steps(tile_m=0.333, case="cb", amp=1e-3, ticks=40, eos=None, every=1):
+    sim = build(tile_m, case, amp, eos=eos)
+    pr = Probe(sim)
+    print(f"# per-step attribution: case={case} tile={tile_m} amp={amp} eos={eos or {}}")
+    print("  dcbN = step 1's change of the relative N checkerboard (%), split central/upwind;"
+          " Phi in m/s (see block comment); P counts = Q16 LSBs")
+    hdr = (f"{'tick':>4} {'ok':>3} {'cbN%':>8} {'dcbN%':>8} {'cen%':>8} {'up%':>8} "
+           f"{'Phi(u0)':>8} {'dPhiSL':>7} {'dPhi4':>8} {'kick':>8} {'kick_mN':>8} "
+           f"{'kick_fP':>8} {'rest':>8} {'cbDiv':>8} {'cbp*%':>8} {'cbPf':>9} "
+           f"{'Pq_rms':>6} {'Pf_spr':>6} {'cbT0':>7} {'cbT1':>7} {'cbT2':>7}")
+    print(hdr)
+    rows = []
+    for t in range(1, ticks + 1):
+        r = attribute_tick(sim, pr)
+        rows.append(r)
+        if t % every == 0 or t == ticks:
+            ok = ("y" if r["div_ok"] else "n") + ("y" if r["mass_ok"] else
+                                                   ("-" if r["mass_ok"] is None else "n"))
+            print(f"{t:4d} {ok:>3} {100*r['cbN0']:8.4f} {100*r['d_cbN']:8.4f} "
+                  f"{100*r['d_cbN_cen']:8.4f} {100*r['d_cbN_up']:8.4f} "
+                  f"{r['phi0']:8.3f} {r['d_phi_sl']:7.3f} {r['d_phi_step4']:8.3f} "
+                  f"{r['phi_kick']:8.3f} {r['phi_kick_meanN']:8.3f} "
+                  f"{r['phi_kick_float']:8.4f} {r['phi_rest']:8.3f} "
+                  f"{r['cb_div']:8.4f} {100*r['cb_pstar']:8.4f} {r['cbP_float']*Q:9.4f} "
+                  f"{r['Pq_rms_counts']:6.2f} {r['Pf_spread_counts']:6.2f} "
+                  f"{r['cbT0']:7.3f} {r['cbT1']:7.3f} {r['cbT2']:7.3f}")
+    return rows
+
+
 def run(tile_m=0.333, case="cb", amp=1e-3, ticks=480, eos=None, every=1,
         quiet=False):
     sim = build(tile_m, case, amp, eos=eos)
@@ -270,9 +631,19 @@ def main(argv=None):
     ap.add_argument("--every", type=int, default=24)
     ap.add_argument("--eos", action="append", default=[],
                     help="EOS dial override key=value (repeatable)")
+    ap.add_argument("--steps", action="store_true",
+                    help="per-step attribution (one row per tick)")
+    ap.add_argument("--solve-bias", action="store_true",
+                    help="step 3 in isolation, integer vs float, per tile size")
     a = ap.parse_args(argv)
     ticks = a.ticks if a.ticks is not None else int(round((a.seconds or 20.0) * TPS))
-    run(a.tile, a.case, a.amp, ticks, eos=parse_eos(a.eos), every=a.every)
+    if a.solve_bias:
+        solve_bias()
+        return
+    if a.steps:
+        run_steps(a.tile, a.case, a.amp, ticks, eos=parse_eos(a.eos), every=a.every)
+    else:
+        run(a.tile, a.case, a.amp, ticks, eos=parse_eos(a.eos), every=a.every)
 
 
 if __name__ == "__main__":
