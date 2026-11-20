@@ -24,17 +24,30 @@ dry map and otherwise only over the view ∩ the wet tiles' box.
 
 Plumbing mirrors LightingPass. Two per-tile RGBA16F textures, bilinear:
     u_water  R = ripple (m)   G = ripple_v (m/s)
-             B = water_depth (m)   A = foam/agitation (reserved, zero)
+             B = water_depth (m)   A = 0
     u_flow   R, G = flow (m/s, y south)   B = solid   A = previous depth (m)
 plus the static ripple bake (``noise_bake.bake_ripple_rgba``, RGBA32F,
-REPEAT, mipmapped). The light textures and the level diffuse need no new
+REPEAT, mipmapped), the foam image (W2, bilinear for the draw) and the
+static bubble bake (``noise_bake.bake_foam_rgba``, REPEAT, mipmapped). The light textures and the level diffuse need no new
 plumbing; the smoke's cast product and the light curve come from the lit-3D
 seam (``lit3d._SMOKE_SHADOW_GLSL`` + ``_LIGHT_CURVE_GLSL``, spliced at the
 shader's ``// <SMOKE_SHADOW>`` marker -- the lighting.py precedent).
 
 THE CLOCK is the SIM clock ``(tick + alpha) / tps`` through the pass's own
 ``fire_vfx.SimClock`` (idle when paused, re-anchored when the tick goes back),
-never wall time (critique B2).
+never wall time (critique B2). Its fixed step is the foam's (W2,
+``foam_step_s``): each frame owes the foam the steps due on that clock.
+
+W2 (#97): FOAM WITH A LIFE. A foam amount per cell (``foam_cells_per_tile``
+per tile) in its own :class:`core.PingPong` image, allocated LAZILY on the
+first wet frame (a dry map never owns one), stepped by
+:meth:`WaterPass.simulate` (``shaders/water_foam.fs``, direct GL, over the
+wet box in cells only) -- made by sources, carried by the flow (MacCormack +
+clamp, substeps of at most one cell), lost by decay; reset when the sim tick
+goes back (a replay seek) and when the map dries out; a level load builds a
+new pass. Its law is ``renderer/water_foam.py`` (the twin). The draw reads it
+bilinear and thresholds a bubble raft (``noise_bake.bake_foam_rgba``) into
+lace. Picture state only: never synced, never read by the simulation.
 
 Every dial is ``[graphics.water]``, read every frame through
 ``water_surface.water_settings`` (the one refusing door) and pushed to the
@@ -42,6 +55,7 @@ shader by :meth:`WaterPass.refresh_settings` when it changed.
 """
 from __future__ import annotations
 
+import math
 import time
 import zlib
 from pathlib import Path
@@ -51,6 +65,7 @@ import numpy as np
 import pyray as rl
 
 from . import core
+from . import water_foam
 from .lighting import art_src_and_uv_rect
 from .water_surface import (FlowFrame, WaterSettings, flow_frame, pack_flow,
                             wet_box)
@@ -59,10 +74,14 @@ from .water_surface import (FlowFrame, WaterSettings, flow_frame, pack_flow,
 SHADERS_DIR = Path(__file__).resolve().parent.parent / "shaders"
 
 # Sampler units beyond raylib's batch (which binds texture0 + 4): the smoke's
-# cast product, the flow texture, the ripple bake (render-effects rule:
-# samplers from unit 5 up).
+# cast product, the flow texture, the ripple bake, the foam image, the bubble
+# bake (render-effects rule: samplers from unit 5 up). The foam step's own
+# direct-GL block binds 8..10 (the water, the flow, the foam front).
 _UNIT_SMOKE, _UNIT_FLOW, _UNIT_RIPPLE = 5, 6, 7
+_UNIT_FOAM, _UNIT_BUBBLES = 8, 9
+_STEP_UNITS = {"u_water": 8, "u_flow": 9, "u_foam": 10}
 RIPPLE_SIZE = 256
+FOAM_TEX_SIZE = 256
 _UNSET = object()
 
 
@@ -86,8 +105,24 @@ def _ripple_texture() -> rl.Texture:
     """The ripple bake as an RGBA32F texture: REPEAT, mipmapped, trilinear
     (critique M8: minified, the slopes average toward flat)."""
     from .noise_bake import bake_ripple_rgba
-    tex = core.create_dynamic_rgba32f_texture(RIPPLE_SIZE, RIPPLE_SIZE)
-    core.update_rgba32f_texture(tex, bake_ripple_rgba(RIPPLE_SIZE))
+    return _static_texture(bake_ripple_rgba(RIPPLE_SIZE))
+
+
+def _bubble_texture() -> rl.Texture:
+    """The foam's bubble bake (W2), RGBA32F, REPEAT, mipmapped, trilinear."""
+    from .noise_bake import bake_foam_rgba
+    return _static_texture(bake_foam_rgba(FOAM_TEX_SIZE))
+
+
+def load_foam_fs() -> str:
+    """``shaders/water_foam.fs``, the foam step's pass program."""
+    return (SHADERS_DIR / "water_foam.fs").read_text(encoding="utf-8")
+
+
+def _static_texture(img: np.ndarray) -> rl.Texture:
+    n = img.shape[0]
+    tex = core.create_dynamic_rgba32f_texture(n, n)
+    core.update_rgba32f_texture(tex, img)
     ptr = rl.ffi.new("Texture *", tex)
     rl.gen_texture_mipmaps(ptr)
     tex = ptr[0]
@@ -117,18 +152,39 @@ class WaterPass:
         for t in (self.water_tex, self.flow_tex):
             rl.set_texture_filter(t, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
         self.ripple_tex = _ripple_texture()
+        self.bubble_tex = _bubble_texture()
         self._prev_depth = np.zeros((self.h, self.w), np.float32)
         self._last_depth = np.zeros((self.h, self.w), np.float32)
+        self._have_prev = False
 
         # Picture state: whether anything is wet, the wet box (tiles, end-
         # exclusive, dilated one tile), the last packed state's key.
         self.wet = False
         self.box: Optional[tuple] = None
         self._key = None
-        self.clock = SimClock(1.0 / 24.0)
+        # the sim clock, stepped in the foam's fixed steps (W2)
+        self.clock = SimClock(1.0 / 48.0, cap=water_foam.FOAM_STEP_CAP)
         self._wall_prev: Optional[float] = None
         self.frame = FlowFrame(0.0, 1.0, 0.0, 0.0, 1.0)
         self.last_update_ms = 0.0
+
+        # W2: the foam. Its PingPong is allocated on the first wet frame
+        # (simulate); the steps owed, the per-tick fastest flow, the box the
+        # passes ran over (cells) and the reset flag are plain values set by
+        # update and spent by simulate.
+        self.foam: Optional[core.PingPong] = None
+        self.foam_m = 0
+        self._foam_steps = 0
+        self._v_max = 0.0
+        self._foam_box: Optional[tuple] = None
+        self._foam_reset = False
+        self._last_tick: Optional[int] = None
+        self.foam_steps_last_frame = 0
+        self.foam_passes_last_frame = 0
+        self.last_simulate_ms = 0.0
+        self._step_shader = None
+        self._step_locs: dict = {}
+        self._step_ucache: dict = {}
 
         # [art.align] transform (level format v2 §1.3) — same convention as
         # LightingPass.draw_lit_world. None = legacy full-stretch draw.
@@ -227,7 +283,7 @@ class WaterPass:
                      "refract_strength", "r0", "ripple_scale",
                      "glint_strength", "alpha_scale", "alpha_min",
                      "alpha_max", "caustic_strength", "caustic_scale",
-                     "foam_threshold", "foam_intensity", "ca_amount",
+                     "ca_amount",
                      "height_scale", "height_edge", "height_floor"):
             uname = {"roughness_base": "u_roughness_base",
                      "roughness_agitation": "u_roughness_agitation",
@@ -239,6 +295,15 @@ class WaterPass:
         self._set_vec("u_water_color", s.water_color)
         self._set_f("u_agit_ref", s.agitation_ref)
         self._set_i("u_debug_view", s.debug_view)
+        from .noise_bake import FOAM_CELLS
+        self._set_vec("u_foam_a", (s.foam_bubble_m[0] * FOAM_CELLS,
+                                   s.foam_bubble_m[1] * FOAM_CELLS,
+                                   s.foam_cover, s.foam_shadow))
+        self._set_vec("u_foam_b", (water_foam.FOAM_EDGE,
+                                   water_foam.FOAM_ALBEDO,
+                                   water_foam.FOAM_LARGE_OFFSET[0],
+                                   water_foam.FOAM_LARGE_OFFSET[1]))
+        self.clock.set_dt(s.foam_step_s)
         self._push_frame()
 
     def _push_frame(self) -> None:
@@ -272,13 +337,20 @@ class WaterPass:
             self.tile_size_m = float(tile_size_m)
         wall_dt = 0.0 if self._wall_prev is None else t0 - self._wall_prev
         self._wall_prev = t0
-        self.clock.set_dt(1.0 / float(tps))
-        self.clock.advance(int(sim_tick), alpha, float(tps), paused=paused,
-                           idle_when_paused=True, wall_dt=wall_dt)
+        if self._last_tick is not None and int(sim_tick) < self._last_tick:
+            self._foam_reset = True          # a seek / a new sim: start over
+            self._have_prev = False
+        self._last_tick = int(sim_tick)
+        n_steps = self.clock.advance(int(sim_tick), alpha, float(tps),
+                                     paused=paused, idle_when_paused=True,
+                                     wall_dt=wall_dt)
         if not np.asarray(depth_q).any():
+            if self.wet:
+                self._foam_reset = True      # dried out: nothing survives
             self.wet = False
             self.box = None
             self._key = None
+            self._foam_steps = 0
             self.last_update_ms = (time.perf_counter() - t0) * 1000.0
             return
         if not paused:
@@ -291,6 +363,8 @@ class WaterPass:
             self._key = key
             self._pack(depth_q, flow_vx_q, flow_vy_q, solid, ripple, ripple_v)
         self.wet = True
+        self._foam_steps = min(self._foam_steps + n_steps,
+                               water_foam.FOAM_STEP_CAP)
         self.frame = flow_frame(self.clock.t_noise, float(tps),
                                 float(zoom_px_per_tile), self.settings)
         self._push_frame()
@@ -305,8 +379,13 @@ class WaterPass:
         self.packed[..., 2] = depth
         self.packed[..., 3] = 0.0
         core.update_rgba16f_texture(self.water_tex, self.packed)
-        # the previous TICK's depth (a paused repack keeps it)
-        if self._key[0] == "tick":
+        # the previous TICK's depth (a paused repack keeps it); the first
+        # packed tick has none, so it is its own (no advancing edge at load:
+        # a standing pool must not foam over on its first frame)
+        if not self._have_prev:
+            self._prev_depth = self._last_depth = depth
+            self._have_prev = True
+        elif self._key[0] == "tick":
             self._prev_depth, self._last_depth = self._last_depth, depth
         else:
             self._last_depth = depth
@@ -315,6 +394,107 @@ class WaterPass:
                   self._prev_depth, self.flow_packed)
         core.update_rgba16f_texture(self.flow_tex, self.flow_packed)
         self.box = wet_box(depth_q)
+        self._v_max = water_foam.flow_max(self.flow_packed)
+
+    # ---- the foam step (W2; outside any texture mode) --------------------
+
+    def reset_foam(self) -> None:
+        """Forget every foam cell at the next :meth:`simulate` (a replay seek
+        does this through a backward tick; a caller may ask directly)."""
+        self._foam_reset = True
+
+    def _step_set(self, gp, name: str, *v) -> None:
+        """A uniform of the step program, sent only when it changed."""
+        loc = self._step_locs.get(name)
+        if loc is None:
+            loc = self._step_locs[name] = rl.get_shader_location(
+                self._step_shader, name)
+        if loc < 0 or self._step_ucache.get(name) == v:
+            return
+        self._step_ucache[name] = v
+        gl = gp.gl
+        if len(v) == 1 and isinstance(v[0], int):
+            gl.Uniform1i(loc, v[0])
+        elif len(v) == 1:
+            gl.Uniform1f(loc, float(v[0]))
+        elif len(v) == 2:
+            gl.Uniform2f(loc, float(v[0]), float(v[1]))
+        elif len(v) == 4:
+            gl.Uniform4fv(loc, 1, gl.floats(v))
+        else:
+            raise ValueError(name)
+
+    def _ensure_foam(self, m: int) -> None:
+        if self.foam is not None and self.foam_m == m:
+            return
+        if self.foam is not None:              # a new cell size: new image
+            self.foam.unload()
+        self.foam = core.PingPong(self.w * m, self.h * m, fp32=True)
+        self.foam.set_filter(True)             # the draw reads it bilinear
+        self.foam_m = m
+        self._foam_box = None
+        self._foam_reset = False               # born zeroed
+        if self._step_shader is None:
+            self._step_shader = core.load_pass_shader(load_foam_fs())
+
+    def simulate(self) -> int:
+        """Spend the foam steps this frame owes (``update`` counted them on
+        the sim clock): each step ``water_foam.substeps`` passes of
+        ``shaders/water_foam.fs`` over the wet box in cells, in ONE direct-GL
+        block. Must run OUTSIDE any texture mode (the renderer calls it
+        before the scene RT is begun, beside the flame's). A dry map, or a
+        frame that owes nothing, issues nothing; the foam image is allocated
+        on the first wet frame. Returns the pass count."""
+        t0 = time.perf_counter()
+        self.foam_steps_last_frame = 0
+        self.foam_passes_last_frame = 0
+        if self.foam is not None and self._foam_reset:
+            self.foam.clear()
+            self._foam_box = None
+            self._foam_reset = False
+        n_steps, self._foam_steps = self._foam_steps, 0
+        if not self.wet or self.box is None or n_steps <= 0:
+            self.last_simulate_ms = (time.perf_counter() - t0) * 1000.0
+            return 0
+        s = self.settings
+        m = int(s.foam_cells_per_tile)
+        self._ensure_foam(m)
+        box = water_foam.cell_box(self.box, m)
+        leaving = water_foam.leaving_rects(self._foam_box, box)
+        if leaving:
+            self.foam.clear_rects(leaving)
+        self._foam_box = box
+        n_sub = water_foam.substeps(self._v_max, s.foam_step_s, m,
+                                    self.tile_size_m)
+        dt = s.foam_step_s / n_sub
+        x0, y0, x1, y1 = box
+        foam = self.foam
+        with core.DirectPasses() as gp:
+            gp.use(self._step_shader)
+            self._step_set(gp, "u_boxes", float(x0), float(y0), float(x1),
+                           float(y1))
+            self._step_set(gp, "u_target", float(foam.width),
+                           float(foam.height))
+            self._step_set(gp, "u_grid", float(self.w), float(self.h))
+            self._step_set(gp, "u_m", float(m))
+            self._step_set(gp, "u_dt", dt)
+            self._step_set(gp, "u_cell_k", dt * m / self.tile_size_m)
+            self._step_set(gp, "u_decay_f", math.exp(-dt / s.foam_decay_s))
+            self._step_set(gp, "u_src_a", s.foam_gain_froude, s.foam_froude,
+                           s.foam_gain_steep, s.foam_gain_edge)
+            self._step_set(gp, "u_src_b", s.foam_gain_wall, s.flow_speed_ref,
+                           s.agitation_ref, s.flow_edge_depth_m)
+            for name, unit in _STEP_UNITS.items():
+                self._step_set(gp, name, unit)
+            gp.bind(_STEP_UNITS["u_water"], self.water_tex.id)
+            gp.bind(_STEP_UNITS["u_flow"], self.flow_tex.id)
+            for _ in range(n_steps * n_sub):
+                gp.bind(_STEP_UNITS["u_foam"], foam.front_id)
+                foam.direct_pass(gp, 1)
+        self.foam_steps_last_frame = n_steps
+        self.foam_passes_last_frame = n_steps * n_sub
+        self.last_simulate_ms = (time.perf_counter() - t0) * 1000.0
+        return self.foam_passes_last_frame
 
     # ---- draw ----------------------------------------------------------
 
@@ -408,13 +588,19 @@ class WaterPass:
             self.shader, self._loc("u_height"),
             self._height_tex if self._height_tex is not None else diffuse)
         self._set_vec("u_art_uv_rect", uv_rect)
+        # W2: the foam image (none yet: the flow texture stands in and
+        # u_foam_on = 0 never reads it) and the bubble bake
+        self._set_i("u_foam_on", 1 if self.foam is not None else 0)
         units = ((_UNIT_SMOKE, "u_smoke_cover", cover),
                  (_UNIT_FLOW, "u_flow", self.flow_tex),
-                 (_UNIT_RIPPLE, "u_ripple", self.ripple_tex))
+                 (_UNIT_RIPPLE, "u_ripple", self.ripple_tex),
+                 (_UNIT_FOAM, "u_foam",
+                  self.foam.front if self.foam is not None else None),
+                 (_UNIT_BUBBLES, "u_bubbles", self.bubble_tex))
         for unit, name, tex in units:
             rl.rl_active_texture_slot(unit)
-            # no cast product: the flow texture stands in (strengths are 0,
-            # so smokeShadow returns before any read)
+            # no cast product / no foam yet: the flow texture stands in
+            # (strengths are 0 / u_foam_on is 0, so nothing reads it)
             rl.rl_enable_texture((tex if tex is not None
                                   else self.flow_tex).id)
             self._set_i(name, unit)
@@ -434,6 +620,13 @@ class WaterPass:
         rl.unload_texture(self.water_tex)
         rl.unload_texture(self.flow_tex)
         rl.unload_texture(self.ripple_tex)
+        rl.unload_texture(self.bubble_tex)
+        if self.foam is not None:
+            self.foam.unload()
+            self.foam = None
+        if self._step_shader is not None:
+            rl.unload_shader(self._step_shader)
+            self._step_shader = None
 
 
-__all__ = ["WaterPass", "load_water_fs"]
+__all__ = ["WaterPass", "load_water_fs", "load_foam_fs"]

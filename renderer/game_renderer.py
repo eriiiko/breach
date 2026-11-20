@@ -44,7 +44,6 @@ from .static_props import (DEFAULT_TILE_SIZE_M, StaticPropRenderer,
                            SwaySettings)
 from .overlays import (
     FieldOverlay, GlowOverlay, HeatFieldOverlay,
-    WaterFieldOverlay,
     draw_unit, draw_waypoint_line, draw_grid, draw_text, draw_panel_background,
 )
 from .pressure_overlay import PressureOverlay
@@ -400,29 +399,14 @@ class GameRenderer:
         # reads copies of the soot/steam density planes, owns no GPU resource.
         # Cycled live with F10 (poll_toggles) for the studio A/B.
         self.speckle = SpeckleField.from_config(cfg.grid_h, cfg.grid_w, CFG)
-        # Water overlay v2 (water W6b; canon engine/07 §6 placeholder): depth-
-        # blue tint + ripple shading + foam + ambient sines over the sim's
-        # water fields. All four knobs bind from [display] with getattr
-        # defaults (the W2b water_display_max precedent) and are RENDER-ONLY +
-        # RESTART-BOUND: read once here; Ctrl+R re-reads config.toml but never
-        # re-binds the renderer's overlays. Off by default; toggled with V
-        # (moved from O in A6 — O is the dev door-toggle key).
-        # RENDER-ONLY — never mutates any field.
-        disp = getattr(CFG, "display", None)
-        self.water_overlay = WaterFieldOverlay(
-            cfg.grid_h, cfg.grid_w,
-            depth_display_max=float(getattr(disp, "water_display_max", 1.0)),
-            ripple_shade=float(getattr(disp, "water_ripple_shade", 0.35)),
-            foam_thresh=float(getattr(disp, "water_foam_thresh", 0.03)),
-            ambient_base=float(getattr(disp, "water_ambient_base", 0.06)))
         # Water OPTICS pass (graphics/water_rendering.md §7 steps 1+2; #97
-        # W1's fine surface that flows): the shipped GLSL Fresnel/GGX/
-        # refraction look that REPLACES the CPU WaterFieldOverlay placeholder
-        # in the same compose slot. Its [graphics.water] dials pass the one
-        # refusing door every frame (upload_state); it reuses the lighting
-        # pass's light textures + the level diffuse. A dry map costs one
-        # .any() and draws nothing. The WaterFieldOverlay above is kept
-        # constructed (W2 deletes it) but is no longer drawn.
+        # W1's fine surface that flows, W2's foam with a life): THE water
+        # look (the CPU WaterFieldOverlay placeholder and its [display]
+        # water_* keys were deleted in W2). Its [graphics.water] dials pass
+        # the one refusing door every frame (upload_state); it reuses the
+        # lighting pass's light textures + the level diffuse. A dry map
+        # costs one .any() and draws nothing; a level load builds a new pass
+        # (the foam starts empty).
         from .water_surface import water_settings as _water_settings
         self.water_pass = WaterPass(
             cfg.grid_h, cfg.grid_w, _water_settings(CFG),
@@ -1043,6 +1027,10 @@ class GameRenderer:
         # outside the scene RT too). No fire -> no passes.
         if self.fire_vfx.enabled:
             self.fire_vfx.simulate()
+        # Water W2 (#97): the foam's steps owed on the sim clock (its own
+        # image, so outside the scene RT too). Dry -> nothing.
+        if self.show_water:
+            self.water_pass.simulate()
         self.gas_relief.render_product(self.lighting, relief_on,
                                        tile_rect=self._relief_view_rect())
         self._smoke_cast = self._smoke_cast_inputs(relief_on)
@@ -2808,7 +2796,6 @@ class GameRenderer:
         self.shockwave.unload()
         self.temperature_overlay.unload()
         rl.unload_texture(self.cold_overlay.tex)
-        rl.unload_texture(self.water_overlay.tex)
         self.water_pass.unload()
         self.pressure_overlay.unload()
         self.world.unload()

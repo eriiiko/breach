@@ -111,8 +111,6 @@ class WaterSettings:
     alpha_max: float
     caustic_strength: float
     caustic_scale: float
-    foam_threshold: float
-    foam_intensity: float
     ca_amount: float
     height_scale: float
     height_edge: float
@@ -130,6 +128,18 @@ class WaterSettings:
     flow_edge_depth_m: float
     flow_phase_noise_m: float
     agitation_ref: float
+    # W2: foam with a life (renderer/water_foam.py)
+    foam_cells_per_tile: int
+    foam_step_s: float
+    foam_decay_s: float
+    foam_froude: float
+    foam_gain_froude: float
+    foam_gain_steep: float
+    foam_gain_edge: float
+    foam_gain_wall: float
+    foam_bubble_m: Tuple[float, float]
+    foam_cover: float
+    foam_shadow: float
     debug_view: int
 
     @property
@@ -138,9 +148,13 @@ class WaterSettings:
         return self.detail_wavelength_m * RIPPLE_CELLS
 
 
-_INT_KEYS = ("debug_view",)
-_VEC3_KEYS = ("water_color",)
-DEBUG_VIEWS = (0, 1)        # 0 = the picture; 1 = (slope x, slope y, k, 1)
+_INT_KEYS = ("debug_view", "foam_cells_per_tile")
+_VEC_KEYS = {"water_color": 3, "foam_bubble_m": 2}
+# 0 = the picture; 1 = (slope x, slope y, k, 1); 2 = (foam amount, foam
+# cover, 0, 1)
+DEBUG_VIEWS = (0, 1, 2)
+FOAM_CELLS_MAX = 8          # foam cells per tile (per axis), the door's top
+FOAM_STEP_MAX_S = 0.1       # a foam step longer than this is refused
 
 
 def config_keys() -> Tuple[str, ...]:
@@ -162,8 +176,8 @@ def water_settings(cfg) -> WaterSettings:
         v = getattr(sec, name)
         if name in _INT_KEYS:
             ok = isinstance(v, int) and not isinstance(v, bool)
-        elif name in _VEC3_KEYS:
-            ok = (isinstance(v, (list, tuple)) and len(v) == 3
+        elif name in _VEC_KEYS:
+            ok = (isinstance(v, (list, tuple)) and len(v) == _VEC_KEYS[name]
                   and all(isinstance(c, (int, float))
                           and not isinstance(c, bool) for c in v))
             v = tuple(float(c) for c in v) if ok else v
@@ -187,6 +201,24 @@ def water_settings(cfg) -> WaterSettings:
     if s.detail_zoom_full <= s.detail_zoom_zero:
         raise ValueError("[graphics.water] detail_zoom_full must exceed "
                          "detail_zoom_zero")
+    for name in ("foam_decay_s", "foam_cover"):
+        if getattr(s, name) <= 0.0:
+            raise ValueError(f"[graphics.water] {name} must be > 0")
+    for name in ("foam_froude", "foam_gain_froude", "foam_gain_steep",
+                 "foam_gain_edge", "foam_gain_wall"):
+        if getattr(s, name) < 0.0:
+            raise ValueError(f"[graphics.water] {name} must be >= 0")
+    if not 1 <= s.foam_cells_per_tile <= FOAM_CELLS_MAX:
+        raise ValueError(f"[graphics.water] foam_cells_per_tile must be in "
+                         f"1..{FOAM_CELLS_MAX}: {s.foam_cells_per_tile}")
+    if not 0.0 < s.foam_step_s <= FOAM_STEP_MAX_S:
+        raise ValueError(f"[graphics.water] foam_step_s must be in "
+                         f"(0, {FOAM_STEP_MAX_S}]: {s.foam_step_s}")
+    if min(s.foam_bubble_m) <= 0.0:
+        raise ValueError("[graphics.water] foam_bubble_m sizes must be > 0")
+    if not 0.0 <= s.foam_shadow <= 1.0:
+        raise ValueError(f"[graphics.water] foam_shadow must be in [0, 1]: "
+                         f"{s.foam_shadow}")
     if s.debug_view not in DEBUG_VIEWS:
         raise ValueError(f"[graphics.water] debug_view must be one of "
                          f"{DEBUG_VIEWS}: {s.debug_view}")
@@ -355,32 +387,65 @@ def flow_slide(vel: np.ndarray, age_s, max_offset_m: float) -> np.ndarray:
     return d * k[..., None]
 
 
+def edge_flow(vel, depth, s: WaterSettings) -> np.ndarray:
+    """The EFFECTIVE flow (..., 2) m/s: the bilinear flow faded to 0 over
+    the first ``flow_edge_depth_m`` of depth (critique M7) -- the one flow
+    the fine surface slides by and the foam (W2) is carried and made by."""
+    edge = smoothstep(0.0, s.flow_edge_depth_m, depth)
+    return np.asarray(vel, np.float64) * edge[..., None]
+
+
+def layer_slides(x_m, y_m, vel, depth, frame: FlowFrame, s: WaterSettings):
+    """THE two layers' slides ``(d0, d1)`` (..., 2) metres, their crossfade
+    weight ``w0`` and the effective flow ``v`` -- the one flow map every
+    surface term rides (the fine surface; W2's foam bubbles): never a second
+    advector."""
+    x = np.asarray(x_m, np.float64)
+    y = np.asarray(y_m, np.float64)
+    v = edge_flow(vel, depth, s)
+    off = phase_offset_field(x, y, s.flow_phase_noise_m)
+    a0, a1, w0 = layer_ages_weight_field(frame.phase, off)
+    d0 = flow_slide(v, a0 * frame.cycle_s, s.flow_max_offset_m)
+    d1 = flow_slide(v, a1 * frame.cycle_s, s.flow_max_offset_m)
+    return d0, d1, w0, v
+
+
+def drift_m(frame: FlowFrame, s: WaterSettings) -> Tuple[float, float]:
+    """The still-water drift in METRES (the frame carries it in ripple
+    periods)."""
+    return frame.drift_u * s.period_m, frame.drift_v * s.period_m
+
+
 def layer_coords(x_m, y_m, vel, depth, frame: FlowFrame, s: WaterSettings):
     """The two layers' texture coordinates (..., 2), their crossfade weight
     ``w0`` and the effective flow ``v`` (depth-faded) -- the geometry half of
     :func:`detail_slope`, exposed for the properties."""
     x = np.asarray(x_m, np.float64)
     y = np.asarray(y_m, np.float64)
-    edge = smoothstep(0.0, s.flow_edge_depth_m, depth)
-    v = np.asarray(vel, np.float64) * edge[..., None]
-    off = phase_offset_field(x, y, s.flow_phase_noise_m)
-    a0, a1, w0 = layer_ages_weight_field(frame.phase, off)
+    d0, d1, w0, v = layer_slides(x, y, vel, depth, frame, s)
     P = s.period_m
     out = []
-    for age in (a0, a1):
-        d = flow_slide(v, age * frame.cycle_s, s.flow_max_offset_m)
+    for d in (d0, d1):
         out.append(np.stack([(x - d[..., 0]) / P - frame.drift_u,
                              (y - d[..., 1]) / P - frame.drift_v], axis=-1))
     return out[0], out[1], w0, v
 
 
+def strength_sat(v: np.ndarray, agitation, s: WaterSettings) -> np.ndarray:
+    """``sat`` in [0, 1]: how far the fine surface is from still toward its
+    full strength (the flow speed over ``flow_speed_ref`` or the agitation
+    ``|ripple_v|`` over ``agitation_ref``, whichever is more). W2's
+    steepness foam source reads THIS term, never a slope of its own."""
+    speed = np.sqrt(v[..., 0] ** 2 + v[..., 1] ** 2)
+    return np.clip(np.maximum(speed / s.flow_speed_ref,
+                              np.abs(np.asarray(agitation, np.float64))
+                              / s.agitation_ref), 0.0, 1.0)
+
+
 def strength(v: np.ndarray, agitation, frame: FlowFrame,
              s: WaterSettings) -> np.ndarray:
     """``k``: the RMS slope of the fine surface here."""
-    speed = np.sqrt(v[..., 0] ** 2 + v[..., 1] ** 2)
-    sat = np.clip(np.maximum(speed / s.flow_speed_ref,
-                             np.abs(np.asarray(agitation, np.float64))
-                             / s.agitation_ref), 0.0, 1.0)
+    sat = strength_sat(v, agitation, s)
     return ((s.detail_strength_still
              + (s.detail_strength_flow - s.detail_strength_still) * sat)
             * frame.fade)
@@ -438,6 +503,7 @@ __all__ = [
     "FlowFrame", "flow_frame", "DRIFT_DIR",
     "hex_hash", "hex_hash01", "triangle_grid", "hex_center",
     "sample_bilinear_repeat", "hex_slope", "plain_slope",
-    "smoothstep", "flow_slide", "layer_coords", "strength", "detail_slope",
+    "smoothstep", "flow_slide", "edge_flow", "layer_slides", "drift_m",
+    "layer_coords", "strength_sat", "strength", "detail_slope",
     "wet_box", "pack_flow",
 ]

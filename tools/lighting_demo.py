@@ -281,11 +281,9 @@ _WATER_DIALS = (
     ("alpha_scale", 6.0, "Alpha scl", 0.0, 20.0),
     ("alpha_min", 0.15, "Alpha min", 0.0, 0.6),
     ("alpha_max", 0.95, "Alpha max", 0.4, 1.0),
-    # Phase 2 (mood pass): caustics / foam / chromatic aberration.
+    # Phase 2 (mood pass): caustics / chromatic aberration.
     ("caustic_strength", 2.5, "Caustic", 0.0, 8.0),
     ("caustic_scale", 6.0, "Caust scl", 0.0, 24.0),
-    ("foam_threshold", 0.02, "Foam thr", 0.001, 0.1),
-    ("foam_intensity", 0.6, "Foam int", 0.0, 2.0),
     ("ca_amount", 0.012, "Chrom ab", 0.0, 0.06),
     # W1: the fine surface that flows.
     ("detail_wavelength_m", 0.12, "Detail m", 0.03, 0.5),
@@ -296,6 +294,16 @@ _WATER_DIALS = (
     ("flow_speed_ref", 1.0, "Flow ref", 0.05, 4.0),
     ("flow_max_offset_m", 0.5, "Slide cap", 0.0, 2.0),
     ("flow_phase_noise_m", 3.0, "Phase m", 0.0, 12.0),
+    # W2: foam with a life (foam_cells_per_tile, foam_step_s and the two
+    # bubble sizes stay config-only: not a float slider).
+    ("foam_decay_s", 2.5, "Foam life s", 0.2, 10.0),
+    ("foam_cover", 1.0, "Foam cover", 0.05, 2.0),
+    ("foam_shadow", 0.5, "Foam shadow", 0.0, 1.0),
+    ("foam_froude", 0.8, "Froude thr", 0.0, 3.0),
+    ("foam_gain_froude", 3.0, "Foam Froude", 0.0, 12.0),
+    ("foam_gain_steep", 0.3, "Foam steep", 0.0, 2.0),
+    ("foam_gain_edge", 10.0, "Foam edge", 0.0, 60.0),
+    ("foam_gain_wall", 4.0, "Foam wall", 0.0, 20.0),
     # Heightmap attenuation (alpha-only): only bites on a level WITH a
     # heightmap (unhcr_vessel_2); inert elsewhere (u_has_height = 0).
     # height_floor = the "level 0" baseline relief, subtracted before scaling.
