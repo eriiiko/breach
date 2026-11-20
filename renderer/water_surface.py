@@ -50,6 +50,15 @@ render read).
     screen px per tile (``heat_shimmer.zoom_fade``, the one fade); the
     texture is mipmapped, so minified slopes average toward flat.
 
+THE CAUSTIC (W4). The same surface's CURVATURE (a companion bake of the
+same waves' exact second derivatives, read through the same hex-tiled,
+flow-mapped taps: :func:`hex_surface`, :func:`detail_surface`) gives the
+Jacobian of the refraction map ``x -> x + depth (1 - 1/n) grad h``;
+the floor's source light is multiplied by ``min(1/|det J|, caustic_max)``
+(signed: :func:`caustic_det`, :func:`caustic_gain`, :func:`caustic_term`;
+``shaders/water.fs`` mirrors it, ``tests/gl_water_caustic_check.py`` holds
+the two equal).
+
 THE CLOCK. The SIM clock ``(tick + alpha) / tps`` through a
 ``fire_vfx.SimClock`` the pass owns (idle when paused, re-anchored when the
 tick goes back), never wall time (critique B2). :func:`flow_frame` turns it
@@ -62,6 +71,10 @@ Credits (repo rule -- cite what a file implements):
   - Morten S. Mikkelsen, "Practical Real-Time Hex-Tiling", Journal of
     Computer Graphics Techniques (JCGT) 11(3), 77-94, 2022 -- the hex-tiled
     lookup and its weights (reference: docs/papers/README_water_2026-11.md).
+  - Evan Wallace, "WebGL Water" (2011, MIT; madebyevan.com/webgl-water) --
+    the caustic's area method (a patch of light's area before and after the
+    surface bends it), here as its analytic limit, the Jacobian determinant
+    (archived: docs/papers/wallace2011_webgl_water_renderer.js).
 """
 from __future__ import annotations
 
