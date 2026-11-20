@@ -132,7 +132,7 @@ p\* = N = 1 + a·s, T ambient, div u = 0, warm start at ambient. The table shows
 - The float signal follows the sign of the seed and scales as 1/σ². That is the restoring force.
 - The integer signal carries an **offset of one sign, whatever the seed's sign**: −5 to −40 counts through the kernel, about 0.1 to 0.5 LSB per weighted cell. At 0.333 m it is larger than the whole physical signal until the seed is about −4 %.
 - Its zero crossing sits where each dynamic run ends: about −0.3 % at 1.0 m, −1.2 % at 0.5 m, −4 % at 0.333 m and −5 % at 0.25 m. The dynamic p\* checkerboards (cbN plus cbT/T) are −0.48, −1.7, −3.8 and −6.8 %.
-- The converged flat red-black path on the same inputs returns exactly 0 at every seed. Its integer P is uniform: no offset, and no restoring signal either. The multigrid path at `S` 200 still shows −47 at +1 %, so the flat result depends on running it to convergence.
+- The converged flat red-black path (`use_multigrid = false`, `S = 2000`) on the same inputs returns exactly 0 at every seed. Its integer P is uniform: no offset, and no restoring signal either. The same flat path at `S = 200`, not yet converged, still shows −47 at +1 %, so the flat result depends on running it to convergence.
 
 ### 2.6 Temperature: step 6 converts, at (γ−1)/dx
 
