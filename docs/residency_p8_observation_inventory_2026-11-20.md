@@ -380,3 +380,187 @@ ended env ticks on until replaced). The books and the picture need a per-env "en
 and the terminal observation must be built AT the ending tick, not at the step's end.
 
 ---------------------------------------------------------------------------------------------
+
+## F. The action path in
+
+Today (farm, `[action] spec = "v1"`), per DECISION and per TICK:
+
+| step | where | when | reads | writes |
+|---|---|---|---|---|
+| 1. range check, masked count | `BatchedEnv.step`: `check_actions`, `masked_choices` | per decision, host | actions (N, U, 5), the served masks | refusal / `info["masked_choices"]` |
+| 2. pointer -> game id | `AgentPolicy.set_decisions(rows5, list_uid)` | per decision, per policy team | the `list_uid` of the observation the rows answered (kept by `EnvRunner._list_uid`) | per slot a `_Decision` (feet, aim as token / walk / keep / unit uid, trigger, hand, arg); the no-sim fallbacks (flashlight -> nothing; ARG_ONTO without a unit aim -> nothing; plant with ARG_ONTO -> nothing) |
+| 3. decode | `AgentPolicy._decode_frame` -> `_decode` | EVERY TICK (`handle_frame`, before `sim.step`) | per living roster unit: `alive`, `team`, `throw_release_tick`, `facing_q`, the centre tile; the team picture's RECORD of an aimed unit (its centre: live while seen, last seen otherwise); the slot's held state (`throw_aim`, `last_vec`) | one RAW row per unit: `clear_move_dir` or `set_move_dir(COMPASS_Q16[d], throttles[s])`; `set_aim` = a compass token, the vector to the aimed unit's record centre (`aim_vector`: FLOAT `quantize_stick_direction`, IEEE `sqrt` + division + `quantize_scalar`), or (0, 0); `set_trigger`; on the FIRST tick of the decision the hand latch (reload / melee / shove / use / plant with `plant_timers[arg]` / a throw along the FACING with `fuse_ticks` and a reach `reaches_q[arg]` or `onto_reach_q` = `quantize_scalar(sqrt(d2))`, FLOAT IEEE); `st.prev`, `st.aimed_uid` (the next observation's `prev` / `prev_aim`) |
+| 4. issue | `control_policy.issue_row` -> `Simulation.set_move_dir` .. `plant_charge_intent` | every tick | `VERB_RULES` (hold every tick, latch on the first) | the intent tap (recorded), then the Unit's latch attribute |
+| 5. the commander | `control_bots.BotCommander.handle_frame` (built for EVERY `policy` team on a level with a room graph, which every `"v1"` run requires) | every tick it reads the picture; every `team_period_ticks` (6) the bots' TEAM LAYER decides | the team picture, `vision.state_for`, the team's living units, the room graph | `Simulation.order_intent` per unit when the order changes |
+| 6. the horde | `control_zombies.ZombieControl.handle_frame` | every tick | every living zombie of `sim.units` | `Simulation.drive_zombies(ids)` |
+| 7. other teams | `[run] policy` may name `"bots"` (or another controller) for a team | every tick | the whole sim | intents |
+
+How it meets the conductor. `DeviceConductor.latch(intents, env)` takes the TAP's `(kind, args)` stream
+and turns it into (1) ONE CuPy scatter of `LATCH_COLUMNS` values into the store at the tick's head
+(`_scatter`: built on the host from a Python dict, one H2D of indices and values), (2) the env's ORDER
+TABLE (`order_intent`, staged only on a tick with an order), (3) the zombie REQUEST SET (the HORDE latch;
+mode CONDUCTOR when the sim drives its own horde, SET with per-row flags when a controller does).
+
+So per env per decision the host work is steps 1-2; per env per TICK steps 3-7, and step 3 needs
+per-unit state and the picture that live on the card: under the device backend a host decoder means a
+download of rows and records EVERY tick (a third and fourth sync per tick, against P7e.5's two).
+What a device action path needs:
+- the decisions (N, U, 5) int32 on the card (the trainer's tensor), the pointer -> uid step against the
+  device `list_uid` it answered (a gather), the no-sim fallbacks (pure integer);
+- a DECODER KERNEL per tick: one thread per (env, row), the slot state on the card (`throw_aim`, its
+  `last_point`, `last_vec`, `aimed_uid`, `prev`), the record lookup in the device picture (C), the two
+  FLOAT seams (`aim_vector`'s `quantize_stick_direction`, `onto_reach_q`'s sqrt) as IEEE double with
+  correctly rounded sqrt and NO FMA contraction (both are IEEE basic operations, so exact-class), and its
+  output written STRAIGHT into the store's latch columns (the same encodings `LATCH_COLUMNS` uses), not
+  through the host `latch`;
+- the zombie latch "every living zombie at the tick's start" built on the card (the reference's
+  `drive_zombies` docstring says a controller naming the whole horde reproduces the conductor's call
+  exactly: then mode CONDUCTOR may serve; to be held by a gate, K);
+- the commander: host Python reading the whole sim (K: blocks the order block's design);
+- other controllers (the bots as an opponent): no device form; refused by name on the device backend
+  until G2's ruling (residency design §12.3: "v1 training on the device backend is self-play or against
+  the horde").
+
+The recording: the intent tap sees every decoded row on the farm; on the card nothing passes the tap, so
+the training-episode record (old P8c) must take the device-decoded raw rows (or the decisions plus the
+decoder's state) to replay under `run_match --replay`.
+
+---------------------------------------------------------------------------------------------
+
+## G. Reset
+
+What an episode start is today (`EnvRunner.reset` -> `MatchSession(level, spec, seed)`):
+`episode_draw(run_seed, env, k, n_levels)` -> (seed, level index), a NEW `Simulation(level, seed)`
+(map built from the level, materials, entities, doors, vents, signals, cover, the physics runner),
+`spawn_match(spec)` (formation placement: draws NO randomness; then `start_team_picture`, which takes the
+tick-0 update), brood spawn in `Simulation._reset_internal` (`swarm_brood.spawn_broods`, keyed on (seed,
+brood ordinal, k): SEED-DEPENDENT), `create_match_controllers` (policy, commander, the horde's), the
+reward books, the `ObsContext`, the `ActionTables`; then the tick-0 observation.
+
+The conductor has NO per-env reset (P7e.5 as built: an ended env ticks on; named as an accepted gap for
+P8). What exists: `ResidentBatch.reset_env(e, sim)` (rebinds env e's planes from a sim, refuses a
+heterogeneous one), `DeviceEditDoor.reset_env(e)`. What a per-env reset must restage for env e ALONE,
+the others untouched:
+
+| state | today's staging | per-env form exists? |
+|---|---|---|
+| every resident plane (`ResidentBatch.buffers`, incl. the swarm planes and the swarm store) | `ResidentBatch(sims)` | YES (`reset_env`) |
+| the unit store row block `(e, :, :)` and `valid` padding | `store.upload(np.stack(...))` all envs | NO (an upload of one env's slice is a CuPy slice copy; the store's counts / tables per env too) |
+| the per-env device tables (`unit_tables.values_batch(sims)`) | at build | NO |
+| the tick row (tick, draw key = the episode SEED, tile-change count) | `TickRow.of_sims` | NO |
+| the record lists: ring, request list, effect lists (3 appliers), cell buffer, claims list | `begin()` per tick (all envs) | per tick they restart; their per-env counts are reset by `begin` |
+| object / entity tables: rounds, noise, blast log, grenades, charges, doors + tiles, ducts + vents, sources + tiles, timed charges, heat sources, the signal tables | `stage_lists([... per env ...])` ALL envs at once | NO (`object_tables.DeviceTable.stage_lists` only) |
+| the horde cache (persistent across ticks) | `cache.stage_lists` all envs | NO |
+| the edit door window + seq | `door.begin`, `set_seq` | YES (`reset_env`) |
+| the latch host side (`_cols`, `_orders`, `_zreqs`), `row_of`, `uids` | at build | host dicts, trivially per env |
+| the obs side (NEW): the picture, the decoder slot state, the books, the obs table rows (per template: ObsContext, roster, n_t, limit), the route cache | -- | to be built |
+
+The levels of a batch must keep ONE grid shape, gas table, tilt, tick rate and stamp path
+(`ResidentBatch` refuses otherwise) and ONE U (the store pads to the largest; a reset must not exceed
+the batch's U, nor any table's capacity).
+
+THE OLD P8a "BANK" (design §4.6): the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`,
+LevelSpec rows + output digest) COMPILED by `tools/build_level_bank.py` into a file of POST-SPAWN TICK-0
+STATES (every synced plane, the store, the entity rows and signals, the books, the MatchSpec),
+digest-verified against `run_match`'s tick-0 checkpoint; `reset(mask)` copies the template into each
+masked env, clears every pending per-env queue, sets the Philox key; nothing re-derived at reset.
+NEITHER `tools/build_level_bank.py` NOR `levels/banks/` exists (NOT FOUND); the farm instead loads
+`[run] levels` and re-derives every episode through `MatchSession`.
+
+Does it still fit? The principle does (copy a verified tick-0 state, set the key), with four changes:
+1. The template is per LEVEL, not per (level, seed), only when tick 0 is seed-independent: true for
+   `spawn_match` (no draws), FALSE for a level with broods (larvae placed by the seed's stream). A brood
+   level needs its broods spawned per episode (host `spawn_broods` into env e's swarm slots, or a device
+   form).
+2. The template now holds far more than §4.6 listed: every table and list P6 to P7e added (above), the
+   horde cache, the tick row, plus the observation side's tick-0 state (the picture after its first
+   update: who sees whom at tick 0, the bars, the motion seeds), the books' tick-0 snapshot, the
+   decoder's empty slot state.
+3. The source can stay `[run] levels` (what the farm reads, the same `episode_draw`) rather than a
+   levelgen bank: the bank file is a cache of `MatchSession(level, spec, seed)`'s tick-0 state, verified
+   against its digests. The levelgen bank format is a separate, later question.
+4. A simpler first form, before any bank file: build the env's next episode on the HOST through
+   `MatchSession` (exactly the reference, so equal by construction), then restage env e's slice of every
+   device structure from that sim (the per-env forms of the rows above). Its cost is a host Simulation
+   build per reset (not measured here, K) and is off the critical path only if resets are rare (matches
+   run 300 to 1600 ticks on ship_demo); the bank is the optimisation of the same copy.
+
+The seed: `episode_draw` is pure, so the device can compute env e's (seed, level) for episode k with the
+Philox kit (`cuda_unit_draws.cuh` holds the device Philox) or take it from the host; the tick row's draw
+key carries it.
+
+---------------------------------------------------------------------------------------------
+
+## H. What the trainer consumes
+
+From `BatchedEnv` (`src/rl_env.py`):
+- `reset(mask) -> (obs, info)`, `step(actions) -> (obs, reward, terminated, truncated, info)`, every
+  array numpy with a leading N axis; the observation keys are the ENV'S OWN buffers (`_buf`, overwritten
+  next step), every other array a fresh copy.
+- `obs`: A.0's keys + masks + `valid`, `in_match`; `info["full_view"]` / `["final_full_view"]` /
+  `["final_obs"]` the same shapes; `reward` (N, U, 5) float32; `terminated`, `truncated` (N,) bool;
+  `info`: `tick`, `episode`, `episode_seed`, `level`, `ticks`, `ended`, `result`, `counters` (N, U, K),
+  `team_balance` / `team_uncredited` / `team_outcome` (N, T), `rows_ended` (N, U), `checkpoints` (per env
+  `(episode, tick, field_digest, tick_digest)` at the replay cadence), `masked_choices` (N, U).
+- `team_rows(obs, t)`: views `arr[:, t*S:(t+1)*S]` (THE path a policy is fed).
+
+From `agents/` (rung 2: `agents/collector.py`, `agents/batch.py`, `agents/network.py`):
+- `Collector.collect`: per step `LearningRows.gather` COPIES the learning teams' rows of `obs` and
+  `info["full_view"]` (through `env.team_rows`, then `np.copyto`) into a host numpy `Batch` laid out
+  time first `(T, R, ...)`, `R = N x L x S`; acts through `as_tensors` = `torch.as_tensor(numpy, device)`
+  (an H2D per step); draws on the device and copies the answers back `.cpu().numpy()`; scatters actions
+  into an (N, U, 5) numpy array (`LearningRows.scatter`, `default_actions` for the other rows); gathers
+  reward and `rows_ended`; keeps `last_*` views.
+- `OBS_STORED` = `SOLDIER_KEYS` (`vector`, `list`, `list_mask`, `near_f`, `near_u`, `far_f`, `far_u`) +
+  the four masks; `FULL_STORED` = `full_list`, `full_mask`, `full_match`, `full_watched`; `list_uid` is
+  not stored; the network checks dtypes as served (`network._check`: float16 planes stay float16, uint8
+  stays uint8).
+
+Zero-copy: NO path exists in the code today (agents/ is numpy-in, torch-on-device-per-step; nothing in
+`src/` or `agents/` uses `__cuda_array_interface__` or DLPack). The stack supports one: in the `data`
+env (CuPy 14.2.0, torch 2.15.0+cu132, CUDA available) `torch.as_tensor(cupy_array, device="cuda")` and
+`torch.from_dlpack(cupy_array)` both return a tensor sharing the CuPy array's pointer (checked here with
+a one-liner, float16 included). The conductor's device memory is CuPy arrays
+(`ResidentBatch.buffers`) or raw `DeviceStore.device_ptr` wrapped as CuPy (`UnownedMemory`, as
+`DeviceConductor._rows` does), so a device-built obs buffer in CuPy hands to torch with no copy.
+
+Streams: the conductor works on the TICK STREAM (`cuda_resident_tick.cu::tick_stream_handle`, created by
+`cudaStreamCreate`: a BLOCKING stream, so it is ordered with the legacy default stream that CuPy (stream
+ptr 0 here) and torch use by default). A torch kernel on the default stream after a tick therefore waits
+for the tick's work with no explicit event (and cannot overlap it); `bp.tick_stream_ptr()` exists if a
+later form wants an `ExternalStream` and explicit events.
+
+What `agents/` must change to take a device obs (a trainer-side patch, not the env's): `Batch` storage
+as torch CUDA tensors, `LearningRows.gather` / `scatter` as tensor index copies, `as_tensors` as
+`from_dlpack`, the actions handed to `step` as a CUDA tensor (the env checks them on the card), the
+small `info` arrays either CuPy or host as now. The env's API stays one API (the rule): the device
+backend returns CuPy (or torch) arrays with the same keys, shapes and dtypes.
+
+---------------------------------------------------------------------------------------------
+
+## I. Determinism status
+
+The observation is not synced game state (no digest moves), but the port's gate (the lead's default) is
+"the device observation equals the host observation exactly, value for value". Per block, where floats
+make that hard and what I propose:
+
+| block / columns | arithmetic | exact equality reachable? | proposal |
+|---|---|---|---|
+| every flag, kind, count, uid, mask, `list_mask`, `valid`, `in_match`, near_u, far_u, the sight planes, lanes, place | integer | yes | integer on the card, written once into the uint8 / int32 / float32 buffer; gate EXACT |
+| cos / sin of a Q16 angle (`cos_q16(f) / 65536`), `wall_share` (k / 16), ratios of two integers (`float(x) / float(d)`), Q16 dequantizes, the pressure band, the poison / teargas / smoke / temperature / wind-magnitude divisions, the grenade velocity (`sqrt`), `aim_vector`, `onto_reach_q` | IEEE double +, -, *, /, sqrt in the reference's order | yes, IF the device uses double with correctly rounded division and sqrt (CUDA's default for double) and FMA CONTRACTION OFF (`-fmad=false` for the TU or `__dmul_rn` / `__dadd_rn`), and converts float64 -> float32 / float16 in ONE correctly rounded step (numpy's `astype(float16)` from float64 is direct; going through float32 double-rounds) | "integer on the card where the reference is integer, the reference's float64 expression elsewhere, cast once at the end"; gate EXACT |
+| the squash beyond 1 (`1 + ln|x|`, every squashed column and plane with |x| > 1) | `math.log` / `np.log` (libm) | NOT provably: neither the host libm's `log` nor CUDA's double `log` (documented 1 ulp) is guaranteed correctly rounded, so a float64 result may differ by 1 ulp, which changes the float32 / float16 value only when it sits on a rounding boundary of the narrower type (rare) | gate EXACT on the corpus with every mismatch counted and printed; a stated fallback of "<= 1 ulp of the served dtype on squashed values with |x| > 1 only"; OR (Erik's / the lead's call, a reference change of <= 1 ulp: no network is trained yet) both sides call one correctly rounded `log` |
+| `d_c` (`log1p(hypot(dx, dy)) / log1p(L_ref)`: list col 3, vector col 91, full list col 3) | `math.hypot`, `math.log1p` | NOT provably (two libm calls) | same as the squash; note `hypot` of integers below 2^26 equals `sqrt(dx*dx + dy*dy)` exactly when hypot is correctly rounded, which glibc's is and other libms may not be (K) |
+| `_hit_from` (vector cols 68-69: `-dx / hypot`, `dy / hypot`) | `math.hypot` | NOT provably | same |
+| the wind planes' direction (`vx / np.hypot(vx, vy)`, near_f / far_f / air cols 64-65) | `np.hypot` | NOT provably | same |
+| `felt_temp` (col 96) | the Q16 law (`felt_temperature_q`, already on the card) then dequantize, ratio, squash | the Q16 part exact; the squash as above | -- |
+| the reward groups, counters, `team_*` (float64 sums in event order, then float32) | IEEE | yes, IF every sum keeps the reference's order: the books walk events serially (one thread per env in ring order), and the env's final `(counters[:, :, None] * G[None]).sum(axis=1)` must be summed in numpy's order for that reduction (K) | serial per env in event order; gate EXACT |
+| `terminated`, `truncated`, the result | integer | yes | EXACT |
+| the full view | as the observation | as above | as above |
+
+Two machine notes. (1) The reference itself is host-libm-dependent today: the farm on Windows (MSVC
+UCRT) and on a Linux node (glibc) may already disagree in the last bit of a squashed value; the device
+gate must name the host it compares against. (2) The ACCEPTED GAP of the rule file (the physics planes
+carry the bodies' own imprint) is untouched: it concerns the counterfactual family, not equality with
+the host.
+
+---------------------------------------------------------------------------------------------
