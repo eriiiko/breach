@@ -59,6 +59,8 @@ public:
 
     // The 6b flush's reset: every env's lists empty and its seq 0.
     void begin();
+    // #29 P7e.3: env e's reset alone (an env reset): its lists empty, its seq 0.
+    void reset_env(int e);
     // Every env's seq from host memory (N int64): the window's base.
     void set_seq(const int64_t* seq);
     // The seq counters (N int64) to host memory; returns once landed.
