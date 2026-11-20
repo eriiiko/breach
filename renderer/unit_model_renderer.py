@@ -415,7 +415,13 @@ class UnitModelRenderer:
         self._tick_s = 1.0 / float(CFG.clock.ticks_per_second)
         pose = PoseLayer(settings)
         skinner = skinner if skinner is not None else CpuInjectSkinner(rl)
+        # #106: a creature look is posed from its sim chain
+        # (creature_pose.pose_from_chain), never by the pose layer
+        creature_looks = {n for names in self._creature_table.values()
+                          for n in names}
         for look in self._looks.values():
+            if look.name in creature_looks:
+                continue
             rig = pose.add_look(look.name, look.path)
             skinner.prepare(look.name, look.model, look.anims[0],
                             rig.bank.skeleton.names)
