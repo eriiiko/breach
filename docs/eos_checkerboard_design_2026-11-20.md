@@ -700,14 +700,29 @@ like-for-like substep count; within noise of "no cost".
 | 1. Completeness and correctness of the units change | Opus | SOUND WITH FIXES | (1) PROVED: twin debt is 12 twins, not `[twins.eos]` alone: `eos_solver.h`, `cuda_eos_step.h`, `cuda_resident_tick.h` and `bulk_transport.cpp` are `files` of eos, water, trace_tail, div_source, energy_flux, radiation_sweep, temperature, fire, stamp, water_tail, swarm_larva (P) and stamp_rows (T); mark all level, or drop the cosmetic rename and comment reword to shrink it. (2) PROVED: §7.5's test pins the SL leg through `eos_sl_advect_ref`, not `step()`'s backtrace (`eos_solver.cpp:831`); dropping the fold there passes it. Measure the SL leg through the live step (e.g. a wind step located in metres via `dbg_mg_inputs` div_u at 1.0 and 0.5 m); state the mass leg as Σ(N1−N0)·dx²/(L_m·dt). (3) PROVED config, INFERRED effect: §7.3's dial list misses `[blast] expansion_m3_per_strength` (calibrated at 0.333 m; 3× the mass at the same u after U), `heat_mj_per_strength`, `[physics.combustion] burn_rate` and `draw_r` (P-O2b widened the draw while resupply ran at 1/3 speed). (4) INFERRED, low: the range guard must sit inside `ensure_fold_table`'s poisoning try (`cuda_eos_resident.cu:919-932`), the `k_flux_q` pattern, and the guard is a behaviour change at 1.0 m when dt_s > 1 s (unreachable today). (5) PROVED, low: the bench twin must use `np.float32(dx)` and n_sub; `dx` on `eos_sl_advect_ref` / `cuda_eos_sl_advect` is required with no default; synthetic callers (`test_thermal_mass_axis.py:764/900/1006`, `cuda_p62_check.py:117`) need a chosen dx. (6) PROVED, info: the float-ratchet argument is moot (the TUs are not in `SIM_TUS`), and `step()` keeps `dt_s_d` for `k_flux_q`. Checked sound: no missed transport site; bit identity at 1.0 m on all four paths; the range and n_sub claims; the outflow limiter at any Courant; trace diffusion per tile² breaks nothing. Noted, not breakage: above 64 m/s at 0.333 m (blasts) mass stays capped at 1 tile/substep, so the solve/mass mismatch survives in that regime. |
 | 2. Gates, regression, rollout, systems reuse | Opus | SOUND WITH FIXES | (1) PROVED: eight ship_demo (0.333 m) match pins move for the right reason, not two: `test_bots_v1.py:503`, `test_zombie_control.py:225` (also `tools/match_pin_check.py`'s), `test_exposure.py:588`, `test_grenade_kinds.py:667`, `test_horde_behaviours.py:52`, `test_turning_law.py:563`, `test_turn_rate.py:317`, `test_unit_impulse.py:883`; each gets a dated "#217 patch U" re-pin comment. The box pins (`_PRE_122_BOX`, `_STAGE1_BOX`, `_RE_PIN_1_BOX`) are 1.0 m oracles that must NOT move (1.0 m inferred for three). (2) PROVED: mark 14 twins level (adds combustion and edit_queue to lens 1's twelve). (3) PROVED: this PC has an RTX 3060 + nvcc 12.3; order is code → re-pins → `--mark-level` ×14 last → `cpp/build_cuda.bat` in the patch worktree → `tools/cuda_green.py` → full suite → merge from that checkout; plus `tools/match_pin_check.py --backend cuda` and `--backend resident` against the new pin. (4) Tests at 1/3 m with measured margins need a category each: re-measure and restate with rationale (`test_drag2_venting_gate.py` legs 4/5, leg 2's strict xfail XPASS goes to Erik, add it to the `k_drag2` dial note; `test_air_boundary.py` reflection/refill gates; `test_eos_checkerboard.py` XPASS goes to Erik); Erik-ruled properties where red is a real finding, never re-pinned (`test_wind_doorway_e2e.py`, `test_wind_studio.py:101`, `test_gen_ship_vents_air.py` `PRESSURE_BAND`); transport-independent, must stay green (`test_trace_resolution`, `test_sky_exchange`, `test_explosion`, `test_fire_vfx_ref`). (5) PROVED: the branch is behind origin/main (#221 test_arena, #97 water_studio); bring it up to main and re-grep. (6) Rule: the E2E reproduction is missing; `tools/wind_drift_probe.py` (plume drift ≈ 0.35-0.5·|u|) on smoke_light_studio and fire_studio, before and after, is the reproduction and the acceptance. (7) `_WIND_VREF`/`_WIND_VSENS` are measured fits, not Erik dials: a named render-only follow-up patch right after U; render `tools/look_shots.toml` before and after; `tests/data/fire_smoke_studio_flame_inputs.npz` goes stale (re-dump in the tuning session). (8) Replays recorded before U at 0.333 m hit `ReplayDivergence` by design (`FORMAT_VERSION` stays 8); RL runs, saved soldiers and imitation records made before U are on old physics (resume needs `--allow-code-change`; tell the game-ai-lead role); tournament pins `docs/rl_agent_rung1_1d_pins/*.json` move. (9) PROVED: the rule line must fire where the device folds live: `fields-gas.md`'s `paths:` miss `eos_solver.h`, `cuda_eos_step.cu`, `cuda_eos_resident.cu`, `cuda_sl_advection.cu`. (10) §7.2 slips: the float-ratchet claim is vacuous; `test_b1`/`test_b2` stay green because no physics runs; `bp.EOSSolver()`'s default dx = 0.333 so its direct users change too (books-only asserts). (11) `stubs/breach_physics.pyi:1272,1348` regenerated; `dx` required on the SL entries. Scope: one patch is right. |
 
-## 8. Blast-regime stability (phase 1: cause and design, 2026-11-20)
+## 8. Blast-regime stability (v2: cause and design, 2026-11-20)
 
 This is the stack's third patch (Erik, 2026-11-20). Phase 1 measures the
 cause and designs the fix; no sim code changed.
 
-Every number comes from the live path at `2425bc6a` (patch U built), on the
-CPU build on the Work Desktop. The instrument is the new `--stability` mode of
-`tests/_eos_checkerboard_bench.py` (commit `6dd0ac78`). Per tick it reports:
+**v2** folds the two critiques of §8.15 into the text, with §7's convention:
+every change that answers a finding carries its id (L1-n = lens 1, L2-n =
+lens 2), and §8.15 ends with a disposition table, one row per finding. v2
+also does the merge of step 0 (§8.0), so it describes the merged base
+`3ac5cfe9`. `eos_solver.cpp`, `cuda_eos_resident.cu`, `cuda_eos_step.cu` and
+`cuda_kick_compression.cu` did not change in that merge, so v1's line numbers
+in them hold.
+
+v1's numbers come from the live path at `2425bc6a` (patch U built). v2's new
+numbers come from the merged base, on this worktree's CPU build
+(`cpp/build/Release`) and CUDA build (`cpp/build_cuda`, RTX 3060), on the Work
+Desktop. The instruments:
+
+- the `--stability` mode of `tests/_eos_checkerboard_bench.py` (commit `6dd0ac78`);
+- `tools/bench_conductor.py` (from main, P7e.5);
+- two scratch readers over the bench's own loop (the k estimate per tick, §8.6.2, and the batch model, §8.7). They read; they probe nothing new. The k columns they print become columns of `--stability` in the patch (§8.9).
+
+Per tick, `--stability` reports:
 
 - `n_sub`, the substep count.
 - `Csub` = max|u_entry|·dt_s/dx and `Ctick` = max|u_entry|·dt/dx.
@@ -722,6 +737,27 @@ pressure k = tps/24 times per 1/24 s. The other slots then run more often too;
 this is noted where it matters.
 
 PROVED means measured, or read in the code. INFERENCE says so.
+
+### 8.0 Step 0: the merged base (L2-4)
+
+**Done in this doc patch** (v2):
+
+- **The merge.** `git fetch origin`, then `main` (`dde25e03`, 36 commits ahead, P7e.5 among them) merged into the branch: `3ac5cfe9`.
+  - One conflict, `tests/twin_manifest.toml`: 11 twins carry a `level_at` mark on both sides (`fd514e9e` for patch U here, `1aebec6c` for P7e.5 on main). Resolved to this branch's marks. Every other hunk of main (its new comments and rows, its generated `files` lists) was taken as merged; the result differs from main's manifest in those 11 `level_at` lines only.
+  - The code merged without a conflict. It changed `cuda_resident_tick.*`, `cuda_unit_books.*`, `bindings.cpp`, `physics_engine.h`, `swarm.*`, `conductor.py`, `physics_runner.py` and `swarm.py`, and brought `tests/cuda_conductor_batch_check.py` and `tools/bench_conductor.py`.
+- **The twin ledger** on the merged base (`tools/twin_debt.py`, read only): 11 twins in debt (water, eos, trace_tail, div_source, radiation_sweep, temperature, fire, stamp, water_tail, stamp_rows, swarm_larva). Neither side's mark covers the merged tree; they go level only through the patch's own step 0, below.
+- **Rebuilt** in the worktree: CPU (`cmake --build cpp/build --config Release`) and CUDA (`cpp/build_cuda.bat`), both exit 0.
+- **§8.1's before tables, re-run on the merged CPU build.** The studio rows of ticks 27-35 reproduce §8.1 to every printed digit; the merge did not touch the CPU path. The arena, read every tick instead of every 24th, peaks higher than v1's sampled table: over 3-30 s, Ctick 7.8, eps 5.4, Nmin 0.050, wind up to 62.6 m/s. It is the same run, sampled more finely, and §8.1 now carries those numbers.
+- **The conductor gates on the merged base:** `pytest tests/test_cuda_conductor_batch.py tests/test_cuda_conductor.py` on the merged CUDA build: 9 passed, 2 failed (20 min). Both reds are patch U's vent-ledger fault, which lens 2 predicted (L2-4):
+  - `test_cuda_conductor_batch` (its hand scenes, swarm, swap, syncs and fault parts pass). Its MATCHES part fails: every ship_demo match is refused by the device conductor with `ApplierFault` in slot 9e(d) vents. bots@11 is refused at tick 627, bots_v1@12 at 831, bots@13 at 694, bots_v1@14 at 728. Each env ALONE is refused too, so the cause is not the batch.
+  - `test_cuda_conductor` pinned matches: bots refused at tick 806 of 3321, after 806 equal ticks; bots_v1 equal to its end (730 ticks). Identical to §7.9's red.
+  - Category: U's red, not §8's and not P7e.5's. The new matches run longer under U, and a vent ledger passes its proved range (§8.4: vents drain rooms at a constant mass rate). It is recorded here so that §8's own conductor leg (T7) is told apart from it.
+
+**Left to the implementation patch, in this order, before its first code commit:**
+
+1. `tools/twin_debt.py --mark-level` for the 11 twins, then `tools/cuda_green.py` on the merged build. The ledger is then level before §8 code exists.
+2. The full suite on the merged base. Its reds are categorised with §7.5's categories and §8.11, so that U's reds, P7e.5's and §8's own stay apart.
+3. The A/B baselines of T6 (§8.9), captured with the merged base's build.
 
 ### 8.1 Measurements
 
@@ -764,10 +800,12 @@ and no fire. The seal pushes 0.5 atm into the wall-layer cells.
 
 | run | max wind | Ctick | eps | Nmin | Tmw at end |
 |---|---|---|---|---|---|
-| 24 tps (shipped) | 4 m/s at tick 1; 35-54 m/s from 3 s on (rms 2.5-3.2) | 2-6.7 | ≤ 4.9 | 0.09-0.13 | −3.0 K |
+| 24 tps (shipped) | 4 m/s at tick 1; up to 31 m/s by 3 s; 11.7-62.6 m/s from 3 s on (rms 2.5-3.2) | ≤ 7.8 | ≤ 5.4 | 0.050-0.07 | −3.0 K |
 | 48 tps | 2-8 m/s | ≤ 0.5 | ≤ 0.17 | 0.75-0.9 | −0.1 K (20 s) |
 | 96 tps | 0.4-0.6 m/s | ≤ 0.02 | ≤ 0.01 | 0.89 | 0.0 K (15 s) |
 | 24 tps, `k_drag2` 0 | 446 m/s at 2 s; 999.6 (U_MAX) at 4 s | 56-125 | 7-9 | 0.005 | −142 K; 720 T_MAX_PHYS rail hits |
+
+(v2: the shipped row is read every tick on the merged base; v1 sampled every 24th tick and printed 35-54 m/s, Ctick 2-6.7, eps ≤ 4.9, Nmin 0.09-0.13. Same run.)
 
 At 24 tps the hot spot sits at one convex wall corner, (47, 77), in a cell
 thinned to N 0.17-0.27. 14-16 of the 20 fastest cells touch a solid. The wind
@@ -782,6 +820,26 @@ has no odd-even share (cb share of u_x 0.00); N has −0.2.
   - The estimator's K·dt·|∇P|/N̂ term at the empty cell (N̂ floored at 1e-3) pins n_sub at the cap.
   - Winds there are only 1-3.5 m/s until the room is nearly empty (20 m/s at 20 s).
 - **The GOLDEN_AGGREGATE scenario** (1.0 m, hull breach to vacuum): n_sub = 8 on 119 of 120 ticks, max wind 78.7 m/s on every tick, 4 cap hits.
+
+### 8.1.1 The design's regime, emulated before the build (v2: L1-1, L1-4)
+
+Two emulations on the merged CPU build, with no code change.
+
+- **k = 1 with the ceiling kept.** 24 tps with `U_MAX` 64 m/s. 64 m/s is below c_amb, so the cap² plane is 64² on every cell (`K_pre_scan`'s `ratio >= ratio_umax` branch), which is (B) with no sub-ticks. This is the mutation tests T2 and T3 must fail under (L1-1).
+- **k = 8 with the ceiling.** 192 tps with `U_MAX` 64 and `N_SUB_MAX` 2: one tile per pressure update and half a tile per substep. This is lens 1's proxy (L1-4). It also runs every other slot 8×, and its cap still destroys (no (C)).
+
+| run | smoke_light_studio (legacy rows), charges at about ticks 24 / 36 / 48 | fire_studio frag at (24,16), tick 24 |
+|---|---|---|
+| before (merged base) | Nmax 113.6 / 131.8, Nmin 0, stored P / p* down to 0.02 and staying | Nmax 1.76, Nmin 0.036; wind median 8.9 m/s over ticks 30-48 and 5.6 over 48-120 (the slosh) |
+| k = 1 + ceiling 64 | Nmax 35.5 (ticks 24-40) and 75.8 (40-72), Nmin 0, P / p* down to 0.03: **still wild** | Nmax 2.10, Nmin 0.035; wind median 8.8 and 5.6: the slosh unchanged |
+| k = 8 + ceiling (proxy) | per charge, Nmax 2.3 / 4.1 / 11.5 and Nmin 0.068 / 0.148 / 0.140. P / p* falls on each detonation tick (to 0.74, 0.18, 0.08) and is back to ≥ 0.99 within 4 ticks @24; it rises monotonically (0.18 → 0.87 in 0.75 of a tick @24) | Nmax 1.19, **Nmin 0.086**; wind median 2.1 and **0.9**: no slosh |
+
+What it says:
+
+- **The mutation breaks the tests (L1-1, PROVED).** The ceiling alone does not tame the studio. So "k forced to 1, ceiling kept" is a real mutation of T2 and T3.
+- **L1-4's sink, at k = 8 (PROVED in the emulation).** The frag's source tile does not empty: no cell falls below 0.086 N0. The criterion stays as a test leg (T2), because the emulation is not the build.
+- **The studio's P / p* dip is a lag, not a sink (PROVED).** On a detonation tick the legacy rows dump their heat into p* before the solve. The solve catches up within about four ticks @24, at the ceiling's pace. T3 is restated for it (§8.9).
+- **N 11.5 beside N 0.14 is not a pile (INFERENCE).** At equal pressure it is the hot/cold mixture of the legacy rows' heat, which rails at T_MAX_PHYS (N ∝ 1/T). So an N band is not the pile test where heat varies 10×. T2 tests pressure instead (§8.9).
 
 ### 8.2 The cause
 
@@ -810,7 +868,7 @@ has no odd-even share (cb share of u_x 0.00); N has −0.2.
    - The mass-weighted T fell from +103 to −3 K. The "−94" was the CELL-UNWEIGHTED mean, which is dominated by emptied cells sitting at T_MIN.
    - For scale: a cell moving at 567 m/s carries kinetic energy equal to its whole thermal energy (k_ke = 9.1e-4 K/(m/s)²).
 6. **PROVED: the quiet-arena winds are the same failure at low amplitude.**
-   - At 24 tps, Ctick reaches 2-6.7 and eps 4.9; at 48 tps they stay ≤ 0.5 and ≤ 0.17. At 96 tps the wind is 0.4-0.6 m/s.
+   - At 24 tps, Ctick reaches 7.8 and eps 5.4 (v2, read every tick); at 48 tps they stay ≤ 0.5 and ≤ 0.17. At 96 tps the wind is 0.4-0.6 m/s.
    - **INFERENCE:** the 2-8 m/s left at 48 tps, where the per-update Courant number is ≤ 0.5, does not come from the update cadence. It is the collocated coupling (§3; F4 and F5 below) at a convex wall corner, and curing it belongs to (d)+(a).
    - Of the −3.0 K arena drift, kick − drag accounts for ~0.35 K and the rails for ~0.5 K. The rest lies outside the EOS. It was not split further, and it vanishes at 96 tps.
 7. **PROVED: idle ship_demo pays for 8 substeps on every tick because of one emptied vent aperture** (§8.1). It is a cost of the same 1/N̂ term, paid today.
@@ -839,7 +897,7 @@ shows:
 
 Where I disagree with its recommendation:
 
-- **"A cap on n that never binds."** The cost would be unbounded: by its own criterion S·dt/n ≤ 0.3, the frag alone asks n ≈ 400. I keep a cap and bound the regime past it instead (§8.6: the budget ceiling, with its KE returned as heat).
+- **"A cap on n that never binds."** The cost would be unbounded: by its own criterion S·dt/n ≤ 0.3, the frag alone asks n ≈ 400. I keep a cap and bound the regime past it instead (§8.6: the budget ceiling, and a cap that returns the kick's energy as heat).
 - **"Spread the blast source so S·dt/n ≤ 0.3."** That changes how a calibrated blast delivers its volume. It is a source-data decision for the blast session with Erik, not for this patch (§8.4).
 - **Face projection (Rhie-Chow / MAC) as the second patch.** I agree in substance: it is the stack's (d)+(a). Its design must take F5 with it: a density-weighted face velocity, and a kick whose mobility is the solve's face mobility.
 
@@ -873,228 +931,587 @@ The verdicts:
 | **limit the wind** (Erik's idea) with the drag dial | lowers the plateau of a numerically made wind; the kick keeps feeding it, and drag turns it into heat | free | treats the symptom. The dial is a physical behaviour and Erik's call. Today it is already the hidden limiter (§8.2.4) |
 | limit the wind: lower U_MAX or a speed cap | lowers the plateau, but the cap destroys KE (F2), so a lower cap drains heat faster | free | treats the symptom and worsens F2 |
 | limit the wind: a Courant cap tied to the tick, u ≤ dx/dt (8 m/s at 0.333 m) | stability, by construction | free | changes physics: every wind, blast push and breach outflow is capped at 8 m/s, and the cap depends on dx and tps. Rejected as the cure |
-| **substep the whole tick** (F1's remedy), with a bounded budget, a ceiling tied to that budget, and an energy-neutral cap | F1; F3 (empties do not form); F2; bounds F5/F6 | k solves, only on ticks with fast air | **chosen** |
+| **substep the whole tick** (F1's remedy), with a bounded budget, a ceiling tied to that budget, and a cap that returns the kick's energy | F1; F3 (no empties in the sealed rooms emulated, §8.1.1; a one-tile source at the cap stays a gap, L1-4); F2; bounds F5/F6 | k solves, only on ticks with fast air | **chosen** |
 
 A wind limit cures the cause only where the limit IS the stability condition,
 the per-update Courant number. The choice below includes exactly that: a
 ceiling tied to the sub-tick budget. It is not the cure. It binds only past the
 budget, where the rest of the design cannot reach.
 
-### 8.6 The design: whole-step sub-ticks (k), a budget ceiling, an energy-neutral cap
+### 8.6 The design (v2): whole-step sub-ticks (k), a budget ceiling, a cap that returns the kick's energy
 
-**(A) Sub-ticks.**
+#### 8.6.1 (A) Sub-ticks, and where the loop lives (L2-3, L1-7)
 
-- `EOSSolver::step(dt)` runs steps 0-7 k times, at `dt_k = dt/k`, inside the ONE call.
-- The per-tick resets (the counter block at `:354-401`) run once at entry. Every counter accumulates across the sub-ticks, and the digests are taken on the last one.
-- Each sub-tick keeps today's inner advection substeps (`n_sub` at CFL_ADV 0.5, within dt_k).
-- `k = 1` runs today's code path verbatim.
+**One call, one host read a tick (L2-3).** The loop lives in three places, one per backend:
 
-**The choice of k: one integer, once per tick at entry.** This is the n_sub
-idiom: one reduction, no float in the per-cell path.
+- the CPU: inside `EOSSolver::step(dt)`;
+- the batched resident engine (every N): inside `eos_step_resident`;
+- the per-call device path: inside the C++ entry of `cuda_eos_step`.
 
-- `k_u = ceil(max|u_entry|·dt / (C_P·dx))`, with C_P = 1: one tile per pressure update, Kwatra's condition.
-- `k_kick = ceil(du_max·dt / (C_P·dx))`. `du_max` is today's K·dt·|∇P_prev|/N̂ term, taken over cells with N ≥ 5 % of ambient only, so an emptied aperture does not pin k (§8.1).
-- `k_div = ceil(γ·dt·max|div u_entry| / ε*)`, with ε* = 0.5 (the reviewer's bound). It keeps the solve's right-hand side positive.
-- `k_src = ceil(max S·dt / (4·C_P))`: the face speed S·dx/4 that a source asks for, in tiles per update.
-- `k = clamp(max(k_u, k_kick, k_div, k_src), 1, K_MAX)`, with K_MAX = 8, the value of Erik's frozen N_SUB_MAX. It is a new perf dial, `[physics.eos] K_MAX`, bound in PhysicsRunner only.
-- The inner `n_sub` of each sub-tick comes from the same entry estimate at dt_k: `ceil(n_adv/k)`, capped at N_SUB_MAX.
-- So the device needs ONE read for both. The existing `tick_sync_point("max_n_sub")` returns k and n_sub together, each the batch's maximum; envs past their own count are masked (`sub_off`). No new sync.
+`physics_runner._resident_chain` is unchanged and calls the EOS stage once, as
+today (`device-residency.md:40`). No loop in Python glue, and no extra host sync.
 
-**(B) The budget ceiling (the backstop).**
+**What runs once at entry.** Lens 1 (L1-7) found these left out; the device pre-stage already runs them once.
+
+- The counter resets (`eos_solver.cpp:354-401`) and the device books' one memset.
+- Step 0, `p_prev := atmosphere`: **`gmap.wave_p` is written once, at entry.** The water splash (`water_solver.cpp:337-345`) reads |P − P_prev| as the tick's transient, and the unseal and applier rows read tick semantics. `wave_p` is also a digested field.
+- The pre-stage scan: the cap² / c_LOCAL plane, max|u|, max_du, the absorb plane, `cmask`, the k-set and k's reductions (§8.6.2), and n_sub (§8.6.3).
+- The coeffE / coeffS caches, folded at (dt_k, n_sub). They are constant across the tick's sub-ticks, because k and n_sub are.
+
+**What runs per sub-tick, k times at dt_k:**
+
+- steps 1a/1d (n_sub substeps of dt_k/n_sub);
+- div u*, with the div source S at dt_k (k·S·dt_k = S·dt);
+- Dalton N and p*;
+- the MG build and solve;
+- the kick with its brackets, the cap ((B), (C)) and drag;
+- step 5, step 6 (K3), and step 7, the recovery.
+
+**The warm start.** For sub-tick ≥ 2 it is the previous sub-tick's stored P, read from `atmosphere` itself. Step 5 is that array's only writer inside the step, and it runs after the solve, so no buffer is needed and the caller's `p_prev` is never touched after entry (L1-7). `debug_pstar_from_prev` reads the same source.
+
+**The recovery runs per sub-tick (L1-7).** That is necessary: sub-tick j's p* reads the mirror sub-tick j−1 wrote.
+
+- Rails still write back only when one binds.
+- `t_max_phys_hits`, `energy_floor_hits` and `e_rail_sum` now accumulate over the tick's sub-ticks.
+- `energy-books.md`'s "once per tick" is amended (§8.13).
+
+**Once per tick, after the EOS (unchanged, L1-7):** the trace tail (diffusion, decay, stranded; `physics_engine.cpp:791`) and every slot outside 7.
+
+**k = 1 with the legacy switches is today's code path** (§8.6.6).
+
+**The inventory of per-tick quantities** (L1-7; the implementer completes it in the as-built):
+
+| kind | quantities | when k > 1 |
+|---|---|---|
+| rates folded with dt | `dt_q`, `Kdt_raw`, aK's dt²/dx² (`Kdt2dx2_raw`), `absorb_dt_q`, `kd_q`, `kd2_q` with `rad_dead_q32`, `k_flux_q`, the dt of `eos_transport_step_q`, the div source's S·dt | re-folded at `dt_k = eos_subtick_dt(dt, k)`, each a host double quantized once (the `k_flux_q` idiom) |
+| per-tick factor | `sponge_udamp` (B3c, ambient maps) | default: applied on the last sub-tick only (the factor stays exact, with no integer root) |
+| per-tick term not scaled by dt | `sponge_sigma`, the σ-mass added to m while m ∝ 1/aK ∝ k² (L1-7) | default: σ·k², an exact shift because k is a power of two, so its weight against m stays the per-tick one |
+| entry only | `p_prev` / `wave_p`, the cap² plane and c_LOCAL, the absorb plane, `cmask`, coeffE/S, k, n_sub | once |
+| state carried across sub-ticks | `atmosphere` (the warm start), wind, the temperature mirror, `gas_energy`, gas | carried |
+| books | every counter | accumulated over the sub-ticks, reset once at entry |
+| after the EOS | the trace tail, slot 9 | unchanged |
+
+Both sponge defaults are decided against the B3c sponge's own gate,
+`test_air_boundary.py`. The implementer may choose the other form if that gate
+says so, and records it.
+
+**A note for ruling 4 (drag).** Quadratic drag's per-step map u/(1 + k_drag2·dt·u)
+is the exact solution of du/dt = −k_drag2·u² over dt. So k sub-ticks at dt_k
+compose to the same map, and the law per second does not change with k.
+Linear drag and the absorb factor change only at second order.
+
+#### 8.6.2 The choice of k (L1-3, L1-5, L1-9, L2-2)
+
+k is one integer per env, chosen once per tick at entry from integer reductions (the n_sub idiom).
+
+**The k-set** is the cells k is measured over:
+
+- gas cells: not solid, not vacuum, not the ambient ring;
+- with Dalton N ≥ `N_K_MIN`;
+- with no vacuum or ambient-ring cell within `R_K` = 2 tiles (4-neighbour distance).
+
+`N_K_MIN` = 3277 raw = quantize(0.05), i.e. 5 % of the 1-atm density at
+T_AMB in the Q16 N currency. It is an integer constant and valid on space
+maps, which have no n_amb (L1-5). `R_K` is an integer constant too.
+
+**The terms:**
+
+- `k_u = ceil(max_kset |u_entry| · dt / (C_P·dx))`, with C_P = 1.
+- `k_div = ceil(γ·dt·max_kset |div u_entry| / ε*)`, with **ε* = 1**: the solve's right-hand side p*(1 − γ·dt_k·div u) stays positive in every sub-tick. v1 had 0.5. 1 is the positivity condition itself, and it halves a breach's k (below).
+- `k_src = ceil(max S·dt / (4·C_P))` on a tick with a div source. S is reduced on the device in the pre-stage, which lens 1 checked sound.
+- **`k = min(K_MAX, pow2ceil(max(k_u, k_div, k_src)))`, so k ∈ {1, 2, 4, 8}** (L1-9). dt_k = dt/k is then exact in float. It is still computed by ONE helper, `eos_subtick_dt(dt, k)` (`eos_solver.h`, out of line in `eos_solver.cpp`), which the CPU, the per-call host stage and `ensure_fold_table` all call.
+
+**The kick term du is NOT in k. This refutes L1-3's sum, on measurement (table below).**
+
+- du is the per-tick kick increment K·dt·|∇P|/N̂, not a displacement.
+- Where a flow is steady (a breach outflow, a vent's draw, a slosh), drag and the cap remove it again inside the same kick loop.
+- Summed into k, it holds k up on quiet and breach ticks:
+  - idle ship_demo runs at k = 2-4 on 53 % of ticks;
+  - the 1.0 m golden breach sits at k = 8 on 119 of 120 ticks;
+  - the fire_studio frag's slosh holds k = 2 for 4 s.
+- du stays in n_sub verbatim, which is HEAD's n_sub, so k = 1 keeps HEAD (§8.6.3).
+
+**Why L1-3's in-tick acceleration is still bounded without the sum.**
+
+- Inside a tick, the mass of sub-tick j moves at the speed sub-tick j−1's kick left. (B) holds that speed at or below U_bud = K_MAX·dx/dt.
+- So mass moves at most max(C_P, K_MAX/k) tiles between solves: 1 tile when k = K_MAX, and 4 tiles in the worst case (k = 2, a tick whose own kick reaches the ceiling).
+- The next tick's k is computed from that speed.
+- T1 asserts exactly this bound, per sub-tick (§8.9).
+
+**Measured** on the merged CPU build, from the entry state of every tick of
+today's trajectories (a scratch reader; float estimates of the integer
+estimator). The cells give the mean k per tick:
+
+| scene | ticks | unfiltered ceil(Ctick) (lens 2's measure) | L1-3's sum (u + du), N filter only, ε* 0.5 | **v2** (the k-set, no du, ε* 1) |
+|---|---|---|---|---|
+| ship_demo, idle | 480 | 1.52 | 1.66 (k 2-4 on 53 % of ticks) | **1.00** |
+| range_hall, idle | 240 | 1.00 | 1.00 | **1.00** |
+| range_hall, frag at the centre | 240 | 1.05 | 1.11 | **1.06** |
+| range_hall, C4 at the centre | 360 | 1.11 | 1.16 | **1.12** |
+| range_hall, C4 against the hull (a breach) | 360 | 5.92 | 3.84 | **2.54** |
+| fire_studio, frag | 120 | 1.23 | 1.96 | **1.27** |
+| GOLDEN_AGGREGATE scenario (1.0 m, a breach) | 120 | 2.97 | 7.94 | **1.59** |
+| smoke_light_studio (today's wild trajectory) | 168 | 6.79 | 6.85 | **6.82** |
+
+**The breach in detail (v2 k, mean, by window; detonation at tick 24):**
+
+| ticks | 24-72 | 72-144 | 144-240 | 240-360 |
+|---|---|---|---|---|
+| range_hall C4 against the hull | 5.90 | 3.15 | 2.70 | **1.00** |
+
+- The C4's own blast ends by about tick 72.
+- From then on, k_u is 1. k_div holds k at 2-8 while the room drains: the expansion fan toward the mouth has |div| ~ u/r, and at 0.333 m it reaches past 2 tiles.
+- k is back to 1 once the room has drained, about 9 s after the C4. So **a breach does not pin k for the rest of the episode** (L2-2), and the cost table carries it (§8.7).
+- These are today's trajectories, where a C4 at 0.333 m is still in the wild regime. INFERENCE: after the fix, blast tails shorten and the means fall. The patch's `--stability` columns re-measure them.
+
+#### 8.6.3 n_sub per sub-tick (L1-3)
+
+- **n_adv** is HEAD's estimate, **uncapped**: `ceil(dt·u_est / (CFL_ADV·dx))`, with u_est = max|u| + max_du + 1, clipped at max(c_LOCAL, U_MAX) as today (`:715-728`).
+- **The rule:** `n_sub = min(N_SUB_MAX, max(ceil(n_adv/k), F))`, where F = ceil(K_MAX/(k·CFL_ADV)) when k > 1 and the ceiling switch is on, and F = 1 otherwise.
+- **At k = 1** this is min(N_SUB_MAX, n_adv): HEAD's n_sub exactly.
+- **At k > 1** every |u| ≤ U_bud after any kick (B), and the SL sample and the face mean are convex combinations. So a substep moves at most U_bud·dt_k/(n_sub·dx) = K_MAX/(k·n_sub) ≤ CFL_ADV = 0.5 tiles. Without this floor, sub-ticks 2..k of a detonation tick (entry u ≈ 0, so n_sub = 1) run at Csub 1.0, the F6 regime (L1-3).
+- **The cost:** k·n_sub ≥ 16 transport substeps on such a tick (8 today at the cap), paid by that env alone (masked, §8.6.7).
+- **n_sub is fixed for the tick:** one estimate, one read. A per-sub-tick device re-estimate (each env's own n_sub from its own sub-tick, with the loop run to the bound) is a later lever, not this patch.
+
+#### 8.6.4 (B) The budget ceiling (L1-8, L1-6)
 
 - The cap stage's per-cell ceiling becomes `min(cap2_plane_[i], U_bud²)`, with U_bud = K_MAX·C_P·dx/dt: 64 m/s at 0.333 m, 192 m/s at 1.0 m, 48 m/s at 0.25 m.
 - Past the budget, the velocity the next update transports therefore never exceeds one tile per update.
-- It moves air no slower than today. The substep budget already limits real mass motion to this speed (§7.4: one tile per substep × 8). What changes is that the velocity seen by the kick, the solve, step 6 and the wind load now agrees with the mass that actually moves.
+- It moves no mass slower than today. The donor-cell limiter already caps real mass motion at one tile per substep × 8 (§7.4).
 - It is a value of an existing stage, as the Interior drag rule requires (extend its stages, never a parallel damping site).
 
-**(C) The energy-neutral cap (F2).**
+**It holds breaches too (L1-8).** A hull breach's mouth wind is sonic, about 300 m/s; the golden scenario rails at c_amb. At 0.333 m it is now held at 64 m/s.
 
-- The cap stage returns its removed KE to `gas_energy_i` on accountable cells, exactly as the drag stage does (`:1295`).
-- It books that heat to a new counter, `e_cap_heat_sum`, in the identity's EOS group.
-- `e_clamp_destroyed_sum` becomes retired-and-zero (the D10 convention), so the identity's transcriptions keep their names.
-- The reasoning: the kick's KE came out of the gas's heat, so what the cap removes goes back. No energy leaves the books, and the T_MIN rail stops minting energy for cells the cap had drained.
-- Every Python transcription of the identity gains the new term:
-  - tests: `tests/test_e1_hot_rail.py`, `test_thermostat_books.py`, `test_p_e3_drag.py`, `test_drag2_venting_gate.py`, `test_bulk_gas_payload.py`, `test_heat_source.py`;
+- The mass flux hardly changes, because the limiter caps it at one tile per substep today.
+- Every wind reader changes:
+  - the wind load on units, which goes as u²: about (300/64)² ≈ 22× less push at a breach mouth;
+  - the renderer's tamed wind;
+  - the recorder.
+- This is ruling 2 (§8.14), and those tests are category A (§8.10).
+
+**Dead at shipped resolutions (L1-6).** After (B), cap² = U_bud² wherever the cap binds, at every shipped dx.
+
+- U_bud < c_amb whenever dx < c_amb·dt/K_MAX ≈ 1.56 m, and the cap² plane floors at c_amb².
+- So the per-cell c_LOCAL plane (D2v2) and U_MAX never bind at shipped resolutions.
+- They stay: they bind at dx ≥ 1.56 m, or with the ceiling switched off. Noted in §8.13, not removed here.
+
+#### 8.6.5 (C) The cap returns only what the kick supplied (L1-6)
+
+**The quantities.** Per accountable cell, in the kick loop, with KE(·) the existing `ke_energy(n_bulk_ke, u²)`:
+
+- KE0: at the kick's entry;
+- KE1: after bracket 1, the kick;
+- KEpre: before the cap, after the absorb and the sponge;
+- KEc: after the cap.
+
+**The rule:**
+
+- removed = KEpre − KEc. It is ≥ 0, and 0 when the cap does not bind.
+- **heat = min(removed, max(0, KE1 − max(KE0, KEc)))**: the part of this sub-tick's kick above both the entry speed and the cap.
+- `gas_energy += heat`, booked to a new counter, `e_cap_heat_sum`. It sits in the identity's EOS group, beside `e_drag_heat_sum`.
+- **removed − heat stays DESTROYED and counted in `e_clamp_destroyed_sum`, which stays LIVE as a tripwire.**
+  - It is structurally about 0 once (B) binds, because u0 ≤ U_bud at the kick's entry.
+  - It is non-zero only for a speed that arrived from outside the kick: a FieldEdit or level-load wind, a K_MAX hot reload, or F7's unbooked SL KE moving onto a denser cell.
+
+**Why it cannot mint.** heat ≤ removed, and heat ≤ KE1 − KE0, the kick's own debit from that same cell's gas. So no energy is minted, and no hot spot forms elsewhere.
+
+**Gated (L1-6).** On the fire_studio frag (no legacy rows), per tick: no tick may show a T_MAX_PHYS hit, or an `e_rail_sum` larger than the same run with `cap_heat` off. On the studio's legacy rows, whose `heat_amount` 5000 rails by design, these are reported, not gated.
+
+**Files.**
+
+- The counters' readers: `bindings.cpp` and the stubs.
+- The device: `cuda_kick_compression.cu` and its reference `eos_kick_compression_reference`; `cuda_resident_tick.cu`'s `kc(...)` fold (`:1332-1345`) gains one slot, with `KICK_CNT_SLOTS` (L1-10).
+- Every Python transcription of the EOS group gains the term. These are the readers of `e_drag_heat_sum`:
+  - tests: `test_e1_hot_rail`, `test_thermostat_books`, `test_p_e3_drag`, `test_drag2_venting_gate`, `test_bulk_gas_payload`, `test_heat_source`;
   - benches: `_sealedbox_bisect_bench`, `_quiet_books_bench`, `_blast_bench`, `_fire_bench`, `_vent_bench`, `_drag2_sweep_bench`, `_eos_checkerboard_bench`;
+  - CUDA checks: `cuda_kick_check`, `cuda_s8a_check`, `cuda_combustion_burn_check`;
   - the tool `tools/storm_ledger.py`;
-  - the CUDA checks that read it: `cuda_kick_check`, `cuda_s8a_check`, `cuda_combustion_burn_check`.
+  - `docs/ray_engine_v2_scheme_study_2026-09-13/currency_audit_t2.py:104` (L1-10).
 
-**What the implementer inventories first.** Every per-tick quantity in
-`step()`, sorted into three kinds. The table goes into §8's as-built.
+**It reverses rule D6 for the cap stage** (`fields-gas.md` Interior drag; code `:1206-1209`). That is a modelling ruling, ruling 3 (§8.14), and the patch amends the rule text (§8.13).
 
-- **Rates folded with dt:** re-fold them at dt_k. These are `dt_q`, `Kdt_raw`, `aK`'s dt²/dx², `absorb_dt_q`, `kd_q`, `kd2_q` with `rad_dead_q32`, `k_flux_q`, the dt in `eos_transport_step_q`, and the div source's S·dt through the rhs.
-- **Per-tick, applied once:** decide each one. `sponge_udamp` is a per-tick factor, not folded with dt. Apply it on the last sub-tick only, or fold it to a per-sub-tick root. The implementer chooses, against the B3c sponge's own gate, `test_air_boundary.py`.
-- **State carried across sub-ticks:** `p_prev` comes from the previous sub-tick's solve, and it is also the warm start.
+#### 8.6.6 Separate switches, and what "k = 1 is HEAD" means (L1-1, L2-6, L2-8)
 
-**Determinism and twins.**
+Three `EOSSolver` fields, default ON:
 
-- k is an integer from integer reductions. Every fold is a per-sub-tick host double quantized once (the `k_flux_q` idiom), and no float enters the per-cell path.
-- The device fold table (`ensure_fold_table`, `cuda_eos_resident.cu`) gains k in its key. A refused row fails the env, as today.
-- Twins changed in the same patch:
-  - `eos_solver.cpp/.h`, the reference;
-  - `cuda_eos_step.cu`, the per-call path;
-  - `cuda_eos_resident.cu` and `physics_runner._resident_chain`, the one resident chain. The outer loop wraps the EOS stage there, never in one caller;
-  - `cuda_kick_compression.cu` and `eos_kick_compression_reference`, for bracket 4 and the ceiling;
-  - the bindings.
-- `tools/twin_debt.py --mark-level` runs in the last commit, and `.cuda_green` must equal HEAD.
+- `subtick_loop`: k from the estimate. Off: k ≡ 1, and n_sub is HEAD's.
+- `subtick_ceiling`: U_bud. Off: the cap is `cap2_plane` alone, HEAD.
+- `cap_heat`: §8.6.5. Off: bracket 4 destroys everything, HEAD.
 
-**1.0 m bit identity.**
+They are test seams, not dials: not in `config.toml`, set by tests through the solver (as `debug_pstar_from_prev` is), and every one is a key of the device fold table. Never off in play.
 
-- **Kept** wherever k = 1 and the cap does not bind. That covers quiet 1.0 m scenes.
-- **Lost** where either happens. That includes the GOLDEN_AGGREGATE scenario, which lives in the changed regime: a breach to vacuum, with n_sub 8 and 78.7 m/s on every tick and 4 cap hits. k_u alone is 4 there.
-- So **GOLDEN_AGGREGATE is re-baselined once, with this section as its rationale.**
-- The A/B lockstep harness proves the k = 1 path unchanged: force K_MAX = 1 and compare against HEAD, field by field and tick by tick, on the golden scenario and on a quiet 0.333 m scene.
-- The 1.0 m box pins (`_PRE_122_BOX`, `_STAGE1_BOX`, `_RE_PIN_1_BOX`) hold if their matches never leave k = 1. That is to be measured; if one moves, it is category A, with this rationale.
+- **Legacy, all three off, is HEAD bit for bit on every path.** The standing guard (L2-6): with the legacy switches, the GOLDEN_AGGREGATE scenario on the new build hashes to the old `d5d03433…487b`. This is `test_b6_logic_golden.py`'s "sole cause" standard: the old setting reproduces the previous value on the same build.
+- **The identity claim, exact (L1-1).** With the defaults, a tick is bit-identical to HEAD if and only if k = 1, no cell's speed exceeds U_bud, and the cap does not bind.
+- **K_MAX is a PHYSICS dial (L2-8).** `[physics.eos] K_MAX`, default 8, is bound in PhysicsRunner only. The ceiling is K_MAX·dx/dt, so K_MAX moves blast and breach physics. Training and play share it; a run records it through its config hash. It is not a perf dial: "lower it to train faster" would train on another game.
 
-### 8.7 Cost (Erik: training speed)
+#### 8.6.7 Per-env k in the batched resident engine (L1-2, L2-1: a requirement)
 
-Measured on ship_demo (70 × 100), physics only, over 48 ticks. The solve's
-share is the difference between `mg_cycles` 8 and 0.
+**Read at the merged base:**
 
-| backend | tick | EOS stage at n_sub 8 | solve | per transport substep |
-|---|---|---|---|---|
-| CPU | 17.9-18.2 ms | 14.5-14.8 ms | 1.7-3.6 ms | ~1.5 ms |
-| GPU resident | 6.25-6.38 ms | 3.14-3.18 ms | ~1.3-1.4 ms | ~0.22 ms |
+- `cuda_eos_resident.cu`: `eos_step_resident` (:1023-1255), `device_prestage` (:953-988), `K_pre_fold` (:737-770), `ensure_fold_table` (:909-946), `mg_build_device` (:627-676);
+- `cuda_batch.cuh`: `sub_off`, `env_off`, `bptr`;
+- `cuda_resident_tick.h`: `EnvSub` (:79-86);
+- `cuda_kick_compression.cu`: `kick_compression_launch_resident`;
+- main's P7e.5 seam: `run_resident_conductor`, `resident_tail_defer` / `_finish`.
 
-A sub-tick costs one solve, plus the kick, step 6 and the recovery (INFERENCE:
-~0.3-0.5 ms beyond the solve on CPU), plus its inner substeps. Estimates:
+**Today**, only the transport rows are per env (`EnvSub`: n_sub, `dtdx_s_q`, `k_flux_q`, `flux_pu_cap`, `c_local_q`). The kick's and the MG's dt folds are batch-uniform, passed by value. The substep loop runs to the batch's max n_sub, with `sub_off` masks.
 
-- **A quiet tick at k = 1** costs exactly what it costs today. If the emptied vent aperture stops pinning n_sub at 8, idle ship_demo's EOS falls from 14.7 to ~5 ms on CPU and from 3.2 to ~1.7 ms on the GPU. That is the fix's intent, but it is INFERENCE; the gate measures it.
-- **A blast tick at k = 8, with n_sub 1-2,** costs ~8 × (1.6-1.8) ≈ 13-15 ms on the GPU (today 3.2) and ~40-50 ms on CPU (today 14.7).
-  - From the 192-tps emulation, k > 1 lasts ~0.4-0.6 s per studio charge, with k = 8 for its first 2-4 ticks.
-  - It lasts ~0.25 s per frag.
-- **On average, with a grenade every 5 s,** that is about +0.5 ms per tick on the GPU (+8 %), before any saving at the vents (INFERENCE).
-- **A breach venting at 1.0 m** runs at k = 4 on every tick while it vents (the golden scenario): ~3-4× the EOS cost there.
-- **A lever, to be measured in the patch, not decided here.** Each sub-tick's solve is easier (σ/k) and warm-starts from the previous one, so fewer V-cycles per sub-tick may still converge. That re-opens the pressure arc's `mg_cycles = 8` measurement, so it goes in only with its numbers.
+**The design:**
+
+1. **The fold table is keyed (k, n_sub).**
+   - 32 rows: k ∈ {1, 2, 4, 8} × n_sub ∈ [1, N_SUB_MAX], built on the host once per config. The key gains K_MAX and the three switches.
+   - Each row's folds come from the ONE function per fold, at dt_k = `eos_subtick_dt(dt, k)`.
+   - `EnvSub` gains `k`, `dt_q`, `Kdt_raw`, `Kdt2dx2_raw`, `absorb_dt_q`, `kd_q`, `kd2_q` and `rad_dead_q32`, beside `dtdx_s_q`, `k_flux_q` and `flux_pu_cap`.
+   - A refused row poisons its env, as today (inside the `try`).
+2. **The pre-stage picks each env's (k, n_sub) row.**
+   - `K_pre_fold` picks it from the env's own reductions.
+   - The k-set maxima (|u|², |div u|, S) are three more `atomicMax` slots of the pre arena, filled in `K_pre_scan` and a k-set div scan beside `K_max_du`.
+   - `K_pre_fold` writes the batch's max k and max n_sub as two words. ONE 16-byte D2H, ONE `tick_sync_point("max_n_sub")`. The name is kept, so the capture check's two named syncs stay two.
+3. **The loop:** for t < k_max: [substeps s < n_sub_max] → [mid-stage] → [MG build + V-cycles] → [kick] → [`K_store_atm`] → [K3 + recovery].
+   - **The mask** `tick_off(es, t)` = t ≥ `es[env].k`, beside `sub_off`, block-uniform as today. Every EOS kernel past the pre-stage takes it:
+     - the SL and the bulk flux (`tick_off || sub_off`);
+     - `K_div_u`, `K_div_source`, `K_ntot`, `K_pstar`;
+     - every MG build kernel at every level (`K_L0_*`, `K_C_*`, `K_recip`);
+     - every V-cycle kernel (`eos_mg_vcycle_resident` gains the `es` pointer; nullptr means unmasked, the per-call path);
+     - `kick_kernel`, `K_store_atm`, the energy-flux passes and the recovery kernel.
+   - **Copies.** The loop's device-to-device copies of scratch (`svx`, `svy`, `st`) are harmless for a masked env, since they are scratch only. No state is copied inside the loop: `p_prev` is entry-only.
+4. **Per-env folds.** The kernels read the dt folds from `es[env]` in place of the by-value `KickScalarFolds` / `MGScalarFolds` fields; the dt-free fields stay by value. N = 1 and the per-call path use row 0 of the same kernels: one code path.
+5. **Books.** The layout is unchanged; the counters accumulate per env across sub-ticks (`atomicAdd` into the arena). The kick slots gain `e_cap_heat_sum` (§8.6.5).
+6. **Batch invariance** (env i of N == env i alone) holds by construction: each env's k, n_sub and folds are its own, and a masked env does nothing. It is gated with a quiet and a blasting env in one batch (§8.9 T7).
+7. **P9 (graph capture).** The loop has two nested data-dependent counts (k_max, n_sub_max), so the WHILE-node plan needs a nested conditional node (L1-10). Recorded for P9; not built here.
+
+**Feasible in one patch: yes.**
+
+- Every EOS kernel already has the (N, h, w) launch and the block-uniform early return.
+- Per kernel the change is one predicate. For the kick and the MG level-0 build it is also reading 1-3 folds from `es`.
+- The V-cycle is the largest edit: one pointer through its launch helpers.
+- No staged fallback is proposed, and batch-max k is not used.
+
+### 8.7 Cost (Erik: training speed; L2-1)
+
+**Measured** on the merged build, this PC (RTX 3060), with `tools/bench_conductor.py` (10 warm-up, 60 timed and 20 profiled ticks; one recorded match latched into every env; the rooms quiet, so k = 1 everywhere today):
+
+| level | N | ms / tick | ms / env-tick | EOS segment, GPU ms | EOS segment, host ms | radiation sweep, GPU ms |
+|---|---|---|---|---|---|---|
+| range_hall | 1 | 7.26 | 7.26 | 1.69 | 0.58 | 0.27 |
+| range_hall | 16 | 9.04 | 0.565 | 1.64 | 0.56 | 1.71 |
+| range_hall | 64 | 16.61 | 0.260 | 2.51 | 0.61 | 6.50 |
+| ship_demo | 1 | 9.65 | 9.66 | 3.09 | 1.98 | 0.63 |
+| ship_demo | 16 | 20.35 | 1.27 | 7.26 | 1.98 | 5.10 |
+| ship_demo | 64 | 58.52 | 0.914 | 24.13 | 2.21 | 19.34 |
+
+**What an extra sub-tick costs.**
+
+- **The floor. This refutes L2-1's "+2-8 % once GPU-bound", PROVED from the table.**
+  - On range_hall the EOS stage is latency-bound on the GPU, not launch-bound on the host.
+  - At N = 1 its GPU segment (1.69 ms) is three times its host launch time (0.58 ms). From N = 1 to N = 64 it grows by only 0.82 ms.
+  - So a masked sub-tick, in which most envs return at the top of each kernel, still costs the chain's kernel latency on the GPU: a floor F per extra sub-tick, paid at the batch's MAX k at any N.
+  - F is not measured directly, because no masked loop exists yet. It lies between the stage's host time and its GPU time at N = 1, which includes the once-per-tick pre-stage and the sync gap: **0.6-1.2 ms on range_hall, 1.2-2.5 ms on ship_demo.**
+- **The bandwidth part** is what per-env masking removes: b = (2.51 − 1.69)/63 ≈ 0.013 ms per env-sub-tick on range_hall, and 0.33 ms on ship_demo.
+- **The model.** Per-env k costs (E[max k] − 1)·F + N·(E[mean k] − 1)·b a tick. Batch-uniform k costs (E[max k] − 1)·T_EOS(N).
+- **The k statistics** come from a Monte Carlo over 45 s episodes (1080 ticks), with blasts at random ticks, lens 2's loadouts (`[loadouts.rifleman]`: 2 frags and 1 C4), and §8.6.2's v2 k sequences measured on range_hall:
+  - a frag: 8, 8, 4, 4, 2;
+  - a C4: 8 ×5, 4, 4, 2 ×9;
+  - a hull breach: 213 ticks, mean 3.6;
+  - the detonation tick: k_src = 8.
+
+**range_hall (the training room)**, extra cost a tick:
+
+| episodes | N | E[max k] | E[mean k] | P(batch k > 1) | **per-env k** | batch-uniform k |
+|---|---|---|---|---|---|---|
+| the learner armed (2 frags + C4) | 1 | 1.08 | 1.085 | 0.02 | +2 % | +2 % |
+| | 16 | 2.22 | 1.085 | 0.32 | **+8-16 %** | +22 % |
+| | 64 | 4.6 | 1.085 | 0.79 | **+14-26 %** | +55 % |
+| both teams armed (4 frags + 2 C4) | 1 | 1.17 | 1.17 | 0.05 | +4 % | +4 % |
+| | 16 | 3.20 | 1.17 | 0.54 | **+15-30 %** | +40 % |
+| | 64 | 6.23 | 1.17 | 0.95 | **+20-39 %** | +79 % |
+| both teams, and 10 % of episodes breach the hull | 1 | 1.22 | 1.22 | 0.06 | +5 % | +5 % |
+| | 16 | 3.7 | 1.22 | 0.63 | **+19-37 %** | +49 % |
+| | 64 | 6.8 | 1.22 | 0.98 | **+22-43 %** | +88 % |
+
+The per-env ranges span F at its two bounds.
+
+**ship_demo at N = 64**, the same model: the learner armed, per-env +11-18 % against uniform +150 %; both teams, +17-29 % against +216 %. The uniform figure counts a full idle EOS stage (n_sub 8) for every extra sub-tick, so it is an upper bound.
+
+**Reading:**
+
+- **Per-env k is required.** It buys most where the EOS is bandwidth-bound: on ship_demo at N = 64, +11-29 % instead of +150-240 %.
+- **On the small training room the floor dominates:** +14-43 % at N = 64 instead of +55-88 %. A "+2-8 %" is not reachable by masking alone.
+- **Levers on the floor.** Each is measured in the patch, and none is decided here:
+  1. fewer V-cycles on sub-ticks ≥ 2, which are warm-started and have σ/k smaller. This re-opens `mg_cycles = 8`, with numbers.
+  2. P9's graph capture of the loop, which removes the host launch gaps, part of F.
+  3. fusing the chain's small kernels, a later perf patch.
+  
+  INFERENCE: (1) is the largest, since the V-cycles are most of the chain's kernels.
+- **Caveat.** The k sequences are today's CPU trajectories, in which a C4 at 0.333 m is still in the wild regime. INFERENCE: after the fix, blasts are calmer, their tails shorter, and E[max k] falls.
+
+**N = 1, the played game.** On the GPU, as v1: a k = 8 blast tick costs about 13-15 ms (3.2 today). On the CPU backend, about 40-60 ms: 8 solves plus k·n_sub ≥ 16 transport substeps at about 1.5 ms each. That is a hitch of 3-6 ticks per blast on the CPU backend.
+
+**v1's idle saving is withdrawn (L1-5).** n_sub stays HEAD's, with its unfiltered du, so idle ship_demo still pays n_sub 8 for its emptied vent aperture. **ACCEPTED GAP:** that is the vents' source data (§8.4), for the blast and vent session.
+
+**The cost gate (L2-1).**
+
+- `tools/bench_conductor.py`, before and after, at N = 1 / 16 / 64, on ship_demo and range_hall.
+- The blasts must be STAGGERED across envs. The bench today latches one recorded match into every env, so the patch gives it a per-env shift of the latched intents (env e runs the match e·Δ ticks later). That is a mode of the existing instrument, not a new probe.
+- It reports ms per env-tick and P(batch k > 1).
+- The acceptance is the measured number, recorded in the as-built against this table.
 
 ### 8.8 What it changes
 
-- **At 0.333 m, blasts stay physical in the solver's sense:** no empty cells or piles, P = p*, and no heat drain.
-  - Blast winds past 64 m/s are held at the ceiling.
-  - The frag's one-tile source asks for ~288 m/s, so part of its 40 m³ is not delivered in its tick. The source carries no state, so that part is lost, not deferred. INFERENCE: its knockdown range shrinks.
-  - That is a blast calibration moving. Restoring it is the job of the blast retune patch, with Erik; the source data is 15× too large anyway (§8.4).
-- **At 1.0 m:** as in §8.6. The ceiling is 192 m/s.
-- **The quiet arena** (INFERENCE, from the 48-tps emulation): 2-8 m/s instead of 35-54, and a drift of −0.1 K instead of −3.0 K. The residual goes to (d)+(a).
-- **Goldens and pins:**
-  - GOLDEN_AGGREGATE moves, once.
-  - The eight ship_demo pins move with the blasts (category A).
-  - The box pins are to be measured.
-  - The field digest needs no version bump: no field, dtype or currency changes.
+**At 0.333 m, blasts stay physical in the solver's sense:** no empty cells and no piles; P tracks p* within about four ticks of a detonation (§8.1.1); no heat drain.
+
+- Blast winds past 64 m/s are held at the ceiling.
+- The frag's one-tile source asks for about 288 m/s, so part of its 40 m³ is not delivered in its tick. The source carries no state, so that part is lost, not deferred. INFERENCE: its knockdown range shrinks. Restoring it is the blast retune's job, with Erik; the source data is 15× too large anyway (§8.4).
+
+**Breaches (L1-8).** The mouth wind is held at 64 m/s at 0.333 m and at 192 m/s at 1.0 m. The wind load on units at a breach falls about 20×; the mass flux hardly changes.
+
+**At 1.0 m:** see §8.6.6. The ceiling is 192 m/s, and the golden breach runs k = 2 on most ticks of its first 3 s (§8.6.2).
+
+**The quiet arena** (INFERENCE, from the 48-tps emulation): 2-8 m/s instead of 35-63, and a drift of −0.1 K instead of −3.0 K. The residual goes to (d)+(a).
+
+**Goldens and pins:** §8.10. The field digest needs no version bump: no field, dtype or currency changes.
 
 ### 8.9 Gates, oracles, property tests, the reproduction
 
-**The E2E reproduction, before and after,** with `tests/_eos_checkerboard_bench.py
---stability` on the live path:
+**The E2E reproduction, before and after,** with `--stability` on the live path. The before numbers are the merged base's (§8.0, §8.1.1).
 
-- **smoke_light_studio, 72 ticks.** Before: the table of §8.1. After, all of these must hold:
-  - Nmax ≤ 4 and Nmin ≥ 0.05;
-  - stored P within 5 % of the p* mean on every tick;
+- **smoke_light_studio, 72 ticks.** After, all of these must hold:
+  - T2's pressure band and T3's lag;
   - Tmw never below its pre-blast value minus the thermal solver's losses;
-  - the clamp column at 0;
-  - the plume-weighted wind back under 10 m/s within 1 s of each charge (the shape of the 192-tps emulation).
-- **fire_studio frag** (`--detonate 24,16,24`): no slosh past 1 s. Today it runs at 3-9 m/s for > 4 s.
-- **`--arena`, 30 s:** max wind and drift, against today's.
+  - the plume-weighted wind back under 10 m/s within 1 s of each charge.
+- **fire_studio frag** (`--detonate 24,16,24`): median wind under 3 m/s from 1 s after the detonation (5.6 today; 0.9 in the proxy).
+- **`--arena`, 30 s:** max wind and drift, against today's 62.6 m/s and −3.0 K.
 - **ship_demo idle:** n_sub, k and the EOS ms per tick, before and after.
 - **`tools/wind_drift_probe.py`** on smoke_light_studio and the fire_studio frag: the median of drift ÷ wind stays ≈ 1 (patch U's result).
 
-**Property tests,** in a new `tests/test_eos_substep_whole_tick.py`. Each
-names the property it protects and the change that must break it; none pins a
-count.
+**Property tests,** in a new `tests/test_eos_substep_whole_tick.py`. Each names the property it protects and the change that must break it, and none pins a count. They read three solver test seams the patch adds:
 
-1. **A pressure update never moves mass more than C_P tiles.**
-   - The check: on every tick of a forced fast flow, max|u|·dt/(k·dx) ≤ C_P + one quantum, read from the solver's own k and u. Two flows: a uniform 60 m/s wind in a sealed room at 0.333 m, and a frag.
-   - It must break if k is dropped from the substep loop (the loop wrapping 1a/1d only), or if the estimator loses a term.
-2. **No cell empties or piles in a sealed blast.**
-   - The check: over 2 s of smoke_light_studio's first charge, every accountable cell keeps N within [0.02, 10]·N0.
-   - It must break with K_MAX forced to 1, which reproduces today's 113×.
-3. **The stored pressure tracks the air.**
-   - The check: in the same run, |mean P − mean p*| / mean p* < 5 % on every tick.
-   - It must break with K_MAX = 1.
-4. **The cap returns what it removes.**
-   - The check: for a cell kicked past its cap, Δgas_energy over the kick loop equals −kick bracket + drag + cap heat, exactly, and e_clamp_destroyed_sum == 0.
-   - It must break if bracket 4 reverts to an export.
-5. **The energy closure identity still closes,** exactly in int64 across whole ticks, with k > 1 (the frag run).
-   - The check: the existing gate, `test_e1_hot_rail`'s transcription of the identity, with the new term.
-   - It must break if a counter resets per sub-tick instead of per tick.
-6. **k = 1 is today's code.**
-   - The check: the A/B lockstep harness (K_MAX = 1 against HEAD, every field, every tick) on a quiet 0.333 m scene and on the golden scenario.
-   - It must break on any edit to the k = 1 path.
-7. **CPU == CUDA at k > 1.**
-   - `cuda_s8a_check` at tolerance 0.
-   - `cuda_batch_invariance_check`, with envs at different k (one env blasting, one quiet).
-   - `cuda_prestage_parity_check`.
-   - `cuda_tick_capture_check`, still with the two named syncs.
+- `dbg_last_k`;
+- `dbg_solves_last_step`, the MG solve calls in the last `step()`;
+- `dbg_subtick_umax`, the k-set's max|u| at each sub-tick's transport entry. It is recorded only when a test turns it on.
 
-**Before merge:**
+**T1. Each pressure update sees bounded mass motion.** This replaces v1's test 1, which held by construction (L2-5).
 
-- the full suite;
-- GOLDEN_AGGREGATE re-baselined, with this rationale;
-- the energy gates: `test_no_transport_mint`, `test_gas_energy_tile_flip`, and `_quiet_books_bench.py` and `_sealedbox_bisect_bench.py` EXACT;
-- `tools/cuda_green.py`;
-- `match_pin_check.py --backend cuda/resident`;
-- the checkerboard `--table`, for information (k = 1 there).
+- The checks:
+  - solves per tick == k;
+  - per sub-tick, `dbg_subtick_umax`·dt_k/dx ≤ max(C_P, K_MAX/k) + one quantum;
+  - per substep, `dbg_subtick_umax`·dt_k/(n_sub·dx) ≤ CFL_ADV + one quantum.
+- These are read from snapshots of what each sub-tick transported, not from k's own estimate.
+- Two flows:
+  - the fire_studio frag, whose detonation tick has entry u ≈ 0: L1-3's case;
+  - a uniform 60 m/s wind in a sealed 0.333 m room.
+- It must break:
+  - (a) if the loop wraps 1a/1d only (solves 1 ≠ k);
+  - (b) if the n_sub floor is dropped (Csub reaches 1.0 on sub-ticks ≥ 2 of the detonation tick);
+  - (c) if the ceiling is dropped (sub-tick Courant above K_MAX/k).
 
-### 8.10 The reds
+**T2. No pile and no sink (L1-4, L2-2).** Three legs:
+
+- **The studio's first charge, 2 s.**
+  - The checks: from 0.25 s after the detonation, every accountable cell's p* stays within [0.25, 4]× the room's mean p*; Nmin ≥ 0.02 N0 throughout.
+  - It tests pressure, not N, because the legacy rows' heat makes an isobaric N vary 10× (§8.1.1). The band is confirmed from the patch's before/after numbers and recorded.
+- **The fire_studio frag.**
+  - The checks: the source tile and its 4-ring keep N ≥ 0.05·N0 on every tick (0.086 in the proxy; 0.035 with k = 1 and the ceiling kept); Nmax ≤ 4.
+- **A breach: range_hall, a C4 against the hull, 10 s.**
+  - The check: from 0.25 s after the detonation, every k-set cell of the vented room keeps p* within [0.25, 4]× the k-set's mean p* (the band near the mouth is not in the k-set).
+  - Its k tail is a measured number of the cost gate, not a property here.
+- It must break, in every leg, with `subtick_loop` off and the ceiling kept (L1-1). Measured for the studio and the frag (§8.1.1).
+
+**T3. The stored pressure tracks the air.**
+
+- The check, in the studio run: |mean P − mean p*| / mean p* < 5 % on every tick outside the 0.25 s after each detonation. Inside that window the ratio rises monotonically and reaches 5 % by its end (proxy: 0.18 → 0.99 within 4 ticks @24; before: 0.02-0.19, and staying).
+- It must break with `subtick_loop` off and the ceiling kept (measured: 0.03, staying).
+
+**T4. The cap returns only what the kick supplied (L1-6).**
+
+- The checks:
+  - for a cell kicked past its cap, Δgas_energy over the kick loop == −kick bracket + drag + cap heat, exactly;
+  - heat == min(removed, max(0, KE1 − max(KE0, KEc)));
+  - `e_clamp_destroyed_sum` == removed − heat;
+  - a cell whose ENTRY speed is above U_bud (a FieldEdit wind) shows destroyed > 0: the tripwire is live.
+- It must break if bracket 4 reverts to an export (heat 0), or if it heats the whole removal (the entry-speed leg).
+
+**T5. The energy closure identity still closes,** exactly in int64 across whole ticks, with k > 1 (the frag run).
+
+- The check: `test_e1_hot_rail`'s transcription of the identity, with `e_cap_heat_sum`.
+- It must break if a counter resets per sub-tick instead of per tick.
+
+**T6. k = 1 / legacy is HEAD (L2-6).**
+
+- (a) A committed property: with the legacy switches, the GOLDEN_AGGREGATE scenario on the new build hashes to `d5d03433…487b`.
+- (b) The A/B lockstep harness, every field and every tick: the legacy switches on the new build against the merged base's captured trajectory (`save_trajectory`, step 0), on two scenes:
+  - the golden scenario;
+  - a named 0.333 m scene, a new `make_sim` in `tests/field_ab_harness.py`: `test_arena` with its vents, 240 ticks.
+- (c) The identity claim with the DEFAULTS: on range_hall idle (k = 1 on every tick, wind far below U_bud), the defaults equal the legacy switches bit for bit, every tick.
+- It must break on any edit to the k = 1 path, or if a switch fails to restore HEAD.
+
+**T7. CPU == CUDA, and the batch (L2-7c).**
+
+- `cuda_s8a_check` (N = 1 == CPU, tol 0), with a frag leg so that k > 1.
+- `cuda_batch_invariance_check`, with envs at different k.
+- `cuda_conductor_batch_check` gains a leg: a quiet env and a blasting env (the same level, one with a frag), each equal to itself alone, every tick.
+- `cuda_conductor_check` and `test_cuda_conductor`.
+- `cuda_prestage_parity_check`: the row is now (k, n_sub).
+- `cuda_tick_capture_check`: still two named syncs.
+
+**The gate order (L2-9).**
+
+0. Step 0 (§8.0).
+1. The code: the CPU reference first, then the device twins, in one patch.
+2. Goldens and pins:
+   - GOLDEN_AGGREGATE re-baselined once, with this section as its rationale;
+   - `test_b6_logic_golden.LOOP_GOLDEN_TRAJ_DIGEST` in the same commit, with the same rationale;
+   - the 11 `cuda_*_check` readers follow the constant;
+   - the ship_demo pins (category A);
+   - the 1.0 m inventory per §8.10.
+3. `tools/twin_debt.py --mark-level`, in the LAST commit. Trust the tool's list; it will include `eos`, `div_source`, `energy_flux` (`cuda_kick_compression.cu`) and every twin whose files include `physics_runner.py` or `eos_solver.h`.
+4. `cpp/build_cuda.bat` in the worktree.
+5. `tools/cuda_green.py`.
+6. The full suite, `pytest tests -q`.
+7. `tools/match_pin_check.py --backend cuda` and `--backend resident`, against the new pins.
+8. The cost gate (§8.7) and the E2E reproduction, recorded in the as-built.
+
+A commit after step 5 voids the stamp and restarts at step 3.
+
+**Informational, not gates (L1-11).** These depend on vents, blast data or (d)+(a):
+
+- the idle ship_demo cost and its vent aperture;
+- the quiet arena's residual wind below about 8 m/s (F5, for (d)+(a); its gate expects it);
+- the frag's knockdown range (the blast's source data);
+- the studio's legacy rows' rail counts.
+
+### 8.10 The regression map (L2-7)
+
+**Goldens.**
+
+- **GOLDEN_AGGREGATE** is re-baselined once. Its breach runs at k = 2 on most ticks of the first 3 s (§8.6.2), and cells past 192 m/s now cap there.
+- **`test_b6_logic_golden.LOOP_GOLDEN_TRAJ_DIGEST`** (`:149`; 1.0 m, live EOS, a door venting a chamber to vacuum, `:181-194`) moves with it, in the same commit, with the same rationale. Every past re-baseline moved it.
+- **The CUDA checks that read GOLDEN_AGGREGATE follow the constant:** `cuda_combustion_check`, `cuda_conduction_check`, `cuda_eos_step_check`, `cuda_fire_check`, `cuda_kick_check`, `cuda_mg_solve_check`, `cuda_p62_check`, `cuda_s3_check`, `cuda_swarm_check`, `cuda_trace_saturation_check`, `cuda_trace_smoke_check`.
+
+**The 1.0 m inventory (L2-7b), classified at step 0 against the merged base's suite run:**
+
+- **The golden scenario and its swarm fixtures** (the breached 16×16 room of `field_ab_harness`): `_xarch_perfield_digest`, `test_swarm_digest`, `test_swarm_tick`, `test_field_ab_harness`, `cuda_swarm_check`, `cuda_swarm_batch_check`, and the other `field_ab_harness` readers. Category A: the golden moves and they follow it.
+- **The 1.0 m box match pins** (`_PRE_122_BOX`, `_STAGE1_BOX`, `_RE_PIN_1_BOX`): a sealed box. Expected k = 1 and no binding cap, so they hold (INFERENCE). If one moves, it is category A with this rationale.
+- **`test_b1_signal_bus`, `test_b2_nodes`:** no physics; unchanged.
+
+**0.333 m.**
+
+- The eight ship_demo pins of §7.3: category A, re-pinned again after U's re-pin.
+- `test_wave_push`, and any test that measures a push or a wind at a breach mouth: category A, with L1-8's rationale (the ceiling holds breach winds at 64 m/s), classified at step 0.
+- The rest per §7.5's categories.
+
+**Replays and RL artefacts (L2-7d)**, §7.5's paragraph widened to 1.0 m:
+
+- **Replays** recorded before §8 hit `ReplayDivergence` wherever k > 1 or the cap binds, now at 1.0 m too (any breach, vent to vacuum or blast). `FORMAT_VERSION` stays 8: the re-simulation differs, which is what the check is for.
+- **Saved soldiers** (`agents/saved.py`), **the imitation records** (`agents/records.py`; re-made, because the observation's wind columns change) and **the rung-1 tournament pins** (`docs/rl_agent_rung1_1d_pins/*.json`) are on the old physics.
+- **A run in progress** keeps its tagged checkout (`rl-agent.md`, Training snapshot). A resume refuses the code change by name and needs `--allow-code-change`.
+- **For the game-ai-lead role** (a note to carry into its next session):
+  - §8 changes blast and breach physics for every agent;
+  - K_MAX is part of the game a run trains on;
+  - a training batch pays the cost of §8.7.
+
+### 8.11 The reds
 
 Expected to turn green (INFERENCE unless marked):
 
-- finding 1, the studio blast;
+- finding 1, the studio blast (the proxy of §8.1.1 shows it);
 - `test_air_boundary.py` ambient gate 2. It is the same runaway at k_drag2 = 0; the signature is PROVED in the arena (U_MAX and the T_MAX_PHYS rail), but that test's own scene is still to be run;
-- `test_grenade_kinds`, the self-knockdown, which comes from the frag's sustained winds. The knockdown calibration moves with (B);
+- `test_grenade_kinds`, the self-knockdown, which comes from the frag's sustained winds (the proxy: no slosh). The knockdown calibration moves with (B);
 - `test_fire_feedback`, where the plume turns inward from about tick 48. It looks like the same limit cycle as the slosh measured after the frag.
 
 Other causes, one line each:
 
-- the quiet-arena winds below ~8 m/s: the collocated coupling, for (d)+(a);
-- the CUDA conductor's vent-ledger fault: vents drain rooms at a constant mass rate (§8.4, source data);
+- the quiet arena's winds below about 8 m/s: the collocated coupling, for (d)+(a);
+- the CUDA conductor's vent-ledger fault (patch U): vents drain rooms at a constant mass rate (§8.4, source data). On the merged base it also reds `cuda_conductor_batch_check`'s match part, alone and batched, at ticks 627-831 (§8.0);
 - `test_wind_doorway_e2e` and `test_gen_ship_vents_air` (Erik-ruled): patch U's faster transport equalizes pressure. Category C, not instability;
-- `test_wave_push`, and the non-vacuity guards of `test_unit_schema` / `test_unit_store`: match and blast dynamics that will move again with (B). Re-classify them after the patch.
+- `test_wave_push`: category A (§8.10, L1-8);
+- the non-vacuity guards of `test_unit_schema` / `test_unit_store`: match dynamics. They are classified at step 0 and again after the patch.
 
-### 8.11 Place in the stack
+### 8.12 Place in the stack, and the merge unit (L2-11)
 
-**Before (e).** The two are independent in quiet rooms, where k = 1. Three
-reasons to go first:
+**Before (e).** The two are independent in quiet rooms, where k = 1. Three reasons to go first:
 
 - (e)'s own gates, the full suite and the pressure arc's convergence re-run, are confounded today by blasts that go wild.
 - (e) changes the multigrid, which this patch calls k times per tick, so its residue measurement belongs on the final cadence.
-- The reds of §8.10 belong to this patch, not to (e).
+- The reds of §8.11 belong to this patch, not to (e).
 
-Proposed order: U, stability, (e), (d)+(a), diffusion in m²/s.
+**The merge unit (L2-11): U + §8 merge to main together, as the first unit, once §8's gates are green.**
 
-### 8.12 Systems
+- U alone leaves the blast regime wild (its finding 1), so U should not merge without §8.
+- After §8, U's reds of §7.9 are either green or classified.
+- Then (e) and (d)+(a) merge separately, each on its own green.
+- Reasons:
+  - main moves weekly on the conductor seam this patch edits;
+  - every later patch re-pins the same eight pins and the golden again;
+  - training stays on the old physics until the unit lands.
+- Diffusion in m²/s comes last.
+
+The order: U + stability (one merge), (e), (d)+(a), diffusion in m²/s.
+
+### 8.13 Systems and rule amendments (L2-10)
 
 **(a) Existing canonical systems the fix must use:**
 
-- **PhysicsRunner / PhysicsEngine:** the sub-tick loop lives in `EOSSolver::step` and `_resident_chain`, never in Python glue; `K_MAX` is bound in PhysicsRunner only.
+- **PhysicsRunner / PhysicsEngine:** the sub-tick loop lives in `EOSSolver::step`, `eos_step_resident` and the per-call `cuda_eos_step` entry, never in Python glue (L2-3); `K_MAX` is bound in PhysicsRunner only.
 - **Interior drag:** the ceiling and the cap's heat belong to the existing cap stage, not a new site. Drag stays as it is.
-- **Energy closure identity / Gas energy seam / Gas energy recovery:** one new counter in the EOS group. The recovery and its rails run per sub-tick and write back only when a rail binds.
-- **Face-flux energy step:** runs per sub-tick at dt_k, with k_flux_q re-folded.
+- **Energy closure identity / Gas energy seam / Gas energy recovery:** one new counter in the EOS group (`e_cap_heat_sum`). The recovery and its rails run per sub-tick and write back only when a rail binds.
+- **Face-flux energy step:** runs per sub-tick at dt_k, with `k_flux_q` re-folded.
 - **Trace transport:** unchanged. Trace rides each sub-tick's face flux, and `eos_transport_step_q(dt_k, n_sub, dx)` stays THE transport scalar.
-- **Fixed-point kits:** no new rounding.
-- **Batched resident engine:** one chain, one sync (k read with max_n_sub), masked envs, books into the one arena.
-- **Class P / Class T + the twin ledger, CUDA harness, A/B lockstep harness, GOLDEN_AGGREGATE, Pinned match plays:** see §8.6 and §8.9.
-- **Benches:** `_eos_checkerboard_bench.py --stability`; never a new probe.
+- **Fixed-point kits:** no new rounding; `eos_subtick_dt` is a helper of the EOS step, not a kit function.
+- **Batched resident engine:** one chain, one sync (max k and max n_sub in one read), per-env (k, n_sub) rows, masked kernels, books in the one arena.
+- **Class P / Class T + the twin ledger, CUDA harness, A/B lockstep harness, GOLDEN_AGGREGATE, Pinned match plays:** §8.9, §8.10.
+- **Benches:** `_eos_checkerboard_bench.py --stability` (gaining the k columns) and `tools/bench_conductor.py` (gaining the per-env stagger); never a new probe.
+- **Not built here:** at shipped resolutions (B) makes the D2v2 per-cell c_LOCAL cap plane and U_MAX dead (§8.6.4). They stay; removing them is a separate cleanup.
 
-**(b) New reusable systems:** none. The sub-tick count is a property of the
-EOS step. Its draft rule line goes to `energy-books.md` and `fields-gas.md`,
-where the loop lives:
+**(b) New reusable systems:** none. The sub-tick count is a property of the EOS step.
 
-> *The EOS updates pressure at least once per C_P tiles of air motion. Steps 0-7 run k times per tick, with k from the one entry estimate (wind, kick, divergence, source), capped at K_MAX; a transport-only substep loop is never the stability mechanism. Past K_MAX, the cap stage's budget ceiling holds, and every cap returns its KE as heat.*
+**(c) Rule changes, written in the patch:**
 
-The bench's `--stability` mode joins the draft bench rule of §6(b).
+- **New** (`energy-books.md` and `fields-gas.md`, where the loop lives): *The EOS updates pressure at least once per C_P tiles of air motion: steps 0-7 run k times per tick (k ∈ {1, 2, 4, 8}, dt_k from `eos_subtick_dt` alone), with k from the one entry estimate over the k-set (wind, divergence, source; never the kick increment), capped at K_MAX; a transport-only substep loop is never the stability mechanism. Past K_MAX the cap stage's budget ceiling K_MAX·dx/dt holds. K_MAX is a physics dial shared by training and play.*
+- **Amended, `energy-books.md:40`** (Gas energy recovery), "once per tick" → *once per EOS sub-tick, over the whole accountable set; rails write back only when one binds (its counters accumulate over the tick)*.
+- **Amended, `fields-gas.md` Interior drag, D6:** *the absorb and sponge stages EXPORT theirs, counted; the cap stage returns as heat the part of its removal that the same sub-tick's kick supplied (`e_cap_heat_sum`) and DESTROYS the rest, counted (`e_clamp_destroyed_sum`, a tripwire)*, citing ruling 3.
+- **Amended, `device-residency.md:36`:** *Substep loops run to the batch's max n_sub, and the EOS sub-tick loop to the batch's max k; an env past its own is masked (`sub_off`, `tick_off`); the fold table's rows are (k, n_sub).*
+- **Amended, `device-residency.md:41`:** a new resident core is masked inside the sub-tick loop as well as the substep loop, and the gates add `cuda_conductor_batch_check` (a quiet and a blasting env in one batch).
+- **The bench rule** (§6(b), draft): `--stability` and its k columns join it.
 
-### 8.13 For Erik (at most three rulings)
+### 8.14 For Erik (rulings, each with the default the build uses)
 
-1. **`K_MAX = 8`,** a perf dial at the value of your frozen N_SUB_MAX. A blast or breach tick then costs up to ~4× the EOS on the GPU, for a fraction of a second.
-2. **The budget ceiling holds blast winds at 64 m/s at 0.333 m** (192 m/s at 1.0 m), so blast knockdown moves. The source data belongs to the blast and vent session:
-   - the frag: 40 m³ / 10 MJ, against ~2.6 m³ / 0.9 MJ;
-   - the studio charges: 156 MJ;
-   - the vents: constant mass flow, in tile volumes.
-3. **The drag dial (`k_drag2`) stays as it is.** Today it is the hidden limiter. Whether real air should be slowed more is your call; this patch does not use it.
+1. **K_MAX = 8 is a physics dial, not a speed dial.** It sets how fast air may move past the budget: 8 tiles a tick, 64 m/s at 0.333 m. Training and play must use the same value. Raising it costs speed on blast ticks; lowering it trains on a different game. *Default: 8, shared by training and play.*
+2. **The 64 m/s ceiling also holds breaches, not only blasts.** At 0.333 m a hull breach's mouth wind goes from about 300 to 64 m/s, so its push on a unit is about 20× smaller. The amount of air leaving barely changes. A blast's knockdown also moves; its source data (the frag's 40 m³ and 10 MJ against about 2.6 m³ and 0.9 MJ for a real charge; the studio charges' 156 MJ; vents as a constant mass flow) is for the blast and vent session. *Default: the ceiling applies everywhere; blast and breach pushes are re-tuned in that session.*
+3. **Energy the speed cap removes becomes heat again, but only what that same step's push put in.** Today the cap destroys it (rule D6), which is why blast rooms cooled by about 56 K. Anything above that, which no push in the step supplied, stays destroyed and counted as an alarm. *Default: return it as heat; rule D6 is amended for the cap.*
+4. **The drag dial `k_drag2` stays as it is.** It was the hidden speed limit; the ceiling now does that job. Its law per second does not change with sub-ticks. Whether real air should be slowed more is your call. *Default: unchanged at 0.225.*
+5. **Training cost.** A training batch pays for its loudest env: at 64 envs in the range room, about +14-43 % per tick with each env sub-ticking only as often as it needs, against +55-88 % if all envs did. Cutting that further means fewer solver cycles on the extra sub-ticks, measured in the patch. *Default: build per-env sub-ticks; report the measured cost before training runs on it.*
 
-### 8.14 Critique (one critic at a time, verdicts recorded before the next)
+### 8.15 Critique (one critic at a time, verdicts recorded before the next)
 
-| lens | model | verdict | findings (to resolve in v2 of §8) |
+| lens | model | verdict | findings (resolved in v2 of §8; the disposition table follows) |
 |---|---|---|---|
 | 1. Correctness and completeness of §8.6 | Opus | SOUND WITH FIXES | The core is right, and the int64 identity across sub-ticks is exact by construction. Items 1-4 must be fixed in the doc before the build. (1) PROVED: K_MAX = 1 does not reproduce HEAD, because U_bud = K_MAX·dx/dt is then 8 m/s; it needs separate switches for the sub-tick loop, the ceiling and the cap heat. Mutate tests 2-3 with k = 1 and the ceiling kept. Restate identity as k = 1 AND no cell above U_bud AND no binding cap. (2) PROVED structure: the batched path needs per-env k. That means per-env fold columns (Kick/MG folds are batch-uniform by value), a (k, n_sub) table, and env masks on every EOS kernel. The batch loops to max k: P(some env k > 1) is 0.81 at N = 16 and 0.9988 at N = 64. Measure eos_step_resident at forced k = 8 for N = 16 / 64. (3) PROVED: k and n_sub are frozen at entry. A detonation tick has entry u ≈ 0, so sub-ticks 2-8 run at Csub = 1.0 (the F6 regime). k = max(k_u, k_kick) undercounts the sum. Fix: take k from ceil((max|u| + filtered du)·dt/dx); for k > 1 set n_sub ≥ ceil(K_MAX/(k·CFL_ADV)); leave n_adv uncapped before dividing; state test 1 per sub-tick. (4) INFERENCE: at the cap, the frag's one-tile div source still empties and becomes an F3 sink. Add a frag leg to tests 2-3, plus a pre-build proxy `--stability --tps 192` with U_MAX 64 and N_SUB_MAX 2. (5) PROVED: the idle-saving claim contradicts k = 1 identity. Filter k_div and du too, compute the k histogram offline, and make the 5 % threshold an integer constant (space maps). (6) PROVED: (C) reverses rule D6 (fields-gas.md Interior drag, code :1206-1209). This is a modelling ruling missing from §8.13. Heat only the part the kick supplied, keep e_clamp_destroyed_sum live as a tripwire, and gate e_rail_sum / t_max_phys_hits. (7) PROVED: the per-tick items left out. Recovery per sub-tick amends energy-books.md "once per tick". p_prev (`gmap.wave_p`) must be written at sub-tick 1 only, with an internal warm-start buffer, or the water ripple splash (`water_solver.cpp:337-345`) and unseal / applier break. The entry pre-stage runs once. Add sponge_sigma. (8) INFERENCE: (B) caps breach winds at 64 m/s (sonic ~300 today), so breach knockdown drops ~20×; ruling 2 must name breaches. (9) PROVED: dt_k is not canonical. Use one `eos_subtick_dt(dt, k)` or k in {1, 2, 4, 8}. (10) Lists to extend: cuda_resident_tick.cu:1251-1256 KICK_CNT_SLOTS, bindings, stubs, currency_audit_t2.py, and P9's graph-capture nesting. (11) F5 and F7 are rightly out of scope; say which gates are informational because they depend on vents and blast data. |
 | 2. Gates, regression, rollout, systems reuse, training cost | Opus | SOUND WITH FIXES | (1) PROVED, measured: §8.7 costs only N = 1. The batch loops to the max k across envs (`cuda_eos_resident.cu:1101-1127`, `device-residency.md:36`). range_hall with 2 frags + 1 C4 per rifleman in 45 s episodes: mean batch-max k 2.3-3.2 at N = 16, 4.6-6.2 at N = 64, 7.4-7.9 at N = 256, against a mean per-env k of 1.09-1.18. That is about +50-90 % tick cost at N = 64 against the P7e.5 profile. Per-env k with masked kernels brings it to about +2-8 % once GPU-bound, with a launch floor of about 1.3 ms per extra sub-tick. Make per-env k a stated requirement, rewrite §8.7, and gate with `tools/bench_conductor.py` at N = 1/16/64 with blasts staggered across envs. (2) PROVED, measured: a C4 breach of range_hall's hull holds k_u ≥ 6 on every tick to episode end (wind 47.6 m/s at the breach). Filter k_u like k_kick (N ≥ 5 %) or exclude vacuum-adjacent faces; add a breach leg to tests 2-3 and the cost table. (3) PROVED: §8.6 puts the loop in Python `_resident_chain`, which means k host syncs a tick (against `device-residency.md:38`) and orchestration in Python glue. Put the loop inside `eos_step_resident` / `EOSSolver::step` / the per-call path, with one call and one read a tick. (4) PROVED: the branch is 36 behind main, and P7e.5 rewrote this seam (`_resident_chain`, `run_resident_conductor` for N envs, the deferred tail fold, `cuda_resident_tick.*`, bindings, physics_runner). merge-tree conflicts only in `tests/twin_manifest.toml`. Step 0: merge main, rebuild CPU + CUDA, `--mark-level` + `cuda_green`, re-run §8.1's before tables on the merged base, and categorise the reds (the conductor batch check will likely show U's vent-ledger fault). (5) PROVED: test 1 holds by construction. Assert instead that solves per tick == k and that mass moved between solves is ≤ 1 tile. (6) The k = 1 path needs a lasting guard: with lens 1's legacy switches on, the default scenario still hashes to `d5d03433…487b`. Capture the A/B baseline on the merged base before any code commit, and name a 0.333 m scene. (7) Regression gaps: `test_b6_logic_golden` loop digest; the list of 1.0 m breach/vent tests (swarm scenarios share the breached level); the conductor gates (`cuda_conductor_check`, `cuda_conductor_batch_check` with a quiet + blasting env leg, `test_cuda_conductor`); replays diverge at 1.0 m where k > 1; saved soldiers, imitation records, rung-1 tournament pins and runs in progress (`--allow-code-change`). Tell the game-ai-lead role. (8) K_MAX is NOT a perf dial: the ceiling is K_MAX·dx/dt, so training and play must share it. (9) Gate order: merged base, code, GOLDEN/B6/re-pins, `--mark-level` last commit, `build_cuda`, `cuda_green`, full suite, `match_pin_check --backend cuda/resident`. (10) Rule amendments named: `energy-books.md:40`, fields-gas D6, `device-residency.md:36,41`. (11) INFERENCE: the merge unit is U + §8, with (e) and (d)+(a) after. Sound: canonical reuse, test 5, the bench exercises k > 1, training rooms at rest are k = 1, placement before (e). |
+
+**How v2 answers each finding** (where, or ACCEPTED GAP, or REFUTED with its evidence):
+
+| id | severity | finding (short) | v2 |
+|---|---|---|---|
+| L1-1 | high | K_MAX = 1 does not reproduce HEAD (U_bud is then 8 m/s); the tests' mutation is wrong | Three switches (§8.6.6). Legacy = HEAD, and the identity claim is stated exactly. The mutation of T2/T3 is "loop off, ceiling kept", measured to stay wild (§8.1.1) |
+| L1-2 | high | batched path needs per-env dt_k: folds, a (k, n_sub) table, masks on every kernel; cost of max k | §8.6.7: 32-row table, folds in `EnvSub`, `tick_off` on every EOS kernel incl. MG and V-cycle; costed at N = 1/16/64 (§8.7) |
+| L1-3 | high | bounds frozen at entry: Csub 1.0 on sub-ticks ≥ 2; k = max undercounts the sum; test 1 per sub-tick | n_sub floor ceil(K_MAX/(k·CFL_ADV)) with n_adv uncapped (§8.6.3); T1 per sub-tick with the honest bound max(C_P, K_MAX/k) (§8.9). **The sum is REFUTED** on measurement (§8.6.2): it holds idle ship_demo at k 2-4 on 53 % of ticks and the golden breach at 8; the in-tick speed is bounded by (B) instead |
+| L1-4 | high | at the cap the frag's source tile empties into an F3 sink | Emulated (192 tps, U_MAX 64, N_SUB_MAX 2): no cell below 0.086 N0, no slosh (§8.1.1). T2's frag leg keeps N ≥ 0.05 N0 at the source and its ring. ACCEPTED GAP: at the cap the source tile's rhs can still be negative (eps/8 ≈ 25); its cure is the source data (§8.4) |
+| L1-5 | medium | idle saving contradicts k = 1 identity; k_div pins idle; histogram; 5 % as an integer | n_sub stays HEAD's (unfiltered); the saving is withdrawn, ACCEPTED GAP (vents' source data). k_div filtered on the k-set; histogram measured (§8.6.2: idle ship_demo k = 1 on 480/480 ticks); `N_K_MIN` = 3277 raw, a constant valid on space maps |
+| L1-6 | medium | (C) reverses D6; heat only the kick's part; keep the tripwire; gate rails; D2v2 dead | §8.6.5 formula; `e_clamp_destroyed_sum` live; rails gated on the frag; ruling 3; rule amended (§8.13); D2v2 / U_MAX dead noted (§8.6.4, §8.13) |
+| L1-7 | medium | per-tick items: recovery cadence, p_prev, entry pre-stage, sponge_sigma, trace tail | §8.6.1 (wave_p once; warm start from `atmosphere`; recovery per sub-tick with the rule amended; sponge σ·k² and udamp last sub-tick; trace tail once) |
+| L1-8 | medium | (B) caps breach winds; ruling 2 must name breaches | §8.6.4, §8.8, ruling 2; breach-push tests category A (§8.10) |
+| L1-9 | low | dt_k not canonical | k ∈ {1, 2, 4, 8} AND one helper `eos_subtick_dt` (§8.6.2) |
+| L1-10 | low | list gaps: KICK_CNT_SLOTS, bindings, stubs, currency_audit_t2, P9 nesting | §8.6.5 (slots, bindings, stubs, currency_audit_t2.py:104), §8.6.7 item 7 (P9) |
+| L1-11 | info | F5, F7 out of scope; say which gates are informational | §8.9 "Informational" |
+| L2-1 | high | §8.7 costs N = 1 only; per-env k a requirement; gate with bench_conductor staggered | §8.6.7 (requirement, built); §8.7 rewritten with measured profile and model at N = 1/16/64; the staggered cost gate. **Partly REFUTED:** "+2-8 % once GPU-bound" does not hold on the training room, the EOS chain being latency-bound on the GPU (1.69 ms GPU vs 0.58 ms host at N = 1); measured model +14-43 % at N = 64 vs +55-88 % batch-max; the floor levers named |
+| L2-2 | high | a hull breach pins k ≥ 6 to episode end | The k-set (N ≥ 5 %, > 2 tiles from vacuum) and ε* = 1: the breach's k returns to 1 when the room has drained (~9 s; §8.6.2), mean 2.54 over 15 s; breach leg in T2; in the cost table |
+| L2-3 | high | the loop must live in C++ (one call, one read), not `_resident_chain` | §8.6.1; `_resident_chain` unchanged |
+| L2-4 | high | merge main first (step 0) | Done here (§8.0): `3ac5cfe9`, one manifest conflict, rebuilds, before tables reproduced; mark-level, cuda_green, reds and A/B capture left to the patch's step 0 |
+| L2-5 | medium | test 1 tautological | T1 rewritten on independent observables (solves per tick == k; per-sub-tick Courant from snapshots) with three named mutations |
+| L2-6 | medium | lasting k = 1 guard; A/B baseline at the merged base; a 0.333 m scene | T6 (a)-(c); baseline captured at step 0; `test_arena` + vents named as the 0.333 m `make_sim` |
+| L2-7 | medium | regression map: B6 loop golden, 1.0 m inventory, conductor gates, replays and RL artefacts | §8.10; T7 conductor legs; game-ai-lead note |
+| L2-8 | medium | K_MAX is not a perf dial | §8.6.6, ruling 1 |
+| L2-9 | low | gate order missing | §8.9 "The gate order" |
+| L2-10 | low | rule amendments not planned | §8.13 (c) |
+| L2-11 | low | the merge unit | §8.12: U + §8 first, then (e), (d)+(a) |
