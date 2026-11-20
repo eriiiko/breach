@@ -26,7 +26,7 @@ and who must use it; this file holds the constraints the code cannot say.
 - Facing is the int `facing_q`; `facing` is a READ-ONLY float view written only by the Turning law. Position is the ints `x_q` / `y_q` (Q16 tiles); `x` / `y` are read-only views written only through `Unit.set_pos_q` (the float door `Unit.set_pos` quantizes once, half away from zero); `tile_x` / `tile_y` truncate (`tests/test_unit_positions_q16.py` scans `src/`).
 - Its impulse state is written only through `unit_impulse`, its order columns only by `unit_orders`; its attributes are `__slots__` from the Unit schema (an undeclared attribute raises); the hp is a float held exactly on the Q16 grid.
 - Its full health is `unit_traits.max_hp_q(u)`: the spawn, the conversion, the panel and `bots_v1` read it. The species' vitality is sheet input read by no tick.
-- A CREATURE unit (`creature_system.is_creature`, #106): its anchor and facing are written per tick ONLY by slot 5b from its body pose (through `set_pos` and `turning.place`); slot 1a, slot 3 and every other position or facing writer skip it (`.claude/rules/creatures.md`).
+- A CREATURE unit (`species.is_creature`, #106): its anchor and facing are written per tick ONLY by slot 5b from its body pose (through `set_pos` and `turning.place`); slot 1a, slot 3 and every other position or facing writer skip it (`.claude/rules/creatures.md`).
 
 ## Unit schema
 - THE one table of what a unit holds: group S (synced columns: kind, default, digest rule, integer encoding), group D (constants derived from S, never written after spawn), REFERENCE_ONLY (host state never decided on by the continuous match path, each with its reason).

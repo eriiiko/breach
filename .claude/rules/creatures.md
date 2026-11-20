@@ -30,7 +30,7 @@ row (Erik, 2026-10-29 / 10-30). Lead: `.claude/skills/octopus-lead/SKILL.md`.
 
 ## Creature table
 - A creature's body plan, tissue, solver resolution, primitive dials and rules are ONE versioned `[creatures.*]` row, read through ONE door (`creatures.build_creature`) that refuses a missing, unknown, mistyped or out-of-range key and a size over the chain's headroom (each failing bound named), quantized once; its `version` + `row_hash` are hashed in every creature record.
-- THE creature key is `species.creature is not None` (`creature_system.is_creature`): never a creature name in a branch, never a per-creature constant in code, never a second table. `SpeciesDef.armed` / `.can_become_zombie` are species DATA: an unarmed species binds no loadout; a non-convertible one never rises (a branch of `ai_zombie.rises_as_zombie`, the one conversion predicate).
+- THE creature key is `species.creature is not None` (`species.is_creature`, beside the table it reads; `creature_system` re-exports it): never a creature name in a branch, never a per-creature constant in code, never a second table. `SpeciesDef.armed` / `.can_become_zombie` are species DATA: an unarmed species binds no loadout; a non-convertible one never rises (a branch of `ai_zombie.rises_as_zombie`, the one conversion predicate).
 - Creatures live on `factions.CREATURE_TEAM`, which `MatchRules` does not count (Erik, 2026-10-30: hostile to all, never the zombie team).
 - The swarm's species table (`swarm.SPECIES_FIELDS`) is a DIFFERENT thing: swarm units are not `Unit`s. A creature is never a swarm species and a swarm species never a creature row.
 
