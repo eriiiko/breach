@@ -18,7 +18,7 @@ harness lists ``doors`` / ``door_tiles``, record functions
 PART TABLES -- every P6b.1 device table row equals an independent read of its
 reference value; the door tables' fingerprint is compiled in.
 PART PROBE -- seal / unseal / can_seal on real maps with real gas (test_level,
-playground, door_test, airlock_demo, wind_studio, both door scenes; every
+test_arena, door_test, airlock_demo, wind_studio, both door scenes; every
 door's span, constructed horizontal and vertical runs of 1 to 6 tiles, runs
 beside vacuum and beside the ambient ring, with smoke near the trace
 saturation), each op run by the device on the map's planes and by the host
@@ -38,7 +38,7 @@ table's IDENTITY (unpack(pack(doors)) is the doors; its entity rows are the
 serializer's) every tick; a CENSUS of the sweep's branches, each required,
 the unreachable ones named; the hooked match equal to an unhooked twin.
 PART BATCH -- N = 2 and 8 of envs that differ in layout, door count, seed,
-boundary and fields (both door-scene variants, playground's bots match,
+boundary and fields (both door-scene variants, test_arena's bots match,
 airlock_demo, test_level, door_test): env i == env i alone every tick.
 PART PADDING -- garbage rows past each table's count neither read nor written.
 PART OVERFLOW -- the door table, the tile table and one door's span past
@@ -785,7 +785,7 @@ def part_probe():
     seen = Counter()
     rng = np.random.default_rng(6101)
     n = 0
-    for name in ("test_level", "playground", "door_test", "airlock_demo", "wind_studio"):
+    for name in ("test_level", "test_arena", "door_test", "airlock_demo", "wind_studio"):
         n += _probe_map(name, LevelDriver(name).sim, seen, rng)
     n += _probe_map("door scene", DoorScene(0).sim, seen, rng, ticks=5)
     n += _probe_map("door scene (planetside)", DoorScene(1).sim, seen, rng, ticks=5)
@@ -1071,10 +1071,10 @@ def part_batch():
 
 def part_levels():
     """The shipped levels with door entities, each its own N = 1 shadow
-    (their grids differ): playground's bots match (the bots' use, the
+    (their grids differ): test_arena's bots match (the bots' use, the
     zombies' bashing), airlock_demo (the signal bus drives its doors' latch
     at 9e(c), read here as the host left it), test_level, door_test."""
-    for name, match in (("playground", True), ("airlock_demo", False),
+    for name, match in (("test_arena", True), ("airlock_demo", False),
                         ("test_level", False), ("door_test", False)):
         d = LevelDriver(name, seed=1, match=match)
         run_shadow(f"level {name} ({len(d.sim._doors)} doors, {len(d.sim.units)} units)",

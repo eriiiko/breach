@@ -484,9 +484,9 @@ def test_furniture_free_level_mask_equals_solid(level):
 
 
 def test_furniture_bearing_level_differs_exactly_on_furniture():
-    g = GameMap(load_level("playground"))
+    g = GameMap(load_level("test_arena"))
     furn = (g.material == MAT_FURNITURE)
-    assert furn.any(), "playground is expected to carry furniture"
+    assert furn.any(), "test_arena is expected to carry furniture"
     assert np.array_equal(g.thermal_solid != g.solid, furn)
 
 
@@ -695,7 +695,7 @@ def test_thermal_solid_is_in_the_resident_mask_set():
 def test_thermal_solid_grid_is_a_plain_bool_grid():
     """Determinism contract: the mask crosses to C++/CUDA as a bool plane — no
     floats, no packing, C-contiguous, exactly (h, w)."""
-    g = GameMap(load_level("playground"))
+    g = GameMap(load_level("test_arena"))
     assert g.thermal_solid.dtype == np.bool_
     assert g.thermal_solid.shape == g.solid.shape
     assert g.thermal_solid.flags["C_CONTIGUOUS"]

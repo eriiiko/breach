@@ -18,7 +18,7 @@ if str(_ROOT / "tools") not in sys.path:
 import level_loader  # noqa: E402
 from simulation import object_tables as ot, unit_kernels, unit_schema  # noqa: E402
 
-VENT_LEVELS = ("ship_demo", "playground", "fire_smoke_studio")
+VENT_LEVELS = ("ship_demo", "test_arena", "fire_smoke_studio")
 
 
 def _sim(name):
@@ -123,7 +123,7 @@ def test_a_duct_past_the_proved_range_is_named_and_one_step_inside_is_not():
     on the duct's returns' quanta and its vent counts) and names the ledger
     one past it, on both sides of a signed ledger. Breaks if a bound is off by
     one or a ledger family is not checked."""
-    sim = _sim("playground")
+    sim = _sim("test_arena")
     drec = unit_kernels.ducts_of(sim)
     vrec = unit_kernels.vents_of(sim)
     lay = ot.table_layout(unit_schema.DUCT_TABLE)
@@ -165,7 +165,7 @@ def test_a_duct_past_the_proved_range_is_named_and_one_step_inside_is_not():
 def test_capacities_refuse_by_name():
     """Property: a duct or vent list past its table's capacity is refused by
     name (``ObjectTableOverflow``). Breaks if a table silently truncates."""
-    sim = _sim("playground")
+    sim = _sim("test_arena")
     for table, objs, cap in ((unit_schema.DUCT_TABLE, sim._ducts, unit_schema.DUCT_CAPACITY),
                              (unit_schema.VENT_TABLE, sim._vents, unit_schema.VENT_CAPACITY)):
         many = list(objs) * (cap // len(objs) + 1)

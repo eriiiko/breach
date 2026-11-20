@@ -110,8 +110,8 @@ def test_the_replay_level_is_the_recordings_and_level_may_only_agree(
     _, rec = recorded
     assert replay_level_name(rec) == rec.level == "ship_demo"
     assert replay_level_name(rec, "ship_demo") == "ship_demo"
-    with pytest.raises(mr.ReplayRefused, match="playground"):
-        replay_level_name(rec, "playground")
+    with pytest.raises(mr.ReplayRefused, match="test_arena"):
+        replay_level_name(rec, "test_arena")
 
 
 def test_a_rebuilt_maps_changed_tiles_are_exactly_the_repatched_ones():
@@ -213,7 +213,7 @@ def _run(args, timeout=300):
 
 
 @pytest.mark.parametrize("extra, needle", [
-    (["--level", "playground"], "playground"),
+    (["--level", "test_arena"], "test_arena"),
     (["--control", "match"], "--control"),
     (["--warp", "2"], "--warp"),
     (["--res", "2"], "--res"),

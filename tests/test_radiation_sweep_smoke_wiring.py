@@ -94,12 +94,12 @@ def test_step_tail_refuses_a_missing_mistyped_or_misshapen_heat_absorb_table():
     eng.step_tail(**kw, gas_heat_absorb_q16=good)                  # NON-VACUITY
 
 
-def _smoky_playground():
-    """The playground with a wood tile HEATED to the 1263-game plateau and lit
+def _smoky_test_arena():
+    """The test_arena with a wood tile HEATED to the 1263-game plateau and lit
     (CLAUDE.md "Starting a fire"), a smoke cloud in the open air around it -- in
     [0, ONE], so the fire step's tracer clamp leaves it exactly as the sweep will
     read it -- and a TEST-FIXTURE heat_absorb on smoke."""
-    sim = Simulation(load_level("playground"), seed=1, breach_physics=bp,
+    sim = Simulation(load_level("test_arena"), seed=1, breach_physics=bp,
                      enable_recorder=False)
     g = sim.gmap
     ys, xs = np.where((g.material == MAT_WOOD) & g.thermal_solid)
@@ -109,7 +109,7 @@ def _smoky_playground():
             if not g.thermal_solid[y, x + 1] or not g.thermal_solid[y + 1, x]:
                 pick = (int(y), int(x))
                 break
-    assert pick is not None, "the playground carries no wood tile beside air"
+    assert pick is not None, "the test_arena carries no wood tile beside air"
     y0, x0 = pick
     g.temperature[y0, x0] = 1263 << 16
     g.fire[y0, x0] = fire_fixed.quantize_scalar(0.8)
@@ -137,7 +137,7 @@ def test_the_live_sweep_reads_the_smoke_term():
     sum to the sweep; the runner stops passing GasTable.heat_absorb_q16; or the
     bulk sum the sweep reads is not the conservative-plane sum.
     """
-    sim, pick, cloud = _smoky_playground()
+    sim, pick, cloud = _smoky_test_arena()
     g = sim.gmap
     runner = sim.physics_runner
     grabbed = {}

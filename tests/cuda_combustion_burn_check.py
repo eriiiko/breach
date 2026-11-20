@@ -19,7 +19,7 @@ on tick 0, the whole field by tick 1).
   plane and every book at tol 0, and the scenes are asserted to have driven
   every channel (a vacuity guard per book).
 
-  PART 2 — THE LIVE TICK, TWO BURNING SCENES: the #71 repro (the playground,
+  PART 2 — THE LIVE TICK, TWO BURNING SCENES: the #71 repro (the test_arena,
   a wood tile heated to the 1263-game plateau and lit, a marine beside it) and
   the fire + smoke studio (five furniture tiles and a lone one lit at 0.5 s by
   its own timed charges, a HEPA vent loop over them) — each built twice
@@ -177,7 +177,7 @@ def _live_dials():
     real Simulation (so PART 1 runs the shipped arithmetic, not a fixture's)."""
     from level_loader import load as load_level
     from simulation import Simulation
-    sim = Simulation(load_level("playground"), seed=1, breach_physics=bp,
+    sim = Simulation(load_level("test_arena"), seed=1, breach_physics=bp,
                      enable_recorder=False)
     rp = sim.physics_runner
     dials = {k: getattr(rp.combustion, k) for k in _DIALS}
@@ -326,9 +326,9 @@ def part1_isolated() -> None:
 # ---------------------------------------------------------------------------
 # PART 2 — the live tick, burning scenes
 # ---------------------------------------------------------------------------
-def _burning_playground():
+def _burning_test_arena():
     """THE #71 REPRO — tests/cuda_radiation_sweep_check.py's live scene (and
-    tests/test_radiation_sweep_shadow_wiring.py's): the playground with a wood
+    tests/test_radiation_sweep_shadow_wiring.py's): the test_arena with a wood
     tile HEATED to the 1263-game plateau and lit (a fire is started by
     delivering heat, CLAUDE.md "Starting a fire"), a marine on open air beside
     it."""
@@ -336,7 +336,7 @@ def _burning_playground():
     from simulation import Simulation, fire_fixed
     from simulation.materials import MAT_WOOD
     from simulation.unit import Unit
-    sim = Simulation(load_level("playground"), seed=1, breach_physics=bp,
+    sim = Simulation(load_level("test_arena"), seed=1, breach_physics=bp,
                      enable_recorder=False)
     g = sim.gmap
     ys, xs = np.where((g.material == MAT_WOOD) & g.thermal_solid)
@@ -346,7 +346,7 @@ def _burning_playground():
             if not g.thermal_solid[y, x + 1] or not g.thermal_solid[y + 1, x]:
                 pick = (int(y), int(x))
                 break
-    assert pick is not None, "the playground carries no wood tile beside air"
+    assert pick is not None, "the test_arena carries no wood tile beside air"
     # The repro's DIRECT write on a thermal solid is outside every book, so the
     # solid side's snapshot jumps by cap_real * dT on tick 0 (the capacity
     # law of conduction::cell_capacity_q: 2^(clamp(s, -16, 30) + 16)).
@@ -503,8 +503,8 @@ def _run_live(tag: str, builder, n_ticks: int) -> None:
 
 def part2_live() -> None:
     print("PART 2 -- the live tick, burning scenes, ONLY the combustion backend flipped")
-    _run_live("2a the #71 repro (playground, a lit 1263-game wood tile)",
-              _burning_playground, 40)
+    _run_live("2a the #71 repro (test_arena, a lit 1263-game wood tile)",
+              _burning_test_arena, 40)
     _run_live("2b fire_smoke_studio (lit at 0.5 s by its charges)",
               _fire_studio, 60)
     _only_combustion(False)

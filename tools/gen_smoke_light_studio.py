@@ -120,7 +120,8 @@ def build_normal(tm) -> Image.Image:
         dist = np.minimum(u, px - u)                # px from the nearest seam
         return np.where(dist < GROOVE_PX,
                         0.5 - 0.5 * np.cos(np.pi * dist / GROOVE_PX), 1.0)
-    hgt = np.minimum(groove(studio.W * px)[None, :], groove(studio.H * px)[:, None])
+    h, w = tm.shape                                 # any grid: the water studio's too
+    hgt = np.minimum(groove(w * px)[None, :], groove(h * px)[:, None])
     floor = np.kron(tm == studio.MAT_AIR, np.ones((px, px), dtype=bool))
     hgt = np.where(floor, hgt, 1.0)
     gy, gx = np.gradient(hgt)

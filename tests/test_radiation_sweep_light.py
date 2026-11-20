@@ -692,13 +692,13 @@ def test_the_flux_vector_points_away_from_a_lone_source():
 # 9. THE REQUEST
 # ---------------------------------------------------------------------------
 def _burning_room():
-    """The playground with one WOOD tile beside air heated to the 1263-game
+    """The test_arena with one WOOD tile beside air heated to the 1263-game
     plateau and lit -- a fire started by delivering heat (CLAUDE.md "Starting a
     fire"); wood's light_atten is 1.0, so it is a light source through L°."""
     from level_loader import load as load_level
     from simulation import Simulation, fire_fixed
     from simulation.materials import MAT_WOOD
-    sim = Simulation(load_level("playground"), seed=5, breach_physics=bp,
+    sim = Simulation(load_level("test_arena"), seed=5, breach_physics=bp,
                      enable_recorder=False)
     g = sim.gmap
     ys, xs = np.where((g.material == MAT_WOOD) & g.thermal_solid)
@@ -708,7 +708,7 @@ def _burning_room():
             g.temperature[y, x] = 1263 << 16          # a THERMAL SOLID: its T is its own
             g.fire[y, x] = fire_fixed.quantize_scalar(0.8)
             return sim
-    raise AssertionError("the playground carries no wood tile beside air")
+    raise AssertionError("the test_arena carries no wood tile beside air")
 
 
 def test_light_is_computed_only_when_requested():

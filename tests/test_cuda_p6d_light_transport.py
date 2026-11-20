@@ -5,7 +5,7 @@ brief_2026-09-29.md section 3).
 PROPERTY: with PhysicsEngine.light_transport set to RadiationSweep.SHEAR, the
 GPU twin (the per-call path PhysicsEngine.step_tail dispatches, the resident
 tick, and relight()) computes the SAME integers as the CPU sweep on a real
-Simulation -- the playground level with its own emergency lamps, a burning
+Simulation -- the test_arena level with its own emergency lamps, a burning
 wood tile and a smoke puff, light requested through the Simulation facade --
 every synced GameMap array (the three light planes included), the engine's
 light books, per tick, tol 0.

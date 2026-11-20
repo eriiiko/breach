@@ -48,6 +48,11 @@ and who must use it; this file holds the constraints the code cannot say. The
 - Gated BEFORE any write by the ship generator's own `gen_ship.validate` (airtight, spawn floor, A* reach) with `mirrored=False`: never a copy of a gate. Doors and opening stamps come from `gen_ship.EDGE_KINDS`; cover is the game's `cover` entity, never the ship generator's fuel crates.
 - The rooms live OUTSIDE the repository (the tool refuses a folder inside it) and are made again from the tool: two writes are byte-equal (`tests/test_training_rooms.py`). Every room has a match file with `sight = "all_round"`, no zombies and its task's clock; each layout is also written `<name>_swapped` (the two spawn rooms exchanged, nothing else).
 
+## Water studio
+- `tools/gen_water_studio.py` writes `levels/water_studio`, THE level for judging water (#97, `docs/water_look_design_2026-11-19.md` W0): a change is a constant there and a re-run, never a hand edit (`tests/test_water_studio.py` holds the checked-in folder to the generator). No test that pins play reads it: it exists to be looked at and is reshaped as the look arc needs.
+- Its rooms are sealed and its floor flat, so each flooded room's water levels out over that room; a running source or a drain does not exist in a level (Erik builds them) and is not imitated here. Its pool hall's south-west corner (`OCTOPUS_CORNER`) stays EMPTY for the octopus (Erik, 2026-11-20).
+- Its look shots (`still_pool_flashlight`, `flooding_corridor`, `wade_by_firelight`) read its timings: moving a charge or a fuse moves what a shot shows, and `flooding_corridor`'s frame is held to a still-running flood by the test.
+
 ## Recipe library + resolver
 - The family-B grammar's data (`docs/levelgen_cycle_types_and_recipes_2026-10-31.md`), loaded through a DOOR that refuses by name (file + field): unknown fields, a physics NUMBER where a preset NAME belongs, a missing named config row, an edge kind outside `EDGE_KINDS`, the air-volume rule at every pattern of optional-room absence, the triangle rule, the layout's packing twin at the minima (`ship_layout.department_feasibility`, never a second bound), the galley fuse, a malformed `second_leg`.
 - Where a room goes is its `attach`, and a declared edge joins a room only to what it attaches to.

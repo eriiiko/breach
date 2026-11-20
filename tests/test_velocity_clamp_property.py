@@ -22,7 +22,7 @@ bound (gate 1's form): the remote hot cell must not raise it (the audit's
 Defect 1 shape — the old global scalar cap let a hot cell anywhere raise
 EVERY cell's ceiling).
 
-Plus one full-engine smoke: a playground-style blast scenario driven through
+Plus one full-engine smoke: a test_arena-style blast scenario driven through
 the real engine, post-tick snapshot, assert wx^2+wy^2 <= cap2(T_snap)*1.5 for
 every open cell — a loose e2e wiring check only (T moves after the fold
 within the tick, hence the slack; the exact assertions live in gates 1-2).
@@ -228,8 +228,8 @@ def test_gate2_cap_locality_hot_cell_does_not_raise_a_remote_cap():
 # ---------------------------------------------------------------------------
 # Gate 2 (cont.) — loose full-engine smoke.
 # ---------------------------------------------------------------------------
-def test_gate2_full_engine_smoke_playground_blast():
-    """Loose e2e wiring check: a real engine tick on a playground-style
+def test_gate2_full_engine_smoke_test_arena_blast():
+    """Loose e2e wiring check: a real engine tick on a test_arena-style
     blast scenario, post-tick snapshot, assert wx^2+wy^2 <= cap2(T_snap)*1.5
     for every open cell (T moves after the fold within the tick, hence the
     slack — the exact assertions live in the two gates above)."""

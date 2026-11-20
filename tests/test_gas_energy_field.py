@@ -19,7 +19,7 @@ identity stops holding "for free" is the day a writer seam is missing or
 wrong. Pinning it now, on three different scenarios, is what makes that
 future regression visible.
 
-Run on three scenarios (space-boundary sealed room, the `playground` level,
+Run on three scenarios (space-boundary sealed room, the `test_arena` level,
 and a vacuum-breach synthetic level with a hot seed) so the gate is not
 vacuous on any one topology (sealed / open / vented).
 """
@@ -127,11 +127,11 @@ def _sealed_room_sim():
     return Simulation(level, seed=1, breach_physics=bp, enable_recorder=False)
 
 
-def _playground_sim():
-    """The `playground` level (the arc's own gate benches' level) — a real,
+def _arena_sim():
+    """The `test_arena` level (the arc's own gate benches' level) — a real,
     complex map (doors, vents, multiple rooms) exercising combustion/pump/
     seal seams the sealed-room synthetic never touches."""
-    lvl = load_level("playground", levels_dir=str(ROOT / "levels"))
+    lvl = load_level("test_arena", levels_dir=str(ROOT / "levels"))
     return Simulation(lvl, seed=2, breach_physics=bp, enable_recorder=False)
 
 
@@ -177,7 +177,7 @@ def _blast_vent_sim():
 
 SCENARIOS = {
     "sealed_room": _sealed_room_sim,
-    "playground": _playground_sim,
+    "test_arena": _arena_sim,
     "blast_vent": _blast_vent_sim,
 }
 

@@ -39,7 +39,7 @@ from simulation.orders import ORDER_MOVE_ATTACK, Order  # noqa: E402
 from simulation.unit import ZOMBIE_TEAM, Unit  # noqa: E402
 
 
-def _sim(level="playground", seed=7):
+def _sim(level="test_arena", seed=7):
     return Simulation(load(level), seed=seed, breach_physics=bp,
                       enable_recorder=False)
 
@@ -73,9 +73,9 @@ def test_zombie_team_cannot_collide_with_a_marine_team():
 
 
 def test_legacy_level_team_1_spawns_zombies_on_zombie_team():
-    level = load("playground")
+    level = load("test_arena")
     raw_zombies = [s for s in level.spawns if s.team == ZOMBIE_TEAM]
-    assert raw_zombies, "the playground's penned zombies must still load"
+    assert raw_zombies, "the test_arena's penned zombies must still load"
     assert not any(s.team == LEGACY_ZOMBIE_TEAM for s in level.spawns)
     sim = _sim()
     for s in level.spawns:
@@ -152,7 +152,7 @@ def _face(u, x, y):
 
 def test_a_converted_marine_is_hostile_to_its_old_team_not_to_zombies():
     sim = _sim()
-    level = load("playground")
+    level = load("test_arena")
     s = _first_marine_spawn(level)
     ax, ay = int(s.x), int(s.y)
     bx, by = _facing_pair(sim, ax, ay)
@@ -176,7 +176,7 @@ def test_a_converted_marine_is_hostile_to_its_old_team_not_to_zombies():
 
 def test_two_marine_teams_engage_each_other_and_the_zombie_ai_ignores_them():
     sim = _sim()
-    level = load("playground")
+    level = load("test_arena")
     s = _first_marine_spawn(level)
     ax, ay = int(s.x), int(s.y)
     bx, by = _facing_pair(sim, ax, ay)

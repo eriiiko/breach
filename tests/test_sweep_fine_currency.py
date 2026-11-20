@@ -65,10 +65,10 @@ def _coarse_live_table():
     return tbl
 
 
-def _playground_sim():
+def _arena_sim():
     from level_loader import load as load_level
     from simulation import Simulation
-    return Simulation(load_level("playground"), seed=1, breach_physics=bp,
+    return Simulation(load_level("test_arena"), seed=1, breach_physics=bp,
                       enable_recorder=False)
 
 
@@ -92,7 +92,7 @@ def test_the_engine_runs_one_currency_the_reference_specifies():
     E°[0], i.e. a near-0-K sky, and the equality below goes red.
     """
     assert bp.E_FINE_BITS == R.FINE_BITS > 0
-    sim = _playground_sim()
+    sim = _arena_sim()
     eng = sim.physics_runner.engine
     assert int(eng.emissive.fine_bits) == bp.E_FINE_BITS
     table = np.asarray(eng.emissive.table(), dtype=np.int64)

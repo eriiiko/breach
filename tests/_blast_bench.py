@@ -6,7 +6,7 @@ energy into cavities; the flux form bounds a cell's heating by its
 neighbours' energy. (Corrects v1 §8.) Fire tuning (#5/#8) will see lower
 core T."
 
-One ``frag_standard`` payload is executed mid-arena on the playground and the
+One ``frag_standard`` payload is executed mid-arena on the test_arena and the
 sim runs 3 s. Two asks:
 
   (1) NO ``T_MAX_PHYS`` hit OUTSIDE the blast disc. The rail is allowed to
@@ -59,7 +59,7 @@ def _n_plane(g):
 
 
 def main() -> None:
-    lvl = load_level("playground", levels_dir=str(ROOT / "levels"))
+    lvl = load_level("test_arena", levels_dir=str(ROOT / "levels"))
     lvl = replace(lvl, entities=[e for e in lvl.entities
                                  if e.class_name not in ("vent", "duct")])
     sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False)

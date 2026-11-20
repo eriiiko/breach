@@ -8,7 +8,7 @@ the EOS / temperature / engine books, the trace books, the seam net) at tol 0
 on every tick, the across-tick energy closure residual equal on both worlds,
 and in isolation the energy-on pass (draw radius 1-3, ring donors and sites,
 furniture sites, thin cells, the T_MAX_PHYS rail) equal plane for plane and
-book for book. The scenes are the #71 repro (the playground, a lit 1263-game
+book for book. The scenes are the #71 repro (the test_arena, a lit 1263-game
 wood tile, a marine beside it) and the fire + smoke studio.
 
 Breaks if the CUDA twin drifts from the CPU law anywhere on the energy seam —

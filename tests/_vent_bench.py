@@ -2,7 +2,7 @@
 
 Design: ``docs/gas_energy_conservation_design_2026-08-29.md`` §6 "VENT".
 
-The scenario, built on the playground with the canonical seams (never a hand
+The scenario, built on the test_arena with the canonical seams (never a hand
 edit): the level's own HULL already encloses a 1-atm volume against hard
 vacuum, so after letting the map settle, ``destroy_wall`` opens three hull
 tiles and the gas vents to space for 5 s.
@@ -59,7 +59,7 @@ from simulation import materials  # noqa: E402
 TPS = 24
 SETTLE_TICKS = 1 * TPS      # let the level's own start transient decay
 RUN_TICKS = 5 * TPS
-# Three adjacent HULL tiles on the playground's north wall: solid, with hard
+# Three adjacent HULL tiles on the test_arena's north wall: solid, with hard
 # vacuum on one side and 1-atm interior air on the other (verified by the
 # fixture assert below rather than assumed).
 MOUTH_TILES = [(2, 5), (2, 6), (2, 7)]
@@ -100,7 +100,7 @@ class _EngineProbe:
 
 
 def main() -> None:
-    lvl = load_level("playground", levels_dir=str(ROOT / "levels"))
+    lvl = load_level("test_arena", levels_dir=str(ROOT / "levels"))
     lvl = replace(lvl, entities=[e for e in lvl.entities
                                  if e.class_name not in ("vent", "duct")])
     sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False)
@@ -130,7 +130,7 @@ def main() -> None:
     T0_room = (E0 / N0 - t_amb_raw) / Q if N0 else 0.0
     T0_plane = g.temperature.astype(np.int64).copy()
 
-    print(f"VENT gate — playground hull breached at {MOUTH_TILES} to vacuum, "
+    print(f"VENT gate — test_arena hull breached at {MOUTH_TILES} to vacuum, "
           f"{RUN_TICKS / TPS:.0f} s")
     print(f"  t=0 (post-settle): interior T = {T0_room:+.2f} game-deg, "
           f"P = {float(g.atmosphere[room].mean()) / Q:.3f} atm, "

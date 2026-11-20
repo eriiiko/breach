@@ -126,7 +126,7 @@ def _residency(on: bool) -> None:
 
 
 def _light_wood(g, cells):
-    """#29 P2 (#71): light wood tiles the CUDA-combustion way the playground
+    """#29 P2 (#71): light wood tiles the CUDA-combustion way the test_arena
     repro does — heated to the 1263-game plateau AND lit (CLAUDE.md "Starting
     a fire": heat delivered, never `fire` alone). Without a flammable source
     the combustion backend this gate turns on had no claimant and never ran
