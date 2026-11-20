@@ -605,7 +605,9 @@ gates of `energy-books.md` (`test_no_transport_mint`,
 
 **(b) New reusable systems:** none. `eos_transport_step_q` is a helper of an
 existing system. **Its rule line goes where it fires** (L2-9): `fields-gas.md`,
-beside Trace transport, as its own subsection *Transport step*: *step 1's
+as the first bullet of its Trace transport section (as built: a section of its
+own is refused by `test_claude_rules_paths.py`, which wants every rule section
+to name a CLAUDE.md index row, and this helper has none): *step 1's
 displacement and face coefficient come only from `eos_transport_step_q`
 (dt_s/dx, quantized once), on every backend; wind is m/s everywhere (Erik,
 2026-11-20).* `fields-gas.md`'s `paths:` gain `cpp/src/eos_solver.h`,

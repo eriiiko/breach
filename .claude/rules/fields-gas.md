@@ -18,6 +18,10 @@ paths:
   - "cpp/src/fire_simulation.cpp"
   - "cpp/src/combustion.cpp"
   - "cpp/src/eos_solver.cpp"
+  - "cpp/src/eos_solver.h"
+  - "cpp/src/cuda_eos_step.cu"
+  - "cpp/src/cuda_eos_resident.cu"
+  - "cpp/src/cuda_sl_advection.cu"
   - "cpp/src/cuda_kick_compression.cu"
   - "cpp/src/cuda_edit_queue.cu"
   - "cpp/src/fixed_point.h"
@@ -52,6 +56,7 @@ and who must use it; this file holds the constraints the code cannot say.
 - The sweep has a device twin, the applier's VENTS stage over `cpp/src/cuda_unit_vents.cuh` with the duct and vent tables (`.claude/rules/device-units.md`): a change to `_duct_sweep`, `VentRuntime.accrue`, a runtime attribute that crosses a tick, or a ledger's per-tick step lands there, in `unit_schema.DUCT_TABLE` / `VENT_TABLE` and in the device's proved ledger range in the SAME patch. `tests/cuda_unit_vents_check.py` is the guard.
 
 ## Trace transport
+- THE TRANSPORT STEP (the bulk face flux trace rides): wind is m/s everywhere (Erik, 2026-11-20). Step 1's displacement (the 1a SL backtrace) and face coefficient (the 1d donor-cell flux) come ONLY from `eos_transport_step_q(dt, n_sub, dx)` (dt_s/dx, tiles per m/s, quantized once, range-guarded), on every backend: `EOSSolver::step`, `eos_sl_advect_reference`, `eos_prestage_finish`, the resident fold table, the standalone device SL entry. Never a second scalar, never `dt_s` alone (the pre-#217 bug: air moved 1/dx too slow below 1 m), never `mul_q16(dt_s_q, quantize(1/dx))` (two roundings). `tests/test_transport_in_metres.py` is the guard.
 - A trace plane's TRANSPORT is ONLY the stage-3b ride on the bulk face flux (`price_face(dq, S, N)` at the donor) plus the once-per-tick Jacobi, magnitude-truncated face diffusion: never a semi-Lagrangian step, never a bespoke advection loop (#12, `docs/smoke_transport_design_2026-10-04.md`).
 - No trace plane is clamped anywhere outside a reader, bar the counted int32 saturation (`TRACE_CELL_MAX`, `trace_add_sat`, #88) at every site that adds to a cell. Trace ADD edits are additive up to that saturation and never cut the tile.
 - Every loss is booked (the vent's trace slots of `boundary_flux_`, wipe, sink, decay, clip) and every gain (`trace_mint_sum`, `trace_deposit_books`); other movers conserve or book through those. Pump extraction, FieldEdit REMOVE and the explosion's smoke clear destroy trace UNBOOKED (ACCEPTED GAP, #88 G6, #98).
