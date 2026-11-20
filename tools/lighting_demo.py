@@ -281,9 +281,10 @@ _WATER_DIALS = (
     ("alpha_scale", 6.0, "Alpha scl", 0.0, 20.0),
     ("alpha_min", 0.15, "Alpha min", 0.0, 0.6),
     ("alpha_max", 0.95, "Alpha max", 0.4, 1.0),
-    # Phase 2 (mood pass): caustics / chromatic aberration.
-    ("caustic_strength", 2.5, "Caustic", 0.0, 8.0),
-    ("caustic_scale", 6.0, "Caust scl", 0.0, 24.0),
+    # W4: the sharp caustic (the area method's contrast and its cap).
+    ("caustic_strength", 1.0, "Caustic", 0.0, 3.0),
+    ("caustic_max", 3.0, "Caust max", 1.05, 10.0),
+    # Phase 2 (mood pass): chromatic aberration.
     ("ca_amount", 0.012, "Chrom ab", 0.0, 0.06),
     # W1: the fine surface that flows.
     ("detail_wavelength_m", 0.12, "Detail m", 0.03, 0.5),

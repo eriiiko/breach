@@ -1443,15 +1443,18 @@ glint_strength = 2.0
 alpha_scale = 6.0
 alpha_min = 0.15
 alpha_max = 0.95
-# --- Phase 2 (mood pass): caustics / foam / chromatic aberration / waves ---
-# Caustics (§3): focused light dancing on the flooded floor under a flashlight.
-# caustic = max(+laplacian(ripple), 0) * caustic_strength * lightRGB, ADDED
-# into the refracted floor term (rides the floor, × alpha). SIGN load-bearing:
-# +laplacian focuses (bright in dips); -div(N) ≡ same; +div(N) would invert it.
-# caustic_scale > 0 layers a touch of high-frequency procedural detail (× the
-# surface energy) for crispness; 0 = pure surface curvature.
-caustic_strength = 2.5
-caustic_scale = 6.0
+# --- Sharp caustics (water W4, #97; renderer/water_surface.py caustic_*) ---
+# The net of light on a flooded floor, from the fine surface's CURVATURE by
+# Wallace's area method (analytic Jacobian of the refraction map, gather):
+# caustic = floor light x (min(1/|det J|, caustic_max) - 1) x caustic_strength,
+# det J = 1 + a tr(H) + a^2 det(H), a = depth x (1 - 1/1.333). SIGNED: it
+# darkens the floor where the surface spreads the light, brightens it where
+# it focuses; no light, no caustic; depth enters only through a. It replaced
+# the Laplacian caustic and its procedural detail (caustic_scale, deleted).
+# Starting values (W4's builder); Erik tunes on levels/water_studio
+# (still_pool_flashlight).
+caustic_strength = 1.0         # 1 = the area method's own contrast; 0 = off
+caustic_max = 3.0              # the most a focus multiplies the light (> 1): the bright lines' cap
 # Chromatic aberration (subtle polish): floor refraction r/g/b sampled at
 # offsets scaled 1 ± ca_amount per channel. Tiny — a barely-there prismatic
 # fringe. 0 = off (single sample).
@@ -1495,7 +1498,7 @@ foam_gain_wall = 4.0           # fast water along a wall: per second next to the
 foam_bubble_m = [0.05, 0.2]    # the bubbles' two sizes, metres (the lace and its clusters)
 foam_cover = 1.0               # the amount at which the foam is a closed sheet
 foam_shadow = 0.5              # how much a closed sheet darkens the floor beneath it (0..1)
-debug_view = 0                 # 1 = draw (slope x, slope y, strength); 2 = (foam amount, foam cover, 0)
+debug_view = 0                 # 1 = draw (slope x, slope y, strength); 2 = (foam amount, foam cover, 0); 3 = (hxx, hxy, hyy, caustic gain)
 # --- Heightmap attenuation (alpha-only; graphics/water_rendering.md §2 §8) ---
 # An OPTIONAL per-level floor heightmap ([art.bare] height) attenuates the water
 # ALPHA where raised relief (crates, consoles, debris) rises above the local

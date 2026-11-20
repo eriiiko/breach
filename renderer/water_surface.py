@@ -50,6 +50,15 @@ render read).
     screen px per tile (``heat_shimmer.zoom_fade``, the one fade); the
     texture is mipmapped, so minified slopes average toward flat.
 
+THE CAUSTIC (W4). The same surface's CURVATURE (a companion bake of the
+same waves' exact second derivatives, read through the same hex-tiled,
+flow-mapped taps: :func:`hex_surface`, :func:`detail_surface`) gives the
+Jacobian of the refraction map ``x -> x + depth (1 - 1/n) grad h``;
+the floor's source light is multiplied by ``min(1/|det J|, caustic_max)``
+(signed: :func:`caustic_det`, :func:`caustic_gain`, :func:`caustic_term`;
+``shaders/water.fs`` mirrors it, ``tests/gl_water_caustic_check.py`` holds
+the two equal).
+
 THE CLOCK. The SIM clock ``(tick + alpha) / tps`` through a
 ``fire_vfx.SimClock`` the pass owns (idle when paused, re-anchored when the
 tick goes back), never wall time (critique B2). :func:`flow_frame` turns it
@@ -62,6 +71,10 @@ Credits (repo rule -- cite what a file implements):
   - Morten S. Mikkelsen, "Practical Real-Time Hex-Tiling", Journal of
     Computer Graphics Techniques (JCGT) 11(3), 77-94, 2022 -- the hex-tiled
     lookup and its weights (reference: docs/papers/README_water_2026-11.md).
+  - Evan Wallace, "WebGL Water" (2011, MIT; madebyevan.com/webgl-water) --
+    the caustic's area method (a patch of light's area before and after the
+    surface bends it), here as its analytic limit, the Jacobian determinant
+    (archived: docs/papers/wallace2011_webgl_water_renderer.js).
 """
 from __future__ import annotations
 
@@ -111,7 +124,7 @@ class WaterSettings:
     alpha_min: float
     alpha_max: float
     caustic_strength: float
-    caustic_scale: float
+    caustic_max: float
     ca_amount: float
     height_scale: float
     height_edge: float
@@ -152,8 +165,8 @@ class WaterSettings:
 _INT_KEYS = ("debug_view", "foam_cells_per_tile")
 _VEC_KEYS = {"water_color": 3, "foam_bubble_m": 2}
 # 0 = the picture; 1 = (slope x, slope y, k, 1); 2 = (foam amount, foam
-# cover, 0, 1)
-DEBUG_VIEWS = (0, 1, 2)
+# cover, 0, 1); 3 = (hxx, hxy, hyy, caustic gain) -- the caustic (W4)
+DEBUG_VIEWS = (0, 1, 2, 3)
 FOAM_CELLS_MAX = 8          # foam cells per tile (per axis), the door's top
 FOAM_STEP_MAX_S = 0.1       # a foam step longer than this is refused
 
@@ -220,6 +233,12 @@ def water_settings(cfg) -> WaterSettings:
     if not 0.0 <= s.foam_shadow <= 1.0:
         raise ValueError(f"[graphics.water] foam_shadow must be in [0, 1]: "
                          f"{s.foam_shadow}")
+    if s.caustic_strength < 0.0:
+        raise ValueError("[graphics.water] caustic_strength must be >= 0")
+    if s.caustic_max <= 1.0:
+        raise ValueError(f"[graphics.water] caustic_max must be > 1 (the "
+                         f"most a focus multiplies the light): "
+                         f"{s.caustic_max}")
     if s.debug_view not in DEBUG_VIEWS:
         raise ValueError(f"[graphics.water] debug_view must be one of "
                          f"{DEBUG_VIEWS}: {s.debug_view}")
@@ -333,9 +352,33 @@ def hex_slope(tex: np.ndarray, st: np.ndarray) -> np.ndarray:
     (the gradient of a rotated field), and the taps are blended by
     ``(1 - c + c |s_i|) w_i^7``, normalised (Mikkelsen's ``hex2colTex`` with
     the slope length as its luminance)."""
+    return hex_surface(tex, None, st)[0]
+
+
+def hex_surface(tex: np.ndarray, curv: Optional[np.ndarray],
+                st: np.ndarray):
+    """:func:`hex_slope` and, when ``curv`` (the curvature bake,
+    ``noise_bake.bake_ripple_curvature_rgba``) is given, the surface's
+    HESSIAN in texture units -> ``(slope (..., 2), hess (..., 3) = (hxx,
+    hxy, hyy) or None)`` (W4).
+
+    THE HEX BLEND AND THE ROTATION ON THE DERIVATIVES (derived for W4). A
+    tap i reads the height field ``f`` at ``q' = R (st - c) + c + o``, so
+    its own height field is ``h_i(st) = f(q')`` with gradient
+    ``R^T grad f(q')`` (the slope rotated back, as W1) and Hessian
+    ``H_i = R^T Hf(q') R`` -- the baked tensor ROTATED BACK on both indices.
+    The blend applies the SAME normalised weights ``W_i`` (the slope taps'
+    ``(1 - c + c |s_i|) w_i^7``) to the three Hessians: ``H = sum W_i H_i``.
+    That is the derivative of the blended slope with the weights held
+    fixed; the weights' own gradient (``grad W_i x (s_i - s)``, non-
+    symmetric and confined to the narrow ``w^7`` seams) is dropped -- the
+    blended slope is itself not the gradient of one height field, so the
+    caustic treats the hex surface as a weighted mix of three honest
+    surfaces, never as one field differentiated across its seams."""
     st = np.asarray(st, np.float64)
     w, verts = triangle_grid(st)
     acc = np.zeros(st.shape)
+    hacc = None if curv is None else np.zeros(st.shape[:-1] + (3,))
     wsum = np.zeros(st.shape[:-1])
     for i, v in enumerate(verts):
         cen = hex_center(v)
@@ -358,8 +401,17 @@ def hex_slope(tex: np.ndarray, st: np.ndarray) -> np.ndarray:
               * w[..., i] ** HEX_EXP)
         acc[..., 0] += wi * gx
         acc[..., 1] += wi * gy
+        if hacc is not None:
+            cm = sample_bilinear_repeat(curv, q)
+            fuu, fuv, fvv = cm[..., 0], cm[..., 1], cm[..., 2]
+            cc, cs, ss = c * c, c * s, s * s
+            # R^T Hf R, R = [[c, -s], [s, c]]
+            hacc[..., 0] += wi * (cc * fuu + 2.0 * cs * fuv + ss * fvv)
+            hacc[..., 1] += wi * (-cs * fuu + (cc - ss) * fuv + cs * fvv)
+            hacc[..., 2] += wi * (ss * fuu - 2.0 * cs * fuv + cc * fvv)
         wsum += wi
-    return acc / wsum[..., None]
+    return (acc / wsum[..., None],
+            None if hacc is None else hacc / wsum[..., None])
 
 
 def plain_slope(tex: np.ndarray, st: np.ndarray) -> np.ndarray:
@@ -506,6 +558,85 @@ def detail_slope(x_m, y_m, vel, depth, agitation, frame: FlowFrame,
     return n * strength(v, agitation, frame, s)[..., None]
 
 
+def detail_surface(x_m, y_m, vel, depth, agitation, frame: FlowFrame,
+                   tex: np.ndarray, curv: np.ndarray, s: WaterSettings):
+    """THE fine surface's slope (as :func:`detail_slope`) AND its Hessian
+    ``(hxx, hxy, hyy)`` in 1/m (W4's caustic) -> ``(slope (..., 2), hess
+    (..., 3))``.
+
+    THE FLOW ON THE DERIVATIVES (derived for W4). A layer reads the texture
+    at ``q = (p - d(p)) / P - drift``; the slide ``d``, the strength ``k``
+    and the crossfade weight ``w0`` vary over a tile or more (the bilinear
+    tile flow, the phase noise, the agitation) while the waves vary over
+    centimetres, so ``dq/dp = I / P`` and ``d slope / dp = k / P x (the
+    texture-space Hessian)``: each layer's Hessian is its hex blend
+    (:func:`hex_surface`) scaled by ``k / P``, and the two layers are
+    cross-faded with the slope's own weight ``w0``. The dropped terms
+    (``grad d``, ``grad k``, ``grad w0``) are smaller by about a wavelength
+    over a tile."""
+    q0, q1, w0, v = layer_coords(x_m, y_m, vel, depth, frame, s)
+    n0, h0 = hex_surface(tex, curv, q0)
+    n1, h1 = hex_surface(tex, curv, q1)
+    k = strength(v, agitation, frame, s)[..., None]
+    w = w0[..., None]
+    slope = (n1 * (1.0 - w) + n0 * w) * k
+    hess = (h1 * (1.0 - w) + h0 * w) * (k / s.period_m)
+    return slope, hess
+
+
+# ---------------------------------------------------------------------------
+# The caustic (W4): the area method, analytic, in gather form
+# ---------------------------------------------------------------------------
+
+# Water's index of refraction (a constant of the medium, not a look dial)
+# and the small-slope refraction law it gives: a vertical ray through a
+# surface of slope ``g`` leaves at the horizontal rate ``(1 - 1/n) g``
+# (Snell, to first order in the slope), so it lands on the floor ``depth``
+# below, displaced by ``depth x CAUSTIC_K x g``.
+WATER_IOR = 1.333
+CAUSTIC_K = 1.0 - 1.0 / WATER_IOR
+
+
+def caustic_det(hess: np.ndarray, depth) -> np.ndarray:
+    """``det J`` of the refraction map ``X(x) = x + a grad h(x)``, ``a =
+    depth x CAUSTIC_K``: the ratio of the floor area a patch of light lands
+    on to the surface area it passed (Wallace's area method -- his ratio of
+    a projected triangle's areas -- as the analytic Jacobian of the map).
+    ``J = I + a H`` (H the Hessian), so ``det J = 1 + a (hxx + hyy) + a^2
+    (hxx hyy - hxy^2)``, exact for that map; the only approximations are the
+    small-slope refraction law and a vertical light (the light field's one
+    elevation does not shear the pattern: accepted, v1)."""
+    hs = np.asarray(hess, np.float64)
+    a = np.asarray(depth, np.float64) * CAUSTIC_K
+    hxx, hxy, hyy = hs[..., 0], hs[..., 1], hs[..., 2]
+    return 1.0 + a * (hxx + hyy) + a * a * (hxx * hyy - hxy * hxy)
+
+
+def caustic_gain(det, s: WaterSettings) -> np.ndarray:
+    """The SIGNED caustic gain ``(min(1 / |det|, caustic_max) - 1) x
+    caustic_strength``: negative where the light spreads (|det| > 1),
+    positive where it focuses, never above ``(caustic_max - 1) x strength``,
+    never below ``-strength``. ``|det|``: past a focus (det < 0) the beam is
+    inverted, not dark, and carries ``E / |det|`` -- so the bright lines are
+    the folds (det = 0) and the floor between them keeps its light (the
+    brief's ``clamp(1/det, 0, max)`` would black out every folded patch).
+    Exactly 0 on a flat surface (det == 1)."""
+    d = np.abs(np.asarray(det, np.float64))
+    g = 1.0 / np.maximum(d, 1.0 / s.caustic_max) - 1.0
+    return g * s.caustic_strength
+
+
+def caustic_term(light, det, s: WaterSettings) -> np.ndarray:
+    """THE caustic: the light ADDED to (signed: taken from) the floor's
+    source light where the fine surface focuses (spreads) it -- ``light``
+    (..., 3) the light at the floor as the floor takes it (exposed,
+    smoke-shadowed, curved) times :func:`caustic_gain`. No light, no
+    caustic; the ambient is not refracted light and is never modulated.
+    The picture is the floor's albedo times it, like any light."""
+    return (np.asarray(light, np.float64)
+            * caustic_gain(det, s)[..., None])
+
+
 # ---------------------------------------------------------------------------
 # The per-tick packing (critique M4, M11)
 # ---------------------------------------------------------------------------
@@ -544,6 +675,8 @@ __all__ = [
     "hex_hash", "hex_hash01", "triangle_grid", "hex_center",
     "sample_bilinear_repeat", "hex_slope", "plain_slope",
     "smoothstep", "flow_slide", "edge_flow", "layer_slides", "drift_m",
-    "layer_coords", "relative_agitation", "strength_ratio", "strength_sat", "strength", "detail_slope",
+    "layer_coords", "relative_agitation", "strength_ratio", "strength_sat",
+    "strength", "detail_slope", "hex_surface", "detail_surface",
+    "WATER_IOR", "CAUSTIC_K", "caustic_det", "caustic_gain", "caustic_term",
     "wet_box", "pack_flow",
 ]

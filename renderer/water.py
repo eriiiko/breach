@@ -29,7 +29,8 @@ Plumbing mirrors LightingPass. Two per-tile RGBA16F textures, bilinear:
              strength and the foam both read it)
     u_flow   R, G = flow (m/s, y south)   B = solid   A = previous depth (m)
 plus the static ripple bake (``noise_bake.bake_ripple_rgba``, RGBA32F,
-REPEAT, mipmapped), the foam image (W2, bilinear for the draw) and the
+REPEAT, mipmapped) and its curvature companion (W4,
+``noise_bake.bake_ripple_curvature_rgba``, the same state), the foam image (W2, bilinear for the draw) and the
 static bubble bake (``noise_bake.bake_foam_rgba``, REPEAT, mipmapped). The light textures and the level diffuse need no new
 plumbing; the smoke's cast product and the light curve come from the lit-3D
 seam (``lit3d._SMOKE_SHADOW_GLSL`` + ``_LIGHT_CURVE_GLSL``, spliced at the
@@ -39,6 +40,13 @@ THE CLOCK is the SIM clock ``(tick + alpha) / tps`` through the pass's own
 ``fire_vfx.SimClock`` (idle when paused, re-anchored when the tick goes back),
 never wall time (critique B2). Its fixed step is the foam's (W2,
 ``foam_step_s``): each frame owes the foam the steps due on that clock.
+
+W4 (#97): SHARP CAUSTICS. The floor's source light is multiplied by the
+fine surface's focusing, ``min(1/|det J|, caustic_max)`` of the refraction
+map (Wallace's area method as an analytic Jacobian; the twin's
+``water_surface.caustic_term``), read from the ripple's curvature companion
+through the same hex-tiled, flow-mapped lookup. It replaced the Laplacian
+caustic, its procedural detail and the last ``u_time``.
 
 W2 (#97): FOAM WITH A LIFE. A foam amount per cell (``foam_cells_per_tile``
 per tile) in its own :class:`core.PingPong` image, allocated LAZILY on the
@@ -69,8 +77,8 @@ import pyray as rl
 from . import core
 from . import water_foam
 from .lighting import art_src_and_uv_rect
-from .water_surface import (FlowFrame, WaterSettings, flow_frame, pack_flow,
-                            relative_agitation, wet_box)
+from .water_surface import (CAUSTIC_K, FlowFrame, WaterSettings, flow_frame,
+                            pack_flow, relative_agitation, wet_box)
 
 
 SHADERS_DIR = Path(__file__).resolve().parent.parent / "shaders"
@@ -81,6 +89,7 @@ SHADERS_DIR = Path(__file__).resolve().parent.parent / "shaders"
 # direct-GL block binds 8..10 (the water, the flow, the foam front).
 _UNIT_SMOKE, _UNIT_FLOW, _UNIT_RIPPLE = 5, 6, 7
 _UNIT_FOAM, _UNIT_BUBBLES = 8, 9
+_UNIT_CURV = 10                     # W4: the ripple's curvature companion
 _STEP_UNITS = {"u_water": 8, "u_flow": 9, "u_foam": 10}
 RIPPLE_SIZE = 256
 FOAM_TEX_SIZE = 256
@@ -108,6 +117,14 @@ def _ripple_texture() -> rl.Texture:
     (critique M8: minified, the slopes average toward flat)."""
     from .noise_bake import bake_ripple_rgba
     return _static_texture(bake_ripple_rgba(RIPPLE_SIZE))
+
+
+def _ripple_curvature_texture() -> rl.Texture:
+    """The ripple's curvature companion (W4's caustic,
+    ``noise_bake.bake_ripple_curvature_rgba``): the same size and sampler
+    state as the ripple bake, so the two are read at the same texels."""
+    from .noise_bake import bake_ripple_curvature_rgba
+    return _static_texture(bake_ripple_curvature_rgba(RIPPLE_SIZE))
 
 
 def _bubble_texture() -> rl.Texture:
@@ -154,6 +171,7 @@ class WaterPass:
         for t in (self.water_tex, self.flow_tex):
             rl.set_texture_filter(t, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
         self.ripple_tex = _ripple_texture()
+        self.ripple_curv_tex = _ripple_curvature_texture()
         self.bubble_tex = _bubble_texture()
         self._prev_depth = np.zeros((self.h, self.w), np.float32)
         self._last_depth = np.zeros((self.h, self.w), np.float32)
@@ -284,8 +302,7 @@ class WaterPass:
         for name in ("roughness_base", "roughness_agitation", "fog_density",
                      "refract_strength", "r0", "ripple_scale",
                      "glint_strength", "alpha_scale", "alpha_min",
-                     "alpha_max", "caustic_strength", "caustic_scale",
-                     "ca_amount",
+                     "alpha_max", "ca_amount",
                      "height_scale", "height_edge", "height_floor"):
             uname = {"roughness_base": "u_roughness_base",
                      "roughness_agitation": "u_roughness_agitation",
@@ -295,6 +312,9 @@ class WaterPass:
                      "ca_amount": "u_ca_amount"}.get(name, "u_" + name)
             self._set_f(uname, getattr(s, name))
         self._set_vec("u_water_color", s.water_color)
+        # W4: the caustic (strength, max, the refraction law's 1 - 1/n)
+        self._set_vec("u_caustic", (s.caustic_strength, s.caustic_max,
+                                    CAUSTIC_K, 0.0))
         self._set_f("u_agit_ref", s.agitation_ref)
         self._set_i("u_debug_view", s.debug_view)
         from .noise_bake import FOAM_CELLS
@@ -317,7 +337,6 @@ class WaterPass:
         self._set_vec("u_flow_ph", (f.phase, f.cycle_s, f.drift_u, f.drift_v))
         self._set_vec("u_flow_lim", (s.flow_max_offset_m, s.flow_edge_depth_m,
                                      s.flow_phase_noise_m, s.flow_speed_ref))
-        self._set_f("u_time", self.clock.t_noise)
 
     # ---- per-frame update ----------------------------------------------
 
@@ -600,6 +619,7 @@ class WaterPass:
         units = ((_UNIT_SMOKE, "u_smoke_cover", cover),
                  (_UNIT_FLOW, "u_flow", self.flow_tex),
                  (_UNIT_RIPPLE, "u_ripple", self.ripple_tex),
+                 (_UNIT_CURV, "u_ripple_curv", self.ripple_curv_tex),
                  (_UNIT_FOAM, "u_foam",
                   self.foam.front if self.foam is not None else None),
                  (_UNIT_BUBBLES, "u_bubbles", self.bubble_tex))
@@ -626,6 +646,7 @@ class WaterPass:
         rl.unload_texture(self.water_tex)
         rl.unload_texture(self.flow_tex)
         rl.unload_texture(self.ripple_tex)
+        rl.unload_texture(self.ripple_curv_tex)
         rl.unload_texture(self.bubble_tex)
         if self.foam is not None:
             self.foam.unload()
