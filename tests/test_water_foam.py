@@ -123,13 +123,15 @@ def test_the_revert_is_what_holds_the_maximum():
 
 def test_zero_flow_and_zero_decay_keep_the_image_steady():
     """Property: still water (no flow, depth as last tick, the calm pool's
-    residual ripple_v) with decay off holds the image EXACTLY -- the traces
-    land on the cell itself and no source fires. Breaks if a source fires on
-    still water (the steepness dead zone, the edge's square) or the trace
-    drifts."""
+    heave of ripple_v, packed as the relative agitation) with decay off
+    holds the image EXACTLY -- the traces land on the cell itself and no
+    source fires. Breaks if a source fires on still water (the agitation
+    read raw, the edge's square lost) or the trace drifts."""
     h, w, m = 8, 12, 4
     water, flow = _channel(h, w)
-    water[..., 1] = np.where(flow[..., 2] > 0, 0.0, 0.01)   # W6a's drift
+    water[..., 1] = np.where(flow[..., 2] > 0, 0.0, 0.04)   # W6a's heave
+    water[..., 3] = WF.relative_agitation(
+        water[..., 1], (water[..., 2] > 0) & (flow[..., 2] < 0.5))
     s = _settings(foam_decay_s=math.inf)
     inp = WF.cell_inputs(water, flow, m, s)
     assert float(np.abs(inp.source).max()) == 0.0
@@ -271,6 +273,32 @@ def test_a_flood_front_makes_foam_that_travels_with_it():
     F, _ = _run(F, water, flow, s2, 8, m)
     cx = (F * np.arange(w * m)).sum() / max(F.sum(), 1e-12)
     assert cx > cx0
+
+
+def test_a_surface_heaving_as_one_makes_no_foam_a_local_wave_does():
+    """Property: the foam's agitation is the RELATIVE one -- a room whose
+    ripple_v jumps as one (the sim's ripple field does this after a blast
+    elsewhere) has none, right up to its walls; a tile moving against its
+    neighbours has it, and enough of it foams. Breaks if the agitation is
+    read raw (|ripple_v|: wall-to-wall lace after every blast) or a wall or
+    dry tile counts as a neighbour (the old gradient foam's wall bands)."""
+    h, w = 8, 10
+    wet = np.ones((h, w), bool)
+    wet[0, :] = wet[-1, :] = False
+    wet[3, 4] = False                              # a dry tile inside
+    rv = np.where(wet, 0.8, 0.0)
+    assert WF.relative_agitation(rv, wet).max() < 1e-12
+    rv2 = rv.copy()
+    rv2[5, 6] += 0.3
+    a = WF.relative_agitation(rv2, wet)
+    assert a[5, 6] == pytest.approx(0.3)
+    assert a[5, 5] == pytest.approx(0.3 / 4)
+    assert (a[~wet] == 0).all()
+    s = _settings()
+    _, st, _, _ = WF.sources(np.zeros((1, 2)), np.array([0.3]),
+                             np.array([0.3]), np.zeros(1),
+                             np.array([a[5, 6]]), s, split=True)
+    assert st[0] > 0
 
 
 # ---------------------------------------------------------------------------

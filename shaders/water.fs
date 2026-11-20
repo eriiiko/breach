@@ -45,7 +45,8 @@
 //                A = light_dir.y (signed). (lighting.fs:101,104)
 //   u_water    - RGBA16F water field (renderer/water.py packing):
 //                R = ripple height (m), G = ripple_v (reserved, unused here),
-//                B = water_depth (m), A = 0.
+//                B = water_depth (m), A = the foam's relative agitation
+//                (W2; water_foam.relative_agitation, read by the foam step).
 //   u_foam     - the foam amount image (W2; foam cells, bilinear), unit 8
 //   u_bubbles  - the bubble bake (noise_bake.bake_foam_rgba, R uniform on
 //                [0, 1]; REPEAT, mipmapped), unit 9

@@ -431,15 +431,23 @@ def layer_coords(x_m, y_m, vel, depth, frame: FlowFrame, s: WaterSettings):
     return out[0], out[1], w0, v
 
 
+def strength_ratio(v: np.ndarray, agitation, s: WaterSettings
+                   ) -> np.ndarray:
+    """The fine surface's DRIVE, unclamped: the flow speed over
+    ``flow_speed_ref`` or the agitation ``|ripple_v|`` over
+    ``agitation_ref``, whichever is more (1 = full strength). W2's
+    steepness foam source reads THIS term past 1 -- water rougher than the
+    fine surface can show breaks -- never a slope of its own."""
+    speed = np.sqrt(v[..., 0] ** 2 + v[..., 1] ** 2)
+    return np.maximum(speed / s.flow_speed_ref,
+                      np.abs(np.asarray(agitation, np.float64))
+                      / s.agitation_ref)
+
+
 def strength_sat(v: np.ndarray, agitation, s: WaterSettings) -> np.ndarray:
     """``sat`` in [0, 1]: how far the fine surface is from still toward its
-    full strength (the flow speed over ``flow_speed_ref`` or the agitation
-    ``|ripple_v|`` over ``agitation_ref``, whichever is more). W2's
-    steepness foam source reads THIS term, never a slope of its own."""
-    speed = np.sqrt(v[..., 0] ** 2 + v[..., 1] ** 2)
-    return np.clip(np.maximum(speed / s.flow_speed_ref,
-                              np.abs(np.asarray(agitation, np.float64))
-                              / s.agitation_ref), 0.0, 1.0)
+    full strength (:func:`strength_ratio`, clamped)."""
+    return np.clip(strength_ratio(v, agitation, s), 0.0, 1.0)
 
 
 def strength(v: np.ndarray, agitation, frame: FlowFrame,
@@ -504,6 +512,6 @@ __all__ = [
     "hex_hash", "hex_hash01", "triangle_grid", "hex_center",
     "sample_bilinear_repeat", "hex_slope", "plain_slope",
     "smoothstep", "flow_slide", "edge_flow", "layer_slides", "drift_m",
-    "layer_coords", "strength_sat", "strength", "detail_slope",
+    "layer_coords", "strength_ratio", "strength_sat", "strength", "detail_slope",
     "wet_box", "pack_flow",
 ]

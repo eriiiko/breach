@@ -24,7 +24,7 @@
 // Texels addressed by gl_FragCoord, GL row = data row (the PingPong rule).
 // Target: the foam image (r = amount, gba = 0).
 
-uniform sampler2D u_water;    // (ripple, ripple_v, depth m, 0) per tile
+uniform sampler2D u_water;    // (ripple, ripple_v, depth m, relative agitation)
 uniform sampler2D u_flow;     // (vx, vy m/s, solid, previous depth m)
 uniform sampler2D u_foam;     // the foam amount, front buffer (cells)
 uniform vec2 u_grid;          // the map in tiles (w, h)
@@ -41,7 +41,6 @@ out vec4 finalColor;
 
 const float G_MPS2 = 9.81;
 const float CFL_MAX_CELLS = 1.0;
-const float STEEP_FROM = 0.5;   // water_foam.STEEP_FROM
 
 ivec2 gridTiles() { return ivec2(u_grid + 0.5); }
 ivec2 gridCells() { return ivec2(u_grid * u_m + 0.5); }
@@ -145,8 +144,8 @@ void main() {
     float speed = length(v);
     float fr = speed / sqrt(G_MPS2 * max(depth, u_src_b.w));
     float s_fr = u_src_a.x * clamp(fr - u_src_a.y, 0.0, 1.0);
-    float sat = clamp(max(speed / u_src_b.y, abs(W.g) / u_src_b.z), 0.0, 1.0);
-    float steep = clamp((sat - STEEP_FROM) / (1.0 - STEEP_FROM), 0.0, 1.0);
+    float ratio = max(speed / u_src_b.y, W.a / u_src_b.z);
+    float steep = clamp(ratio - 1.0, 0.0, 1.0);
     float s_steep = u_src_a.z * steep * steep;
     float rise = max(depth - Fl.a, 0.0);
     float frac = clamp(rise / max(depth, 1e-6), 0.0, 1.0);

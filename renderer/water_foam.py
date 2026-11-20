@@ -25,7 +25,8 @@ sources, CARRIED by the simulated flow and LOST by decay:
     tile-centred bilinear the GPU would use (``heat_shimmer.bilinear_tiles``,
     CLAMP), except BLOCKED, read at the cell's own tile: its depth is 0 or
     it is solid. The shader does this bilinear itself with ``texelFetch``,
-    so the GPU and the twin compute the same numbers.
+    so the GPU and the twin compute the same numbers. ``u_water``'s A is
+    W2's: the relative agitation, packed per tick (:func:`relative_agitation`).
   * THE FLOW is W1's effective flow (``water_surface.edge_flow``: faded to 0
     over the first ``flow_edge_depth_m``), never a second flow.
   * THE SCHEME (M10) is MacCormack + clamp, as the fire's flame field
@@ -42,11 +43,18 @@ sources, CARRIED by the simulated flow and LOST by decay:
       - WHITEWATER: the Froude number ``Fr = |v| / sqrt(g h)`` (h floored at
         ``flow_edge_depth_m``) past ``foam_froude``: ``gain x min(Fr - thr,
         1)`` -- fast, shallow water breaks;
-      - STEEP SURFACE: W1's strength term (``water_surface.strength_sat``,
-        the flow or the agitation ``|ripple_v|`` that roughens the fine
-        surface) past its middle, :data:`STEEP_FROM`: ``gain x e^2``, ``e =
-        (sat - 1/2) / (1/2)`` -- a blast's or a body's waves foam, a calm
-        pool's residual ripple (the W6a drift, ~0.01 m/s) never does;
+      - STEEP SURFACE: W1's strength term (``water_surface.
+        strength_ratio``: the flow over ``flow_speed_ref`` or the agitation
+        over ``agitation_ref``) PAST full strength: ``gain x e^2``, ``e =
+        clamp(ratio - 1)`` -- water rougher than the fine surface can show
+        breaks (a blast's waves, a flood over twice ``flow_speed_ref``). The
+        agitation here is the RELATIVE one (:func:`relative_agitation`, the
+        tile's ``ripple_v`` against its wet neighbours', packed per tick in
+        ``u_water``'s A): a surface heaving as one does not break -- and the
+        sim's ripple field does heave whole rooms as one (after the water
+        studio's pool blast every room's ``ripple_v`` jumps to ~0.8 m/s
+        uniformly, then sits at a frozen ~0.04 m/s), which ``|ripple_v|``
+        would foam over from wall to wall;
       - ADVANCING EDGE: depth appearing where there was little, from the
         previous tick's depth channel: ``gain x r^2``, ``r = clamp((h -
         h_prev) / h)`` the share of the depth that arrived this tick (1 where
@@ -93,14 +101,13 @@ import numpy as np
 
 from .heat_shimmer import bilinear_tiles
 from .water_surface import (FlowFrame, WaterSettings, drift_m, edge_flow,
-                            layer_slides, smoothstep, strength_sat)
+                            layer_slides, smoothstep, strength_ratio)
 
 G_MPS2 = 9.81                 # gravity, for the Froude number
 FOAM_SUBSTEP_CAP = 4          # substeps per foam step at most (M10)
 CFL_MAX_CELLS = 1.0           # a substep moves at most this many cells
 FOAM_STEP_CAP = 8             # foam steps per frame at most (SimClock cap)
 FOAM_EDGE = 0.04              # the lace threshold's half-width (bubble units)
-STEEP_FROM = 0.5              # the steepness source starts past this sat
 FOAM_ALBEDO = 0.85            # the foam's diffuse albedo (white froth)
 # The larger bubble size reads the texture shifted, so the two sizes never
 # line up where both coordinates happen to coincide.
@@ -146,7 +153,7 @@ def cell_inputs(water: np.ndarray, flow: np.ndarray, m: int,
     tj = np.clip(np.floor(xt).astype(np.int64), 0, w - 1)
     blocked = (water[ti, tj, 2] <= 0.0) | (flow[ti, tj, 2] > 0.5)
     src = sources(v, depth, bl(flow[..., 3]), bl(flow[..., 2]),
-                  np.abs(bl(water[..., 1])), s)
+                  bl(water[..., 3]), s)
     return CellInputs(v, blocked, src)
 
 
@@ -155,14 +162,14 @@ def sources(v: np.ndarray, depth, prev_depth, near_wall, agitation,
     """The source rate (amount per second) of the four sources (module
     docstring): ``v`` the effective flow (..., 2) m/s, ``depth`` /
     ``prev_depth`` m (this tick's and the previous tick's, bilinear),
-    ``near_wall`` the bilinear solid channel, ``agitation`` |ripple_v|.
+    ``near_wall`` the bilinear solid channel, ``agitation`` the bilinear
+    relative agitation (:func:`relative_agitation`).
     ``split`` returns the four rates (froude, steep, edge, wall)."""
     depth = np.asarray(depth, np.float64)
     speed = np.sqrt(v[..., 0] ** 2 + v[..., 1] ** 2)
     fr = speed / np.sqrt(G_MPS2 * np.maximum(depth, s.flow_edge_depth_m))
     s_fr = s.foam_gain_froude * np.clip(fr - s.foam_froude, 0.0, 1.0)
-    steep = np.clip((strength_sat(v, agitation, s) - STEEP_FROM)
-                    / (1.0 - STEEP_FROM), 0.0, 1.0)
+    steep = np.clip(strength_ratio(v, agitation, s) - 1.0, 0.0, 1.0)
     s_steep = s.foam_gain_steep * steep * steep
     rise = np.maximum(depth - np.asarray(prev_depth, np.float64), 0.0)
     frac = np.clip(rise / np.maximum(depth, 1e-6), 0.0, 1.0)
@@ -172,6 +179,30 @@ def sources(v: np.ndarray, depth, prev_depth, near_wall, agitation,
     if split:
         return s_fr, s_steep, s_edge, s_wall
     return s_fr + s_steep + s_edge + s_wall
+
+
+def relative_agitation(ripple_v: np.ndarray, wet: np.ndarray) -> np.ndarray:
+    """THE agitation the foam reads, per tile: ``|ripple_v - mean of the
+    wet 4-neighbours' ripple_v|`` (m/s) on a wet tile, 0 elsewhere and on a
+    tile with no wet neighbour. Waves break where the surface moves against
+    its neighbours, not where it heaves as one; a wall or a dry tile is no
+    neighbour, so the water's edge against a wall makes none (the old
+    gradient foam's wall bands). Per tick, at pack time."""
+    rv = np.asarray(ripple_v, np.float64)
+    wet = np.asarray(wet, bool)
+    h, w = rv.shape
+    acc = np.zeros((h, w))
+    n = np.zeros((h, w))
+    for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+        ys = slice(max(dy, 0), h + min(dy, 0))
+        yd = slice(max(-dy, 0), h + min(-dy, 0))
+        xs = slice(max(dx, 0), w + min(dx, 0))
+        xd = slice(max(-dx, 0), w + min(-dx, 0))
+        m = wet[ys, xs]
+        acc[yd, xd] += np.where(m, rv[ys, xs], 0.0)
+        n[yd, xd] += m
+    out = np.abs(rv - acc / np.maximum(n, 1.0))
+    return np.where(wet & (n > 0), out, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -379,8 +410,9 @@ def shadow_factor(amount, s: WaterSettings) -> np.ndarray:
 
 __all__ = [
     "G_MPS2", "FOAM_SUBSTEP_CAP", "CFL_MAX_CELLS", "FOAM_STEP_CAP",
-    "FOAM_EDGE", "STEEP_FROM", "FOAM_ALBEDO", "FOAM_LARGE_OFFSET",
-    "cell_centres", "CellInputs", "cell_inputs", "sources",
+    "FOAM_EDGE", "FOAM_ALBEDO", "FOAM_LARGE_OFFSET",
+    "cell_centres", "CellInputs", "cell_inputs", "relative_agitation",
+    "sources",
     "substeps", "cell_step", "advect", "substep", "step", "flow_max",
     "cell_box", "leaving_rects",
     "cover_fraction", "lace_threshold", "lace", "bubble_coords",

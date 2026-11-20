@@ -24,7 +24,8 @@ dry map and otherwise only over the view ∩ the wet tiles' box.
 
 Plumbing mirrors LightingPass. Two per-tile RGBA16F textures, bilinear:
     u_water  R = ripple (m)   G = ripple_v (m/s)
-             B = water_depth (m)   A = 0
+             B = water_depth (m)   A = the relative agitation (m/s, W2's:
+             ``water_foam.relative_agitation``)
     u_flow   R, G = flow (m/s, y south)   B = solid   A = previous depth (m)
 plus the static ripple bake (``noise_bake.bake_ripple_rgba``, RGBA32F,
 REPEAT, mipmapped), the foam image (W2, bilinear for the draw) and the
@@ -377,7 +378,10 @@ class WaterPass:
         self.packed[..., 0] = ripple if ripple is not None else 0.0
         self.packed[..., 1] = ripple_v if ripple_v is not None else 0.0
         self.packed[..., 2] = depth
-        self.packed[..., 3] = 0.0
+        # W2: the foam's agitation -- ripple_v against its wet neighbours'
+        self.packed[..., 3] = (
+            0.0 if ripple_v is None else water_foam.relative_agitation(
+                ripple_v, (depth > 0) & ~np.asarray(solid, bool)))
         core.update_rgba16f_texture(self.water_tex, self.packed)
         # the previous TICK's depth (a paused repack keeps it); the first
         # packed tick has none, so it is its own (no advancing edge at load:
