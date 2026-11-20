@@ -823,6 +823,173 @@ def burn_through(store, dev_applier, fields: dict, walls, tick_row=None) -> tupl
     return books["applied"].copy(), books
 
 
+class BurnList:
+    """#29 P7e.2: slot 7's burn-through list ON THE DEVICE, as the fire leaves
+    it -- ``counts`` the device address of an ``(N,)`` int32 counter, ``lists``
+    of ``(N, stride)`` int32 packed in-env linear indices (``y * w + x``) in
+    ARRIVAL order -- read in place by :func:`burn_through_device`. ``keep``
+    holds the arrays a gate built it from alive."""
+
+    def __init__(self, counts: int, lists: int, stride: int, keep=()):
+        self.counts, self.lists, self.stride, self.keep = (int(counts), int(lists),
+                                                           int(stride), keep)
+
+    @classmethod
+    def of_arrays(cls, counts, lists) -> "BurnList":
+        """From DEVICE (CuPy) arrays: ``counts`` (N,) int32, ``lists`` (N, S)
+        int32 (a gate's staged list in any order it chooses)."""
+        if np.dtype(counts.dtype) != np.int32 or np.dtype(lists.dtype) != np.int32 \
+                or lists.ndim != 2 or not lists.flags.c_contiguous \
+                or int(counts.shape[0]) != int(lists.shape[0]):
+            raise ValueError("BurnList: counts (N,) int32 and a C-contiguous (N, S) int32 "
+                             "list on the device")
+        return cls(counts.data.ptr, lists.data.ptr, int(lists.shape[1]), (counts, lists))
+
+    @classmethod
+    def resident(cls, bp, n_env: int, h: int, w: int) -> "BurnList":
+        """The LAST resident tick's own list (``bp.resident_burn_list``: the
+        fire's counter in the books arena and its arrival-order buffer), for a
+        batch of ``n_env`` envs of one ``(h, w)`` grid (refused otherwise)."""
+        c, lst, n, hh, ww = bp.resident_burn_list()
+        if (int(n), int(hh), int(ww)) != (int(n_env), int(h), int(w)):
+            raise ValueError(f"BurnList.resident: the last resident tick ran ({n}, {hh}, "
+                             f"{ww}), not ({n_env}, {h}, {w})")
+        return cls(c, lst, int(h) * int(w))
+
+
+def burn_through_device(store, dev_applier, fields: dict, burn: BurnList,
+                        tick_row=None) -> tuple:
+    """Slot 9 (``Simulation._burn_through_walls``) with its input sorted ON THE
+    DEVICE (#29 P7e.2): the effect list emptied, each env's burn-through list
+    (``burn``, arrival order) ranked into the host's row-major order
+    (``fire_destroyed_row_major``'s, ties included) and appended as
+    DESTROY_WALL records (``cpp/src/cuda_unit_sorts.cu``), then walked in the
+    TOPOLOGY stage (:func:`walk_effects`) -- no host round trip. Returns
+    ``(coverage, books)`` as :func:`burn_through`. Refuses a list that left
+    the grid (:class:`UnitKernelFault`) and, at the walk, one past the effect
+    list's cap (``applier.EffectOverflow``)."""
+    from simulation import applier
+    _ptrs, _g, h, w = _plane_ptrs("burn_through_device", store.shape[0], fields)
+    dev_applier.begin()
+    _done(store, "burn_sort", store.bp.unit_burn_sort(
+        store.buffer, dev_applier.buffer, burn.counts, burn.lists, burn.stride, h, w))
+    cov, books = walk_effects(store, dev_applier, fields, applier.STAGE_TOPOLOGY,
+                              tick_row=tick_row)
+    return books["applied"].copy(), books
+
+
+#: Slot 9b's planes, in the binding's order.
+BURST_FIELDS = (("material", np.int8), ("solid", np.bool_), ("is_vacuum", np.bool_),
+                ("is_ambient", np.bool_), ("atmosphere", np.int32))
+
+
+def burst_walls(store, dev_applier, fields: dict, tick_row=None) -> tuple:
+    """Slot 9b (``Simulation._burst_walls``: ``GameMap.find_burst_walls`` and
+    its destroy loop) ON THE DEVICE (#29 P7e.2): the effect list emptied, the
+    scan on every env's planes (the spread over the open 4-neighbours, the
+    material's ``burst_thresh_q`` row; the ``burst_cap`` worst, spread
+    descending, ties in row-major order) appended as DESTROY_WALL records,
+    walked in the TOPOLOGY stage. ``fields`` every ``applier.PLANES`` name
+    (the walk's) as DEVICE arrays. Returns ``(coverage, books)``; refuses a
+    material outside the table (:class:`UnitKernelFault`)."""
+    from simulation import applier
+    n = store.shape[0]
+    _ptrs, _g, h, w = _plane_ptrs("burst_walls", n, fields)
+    _check_planes("burst_walls", store, fields, dict(BURST_FIELDS))
+    ptrs = np.array([int(fields[nm].data.ptr) for nm, _dt in BURST_FIELDS], dtype=np.uint64)
+    dev_applier.begin()
+    _done(store, "burst_walls", store.bp.unit_burst_walls(
+        store.buffer, store.tables, dev_applier.buffer, ptrs, h, w))
+    cov, books = walk_effects(store, dev_applier, fields, applier.STAGE_TOPOLOGY,
+                              tick_row=tick_row)
+    return books["applied"].copy(), books
+
+
+#: Slot 6's planes, in the binding's order (the stamp's static baselines, its
+#: five outputs, the refill's reads and its output).
+STAMP_FIELDS = (("permeability", np.float32), ("wave_absorb", np.float32),
+                ("heat_atten_q", np.int32), ("light_atten_q", np.int32),
+                ("obstacles", np.bool_), ("dyn_permeability", np.float32),
+                ("dyn_wave_absorb", np.float32), ("dyn_heat_atten_q", np.int32),
+                ("dyn_light_atten_q", np.int32), ("solid", np.bool_),
+                ("is_vacuum", np.bool_), ("atmosphere", np.int32))
+#: unit_lib::FOOTPRINT_MAX: a footprint of at most 8 x 8 tiles.
+STAMP_FOOTPRINT_MAX = 8
+
+
+class StampScratch:
+    """#29 P7e.2: slot 6's device scratch for ``n_env`` envs of ``n_units``
+    rows on an ``(h, w)`` grid: the rows ``(cap, 9)`` int32 (``cap`` = every
+    row's largest footprint), the total, the per-row tile counts, the stamp's
+    winner plane and the refill's freed plane. Grown once, reused per tick."""
+
+    def __init__(self, n_env: int, n_units: int, h: int, w: int):
+        import cupy as cp
+        self.key = (int(n_env), int(n_units), int(h), int(w))
+        self.cap = int(n_env) * int(n_units) * STAMP_FOOTPRINT_MAX ** 2
+        self.rows = cp.zeros((self.cap, 9), dtype=cp.int32)
+        self.total = cp.zeros((1,), dtype=cp.int64)
+        self.ntiles = cp.zeros((int(n_env), int(n_units)), dtype=cp.int64)
+        self.winner = cp.zeros((int(n_env), int(h), int(w)), dtype=cp.int32)
+        self.freed = cp.zeros((int(n_env), int(h), int(w)), dtype=cp.uint8)
+
+    def ptrs(self) -> np.ndarray:
+        return np.array([int(a.data.ptr) for a in (self.rows, self.total, self.ntiles,
+                                                    self.winner, self.freed)], dtype=np.uint64)
+
+
+def _stamp_scratch(store, h, w, scratch):
+    n, U = store.shape[0], store.shape[1]
+    if scratch is None or scratch.key != (n, U, int(h), int(w)):
+        scratch = StampScratch(n, U, h, w)
+    return scratch
+
+
+def stamp_rows(store, h: int, w: int, scratch: StampScratch | None = None):
+    """Slot 6's stamp ROWS built ON THE DEVICE from the unit store (#29 P7e.2):
+    ``GameMap._stamp_units_cpp``'s rows ``[env, y, x, perm bits, wabsorb
+    bits, heat_q, l0, l1, l2]`` -- per env, unit row order, then each living
+    unit's in-bounds footprint tiles row-major -- with the map defaults
+    (``stamp_*`` rows). Returns ``(rows, total, scratch)``: the DEVICE
+    ``(cap, 9)`` int32 rows (the first ``total`` the host's, the rest env
+    ``-1``), the total (a download: gates only). Refuses a footprint outside
+    ``[1, 8]`` (:class:`UnitKernelFault`)."""
+    s = _stamp_scratch(store, h, w, scratch)
+    rc, _c = store.bp.unit_stamp(store.buffer, store.tables, s.ptrs(), s.cap,
+                                 np.zeros(12, dtype=np.uint64), int(h), int(w), True)
+    _done(store, "stamp_rows", rc)
+    return s.rows, int(s.total.get()[0]), s
+
+
+def stamp(store, fields: dict, scratch: StampScratch | None = None):
+    """Slot 6 (``GameMap.stamp_units``, the C++ path) ON THE DEVICE from the
+    unit store (#29 P7e.2): :func:`stamp_rows`, the stamp kernel
+    (``cpp/src/cuda_stamp.cu``: the five planes reset to their baselines and
+    MAX-stamped, the permeability the last row's) and the atmosphere refill
+    (the walls the last stamp held that are open now take the integer mean of
+    their open, non-vacuum neighbours, row-major, serially). ``fields`` maps
+    each :data:`STAMP_FIELDS` name to a DEVICE array ``(N, h, w)``
+    (``light_atten_q`` / ``dyn_light_atten_q`` ``(N, h, w, 3)``), the
+    outputs written IN PLACE. Returns ``(refilled, scratch)``: the tiles the
+    refill wrote per env."""
+    n = store.shape[0]
+    _check_planes("stamp", store, fields, dict(STAMP_FIELDS))
+    a = fields["atmosphere"]
+    h, w = int(a.shape[1]), int(a.shape[2])
+    for nm, _dt in STAMP_FIELDS:
+        f = fields[nm]
+        want = (n, h, w, 3) if nm.endswith("light_atten_q") else (n, h, w)
+        if tuple(int(x) for x in f.shape) != want or not f.flags.c_contiguous:
+            raise ValueError(f"unit kernel stamp: field {nm!r} is {f.shape}, not a "
+                             f"C-contiguous {want}")
+    s = _stamp_scratch(store, h, w, scratch)
+    ptrs = np.array([int(fields[nm].data.ptr) for nm, _dt in STAMP_FIELDS], dtype=np.uint64)
+    rc, c = store.bp.unit_stamp(store.buffer, store.tables, s.ptrs(), s.cap, ptrs, h, w,
+                                False)
+    _done(store, "stamp_rows", rc)
+    return _done(store, "stamp", c), s
+
+
 def tick_end_clears(bp, fields: dict, active=None) -> None:
     """The tick-end clears (``Simulation._clear_tick_buffers``' planes,
     ``applier.CLEAR_PLANES``) zeroed in place on every env whose ``active``

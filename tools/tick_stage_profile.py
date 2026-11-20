@@ -88,7 +88,7 @@ SLOT_WRAPS = (
     ("simulation.physics_runner", "PhysicsRunner.serve_edit_queue", "6b FieldEdit flush"),
     ("simulation.physics_runner", "PhysicsRunner.step", SLOT7),
     ("simulation.simulation", "Simulation._burn_through_walls", "9 burn-through walls"),
-    ("simulation.gamemap", "GameMap.find_burst_walls", "9b over-pressure walls"),
+    ("simulation.simulation", "Simulation._burst_walls", "9b over-pressure walls"),   # #29 P7e.2: the scan + its destroys
     ("simulation.simulation", "apply_environmental_damage", "9c unit heat damage"),
     ("simulation.simulation", "apply_wind_force", "9c2 wind on units"),
     ("simulation.simulation", "apply_teargas_blind", "9c3 gas rows"),

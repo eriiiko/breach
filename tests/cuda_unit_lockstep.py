@@ -1074,7 +1074,8 @@ def gmap_state(gmap) -> dict:
         elif isinstance(v, (set, frozenset)):
             out[k] = frozenset(v)
         elif isinstance(v, (list, tuple)):
-            out[k] = list(v)
+            # #29 P7e.2: a tuple of arrays (the stamp's kept rows) copied
+            out[k] = [x.copy() if isinstance(x, np.ndarray) else x for x in v]
         elif k in OBJECT_PROBES:
             out[k] = OBJECT_PROBES[k](v)
     # ALIASES: attributes that are the SAME array (e.g. `obstacles` is
@@ -1101,9 +1102,20 @@ def changed_attrs(pre: dict, post: dict) -> list:
                     and a.shape == b.shape and a.dtype == b.dtype
                     and np.array_equal(a, b)):
                 out.append(k)
-        elif a != b:
+        elif not _same_value(a, b):
             out.append(k)
     return out
+
+
+def _same_value(a, b) -> bool:
+    """``a == b`` for the write-set's values, a list holding arrays compared
+    element by element (#29 P7e.2: the stamp's kept rows)."""
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_same_value(x, y) for x, y in zip(a, b))
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        return (isinstance(a, np.ndarray) and isinstance(b, np.ndarray)
+                and a.shape == b.shape and a.dtype == b.dtype and np.array_equal(a, b))
+    return bool(a == b)
 
 
 def write_set_violations(slot, changed, aliases=None) -> list:

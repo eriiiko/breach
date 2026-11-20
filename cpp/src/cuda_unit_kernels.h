@@ -415,4 +415,53 @@ void unit_rounds(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldAp
                  ObjectTable& rounds, std::uintptr_t tick_row,
                  const ShootPlanes& p, bool compact, const UnitShootCounts& out);
 
+// ---- #29 P7e.2: the device sorts and 9b (cuda_unit_sorts.cu) ---------------------
+//   unit_burn_sort    slot 9's input: the fire's arrival-order burn-through list
+//                     ranked into the host's row-major order, appended to the
+//                     applier's effect list as DESTROY_WALL records
+//   unit_burst_walls  slot 9b: GameMap.find_burst_walls' scan and top-K (spread
+//                     descending, ties in scan order) as DESTROY_WALL records
+//   unit_stamp_rows   slot 6's stamp rows built from the unit store, in the host
+//                     stamp's row order (env -1 past the total)
+//   unit_stamp        those rows through the stamp kernel (cuda_stamp.cu) and the
+//                     atmosphere refill (_stamp_units_cpp's _neighbor_mean loop)
+// The burn sort reads `counts` (N,) int and `lists` (N, stride) int device
+// arrays (the resident fire's: resident_burn_list); out.coverage = the records
+// requested per env, out.faults = an env whose list left the grid (nothing
+// appended). The records go after what the list holds; past its cap they are
+// counted in its dropped (the walk refuses the run).
+void unit_burn_sort(UnitStoreDevice& store, FieldApplier& a, std::uintptr_t counts,
+                    std::uintptr_t lists, int stride, int h, int w, const UnitKernelCounts& out);
+struct BurstScanPlanes {
+    std::uintptr_t material = 0;      // int8
+    std::uintptr_t solid = 0;         // bool
+    std::uintptr_t is_vacuum = 0;     // bool
+    std::uintptr_t is_ambient = 0;    // bool
+    std::uintptr_t atmosphere = 0;    // int32 (Q16)
+    int h = 0, w = 0;
+};
+void unit_burst_walls(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& a,
+                      const BurstScanPlanes& planes, const UnitKernelCounts& out);
+// The stamp's scratch, device addresses the caller owns: rows (cap, 9) int32,
+// total (1,) int64, ntiles (N, U) int64, winner (N, h, w) int32, freed (N, h, w)
+// uint8 (the last two for unit_stamp only).
+struct StampScratch {
+    std::uintptr_t rows = 0, total = 0, ntiles = 0, winner = 0, freed = 0;
+    int cap = 0;
+};
+void unit_stamp_rows(UnitStoreDevice& store, const UnitTablesDevice& tables,
+                     const StampScratch& s, int h, int w, const UnitKernelCounts& out);
+struct StampPlanes {
+    std::uintptr_t permeability = 0, wave_absorb = 0, heat_atten_q = 0, light_atten_q = 0;
+    std::uintptr_t obstacles = 0, dyn_permeability = 0, dyn_wave_absorb = 0;
+    std::uintptr_t dyn_heat_atten_q = 0, dyn_light_atten_q = 0;
+    std::uintptr_t solid = 0, is_vacuum = 0, atmosphere = 0;
+    int h = 0, w = 0;
+};
+// rows_out: the row build's counts (faults = a footprint outside the proved
+// range); out: the refill's (coverage = tiles refilled).
+void unit_stamp(UnitStoreDevice& store, const UnitTablesDevice& tables, const StampScratch& s,
+                const StampPlanes& p, const UnitKernelCounts& rows_out,
+                const UnitKernelCounts& out);
+
 }  // namespace breach_cuda

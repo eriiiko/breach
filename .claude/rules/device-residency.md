@@ -27,7 +27,8 @@ C++ sim TUs go on the `/fp:strict` list in `cpp/CMakeLists.txt`, always.
 - The CPU stamp stays THE oracle (gameplay reads its planes) and the law is its: reset, then MAXes, the permeability a WRITE (the LAST row wins where bodies overlap, not a running min).
 - `take_stamp_rows` returns None, and the tick uploads the host's planes instead, when no C++ stamp ran or a tile changed between the stamp and the tick. In a batch one env's None makes every env upload its planes that tick.
 - A new stamp output is a column of the rows, the kernel and the CPU stamp in ONE change, gated by `tests/cuda_stamp_check.py` and every `cuda_s8a_check` leg.
-- DEBT: the refill (`_neighbor_mean`, atmosphere) is still host Python in both stamp paths.
+- The rows and the refill have a Class-T device form built from the unit store (`unit_kernels.stamp` over `cpp/src/cuda_unit_sorts.cu`, the Device sorts and 9b in `.claude/rules/device-units.md`), running THIS kernel unchanged; the played tick keeps the host-built rows and the host refill (its output rides the atmosphere upload) until the device conductor.
+- ACCEPTED GAP (a finding for Erik, not changed): on the C++ stamp path `obstacles` IS `solid` (`_update_caches` aliases them, the stamp writes in place), so `destroy_wall` opens the wall in `obstacles` too and the refill's `prev_obstacles & ~obstacles` never fires there; only the Python stamp path reaches it.
 
 ## Batched resident engine
 - Slot 7 of N HOMOGENEOUS envs (one grid shape, gas table, tilt, config; space maps; no light until #81) in ONE device chain.
