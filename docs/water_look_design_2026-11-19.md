@@ -104,6 +104,10 @@ stays dark and glossy and dries from the edges. Designed with the marks.
 - New switches and numbers are `config.toml` settings, never keys.
 - A published technique carries its author and paper in the file header, and the paper is archived under `docs/papers/`.
 - Tests assert properties, never snapshots; GL checks run in a subprocess.
+- Every animated term runs on the SIM clock, `(tick + alpha) / tps`, through `fire_vfx.SimClock` (idle when paused, re-anchored on a seek), never wall time (critique B2).
+- Each law (the flow surface, the foam step, the caustic, the waterline tint) lands first in a numpy twin; the shader is GL-checked against it and the properties are asserted on the twin (critique M5).
+- The water dials pass one refusing settings door, read every frame; `tools/lighting_demo.py`'s copy of them changes in the same patch (critique M6).
+- A dry level renders bit-identically and costs nothing (critique M4).
 - The frame cost is measured before and after with `tools/lighting_demo.py --perf` on the water studio and on `ship_demo` (dry), and reported in milliseconds. A dry ship must cost the same as today.
 
 ## 4. Gates and merging
@@ -129,7 +133,7 @@ Nothing blocks the start. These are the calls the pictures will ask for:
 
 ## 7. Systems
 
-**Existing systems this design must use:** GameRenderer + WorldComposite;
+**Existing systems this design must use:** the advected noise flow map (`renderer/advected_noise.py`, critique B1); GameRenderer + WorldComposite;
 One tone-map; Look shots; LightingPass and the Lit-3D seam; Smoke cast
 product; Ping-pong helper; Particle primitive; Billow noise bake (if its
 tiling noise fits the ripple texture); Dequantize convention; No BLAS in the
@@ -153,10 +157,72 @@ the project instructions only when the code exists):
 - **Tilt** (the water solver's tilt input, and a camera that shows it): may come before this arc or inside it. Open; not in W0.
 - The marks layer (#180) is not built first; W5 waits for it.
 
-## 9. Critique
+## 9. Critique (one Opus critic, sections 2-3, against main 7cba57dd, 2026-11-20)
 
-One critic (Opus) on sections 2 and 3, run while W0 is built. Its verdict is
-written here before W1 starts.
+Verdict: two blockers, both resolved on paper below; twelve majors folded into the
+patch briefs; minors accepted. The orchestrator spot-checked the blockers and the
+gap fact against the code (advected_noise.py:21/169/185; game_renderer.py:500/1079;
+render-core.md:47).
+
+**Blockers, resolved:**
+- B1 W1 would build a second Vlachos flow map: `renderer/advected_noise.py` already
+  holds the two-phase crossfade (`advection_phase`, `layer_ages_weight`), shared by
+  gas detail, gas relief, heat shimmer. RESOLVED: W1 uses and extends it (sub-tick
+  alpha, per-pixel phase offset), never a copy in water code; added to section 7.
+- B2 no defined clock; the pass runs on wall time (`perf_counter`), animating through
+  pause and drifting from the sim at `sim_speed` != 1 and in shots. RESOLVED: new
+  section 3 rule -- W1-W3 run on the sim clock `(tick + alpha) / tps` through
+  `fire_vfx.SimClock` (idle when paused, re-anchored on a seek), fixed substeps.
+
+**Majors, into the briefs:**
+- M3 (fact fix) the render-core gap is the LIGHT CURVE, not the smoke shadow. W1
+  splices `_SMOKE_SHADOW_GLSL + _LIGHT_CURVE_GLSL` at a `// <SMOKE_SHADOW>` marker
+  (the `lighting.py` precedent) and only then removes the water half of the gap line.
+- M4 dry cost: the draw runs every frame over the whole world RT and dequantizes
+  depth twice before `.any()`. W1: `.any()` on the int plane first, pack on tick
+  change only, skip the draw when dry, clip to view x wet bbox. "A dry map costs
+  nothing" becomes true and is measured.
+- M5 new section 3 rule: each law (flow surface, foam step, caustic, waterline tint)
+  lands in a numpy twin first; the shader is GL-checked against it; properties on
+  the twin.
+- M6 one refusing `water_settings(cfg)` door read every frame; `lighting_demo`'s
+  parallel copy of the water dials edited in the same patch.
+- M7 W1 slide capped per half-cycle (`flow_max_offset_m`), flow weighted by a depth
+  smoothstep at wet/dry edges; property: the cap holds.
+- M8 W1 detail faded by screen px per tile (`heat_shimmer` zoom fade), ripple
+  texture mipmapped + repeat.
+- M9 W2 property replaced: with no source the MAXIMUM never rises (MacCormack +
+  clamp), not "the total only falls".
+- M10 W2 substeps (at most one cell per step), backtrace clamped to wet non-solid
+  cells, scheme named (MacCormack + clamp, as fire_vfx).
+- M11 W1's second texture is RGBA16F `(vx, vy, solid, previous depth)`; whitewater
+  source by Froude number; steepness source from W1's strength term; the pour
+  source dropped until sources exist.
+- M12 W3 waterline: a `lit3d._WATERLINE_GLSL` Beer-Lambert tint over the water
+  column above the fragment's height (water texture on a free material slot), the
+  ring a W2 foam source under the unit; metres to drawn scale (marine 6 tiles from
+  1.83 m); the lit3d byte-identity oracle re-baselined deliberately; property: a
+  dry tile leaves a unit fragment bit-identical. Top-down camera: what shows is
+  limbs past the silhouette, prone / dead bodies, and the ring. Erik, 2026-11-20:
+  the straight-down camera may tilt a little later, so the waterline is a per-
+  fragment law in world height (it then shows on the body as the camera tilts),
+  never a screen-space trick that assumes top-down.
+- M13 W3 wake is a W2 foam source (+ optionally a V-wake term inside W1's one
+  surface function), never a render-side ripple field.
+- M14 W4: choose scatter (grid mesh into a target, conserves) or the analytic
+  Jacobian with a clamp; term signed `(1/det - 1)·light`; curvature baked into
+  the ripple texture; conservation tested on the scatter form only.
+
+**Minors, accepted:** the grid texture is RGBA16F (section 1 said 32F); W1's
+tile-offset property becomes "no spectral peak at the tile frequency + bounded
+change across a phase reset"; W3 reads blasts through the `"blast"` effect with a
+`spray_seen` marker (the blast log is a sim seam); "a round hitting water" becomes
+a splash at a wet wall-stop or is dropped; unit speed from position deltas per sim
+tick; spray in the debris stage with an analytic parabola, landings handed to W2
+as a source list; delete the dead `WaterFieldOverlay` and its `[display] water_*`
+keys in W2; foam PingPong allocated lazily, reset on a backward tick; every patch
+asserts a dry level renders bit-identically; W3's gate is properties plus a live
+check (no wake shot, units stand still).
 
 ## 10. Sources
 
