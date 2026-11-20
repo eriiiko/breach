@@ -309,6 +309,15 @@ class DeviceConductor:
         self.last_books: dict = {}           # book -> (N,) this tick's applier books
         self.last_profile = None
         self.swarm_death_rows = [None] * N
+        self.obs = None                      # the device observation (P8.0), when attached
+
+    def attach_observation(self, obs) -> None:
+        """#29 P8.0: the device observation (``simulation.device_obs``) whose
+        blocks the walk builds at its end on a decision tick (call line 11').
+        One per conductor."""
+        if self.obs is not None and self.obs is not obs:
+            raise ConductorRefused("device conductor: an observation is already attached")
+        self.obs = obs
 
     # ------------------------------------------------------------------
     # The build's refusals
@@ -648,6 +657,11 @@ class DeviceConductor:
         uk.convert_zombies(st)
         uk.prune_grenades(self.grenades)
         # 11. the team picture: host, a match only, in no digest (not run)
+        # 11'. the device observation (P8.0): its blocks on a decision tick,
+        # on the tick stream before the books read; no sync, no synced write
+        if self.obs is not None:
+            L("11' observation")
+            self.obs.build_if_due()
 
     # ------------------------------------------------------------------
     # THE ONE BOOKS READ

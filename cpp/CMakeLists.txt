@@ -205,6 +205,11 @@ if(BREACH_CUDA)
         # to the edit queue's K1 / K2. Class T, pure integer, on the same
         # target-wide CUDA determinism floor.
         src/cuda_edit_flush.cu
+        # #29 P8.0: the device observation's blocks (src/simulation/device_obs.py),
+        # built in the conductor's tick; its own TU, never the unit library.
+        # Class T, pure integer (its float16 values are generated bit
+        # patterns), on the same target-wide CUDA determinism floor.
+        src/cuda_obs.cu
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like

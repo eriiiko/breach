@@ -48,6 +48,7 @@ const char* breach_build_id();
 #include "cuda_unit_books.h"       // #29 P7e.4: the conductor's one books read     // #29 P7.0b: the device object tables (Class T)
 #include "cuda_edit_door.h"        // #29 P7a.3: the device edit door (Class T)
 #include "cuda_edit_flush.h"       // #29 P7e.3: the edit door, step (c) (Class T)
+#include "cuda_obs.h"               // #29 P8.0: the device observation (Class T)
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -723,6 +724,29 @@ PYBIND11_MODULE(breach_physics, m) {
     // the TEST-ONLY capture-mode probe (begin / end / abort).
     m.def("eos_nsub_reads", &breach_cuda::eos_nsub_reads,
           "#29 P5: how many max(n_sub) reads the resident EOS made (one per tick).");
+    // #29 P8.0: THE DEVICE OBSERVATION's blocks (src/simulation/device_obs.py).
+    m.attr("OBS_LAYOUT_FINGERPRINT") = breach_cuda::obs_layout_fingerprint();
+    m.def("obs_block",
+          [](int n_env, std::uintptr_t store, int n_units, int store_w, std::uintptr_t rowmap,
+             int n_rows, int n_slots, std::uintptr_t solid, int h, int w,
+             breach_cuda::UnitRecordList& doors, breach_cuda::UnitRecordList& door_tiles,
+             std::uintptr_t door_plane,
+             std::uintptr_t tick_row, std::uintptr_t params, std::uintptr_t ended,
+             std::uintptr_t near_u, std::uintptr_t far_f, std::uintptr_t far_u,
+             std::uintptr_t valid, std::uintptr_t in_match) {
+              breach_cuda::obs_block(n_env, store, n_units, store_w, rowmap, n_rows, n_slots,
+                                     solid, h, w, doors, door_tiles, door_plane, tick_row,
+                                     params, ended, near_u, far_f, far_u, valid, in_match);
+          },
+          py::arg("n_env"), py::arg("store"), py::arg("n_units"), py::arg("store_w"),
+          py::arg("rowmap"), py::arg("n_rows"), py::arg("n_slots"), py::arg("solid"),
+          py::arg("h"), py::arg("w"), py::arg("doors"), py::arg("door_tiles"),
+          py::arg("door_plane"), py::arg("tick_row"), py::arg("params"), py::arg("ended"),
+          py::arg("near_u"), py::arg("far_f"), py::arg("far_u"), py::arg("valid"),
+          py::arg("in_match"),
+          "#29 P8.0: the device observation's first block on the tick stream (no sync): "
+          "valid / in_match and the near wall / door, far wall share / door planes of every "
+          "env on its decision tick (cpp/src/cuda_obs.cu).");
     m.def("tick_stream_ptr", []() {
               return reinterpret_cast<std::uintptr_t>(breach_cuda::tick_stream_handle());
           },
