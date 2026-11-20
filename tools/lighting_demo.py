@@ -1363,7 +1363,9 @@ def _run_water_perf(renderer, sim, lights_in, light_sky,
         sim.set_light(True, demo_light_rows(lights_in, total,
                                             sim_time_per_tick, grid_w,
                                             grid_h), light_sky)
-        _step_keep_running(sim)
+        if sim.is_paused():
+            sim.set_paused(False)
+        sim.step()           # tick_events are this step's: consume them now
         total = monotonic_total_tick(sim.turn_number, ticks_per_round,
                                      sim.tick)
         renderer.consume_events(sim.tick_events, sim_tick=total)
