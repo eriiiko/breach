@@ -549,7 +549,7 @@ class Unit:
         creature: ``occupied_tiles()`` for every other unit; for a creature
         the body's footprint plus every tile an arm segment crosses (rebuilt
         once per tick at slot 5b, top-down: z is ignored)."""
-        shape = getattr(self, "hit_shape", None)
+        shape = self._creature_hit_shape()
         if shape is None:
             return self.occupied_tiles()
         return list(shape.tiles)
@@ -558,7 +558,7 @@ class Unit:
         """``(ix, iy) in hit_tiles()``, without building the list: the march's
         own footprint rectangle (the shipped test, verbatim) for every unit
         but a creature, the shape's set for a creature."""
-        shape = getattr(self, "hit_shape", None)
+        shape = self._creature_hit_shape()
         if shape is None:
             return (self.tile_x <= ix < self.tile_x + self.footprint
                     and self.tile_y <= iy < self.tile_y + self.footprint)
@@ -568,9 +568,18 @@ class Unit:
         """A round or a beam connected on tile ``(ix, iy)`` of this unit:
         a creature records the struck node on its body (``last_hit``,
         hashed); every other unit has nothing to record."""
-        shape = getattr(self, "hit_shape", None)
+        shape = self._creature_hit_shape()
         if shape is not None:
             shape.note_hit(ix, iy)
+
+    def _creature_hit_shape(self):
+        """The derived hit shape of a CREATURE unit (``hit_shape``, a
+        REFERENCE_ONLY entry: host-side, the device paths refuse a creature),
+        None for every other unit -- whose seam is its footprint and which
+        never reads the attribute (the species decides first)."""
+        if get_species(self.species_id).creature is None:
+            return None
+        return getattr(self, "hit_shape", None)
 
     # ------------------------------------------------------------------
     # Facing helpers

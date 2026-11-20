@@ -723,10 +723,11 @@ REFERENCE_ONLY: dict[str, str] = {
     "hit_shape": "a creature's hit set (#106 P6d3, creature_system.HitShape): "
                  "DERIVED every tick at slot 5b from the creature body's "
                  "integer chain, which the __creature__ digest section "
-                 "carries; None for every other unit. Read by the bullet "
-                 "march and the laser skewer through Unit.in_hit_tiles; "
-                 "the device unit store does not carry creatures (the "
-                 "creature chain is host-side on every path)",
+                 "carries; None for every other unit, and never read for "
+                 "one (Unit._creature_hit_shape asks the species first). "
+                 "Read for a creature only, by the bullet march and the "
+                 "laser skewer through Unit.in_hit_tiles; host-side on "
+                 "every path (the device conductor refuses a creature)",
 }
 
 #: The backing slots of the properties (``facing_q`` / ``facing``,
