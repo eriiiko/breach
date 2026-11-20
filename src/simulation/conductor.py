@@ -136,9 +136,10 @@ OTHER_LATCHES = ("order_intent", "drive_zombies")
 
 
 class DeviceConductor:
-    """The device tick of ONE sim (N = 1); see the module docstring."""
+    """The device tick of N homogeneous sims (one level; N = 1 is one sim);
+    see the module docstring."""
 
-    def __init__(self, sim, bp=None):
+    def __init__(self, sims, bp=None):
         import cupy as cp
         if bp is None:
             import breach_physics as bp
@@ -149,96 +150,112 @@ class DeviceConductor:
                                 unit_kernels as uk, unit_requests, unit_schema as us,
                                 unit_store, unit_tables)
         from simulation.resident_batch import ResidentBatch
-        self.cp, self.bp, self.sim = cp, bp, sim
-        self._refuse(sim)
-        uk.shooting_door(sim)
-        uk.refuse_wego([sim])
-        g = sim.gmap
+        sims = list(sims) if isinstance(sims, (list, tuple)) else [sims]
+        if not sims:
+            raise ConductorRefused("device conductor: at least one sim")
+        self.cp, self.bp = cp, bp
+        self.sims = sims
+        self.sim = sims[0]                   # env 0 (the N = 1 twin)
+        self.N = N = len(sims)
+        for e, s in enumerate(sims):
+            self._refuse(s, e)
+            uk.shooting_door(s)
+        uk.refuse_wego(sims)
+        g = sims[0].gmap
         self.h, self.w = int(g._h), int(g._w)
         self.n_gases = int(g.gas.shape[0])
         self.o2 = int(g.gases.name_to_id["o2"])
         self.n2 = int(g.gases.name_to_id["inert_n2"])
-        self.sim_time = 1.0 / float(sim._tps)
-        # -- the planes: the twin's map made resident (ONE upload, here) -----
-        self.batch = ResidentBatch([sim])
+        self.sim_time = 1.0 / float(sims[0]._tps)
+        # -- the planes: every env's map made resident (ONE upload, here) -----
+        # (ResidentBatch refuses a heterogeneous batch by name: grid, gas
+        # table, tilt, tick rate, an ambient map)
+        try:
+            self.batch = ResidentBatch(sims)
+        except ValueError as ex:
+            raise ConductorRefused(f"device conductor: {ex}") from ex
         f = dict(self.batch.buffers)
         for name in applier.non_resident_planes():
             # the render-only ripple pair (host-computed by design, W6a): the
             # seal's 0.0 write needs a device plane; never read back
-            f[name] = cp.asarray(np.ascontiguousarray(getattr(g, name)))[None].copy()
+            f[name] = cp.asarray(np.ascontiguousarray(
+                np.stack([getattr(s.gmap, name) for s in sims])))
         # On the C++ stamp path the host's `obstacles` IS `solid`
         # (GameMap._update_caches aliases them; the C++ stamp writes in place,
         # so a destroyed wall opens both at once): the device does the same
         # (the stamp's `obstacles` output is the `solid` buffer). The finding
-        # P7e.2 reported, mirrored, not changed.
-        self.obstacles_is_solid = g.obstacles is g.solid
+        # P7e.2 reported, mirrored, not changed. One answer for the batch.
+        alias = [s.gmap.obstacles is s.gmap.solid for s in sims]
+        if len(set(alias)) != 1:
+            raise ConductorRefused("device conductor: the envs disagree on the stamp path "
+                                   f"(obstacles is solid: {alias})")
+        self.obstacles_is_solid = alias[0]
         if self.obstacles_is_solid:
             f["obstacles"] = f["solid"]
         self.fields = f
-        self.flight = cp.zeros((1, self.h, self.w), dtype=cp.bool_)
-        self.src_out = cp.zeros((1, self.h, self.w), dtype=cp.int32)
-        # -- the units ----------------------------------------------------------
-        self.U = max(1, len(sim.units))
-        self.uids = [int(u.id) for u in sim.units]
-        self.row_of = {uid: r for r, uid in enumerate(self.uids)}
-        self.store = unit_store.DeviceStore(1, self.U, bp=bp,
-                                            tables=unit_tables.values_batch([sim]))
-        self.store.upload(unit_store.pack(sim.units, self.U)[None])
+        self.flight = cp.zeros((N, self.h, self.w), dtype=cp.bool_)
+        self.src_out = cp.zeros((N, self.h, self.w), dtype=cp.int32)
+        # -- the units: one (N, U, W) store, the short envs padded -------------
+        self.U = U = max(1, max(len(s.units) for s in sims))
+        self.uids = [[int(u.id) for u in s.units] for s in sims]
+        self.row_of = [{uid: r for r, uid in enumerate(ids)} for ids in self.uids]
+        self.store = unit_store.DeviceStore(N, U, bp=bp,
+                                            tables=unit_tables.values_batch(sims))
+        self.store.upload(np.stack([unit_store.pack(s.units, U) for s in sims]))
         lay = unit_store.layout()
         self._lay = lay
         mem = cp.cuda.UnownedMemory(self.store.device_ptr, 8 * int(np.prod(self.store.shape)),
                                     self.store)
         self._rows = cp.ndarray(self.store.shape, dtype=cp.int64,
                                 memptr=cp.cuda.MemoryPointer(mem, 0))
-        self._zombie = [bool(u.is_zombie) for u in sim.units]
+        self._zombie = [[bool(u.is_zombie) for u in s.units] for s in sims]
         # -- the tick row (the latch written ONCE, here; advanced on the device)
-        self.trow = unit_draws.TickRow.of_sims([sim])
+        self.trow = unit_draws.TickRow.of_sims(sims)
         # -- the record lists ---------------------------------------------------
-        U = self.U
-        self.ring = unit_events.EventRing(1, U, bp=bp)
-        self.req = unit_requests.RequestList(1, U, bp=bp)
-        self.eff = applier.DeviceApplier(1, applier.E_CAP, bp=bp, n_units=U)
-        self.det = applier.DeviceApplier(1, applier.E_CAP, bp=bp, n_units=U)
-        self.aux = applier.DeviceApplier(1, applier.E_CAP, bp=bp, n_units=U)
-        self.cells = attack_lists.cell_buffer(1, bp=bp)
-        self.claims = attack_lists.claims_list(1, bp=bp)
-        self.door = edit_door.DeviceEditDoor(1, bp=bp)
+        self.ring = unit_events.EventRing(N, U, bp=bp)
+        self.req = unit_requests.RequestList(N, U, bp=bp)
+        self.eff = applier.DeviceApplier(N, applier.E_CAP, bp=bp, n_units=U)
+        self.det = applier.DeviceApplier(N, applier.E_CAP, bp=bp, n_units=U)
+        self.aux = applier.DeviceApplier(N, applier.E_CAP, bp=bp, n_units=U)
+        self.cells = attack_lists.cell_buffer(N, bp=bp)
+        self.claims = attack_lists.claims_list(N, bp=bp)
+        self.door = edit_door.DeviceEditDoor(N, bp=bp)
         self.flush = edit_door.DeviceEditFlush(self.door, bp=bp)
-        # -- the object and entity tables, staged ONCE from the twin ------------
+        # -- the object and entity tables, staged ONCE from the sims -----------
         DT = ot.DeviceTable
-        self.rounds = DT(us.ROUND_TABLE, 1, n_units=U, row_cap=uk.round_row_cap(), bp=bp)
-        self.noise = DT(us.NOISE_TABLE, 1, n_units=U, row_cap=1, bp=bp)
-        self.blast_log = DT(us.BLAST_LOG_TABLE, 1, n_units=U, row_cap=1, bp=bp)
-        self.grenades = DT(us.GRENADE_TABLE, 1, bp=bp)
-        self.charges = DT(us.CHARGE_TABLE, 1, bp=bp)
-        self.doors, self.door_tiles = uk.door_tables(1, bp=bp)
-        self.ducts, self.vents = uk.vent_tables(1, bp=bp)
-        self.sources, self.source_tiles = uk.source_tables(1, bp=bp)
-        self.timed, self.heat = uk.hazard_tables(1, bp=bp)
-        self.sig = uk.signal_tables(1, bp=bp)
+        self.rounds = DT(us.ROUND_TABLE, N, n_units=U, row_cap=uk.round_row_cap(), bp=bp)
+        self.noise = DT(us.NOISE_TABLE, N, n_units=U, row_cap=1, bp=bp)
+        self.blast_log = DT(us.BLAST_LOG_TABLE, N, n_units=U, row_cap=1, bp=bp)
+        self.grenades = DT(us.GRENADE_TABLE, N, bp=bp)
+        self.charges = DT(us.CHARGE_TABLE, N, bp=bp)
+        self.doors, self.door_tiles = uk.door_tables(N, bp=bp)
+        self.ducts, self.vents = uk.vent_tables(N, bp=bp)
+        self.sources, self.source_tiles = uk.source_tables(N, bp=bp)
+        self.timed, self.heat = uk.hazard_tables(N, bp=bp)
+        self.sig = uk.signal_tables(N, bp=bp)
         self.sig["doors"] = self.doors
         w_ = lambda t, objs: np.array(ot.records(t, objs), dtype=np.int64).reshape(  # noqa: E731
             -1, ot.table_layout(t).width)
-        self.rounds.stage_lists([uk.rounds_of(sim)])
-        self.noise.stage_lists([uk.noise_of(sim)])
-        self.blast_log.stage_lists([uk.blast_log_of(sim)])
-        self.grenades.stage_lists([w_(us.GRENADE_TABLE, sim.projectiles)])
-        self.charges.stage_lists([w_(us.CHARGE_TABLE, sim.planted_charges)])
-        self.doors.stage_lists([uk.doors_of(sim)])
-        self.door_tiles.stage_lists([uk.door_tiles_of(sim)])
-        self.ducts.stage_lists([uk.ducts_of(sim)])
-        self.vents.stage_lists([uk.vents_of(sim)])
-        self.sources.stage_lists([uk.sources_of(sim)])
-        self.source_tiles.stage_lists([uk.source_tiles_of(sim)])
-        self.timed.stage_lists([uk.timed_charges_of(sim)])
-        self.heat.stage_lists([uk.heat_sources_of(sim)])
+        self.rounds.stage_lists([uk.rounds_of(s) for s in sims])
+        self.noise.stage_lists([uk.noise_of(s) for s in sims])
+        self.blast_log.stage_lists([uk.blast_log_of(s) for s in sims])
+        self.grenades.stage_lists([w_(us.GRENADE_TABLE, s.projectiles) for s in sims])
+        self.charges.stage_lists([w_(us.CHARGE_TABLE, s.planted_charges) for s in sims])
+        self.doors.stage_lists([uk.doors_of(s) for s in sims])
+        self.door_tiles.stage_lists([uk.door_tiles_of(s) for s in sims])
+        self.ducts.stage_lists([uk.ducts_of(s) for s in sims])
+        self.vents.stage_lists([uk.vents_of(s) for s in sims])
+        self.sources.stage_lists([uk.sources_of(s) for s in sims])
+        self.source_tiles.stage_lists([uk.source_tiles_of(s) for s in sims])
+        self.timed.stage_lists([uk.timed_charges_of(s) for s in sims])
+        self.heat.stage_lists([uk.heat_sources_of(s) for s in sims])
         for ln in uk.SIGNAL_LISTS:
-            self.sig[ln].stage_lists([uk.SIGNAL_RECORDS[ln](sim)])
-        self.cache = horde_cache.DeviceHordeCache(1, U, persistent=True)
-        self.cache.stage_lists([horde_cache.cache_records(sim)])
+            self.sig[ln].stage_lists([uk.SIGNAL_RECORDS[ln](s) for s in sims])
+        self.cache = horde_cache.DeviceHordeCache(N, U, persistent=True)
+        self.cache.stage_lists([horde_cache.cache_records(s) for s in sims])
         self.cache.begin()
         self.door.begin()
-        self.door.set_seq([int(sim.edit_queue._seq)])
+        self.door.set_seq([int(s.edit_queue._seq) for s in sims])
         self.claims.begin()
         self.cells.begin()
         self.walk = uk.WalkLists(cells=self.cells, door=self.door, claims=self.claims,
@@ -246,82 +263,101 @@ class DeviceConductor:
                                  sources=self.sources, source_tiles=self.source_tiles)
         self.box_max = uk.spray_box_max(self.store, self.h, self.w)
         self.stamp_scratch = None
-        # -- the latches' host side ---------------------------------------------
-        self._orders: dict = {}
-        self._zreqs = None if sim._zombie_requests is None else set(sim._zombie_requests)
-        # -- the 9e gates: the level's entity classes (load constants) ---------
-        self.has_bus = sim._signal_bus is not None
-        self.has_ducts = bool(sim._ducts)
-        self.has_doors = bool(sim._doors)
-        self.has_timed = bool(sim._timed_charges)
-        self.has_heat = bool(sim._heat_sources)
-        self.has_pumps = bool(sim._pumps)
+        # -- the latches' host side (per env) -----------------------------------
+        self._cols: dict = {}                # (env, row, column) -> value, this tick
+        self._orders = [dict() for _ in sims]
+        self._zreqs = [None if s._zombie_requests is None else set(s._zombie_requests)
+                       for s in sims]
+        # -- the 9e gates: the level's entity classes (load constants; a slot
+        # runs when ANY env holds its class -- an env without rows is a no-op
+        # of the face, held by the batch invariance gate) ------------------------
+        self.has_bus = any(s._signal_bus is not None for s in sims)
+        self.has_ducts = any(bool(s._ducts) for s in sims)
+        self.has_doors = any(bool(s._doors) for s in sims)
+        self.has_timed = any(bool(s._timed_charges) for s in sims)
+        self.has_heat = any(bool(s._heat_sources) for s in sims)
+        self.has_pumps = any(bool(s._pumps) for s in sims)
         self.ticks = 0
-        self.last_books: dict = {}
+        self.last_books: list = [dict() for _ in sims]
+        self.last_profile = None
+        self.swarm_death_rows = [None] * N
 
     # ------------------------------------------------------------------
     # The build's refusals
     # ------------------------------------------------------------------
     @staticmethod
-    def _refuse(sim):
+    def _refuse(sim, e=0):
         from simulation.ruleset import ContinuousRealtime
+        who = f"device conductor (env {e})"
         r = sim.physics_runner
         if r is None:
-            raise ConductorRefused("device conductor: the sim has no physics runner")
+            raise ConductorRefused(f"{who}: the sim has no physics runner")
         if not isinstance(sim.ruleset, ContinuousRealtime) or sim.ruleset.drives_units:
-            raise ConductorRefused(f"device conductor: the ruleset "
+            raise ConductorRefused(f"{who}: the ruleset "
                                    f"{type(sim.ruleset).__name__} is not the continuous path")
         g = sim.gmap
         if g.water_sources or g.water_depth.any():
-            raise ConductorRefused("device conductor: the map holds water (the water "
+            raise ConductorRefused(f"{who}: the map holds water (the water "
                                    "pre-step and its dormancy read the host mirror)")
         if r._ambient_mask(g) is not None:
-            raise ConductorRefused("device conductor: an ambient map (the sky exchange "
+            raise ConductorRefused(f"{who}: an ambient map (the sky exchange "
                                    "is a host bracket, ACCEPTED GAP of the resident tick)")
         if r.engine.light_requested:
-            raise ConductorRefused("device conductor: light is requested (render state, "
-                                   "until #81)")
+            raise ConductorRefused(f"{who}: light is requested (render state, until #81)")
         if sim.edit_queue._edits:
-            raise ConductorRefused("device conductor: the edit queue holds "
+            raise ConductorRefused(f"{who}: the edit queue holds "
                                    f"{len(sim.edit_queue._edits)} edit(s): the device "
                                    "door starts empty")
         if sim.paused:
-            raise ConductorRefused("device conductor: the sim is paused")
+            raise ConductorRefused(f"{who}: the sim is paused")
 
     # ------------------------------------------------------------------
     # THE LATCHES
     # ------------------------------------------------------------------
-    def latch(self, intents) -> None:
-        """This tick's intents (``(kind, args)`` in issue order, args as the
-        tap records them) into the device latches: the column scatter, the
+    def latch(self, intents, env: int = 0) -> None:
+        """Env ``env``'s intents this tick (``(kind, args)`` in issue order,
+        args as the tap records them) into the device latches: the column
+        scatter (applied ONCE for every env at :meth:`tick`'s head), the
         order table, the zombie request set. Refuses an unknown kind by name.
-        A unit id the sim does not hold is skipped (``get_unit`` -> None)."""
-        from simulation import unit_orders, unit_schema as us
-        cols: dict = {}
+        A unit id the env does not hold is skipped (``get_unit`` -> None).
+        An env given no intents latches nothing (its columns keep their
+        values: the host's "no intent this tick")."""
+        from simulation import unit_orders
+        e = int(env)
+        if not 0 <= e < self.N:
+            raise IndexError(f"device conductor: env {e} of {self.N}")
+        sim = self.sims[e]
         for kind, args in intents:
             args = tuple(args)
             if kind in LATCH_COLUMNS:
                 col, val = LATCH_COLUMNS[kind]
-                r = self.row_of.get(int(args[0]))
+                r = self.row_of[e].get(int(args[0]))
                 if r is None:
                     continue
-                cols[(r, col)] = val(args)
+                self._cols[(e, r, col)] = val(args)
             elif kind == "order_intent":
                 uid, what, where, ticks, target = (int(x) for x in args)
-                until = unit_orders.NO_LIMIT if ticks == 0 else self.sim.tick + ticks
-                self._orders[uid] = (what, where, until, target)
+                until = unit_orders.NO_LIMIT if ticks == 0 else sim.tick + ticks
+                self._orders[e][uid] = (what, where, until, target)
             elif kind == "drive_zombies":
-                if self._zreqs is None:
-                    raise ConductorRefused("device conductor: drive_zombies on a sim whose "
-                                           "horde the conductor drives")
-                self._zreqs.update(int(i) for i in args[0])
+                if self._zreqs[e] is None:
+                    raise ConductorRefused(f"device conductor (env {e}): drive_zombies on "
+                                           "a sim whose horde the conductor drives")
+                self._zreqs[e].update(int(i) for i in args[0])
             else:
-                raise ConductorRefused(f"device conductor: intent {kind!r} has no latch")
+                raise ConductorRefused(f"device conductor (env {e}): intent {kind!r} has "
+                                       "no latch")
+
+    def _scatter(self) -> None:
+        """The tick's column scatter: every env's latched (row, column)
+        values in ONE CuPy scatter (one H2D of indices and values)."""
+        from simulation import unit_schema as us
+        cols, self._cols = self._cols, {}
         if not cols:
             return
         idx, vals = [], []
-        W = self.store.shape[2]
-        for (r, name), v in cols.items():
+        U, W = self.store.shape[1], self.store.shape[2]
+        for (e, r, name), v in cols.items():
             c = self._lay.column(name)
             enc = us.COLUMN_BY_NAME[name].encode(v)
             enc = tuple(enc) if isinstance(enc, tuple) else (enc,)
@@ -329,7 +365,7 @@ class DeviceConductor:
                 raise ConductorRefused(f"device conductor: latch {name!r} encodes "
                                        f"{len(enc)} ints, its column is {c.width} wide")
             for j, x in enumerate(enc):
-                idx.append(r * W + c.offset + j)
+                idx.append((e * U + r) * W + c.offset + j)
                 vals.append(int(x))
         cp = self.cp
         flat = self._rows.reshape(-1)
@@ -338,27 +374,33 @@ class DeviceConductor:
 
     def _order_table(self):
         from simulation import unit_kernels as uk
-        rows = [(uid,) + tuple(self._orders[uid]) for uid in sorted(self._orders)]
-        self._orders.clear()
-        return uk.pad_requests([np.array(rows, dtype=np.int64).reshape(-1, uk.REQUEST_WIDTH)])
+        per = []
+        for o in self._orders:
+            rows = [(uid,) + tuple(o[uid]) for uid in sorted(o)]
+            o.clear()
+            per.append(np.array(rows, dtype=np.int64).reshape(-1, uk.REQUEST_WIDTH))
+        return uk.pad_requests(per)
 
     def _horde_latch(self):
         from simulation import applier, horde_cache
-        row = np.zeros(len(applier.HORDE_LATCH) + self.U, dtype=np.int64)
-        m = applier.HORDE_LATCH.index("mode")
         modes = horde_cache._MODE
-        if self._zreqs is None:
-            row[m] = modes["CONDUCTOR"]
-        elif not self._zreqs:
-            row[m] = modes["EMPTY"]
-        else:
-            row[m] = modes["SET"]
-            base = len(applier.HORDE_LATCH)
-            for r, uid in enumerate(self.uids):
-                if uid in self._zreqs:
-                    row[base + r] = 1
-            self._zreqs.clear()
-        return [row]
+        m = applier.HORDE_LATCH.index("mode")
+        base = len(applier.HORDE_LATCH)
+        out = []
+        for e, zr in enumerate(self._zreqs):
+            row = np.zeros(base + self.U, dtype=np.int64)
+            if zr is None:
+                row[m] = modes["CONDUCTOR"]
+            elif not zr:
+                row[m] = modes["EMPTY"]
+            else:
+                row[m] = modes["SET"]
+                for r, uid in enumerate(self.uids[e]):
+                    if uid in zr:
+                        row[base + r] = 1
+                zr.clear()
+            out.append(row)
+        return out
 
     # ------------------------------------------------------------------
     # THE WALK
@@ -366,35 +408,68 @@ class DeviceConductor:
     def _planes(self, names):
         return {n: self.fields[n] for n in names}
 
-    def tick(self) -> None:
-        """ONE reference tick on the device (``Simulation.step()``'s slots in
-        order, one call line each), its every count deferred to THE ONE
-        BOOKS READ at its end (:meth:`_books_read`), where a refusal is
-        raised by name: a refused tick is refused (the state is partly
-        written; the caller stops)."""
+    def tick(self, profile: bool = False) -> None:
+        """ONE reference tick of every env on the device (``Simulation.step()``'s
+        slots in order, one call line each, every face launched once for the
+        N envs), its every count deferred to THE ONE BOOKS READ at its end
+        (:meth:`_books_read`), where a refusal is raised by name with its env:
+        a refused tick refuses the BATCH (the state is partly written in
+        every env; the caller stops). ``profile``: the sub-slot profile of
+        this tick lands in :attr:`last_profile` (``(label, gpu ms, host ms)``
+        per call line, GPU ms between CUDA events on the tick stream)."""
+        from simulation import physics_runner as pr
         bp = self.bp
+        self._scatter()
+        if profile:
+            bp.conductor_profile_begin()
+            pr._PROFILE_MARK = bp.conductor_profile_mark
         bp.conductor_books_begin(BOOKS_CAP)
+        bp.resident_tail_defer(True)
         try:
             self._walk(bp.conductor_label)
+            if profile:
+                bp.conductor_profile_mark("books read")
         except BaseException:
             if bp.conductor_books_deferring():
                 bp.conductor_books_end()
+            if bp.resident_tail_pending():
+                bp.resident_tail_finish()
+            bp.resident_tail_defer(False)
+            if profile:
+                pr._PROFILE_MARK = None
+                bp.conductor_profile_end()
             raise
         finally:
             bp.conductor_label("")
+        # THE ONE READ: the unit side's arena AND the physics tail's books
+        # (its D2H was enqueued on the same stream before it): one sync
+        import time as _time
+        t_read = _time.perf_counter()
         words, entries = bp.conductor_books_end()
+        if profile:
+            pr._PROFILE_MARK = None
+            self.last_profile = list(bp.conductor_profile_end())
+            self.last_profile.append(("books read", None,
+                                      1000.0 * (_time.perf_counter() - t_read)))
+        try:
+            rows = bp.resident_tail_finish() if bp.resident_tail_pending() else None
+        finally:
+            bp.resident_tail_defer(False)
+        if rows is not None:
+            self.swarm_death_rows = list(rows)
         self.ticks += 1
         self._books_read(words, entries)
 
     def _walk(self, L) -> None:
         from simulation import physics_runner as pr, unit_kernels as uk
         from simulation import edit_door as _ed  # noqa: F401
-        sim, st, f, tr = self.sim, self.store, self.fields, self.trow
+        st, f, tr = self.store, self.fields, self.trow
         lists = self.walk
         # 1. the event ring begun; the trace books are host books (reset)
         L("1 tick head")
         self.ring.begin()
-        sim.gmap.reset_trace_books()
+        for s in self.sims:
+            s.gmap.reset_trace_books()
         # 1a. integrate + turn
         L("1a integrate + turn")
         uk.integrate_turn(st)
@@ -408,7 +483,7 @@ class DeviceConductor:
         uk.door_uses(st, self.req, self.doors)
         # 1b'. the commander's orders
         L("1b' orders")
-        if self._orders:                     # dormant on an empty latch, as the host
+        if any(self._orders):                # dormant on an empty latch, as the host
             uk.apply_orders(st, self._order_table())
         # 1c. exposure decays
         L("1c exposure decay")
@@ -456,24 +531,25 @@ class DeviceConductor:
         self.flush.run(tr, st.tables, self._planes(n for n, _d in _ed.FLUSH_PLANES),
                        self.n_gases, self.o2, self.n2)
         # 7. the physics head on the device (the blast source), then slot 7
-        L("7 physics")
-        self.aux.begin()
         L("7 physics head (sources)")
+        self.aux.begin()
         uk.take_sources(st, self.aux, f, lists, source_out=self.src_out)
         L("7 physics")
         was = [bool(getattr(self.bp, f"get_{b}_backend")()) for b in SLOT7_BACKENDS]
         for b in SLOT7_BACKENDS:
             getattr(self.bp, f"set_{b}_backend")(True)
         try:
-            pr.run_resident_conductor(sim.physics_runner, sim.gmap, self.sim_time,
-                                      int(self.src_out.data.ptr))
+            pr.run_resident_conductor([s.physics_runner for s in self.sims],
+                                      [s.gmap for s in self.sims], self.sim_time,
+                                      int(self.src_out.data.ptr), self.trow.ptr)
         finally:
             for b, on in zip(SLOT7_BACKENDS, was):
                 getattr(self.bp, f"set_{b}_backend")(on)
         # 9. burn-through (the resident fire's list ranked on the device)
         L("9 burn-through walls")
         uk.burn_through_device(st, self.eff, f,
-                               uk.BurnList.resident(self.bp, 1, self.h, self.w), tick_row=tr)
+                               uk.BurnList.resident(self.bp, self.N, self.h, self.w),
+                               tick_row=tr)
         # 9b. over-pressure walls
         L("9b over-pressure walls")
         uk.burst_walls(st, self.eff, f, tick_row=tr)
@@ -528,7 +604,7 @@ class DeviceConductor:
         L("tick-end clears")
         uk.tick_end_clears(self.bp, {"heat": f["heat"]})
         self.claims.begin()
-        # 10. the tick advances (the device row and the twin's host clock)
+        # 10. the tick advances (the device row and the twins' host clocks)
         L("10 tick advance")
         self._advance()
         # 10'. orders expire; the ruleset's tick end (conversion, the prune)
@@ -538,7 +614,6 @@ class DeviceConductor:
         uk.convert_zombies(st)
         uk.prune_grenades(self.grenades)
         # 11. the team picture: host, a match only, in no digest (not run)
-        self.ticks += 1
 
     # ------------------------------------------------------------------
     # THE ONE BOOKS READ
@@ -546,55 +621,74 @@ class DeviceConductor:
     def _books_read(self, words, entries) -> None:
         """Every face's deferred counts (``cuda_unit_books.h``: one D2H, one
         sync), raised BY NAME as each face would have raised at its own
-        launch -- the slot (the call line's label) and what was crossed --
-        in walk order (the first refusal wins). The device flush's books are
-        folded into the twin's map books and draws here."""
+        launch -- the slot (the call line's label), what was crossed and THE
+        ENV -- in walk order, the lowest env first within a call line (the
+        first refusal wins; the exception carries ``.env``). A refusal
+        refuses the batch: :meth:`tick` raised, the caller stops every env.
+        The device flush's books are folded into each env's map books and
+        draws here."""
         from simulation import applier, edit_door as ed
         from simulation.physics_runner import fold_edit_queue_books
+        N = self.N
         w = np.asarray(words, dtype=np.int64)
-        self.last_books = {}
+        self.last_books = [dict() for _ in range(N)]
+
+        def refuse(cls, e, what, *a):
+            ex = cls(f"device conductor (env {e}, {where}): {what}", *a)
+            ex.env = e
+            raise ex
+
         for label, kind, off, n in entries:
             v = w[int(off):int(off) + int(n)]
-            where = f"tick {int(self.sim.tick) - 1}, slot {label!r}"
-            if kind == "counts":                       # (coverage, faults, refused)
-                if v[1]:
-                    raise ConductorFault(f"device conductor ({where}): {int(v[1])} row(s) left "
-                                         f"the range the kernel was proved for")
-                if v[2] and label in _refusing_slots():
-                    raise _refusing_slots()[label](
-                        f"device conductor ({where}): {int(v[2])} refused by name "
-                        f"(a refused count)")
+            where = f"tick {int(self.sims[0].tick) - 1}, slot {label!r}"
+            if kind == "counts":                       # (coverage, faults, refused) x N
+                c = v.reshape(3, N)
+                for e in range(N):
+                    if c[1, e]:
+                        refuse(ConductorFault, e, f"{int(c[1, e])} row(s) left the range "
+                               f"the kernel was proved for")
+                    if c[2, e] and label in _refusing_slots():
+                        refuse(_refusing_slots()[label], e,
+                               f"{int(c[2, e])} refused by name (a refused count)")
             elif kind == "list_dropped":
-                if v.any():
-                    raise ConductorOverflow(f"device conductor ({where}): a list dropped "
-                                            f"{int(v.sum())} record(s) past its capacity")
+                for e in range(N):
+                    if v[e]:
+                        refuse(ConductorOverflow, e, f"a list dropped {int(v[e])} "
+                               f"record(s) past its capacity")
             elif kind == "books":
-                b = applier.books_dict(v.reshape(1, -1))
-                for book, exc in _book_refusals():
-                    if int(b[book][0]):
-                        raise exc(f"device conductor ({where}): {book} = {int(b[book][0])}")
-                for k_, x in b.items():
-                    self.last_books[k_] = self.last_books.get(k_, 0) + int(x[0])
+                b = applier.books_dict(v.reshape(N, -1))
+                for e in range(N):
+                    for book, exc in _book_refusals():
+                        if int(b[book][e]):
+                            refuse(exc, e, f"{book} = {int(b[book][e])}")
+                    for k_, x in b.items():
+                        lb = self.last_books[e]
+                        lb[k_] = lb.get(k_, 0) + int(x[e])
             elif kind in ("door_counts", "object_counts"):
-                if v[1]:
-                    raise ConductorFault(f"device conductor ({where}): {int(v[1])} fault(s)")
-                if kind == "object_counts" and v[2]:
-                    from simulation.unit_kernels import ObjectSlotRefused
-                    raise ObjectSlotRefused(f"device conductor ({where}): a WEGO grenade")
+                c = v.reshape(N, -1)
+                for e in range(N):
+                    if c[e, 1]:
+                        refuse(ConductorFault, e, f"{int(c[e, 1])} fault(s)")
+                    if kind == "object_counts" and c[e, 2]:
+                        from simulation.unit_kernels import ObjectSlotRefused
+                        refuse(ObjectSlotRefused, e, "a WEGO grenade")
             elif kind == "flush_books":
                 slots = self.flush.slots
-                books, word = v[:slots], int(v[slots]) & ((1 << 64) - 1)
-                if word != (1 << 64) - 1:
-                    code, row = word >> 32, word & 0xffffffff
-                    name, why = ed.FLUSH_FAULTS.get(code, ("?", "an unknown code"))
-                    raise ed.EditFlushRefused(f"device conductor ({where}): the flush refused "
-                                              f"({name}: {why}; row {row})", 0, code, row)
-                if int(books[self.flush.fail_slot]):
-                    raise ed.EditQueueFailed(f"device conductor ({where}): "
-                                             f"{int(books[self.flush.fail_slot])} edit result(s) "
-                                             f"left their field's range")
-                fold_edit_queue_books(self.bp.EDIT_QUEUE_LAYOUT, self.sim.gmap, books,
-                                      self.sim.draws)
+                books = v[:N * slots].reshape(N, slots)
+                for e in range(N):
+                    word = int(v[N * slots + e]) & ((1 << 64) - 1)
+                    if word != (1 << 64) - 1:
+                        code, row = word >> 32, word & 0xffffffff
+                        name, why = ed.FLUSH_FAULTS.get(code, ("?", "an unknown code"))
+                        refuse(ed.EditFlushRefused, e, f"the flush refused ({name}: {why}; "
+                               f"row {row})", e, code, row)
+                    if int(books[e, self.flush.fail_slot]):
+                        refuse(ed.EditQueueFailed, e,
+                               f"{int(books[e, self.flush.fail_slot])} edit result(s) "
+                               f"left their field's range")
+                for e, s in enumerate(self.sims):
+                    fold_edit_queue_books(self.bp.EDIT_QUEUE_LAYOUT, s.gmap, books[e],
+                                          s.draws)
 
     def _advance(self) -> None:
         from simulation.unit_draws import TICK_ROW_KEY, _M32
@@ -602,64 +696,74 @@ class DeviceConductor:
         b[:, 0] += 1
         k = TICK_ROW_KEY + 2
         b[:, k] = (b[:, k] + 1) & _M32
-        self.sim.tick += 1
-        self.sim.real_time += self.sim_time
+        for s in self.sims:
+            s.tick += 1
+            s.real_time += self.sim_time
 
     # ------------------------------------------------------------------
     # THE GATE'S DOWNLOAD
     # ------------------------------------------------------------------
-    def download(self) -> None:
-        """Land the device state on the twin's host objects (what the digest,
-        ``field_ab_harness.capture_snapshot``, reads): the unit rows (and the
-        conversion's host-only "Z-" name), the resident planes, the tick's
-        synced events, the planted charges and every entity table on the
-        sim's own runtimes."""
+    def download(self, envs=None) -> None:
+        """Land the device state on the sims' host objects (what the digest,
+        ``field_ab_harness.capture_snapshot``, reads) for ``envs`` (default
+        every env): the unit rows (and the conversion's host-only "Z-" name),
+        the resident planes, the tick's synced events, the planted charges and
+        every entity table on the sim's own runtimes."""
         from simulation import (object_tables as ot, swarm, unit_events,
                                 unit_kernels as uk, unit_schema as us, unit_store)
         from simulation.gamemap import GameMap
-        sim = self.sim
-        g = sim.gmap
-        rows = self.store.download()[0]
-        unit_store.unpack(rows, sim.units)
-        for k, u in enumerate(sim.units):
-            if u.is_zombie and not self._zombie[k] and not u.name.startswith("Z-"):
-                u.name = f"Z-{u.name}"
-            self._zombie[k] = bool(u.is_zombie)
-        sw = set(swarm.SWARM_RESIDENT_NAMES) | set(swarm.SWARM_PLANE_NAMES)
-        names = [n for n in GameMap._RESIDENT_FIELD_NAMES if n not in sw]
-        if self.obstacles_is_solid:
-            names = [n for n in names if n != "obstacles"]   # the host alias of solid
-        g.to_host(names + list(swarm.resident_exit_names(g)))
-        recs = self.ring.records()[0]
-        sim.tick_events[:] = [unit_events.event_of(r) for r in recs]
+        envs = range(self.N) if envs is None else list(envs)
+        rows = self.store.download()
+        recs = self.ring.records()
         crow, ccnt, _ = self.charges.download()
-        sim.planted_charges[:] = ot.unpack(us.CHARGE_TABLE, crow[0], int(ccnt[0]))
-        if self.has_doors:
-            uk.doors_to_host(sim, self.doors.records()[0], self.door_tiles.records()[0])
-        if self.has_ducts:
-            uk.ducts_to_host(sim, self.ducts.records()[0])
-            uk.vents_to_host(sim, self.vents.records()[0])
-        if self.has_bus:
-            uk.signals_to_host(sim, self.sig["signals"].records()[0])
-            uk.nodes_to_host(sim, self.sig["nodes"].records()[0])
-            uk.pumps_to_host(sim, self.sig["pumps"].records()[0])
-        if self.has_timed:
-            uk.timed_charges_to_host(sim, self.timed.records()[0])
-        if self.has_heat:
-            uk.heat_sources_to_host(sim, self.heat.records()[0])
+        doors = (self.doors.records(), self.door_tiles.records()) if self.has_doors else None
+        ducts = (self.ducts.records(), self.vents.records()) if self.has_ducts else None
+        sigs = ({k: self.sig[k].records() for k in ("signals", "nodes", "pumps")}
+                if self.has_bus else None)
+        timed = self.timed.records() if self.has_timed else None
+        heat = self.heat.records() if self.has_heat else None
+        sw = set(swarm.SWARM_RESIDENT_NAMES) | set(swarm.SWARM_PLANE_NAMES)
+        for e in envs:
+            sim = self.sims[e]
+            g = sim.gmap
+            unit_store.unpack(rows[e], sim.units)
+            for k, u in enumerate(sim.units):
+                if u.is_zombie and not self._zombie[e][k] and not u.name.startswith("Z-"):
+                    u.name = f"Z-{u.name}"
+                self._zombie[e][k] = bool(u.is_zombie)
+            names = [n for n in GameMap._RESIDENT_FIELD_NAMES if n not in sw]
+            if self.obstacles_is_solid:
+                names = [n for n in names if n != "obstacles"]   # the host alias of solid
+            g.to_host(names + list(swarm.resident_exit_names(g)))
+            sim.tick_events[:] = [unit_events.event_of(r) for r in recs[e]]
+            sim.planted_charges[:] = ot.unpack(us.CHARGE_TABLE, crow[e], int(ccnt[e]))
+            if doors is not None and sim._doors:
+                uk.doors_to_host(sim, doors[0][e], doors[1][e])
+            if ducts is not None and sim._ducts:
+                uk.ducts_to_host(sim, ducts[0][e])
+                uk.vents_to_host(sim, ducts[1][e])
+            if sigs is not None and sim._signal_bus is not None:
+                uk.signals_to_host(sim, sigs["signals"][e])
+                uk.nodes_to_host(sim, sigs["nodes"][e])
+                uk.pumps_to_host(sim, sigs["pumps"][e])
+            if timed is not None and sim._timed_charges:
+                uk.timed_charges_to_host(sim, timed[e])
+            if heat is not None and sim._heat_sources:
+                uk.heat_sources_to_host(sim, heat[e])
 
-    def nondigest_records(self) -> dict:
-        """The cross-tick state in NO digest, for the gate: the rounds, the
-        grenades, the noise list, the blast sources, the edit door's window
-        and the horde cache, each as the reference's record function writes
-        it (a download)."""
+    def nondigest_records(self, env: int = 0) -> dict:
+        """Env ``env``'s cross-tick state in NO digest, for the gate: the
+        rounds, the grenades, the noise list, the blast sources, the edit
+        door's window and the horde cache, each as the reference's record
+        function writes it (a download)."""
         from simulation import edit_door as ed
-        e, t = self.door.rows()[0]
-        return {"rounds": self.rounds.records()[0], "grenades": self.grenades.records()[0],
-                "noise": self.noise.records()[0], "sources": self.sources.records()[0],
-                "source_tiles": self.source_tiles.records()[0],
+        e_ = int(env)
+        e, t = self.door.rows()[e_]
+        return {"rounds": self.rounds.records()[e_], "grenades": self.grenades.records()[e_],
+                "noise": self.noise.records()[e_], "sources": self.sources.records()[e_],
+                "source_tiles": self.source_tiles.records()[e_],
                 "door": (e[:, :ed.EDIT_COLS].tolist(), t.tolist()),
-                "horde": self.cache.records()[0]}
+                "horde": self.cache.records()[e_]}
 
 
 def reference_records(sim) -> dict:

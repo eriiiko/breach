@@ -163,6 +163,16 @@ void resident_edits(const EngineList& engs, const ResidentFields& f,
 std::vector<std::vector<std::pair<int, int>>> resident_tail(
     const EngineList& engs, const ResidentFields& f, const ResidentTickArgs& a);
 
+// #29 P7e.5 (Class T, the device conductor): defer the tail's fold. While on,
+// resident_tail enqueues its books D2H and returns WITHOUT the "books" sync
+// (empty burn-through lists); resident_tail_finish, called after the
+// conductor's one books read has synchronised the tick stream, folds every
+// env's books into its engine and returns each env's swarm death rows (flat,
+// swarm::ROW_WORDS each). The played tick never defers.
+void resident_tail_defer(bool on);
+bool resident_tail_pending();
+std::vector<std::vector<int32_t>> resident_tail_finish();
+
 // arc #63 P3 (docs/swarm_P3_impl.md §4.4): the swarm stage, called by
 // resident_tail after temperature and before its books D2H (no third host
 // sync): every species present in some env (a.swarm_species) launched over

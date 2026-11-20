@@ -2047,6 +2047,10 @@ class PhysicsRunner:
 # uploads, before the exit downloads) -- tests/cuda_tick_capture_check.py
 # captures the chain in global mode through it. None in every real run.
 _TICK_CAPTURE = None
+# #29 P7e.5 (Class T, the conductor's profile): when set, a callable taking a
+# label, called at each stage boundary of the device chain (the bench's
+# sub-slot marks, ``bp.conductor_profile_mark``). None in every played run.
+_PROFILE_MARK = None
 
 
 def run_resident_batch(runners, gmaps, sim_time, water_before_base=None,
@@ -2166,12 +2170,17 @@ def run_resident_batch(runners, gmaps, sim_time, water_before_base=None,
     return [list(d) for d in destroyed]
 
 
-def _resident_chain(runners, gmaps, ctxs, sim_time, water_before_base, div_source_dev):
+def _resident_chain(runners, gmaps, ctxs, sim_time, water_before_base, div_source_dev,
+                    swarm_tick_row=None):
     """Slot 7's device chain from the water stage to the tail's ONE books D2H
     (#29 P7e.4: code motion out of :func:`run_resident_batch`, so the played
     tick and the device conductor's slot 7, :func:`run_resident_conductor`,
     run ONE chain). Each env's swarm death rows land on its runner. Returns
-    each env's burn-through list (row-major, from the books D2H)."""
+    each env's burn-through list (row-major, from the books D2H).
+    ``swarm_tick_row`` (#29 P7e.5, the conductor only): the device address of
+    the tick row the swarm's launch words are written from on the device
+    (None, the played tick: ``sim.draws``' tick and key, as before)."""
+    mark = _PROFILE_MARK
     n_env = len(runners)
     r0, g0 = runners[0], gmaps[0]
     h, w = g0._h, g0._w
@@ -2205,15 +2214,21 @@ def _resident_chain(runners, gmaps, ctxs, sim_time, water_before_base, div_sourc
             n_env=n_env, engines=engines)
 
     # 3b. the EOS stage (the device pre-stage, the masked substep loops).
+    if mark is not None:
+        mark("7 EOS substeps")
     if div_source_dev is not None:          # #29 P7c.2: the device-taken source
         dev["div_source_taken"] = int(div_source_dev)
     e0.run_substeps_resident(dev, h, w, cons, sim_time, ambient,
                              n_amb=amb[1], p_amb=int(amb[2]),
                              n_env=n_env, engines=engines)
     # 3c. the once-per-tick TRACE TAIL (smoke transport v2, #12 P2b).
+    if mark is not None:
+        mark("7 trace tail")
     e0.run_trace_tail_resident(dev, h, w, cons, g0.gases.diffusion, g0.gases.decay,
                                sim_time, ambient, n_env=n_env, engines=engines)
     # 3d. COMBUSTION (#29 P4a; the CPU twin since #71).
+    if mark is not None:
+        mark("7 combustion")
     e0.run_combustion_resident(
         dev, h, w, n_gases, int(g0.dem_acc.shape[0]),
         r0._o2_idx, r0._inert_n2_idx, r0._black_smoke_idx,
@@ -2236,31 +2251,36 @@ def _resident_chain(runners, gmaps, ctxs, sim_time, water_before_base, div_sourc
         g0.gases.heat_absorb_q16, g0.gases.light_absorb_q16,
         g0.gases.light_glow_q16, n_env=n_env, engines=engines,
         swarm=_swarm.engine_args(gmaps, [r._draws for r in runners], sim_time,
-                                 resident=True))
+                                 resident=True, tick_row=swarm_tick_row))
     for r, rows in zip(runners, swarm_rows):
         r.swarm_death_rows = rows
     return destroyed
 
 
-def run_resident_conductor(runner, gmap, sim_time, div_source_dev):
-    """#29 P7e.4 (Class T): slot 7 of the DEVICE CONDUCTOR
-    (``simulation.conductor``) at N = 1, on resident buffers that ARE the
-    truth: the physics head's host books (the trace dt check, the per-tick
-    saturation books), then :func:`_resident_chain` with the blast source the
-    SOURCES stage took on the device (``div_source_dev``). Slot 6's stamp and
-    slot 6b's flush ran on the device before it, so there is no stamp row,
-    no edit buffer, no entry upload and no exit download here; water is
-    dormant by the conductor's refusal (a map with water is refused at its
-    build), light and an ambient map likewise. Returns the burn-through list
-    (row-major, from the tail's books D2H), which the conductor does not
-    read: slot 9 ranks the resident fire's own list on the device."""
-    runner._check_trace_dt(gmap, sim_time)
-    runner.eos.reset_trace_sat_books(int(gmap.gas.shape[0]))
-    ctx = runner._resident_scalars(gmap)
-    ctx["water_dormant"] = True
-    ctx["sim_time"] = sim_time
-    return list(_resident_chain([runner], [gmap], [ctx], sim_time, None,
-                                int(div_source_dev))[0])
+def run_resident_conductor(runners, gmaps, sim_time, div_source_dev, tick_row):
+    """#29 P7e.4 / P7e.5 (Class T): slot 7 of the DEVICE CONDUCTOR
+    (``simulation.conductor``) over its N envs, on resident buffers that ARE
+    the truth: each env's physics head host books (the trace dt check, the
+    per-tick saturation books), then :func:`_resident_chain` with the blast
+    source the SOURCES stage took on the device (``div_source_dev``, the
+    batch's (N, h, w) base) and the swarm's launch words from the device tick
+    row (``tick_row``, its address). Slot 6's stamp and slot 6b's flush ran on
+    the device before it, so there is no stamp row, no edit buffer, no entry
+    upload and no exit download here; water is dormant by the conductor's
+    refusal (a map with water is refused at its build), light and an ambient
+    map likewise. The tail's fold is DEFERRED (``bp.resident_tail_defer``,
+    set by the conductor): no books sync here; the conductor folds after its
+    one books read (``bp.resident_tail_finish``)."""
+    ctxs = []
+    for r, g in zip(runners, gmaps):
+        r._check_trace_dt(g, sim_time)
+        r.eos.reset_trace_sat_books(int(g.gas.shape[0]))
+        ctx = r._resident_scalars(g)
+        ctx["water_dormant"] = True
+        ctx["sim_time"] = sim_time
+        ctxs.append(ctx)
+    return _resident_chain(list(runners), list(gmaps), ctxs, sim_time, None,
+                           int(div_source_dev), swarm_tick_row=int(tick_row))
 
 
 def fold_edit_queue_books(lay, gmap, b, rng) -> None:

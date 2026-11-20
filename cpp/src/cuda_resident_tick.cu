@@ -291,6 +291,18 @@ struct ResidentTickState {
     struct SwarmRan { int law; int max_units; std::vector<int32_t> hw; };
     std::vector<SwarmRan> swarm_ran;
     std::vector<uint32_t> swarm_launch;
+    // #29 P7e.5 (Class T): the device conductor's deferred fold -- the tail
+    // enqueues its books D2H and returns; resident_tail_finish folds after the
+    // conductor's one books read (the played tick never sets defer_fold).
+    bool defer_fold = false;
+    struct PendingFold {
+        bool on = false;
+        std::vector<const PhysicsEngine*> engs;
+        int N = 0, h = 0, w = 0, n_gases = 0;
+        bool with_light = false, swarm = false;
+        int32_t max_fire_thresh_q = 0;
+        int* dlist = nullptr;
+    } pending;
     // this tick's light inputs (resident_upload_light)
     bool light_uploaded = false;
     bool l_cones = false, l_sky = false, l_emult = false;
@@ -951,7 +963,7 @@ void resident_swarm(const EngineList& engs, const ResidentFields& f,
         const int launched = swarm::resident_species(
             sp.law, sp.st, sp.max_units, N, f.h, f.w, P<const int32_t>(f.temperature),
             P<const bool>(f.solid), S.swarm_launch.data(), sp.tables, sp.table_width,
-            cnt, static_cast<void*>(st), bite, count);
+            cnt, static_cast<void*>(st), bite, count, a.swarm_tick_row);
         if (launched > 0) {
             any = true;
             ++g_counts[17];
@@ -965,6 +977,37 @@ void resident_swarm(const EngineList& engs, const ResidentFields& f,
 // ---------------------------------------------------------------------------
 // the tail: the bulk sum, fire, the sweep, temperature; the books; destroyed
 // ---------------------------------------------------------------------------
+std::vector<std::vector<std::pair<int, int>>> resident_tail_fold(
+        const EngineList& engs, int N, int h, int w, int n_gases, bool with_light,
+        int32_t max_fire_thresh_q, int* dlist,
+        std::vector<std::vector<int32_t>>* swarm_rows_out, bool want_destroyed);
+
+void resident_tail_defer(bool on) {
+    if (!on && g_rt.pending.on)
+        throw std::logic_error("resident_tail_defer(false): a deferred fold is still pending");
+    g_rt.defer_fold = on;
+}
+
+bool resident_tail_pending() { return g_rt.pending.on; }
+
+std::vector<std::vector<int32_t>> resident_tail_finish() {
+    ResidentTickState& S = g_rt;
+    if (!S.pending.on)
+        throw std::logic_error("resident_tail_finish: no deferred fold is pending");
+    // The caller's one books read has synchronised the tick stream: the
+    // tail's D2H has landed. Checked without a wait (a query is no sync).
+    if (cudaStreamQuery(tstream()) != cudaSuccess)
+        throw std::logic_error("resident_tail_finish: the tick stream is still busy (the "
+                               "conductor's books read must come first)");
+    ResidentTickState::PendingFold p = S.pending;
+    S.pending = ResidentTickState::PendingFold{};
+    std::vector<std::vector<int32_t>> rows;
+    resident_tail_fold(p.engs, p.N, p.h, p.w, p.n_gases, p.with_light, p.max_fire_thresh_q,
+                       p.dlist, p.swarm ? &rows : nullptr, /*want_destroyed=*/false);
+    if (!p.swarm) rows.assign((size_t)p.N, std::vector<int32_t>());
+    return rows;
+}
+
 std::vector<std::vector<std::pair<int, int>>> resident_tail(
         const EngineList& engs, const ResidentFields& f, const ResidentTickArgs& a) {
     check_batch(engs, f, "resident_tail");
@@ -1004,6 +1047,7 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail(
     unsigned long long* arena = S.arena_dev();
     const int block = 256, grid = (int)((nn + block - 1) / block);
 
+    profile_mark("7 tail: bulk sum + fire");   // #29 P7e.5: the profile (no-op unless open)
     // ---- the bulk sum (step_tail's n_bulk_, built ONCE before the fire) ---
     int32_t* n_bulk = S.n_bulk.get<int32_t>(nn);
     rt_nbulk<<<grid, block, 0, st>>>(n_bulk, P<const int32_t>(f.gas),
@@ -1030,6 +1074,7 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail(
         fire_gate, fire_cnt, dlist);
     ++g_counts[3];
 
+    profile_mark("7 tail: radiation sweep");   // #29 P7e.5: the profile (no-op unless open)
     // ---- 2b. the radiation sweep (heat; light when requested) -------------
     // The ACTIVE gases decide the gas group, as the per-call wrapper decides
     // it: a zero coefficient adds exactly 0 to a density sum, so the full
@@ -1119,6 +1164,7 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail(
     if (with_light) ++g_counts[6];
     S.light_uploaded = false;   // the next tick hands its own inputs over
 
+    profile_mark("7 tail: temperature");   // #29 P7e.5: the profile (no-op unless open)
     // ---- 3. temperature ---------------------------------------------------
     const TemperatureSolver& tsv = eng.temperature;
     const TemperatureScalars tsc = temperature_bake_scalars(
@@ -1137,10 +1183,12 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail(
         tsc, arena + S.L.temp, /*solid_books=*/true);
     ++g_counts[7];
 
+    profile_mark("7 tail: swarm");   // #29 P7e.5: the profile (no-op unless open)
     // ---- 4. the swarm stage (arc #63 P3): the LAST stage of slot 7, after
     //      temperature, before the books D2H -- no third host sync -----------
     resident_swarm(engs, f, a);
 
+    profile_mark("7 tail: books D2H");   // #29 P7e.5: the profile (no-op unless open)
     // ---- THE ONE BOOKS D2H (every stage, every env; it waits for the chain)
     unsigned char* hb = S.arena_host();
     cuda_check(cudaMemcpyAsync(hb, arena, S.L.end * 8, cudaMemcpyDeviceToHost, st),
@@ -1150,14 +1198,51 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail(
     cuda_check(cudaMemcpy2DAsync(hheads, (size_t)DESTROYED_HEAD * 4, dlist, (size_t)n * 4,
                                  (size_t)head * 4, (size_t)N, cudaMemcpyDeviceToHost, st),
                "D2H destroyed heads");
-    tick_sync_point("books");   // the tick's one books read
     ++g_counts[8];
+    // #29 P7e.5 (Class T): the device conductor DEFERS the fold -- no sync here;
+    // its one books read at the tick's end waits for this D2H too, then
+    // resident_tail_finish folds (the conductor reads no destroyed list: slot 9
+    // ranks the fire's own list on the device). The played tick never defers.
+    if (S.defer_fold) {
+        if (S.pending.on)
+            throw std::logic_error("resident_tail: a deferred fold is still pending "
+                                   "(resident_tail_finish was not called)");
+        S.pending.on = true;
+        S.pending.engs = engs;
+        S.pending.N = N;
+        S.pending.h = h;
+        S.pending.w = w;
+        S.pending.n_gases = n_gases;
+        S.pending.with_light = with_light;
+        S.pending.max_fire_thresh_q = fsc.max_fire_thresh_q;
+        S.pending.dlist = dlist;
+        S.pending.swarm = (a.swarm_rows != nullptr);
+        return destroyed;
+    }
+    tick_sync_point("books");   // the tick's one books read
+    return resident_tail_fold(engs, N, h, w, n_gases, with_light, fsc.max_fire_thresh_q,
+                              dlist, a.swarm_rows, /*want_destroyed=*/true);
+}
+
+// The fold of the tail's books (every env's engine, the swarm's death rows,
+// the destroyed walls), after the books D2H has landed: the played tick's
+// tail calls it right after its sync; the conductor's deferred fold calls it
+// from resident_tail_finish after the conductor's one books read.
+std::vector<std::vector<std::pair<int, int>>> resident_tail_fold(
+        const EngineList& engs, int N, int h, int w, int n_gases, bool with_light,
+        int32_t max_fire_thresh_q, int* dlist,
+        std::vector<std::vector<int32_t>>* swarm_rows_out, bool want_destroyed) {
+    ResidentTickState& S = g_rt;
+    const int n = h * w;
+    std::vector<std::vector<std::pair<int, int>>> destroyed((size_t)N);
+    unsigned char* hb = S.arena_host();
+    int* hheads = reinterpret_cast<int*>(hb + S.L.end * 8);
     const unsigned long long* hu = reinterpret_cast<const unsigned long long*>(hb);
     const bool edq_ran = S.edq_ran;   // #29 P4c (cleared before any fold can throw)
     S.edq_ran = false;
     std::vector<ResidentTickState::SwarmRan> swarm_ran;   // arc #63 P3 (ditto)
     swarm_ran.swap(S.swarm_ran);
-    if (a.swarm_rows != nullptr) a.swarm_rows->assign((size_t)N, std::vector<int32_t>());
+    if (swarm_rows_out != nullptr) swarm_rows_out->assign((size_t)N, std::vector<int32_t>());
 
     for (int e = 0; e < N; ++e) {
         const PhysicsEngine& E = *engs[(size_t)e];
@@ -1362,8 +1447,8 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail(
 
         // ---- arc #63 P3: the swarm stage's records -> this env's death rows,
         //      in (species, slot) order, cross-checked against its counter ---
-        if (a.swarm_rows != nullptr) {
-            std::vector<int32_t>& rows = (*a.swarm_rows)[(size_t)e];
+        if (swarm_rows_out != nullptr) {
+            std::vector<int32_t>& rows = (*swarm_rows_out)[(size_t)e];
             rows.clear();
             long long deaths = 0;
             for (const auto& sr : swarm_ran) {
@@ -1400,8 +1485,8 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail(
         const int* fcnt = reinterpret_cast<const int*>(hu + S.L.fire_cnt);
         const int32_t* fgate = reinterpret_cast<const int32_t*>(hu + S.L.fire_gate);
         int counter = fcnt[e];
-        if (fgate[e] >= fsc.max_fire_thresh_q) ++g_counts[4];
-        if (counter > 0) {
+        if (fgate[e] >= max_fire_thresh_q) ++g_counts[4];
+        if (counter > 0 && want_destroyed) {
             if (counter > n) counter = n;   // defensive (cannot exceed n slots)
             std::vector<int> idx((size_t)counter);
             const int* hh = hheads + (size_t)e * DESTROYED_HEAD;
