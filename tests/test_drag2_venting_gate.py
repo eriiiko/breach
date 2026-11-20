@@ -122,7 +122,17 @@ BOUND_RATIO = 1.5                    # design §6's shared bound, all legs
 # scenario -- so it gets its own, leg-local bound restated around the
 # measured value with margin, instead of quietly loosening the SHARED
 # BOUND_RATIO that legs 1/2 still gate on.
-LEG4_BOUND_RATIO = 1.4               # measured 1.4706; ~5% margin below it
+# RESTATED #217 patch U (2026-11-20): transport moves air in METRES since
+# patch U (wind is m/s, Erik's ruling), so at this scenario's 0.333 m tiles
+# both the baseline and the k_drag=10 molasses vent ~3x faster and their
+# ratio fell from 1.4706 to a measured 1.3333. The negative control's
+# property stays (a 20x linear drag measurably slows venting past its own
+# bound); the bound is restated around the new measurement with the same
+# ~5% margin. NOTE for the k_drag / k_drag2 tuning session with Erik: the
+# molasses now sits well under the SHARED 1.5x bound, i.e. the shared bound
+# alone would no longer catch it (docs/eos_checkerboard_design_2026-11-20.md
+# section 7.3's dial list).
+LEG4_BOUND_RATIO = 1.27              # measured 1.3333 (was 1.4 / 1.4706); ~5% margin
 
 
 def _build_scenario():
@@ -381,6 +391,9 @@ def test_leg4_linear_negative_control_k_drag_10_must_exceed_bound(legs):
     (this sim is fixed-point, not stochastic), but still worth flagging: a
     future change elsewhere that shifts this leg's crossing tick by even one
     tick could flip this assertion again.
+
+    RESTATED #217 patch U (2026-11-20): transport in metres moved the ratio
+    to a measured 1.3333; `LEG4_BOUND_RATIO` restated to 1.27 (see there).
     """
     r = legs["lin"]
     print(f"\nleg4 k_drag={LIN_NEG_CONTROL_KDRAG}: tick50={r['tick50']} "
