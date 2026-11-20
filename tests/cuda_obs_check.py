@@ -84,7 +84,7 @@ FAILS: list = []
 BREAK = os.environ.get("OBS_BREAK", "")
 #: The patch this script's gates are at: every column owned by it or an
 #: earlier patch of the version-2 table is compared.
-PATCH = "P8.0"
+PATCH = "P8.1"
 #: The decision cadence of the corpus (design 13.1's decimation, a run file's
 #: ``[run] decimation``; the device observation takes it as its argument).
 DECIMATION = 4
@@ -296,6 +296,25 @@ def _anchor_break(obs):
     obs.build = broken
 
 
+def _divisor_break(obs):
+    """THE BREAK ``divisor`` (P8.1): the obs table's weapon block shifted one
+    row, so a column's divisor (``rounds`` / ``mag_size``, ``range``, ...)
+    is read from the NEIGHBOURING weapon row; must turn the gate red."""
+    import cupy as cp
+    off = {n: o for n, o, _ in dobs.table_layout()}
+    ww = len(dobs.WEAPON_FIELDS)
+    nw = int(bp_layout("OBS_TAB_N_WEAPONS"))
+    t = obs.table_host.copy()
+    blk = t[:, off["WEAPON"]:off["WEAPON"] + nw * ww].reshape(len(t), nw, ww)
+    blk[:] = np.roll(blk, -1, axis=1)
+    obs.table = cp.asarray(t)
+
+
+def bp_layout(name: str) -> int:
+    """A generated constant of the observation's layout (device_obs's own list)."""
+    return dict(dobs._constants())[name]
+
+
 def gate(label, played: list, census: Census | None = None) -> bool:
     """The conductor over twins of ``played`` (one level), each env fed its
     tapped intents; every env's owned device arrays equal to its reference
@@ -310,6 +329,8 @@ def gate(label, played: list, census: Census | None = None) -> bool:
         _anchor_break(obs)
     if BREAK == "stale":                           # nothing rebuilt after tick 0
         obs.skip_build = True
+    if BREAK == "divisor":                         # rounds over the NEXT weapon row's magazine
+        _divisor_break(obs)
     n_cmp = 0
     end = max(p.end for p in played)
     t0 = time.perf_counter()
@@ -335,10 +356,16 @@ def gate(label, played: list, census: Census | None = None) -> bool:
                         idx = np.argwhere(raw(w) != raw(g)) if w.shape == g.shape else []
                         at = tuple(int(x) for x in idx[0]) if len(idx) else "shape"
                         fail(f"{label}: tick {tick}, env {e} ({p.name}@{p.seed}), {kk[0]}"
-                             f"{'' if kk[1] is None else ' plane ' + kk[1]}: {len(idx)} value(s) "
-                             f"differ, first at (row, ...) {at}: reference "
+                             f"{'' if kk[1] is None else ' column/plane ' + kk[1]}: {len(idx)} "
+                             f"value(s) differ, first at (row, ...) {at}: reference "
                              f"{w[tuple(idx[0])] if len(idx) else w.shape} device "
-                             f"{g[tuple(idx[0])] if len(idx) else g.shape}")
+                             f"{g[tuple(idx[0])] if len(idx) else g.shape}"
+                             + (f" (bits 0x{int(raw(w)[tuple(idx[0])]):x} vs "
+                                f"0x{int(raw(g)[tuple(idx[0])]):x})" if len(idx) else ""))
+                        if np.issubdtype(w.dtype, np.floating):
+                            nan_w, nan_g = int(np.isnan(w).sum()), int(np.isnan(g).sum())
+                            if nan_w or nan_g:
+                                print(f"    NaNs: reference {nan_w}, device {nan_g}")
                         return False
                 if census is not None:
                     census.add(want, want[("valid", None)] if ("valid", None) in want
@@ -513,8 +540,101 @@ def part_ended():
         print("  NOTE: the reference planes did not move over the match")
 
 
+def half_corpus() -> np.ndarray:
+    """EVERY float16 rounding case as float64: every float16 value (all 2^16
+    bit patterns, inf and NaN included), every midpoint of two neighbouring
+    finite halves and its two float64 neighbours, the overflow boundary
+    (65520 and its neighbours), values past it, the underflow boundary
+    (2^-25 and its neighbours, 2^-26, float64 subnormals), signed zeros,
+    NaN payloads; both signs."""
+    h = np.arange(0x7c00, dtype=np.uint16).view(np.float16).astype(np.float64)
+    mids = (h[:-1] + h[1:]) / 2.0                         # exact in float64
+    edge = np.array([65504.0, 65520.0, 65536.0, 1e5, 1e300, np.inf, 2.0 ** -24,
+                     2.0 ** -25, 2.0 ** -26, 3 * 2.0 ** -26, 5e-324, 2.2e-308, 0.0])
+    pos = np.concatenate([h, mids, edge])
+    pos = np.concatenate([pos, np.nextafter(pos, np.inf), np.nextafter(pos, -np.inf)])
+    pos = pos[pos >= 0.0]
+    allh = np.arange(1 << 16, dtype=np.uint32).astype(np.uint16).view(np.float16).astype(
+        np.float64)
+    nans = np.array([0x7ff8000000000000, 0x7ff0000000000001, 0x7ff4000000000000,
+                     0x7ff00400_00000000, 0xfff8000000000000, 0x7fffffffffffffff],
+                    dtype=np.uint64).view(np.float64)
+    return np.concatenate([pos, -pos, allh, nans])
+
+
+def part_floatkit():
+    """The observation's float kit on the card (``cpp/src/cuda_obs_float.cuh``):
+    the hand double -> float16 conversion EXHAUSTIVELY equal to numpy's direct
+    conversion; the double -> float32 cast equal to numpy's; a*b + c never
+    contracted (numpy rounds twice); the squash's served float32 equal to the
+    host's ``obs_spec_v1.squash`` on a dense sweep (CUDA's log against the
+    host's libm: the count is reported). Breaks: ``half_f32`` (the conversion
+    through float32, double rounding), ``fused`` (an explicit fma, what
+    contraction would build)."""
+    from simulation import obs_spec_v1 as o
+    rng = np.random.default_rng(81)
+    # -- float16 --
+    xs = half_corpus()
+    with np.errstate(over="ignore", invalid="ignore"):
+        want = xs.astype(np.float16).view(np.uint16)
+    got = np.asarray(bp.obs_probe_half(xs, via_f32=(BREAK == "half_f32")))
+    bad = np.flatnonzero(got != want)
+    print(f"  float16: {len(xs)} values (every half, every midpoint +- 1 ulp, the edges, "
+          f"NaNs): {len(bad)} differ from numpy")
+    if len(bad):
+        i = bad[0]
+        fail(f"floatkit: double -> float16 differs on {len(bad)} of {len(xs)}: first "
+             f"{xs[i]!r} (0x{int(np.float64(xs[i]).view(np.uint64)):016x}) numpy "
+             f"0x{int(want[i]):04x} device 0x{int(got[i]):04x}")
+    # -- float32 --
+    rnd = np.concatenate([rng.uniform(-70000, 70000, 200000),
+                          np.exp(rng.uniform(-750, 700, 200000)) * rng.choice([-1, 1], 200000)])
+    xf = np.concatenate([xs, rnd, np.nextafter(rnd, np.inf)])
+    with np.errstate(over="ignore", invalid="ignore"):
+        wf = xf.astype(np.float32).view(np.uint32)
+    gf = np.asarray(bp.obs_probe_f32(xf)).view(np.uint32)
+    badf = np.flatnonzero(gf != wf)
+    print(f"  float32: {len(xf)} values: {len(badf)} differ from numpy")
+    if len(badf):
+        i = badf[0]
+        fail(f"floatkit: double -> float32 differs on {len(badf)}: first {xf[i]!r} numpy "
+             f"0x{int(wf[i]):08x} device 0x{int(gf[i]):08x}")
+    # -- no contraction: c = -(a*b rounded), so a*b + c is 0 unrounded-twice and
+    # the product's rounding error when fused --
+    a = rng.uniform(0.5, 2.0, 100000)
+    b = rng.uniform(0.5, 2.0, 100000)
+    c = -(a * b)
+    wm = (a * b) + c                                       # numpy: two roundings
+    gm = np.asarray(bp.obs_probe_muladd(a, b, c, fused=(BREAK == "fused")))
+    fused = np.asarray(bp.obs_probe_muladd(a, b, c, fused=True))
+    badm = int(np.count_nonzero(gm.view(np.uint64) != wm.view(np.uint64)))
+    disc = int(np.count_nonzero(fused.view(np.uint64) != wm.view(np.uint64)))
+    print(f"  a*b + c: {len(a)} triples, {badm} differ from numpy's two roundings; the "
+          f"fused form differs on {disc} (the inputs discriminate)")
+    if badm:
+        fail(f"floatkit: a*b + c is contracted on {badm} of {len(a)} triples")
+    if disc < len(a) // 2:
+        fail(f"floatkit: the contraction probe's inputs do not discriminate ({disc})")
+    # -- the squash: CUDA's log against the host's (the served float32) --
+    sx = np.concatenate([np.exp(rng.uniform(0.0, 3.2, 300000)),
+                         -np.exp(rng.uniform(0.0, 3.2, 100000)),
+                         rng.uniform(-1.0, 1.0, 10000),
+                         np.array([1.0, -1.0, np.e ** 3, np.nextafter(np.e ** 3, 0), 1e9]),
+                         np.arange(1, 4097, dtype=np.float64) / 16.0])
+    g64, g32 = bp.obs_probe_squash(sx)
+    w64 = np.array([o.squash(x) for x in sx], dtype=np.float64)
+    w32 = w64.astype(np.float32)
+    d64 = int(np.count_nonzero(np.asarray(g64).view(np.uint64) != w64.view(np.uint64)))
+    d32 = int(np.count_nonzero(np.asarray(g32).view(np.uint32) != w32.view(np.uint32)))
+    print(f"  squash: {len(sx)} values: float64 differs from the host's on {d64}, the "
+          f"served float32 on {d32}")
+    if d32:
+        fail(f"floatkit: the squash's served float32 differs from the host's on {d32} of "
+             f"{len(sx)} values (CUDA's log vs the host's: the shared-module trigger)")
+
+
 PARTS = {"gate": part_gate, "batch": part_batch, "handover": part_handover,
-         "syncs": part_syncs, "ended": part_ended}
+         "syncs": part_syncs, "ended": part_ended, "floatkit": part_floatkit}
 
 
 def main(parts=None) -> int:

@@ -747,6 +747,63 @@ PYBIND11_MODULE(breach_physics, m) {
           "#29 P8.0: the device observation's first block on the tick stream (no sync): "
           "valid / in_match and the near wall / door, far wall share / door planes of every "
           "env on its decision tick (cpp/src/cuda_obs.cu).");
+    m.def("obs_vector",
+          [](int n_env, std::uintptr_t store, int n_units, int store_w,
+             const breach_cuda::UnitTablesDevice& tables, std::uintptr_t rowmap, int n_rows,
+             int n_slots, int n_teams, std::uintptr_t obs_table, int table_w,
+             std::uintptr_t teams, std::uintptr_t tick_row, std::uintptr_t params,
+             std::uintptr_t ended, std::uintptr_t vector) {
+              breach_cuda::obs_vector(n_env, store, n_units, store_w, tables, rowmap, n_rows,
+                                      n_slots, n_teams, obs_table, table_w, teams, tick_row,
+                                      params, ended, vector);
+          },
+          py::arg("n_env"), py::arg("store"), py::arg("n_units"), py::arg("store_w"),
+          py::arg("tables"), py::arg("rowmap"), py::arg("n_rows"), py::arg("n_slots"),
+          py::arg("n_teams"), py::arg("obs_table"), py::arg("table_w"), py::arg("teams"),
+          py::arg("tick_row"), py::arg("params"), py::arg("ended"), py::arg("vector"),
+          "#29 P8.1: the device observation's vector columns of the store and the tables "
+          "(device_obs.BUILT['vector']) on the tick stream (no sync), every env on its "
+          "decision tick (cpp/src/cuda_obs.cu).");
+    m.def("obs_probe_half",
+          [](py::array_t<double, py::array::c_style | py::array::forcecast> x, bool via_f32) {
+              py::array_t<uint16_t> out(x.size());
+              breach_cuda::obs_probe_half(x.data(), out.mutable_data(), (int)x.size(), via_f32);
+              return out;
+          },
+          py::arg("x"), py::arg("via_f32") = false,
+          "#29 P8.1 TEST-ONLY: the observation kit's double -> float16 bits on the card "
+          "(via_f32: THE BREAK, double rounding through float32).");
+    m.def("obs_probe_f32",
+          [](py::array_t<double, py::array::c_style | py::array::forcecast> x) {
+              py::array_t<float> out(x.size());
+              breach_cuda::obs_probe_f32(x.data(), out.mutable_data(), (int)x.size());
+              return out;
+          },
+          py::arg("x"), "#29 P8.1 TEST-ONLY: the observation kit's double -> float32 cast.");
+    m.def("obs_probe_muladd",
+          [](py::array_t<double, py::array::c_style | py::array::forcecast> a,
+             py::array_t<double, py::array::c_style | py::array::forcecast> b,
+             py::array_t<double, py::array::c_style | py::array::forcecast> c, bool fused) {
+              if (a.size() != b.size() || a.size() != c.size())
+                  throw std::invalid_argument("obs_probe_muladd: a, b, c sizes differ");
+              py::array_t<double> out(a.size());
+              breach_cuda::obs_probe_muladd(a.data(), b.data(), c.data(), out.mutable_data(),
+                                            (int)a.size(), fused);
+              return out;
+          },
+          py::arg("a"), py::arg("b"), py::arg("c"), py::arg("fused") = false,
+          "#29 P8.1 TEST-ONLY: the observation kit's a*b + c, never fused (fused: THE "
+          "BREAK, an explicit fma).");
+    m.def("obs_probe_squash",
+          [](py::array_t<double, py::array::c_style | py::array::forcecast> x) {
+              py::array_t<double> out64(x.size());
+              py::array_t<float> out32(x.size());
+              breach_cuda::obs_probe_squash(x.data(), out64.mutable_data(),
+                                            out32.mutable_data(), (int)x.size());
+              return py::make_tuple(out64, out32);
+          },
+          py::arg("x"), "#29 P8.1 TEST-ONLY: the observation kit's squash (CUDA's log), "
+          "float64 and its float32.");
     m.def("tick_stream_ptr", []() {
               return reinterpret_cast<std::uintptr_t>(breach_cuda::tick_stream_handle());
           },

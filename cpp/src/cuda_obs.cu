@@ -27,15 +27,32 @@
 #include <string>
 
 #include "cuda_batch.cuh"          // tstream(): THE tick stream (blocking)
+#include "cuda_obs_float.cuh"      // #29 P8.1: the observation's float kit
 #include "cuda_unit_events.h"      // UnitRecordList (the door tables' buffers)
+#include "cuda_unit_lib.cuh"       // #29 P8.1: the unit library's integer reads (used, never added to)
+#include "cuda_unit_store.h"       // UnitTablesDevice
+#include "fixed_point.h"           // cos_q16 / sin_q16 (the kit)
 #include "obs_layout.h"
 #include "object_tables_layout.h"
 #include "unit_draws_layout.h"
 #include "unit_store_layout.h"
+#include "unit_tables_layout.h"
 
 namespace breach_cuda {
 
 using namespace obs_layout;
+
+// The spec's constants the observation shares with the unit layouts.
+static_assert(OBS_HAND_GRENADE_SLOTS == unit_store::UNIT_COL_GRENADE_COUNTS_W,
+              "the vector's grenade slots are the store's grenade counts");
+static_assert(OBS_TAB_N_GRENADES == OBS_HAND_GRENADE_SLOTS,
+              "the loadout rows' grenade block is the vector's grenade slots");
+static_assert(OBS_N_STATUS_KINDS == unit_tables::UNIT_N_STATUS_KINDS,
+              "one status registry");
+static_assert(OBS_PI_Q16 == unit_lib::PI_Q16, "one PI_Q16");
+static_assert(OBS_NO_ROW == unit_lib::NO_ROW, "one NO_ROW");
+static_assert(OBS_TAB_N_WEAPONS == unit_tables::UNIT_TAB_WEAPON_MAG_SIZE_W,
+              "the obs table's weapon rows are the device tables' weapon rows");
 
 namespace {
 
@@ -168,6 +185,234 @@ __global__ void k_obs_block(const int64_t* store, int n_units, const int32_t* ro
     }
 }
 
+// ---------------------------------------------------------------------------
+// #29 P8.1: THE VECTOR's columns of the store and the tables (spec 1.1, 1.2,
+// 1.5: obs_spec_v1.build_vector / _kit_values, line for line). One thread per
+// (env, row); a row that is not valid reads 0 in every column this block owns
+// (observe_rows zeroes the vector). Every value is float64 in the reference's
+// order (obs_f64), cast ONCE to float32. The table values come from the obs
+// table (`ot`, device_obs.table_values) and the team rows; the unit
+// library's integer reads (mag_status, composed_flags, handling_ticks,
+// scaled, wrap_q16) take the device tables (`tab`) as they were built for.
+// ---------------------------------------------------------------------------
+using namespace obs_f64;
+
+__device__ __forceinline__ void put_v(float* v, int col, double x) { v[col] = to_f32(x); }
+
+__global__ void k_obs_vector(const int64_t* store, int n_units, const int64_t* tables,
+                             const int32_t* rowmap, int n_rows, int n_slots, int n_teams,
+                             const int64_t* otab, const int64_t* teams, const int64_t* trow,
+                             const int64_t* params, const uint8_t* ended, float* vector) {
+    const int e = blockIdx.y;
+    const int r = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r >= n_rows || !env_due(e, trow, params, ended)) return;
+    const size_t er = (size_t)e * n_rows + r;
+    float* v = vector + er * OBS_V;
+    const int team = r / n_slots;
+    const int sr = rowmap[er];
+    const int64_t* env_rows = store + (size_t)e * n_units * unit_store::UNIT_STORE_W;
+    const int64_t* u = nullptr;
+    bool valid = false;
+    if (sr >= 0 && sr < n_units) {
+        u = env_rows + (size_t)sr * unit_store::UNIT_STORE_W;
+        valid = u[unit_store::UNIT_COL_LIFE_STATE] == OBS_LIFE_ALIVE &&
+                u[unit_store::UNIT_COL_TEAM] == (int64_t)team;
+    }
+    // the columns this block owns, zeroed first (the reference's out[...] = 0)
+    const int owned[] = {
+        OBS_V_FACING_COS, OBS_V_FACING_SIN, OBS_V_OMEGA, OBS_V_TURN_LEFT, OBS_V_PUSHED_X,
+        OBS_V_PUSHED_Y, OBS_V_EFFORT, OBS_V_REACT, OBS_V_PRONE, OBS_V_CAN_MOVE, OBS_V_CAN_ACT,
+        OBS_V_CAN_AIM, OBS_V_ROUNDS, OBS_V_MAGS, OBS_V_AMMO_UNTRACKED, OBS_V_RELOADING,
+        OBS_V_RELOAD_LEFT, OBS_V_THROW_WINDUP, OBS_V_THROW_LEFT, OBS_V_THROW_KIND,
+        OBS_V_CHARGES, OBS_V_HAS_CHARGE_KIND, OBS_V_PLANTING, OBS_V_PLANT_LEFT,
+        OBS_V_PLANT_TIMER, OBS_V_MELEE_COOL, OBS_V_HAS_MELEE, OBS_V_SHOVE_COOL, OBS_V_CLASS,
+        OBS_V_WEAPON, OBS_V_RANGE, OBS_V_ROF, OBS_V_SPREAD, OBS_V_TRIGGER, OBS_V_TIME_LEFT,
+        OBS_V_MATES_ALIVE, OBS_V_TEAM_AMMO};
+    for (int c : owned) v[c] = 0.0f;
+    for (int k = 0; k < OBS_N_STATUS_KINDS; ++k) v[OBS_V_STATUS_LEFT_0 + k] = 0.0f;
+    for (int k = 0; k < OBS_HAND_GRENADE_SLOTS; ++k) {
+        v[OBS_V_GRENADE_0 + 2 * k] = 0.0f;
+        v[OBS_V_GRENADE_KIND_OK_0 + 2 * k] = 0.0f;
+    }
+    if (!valid) return;
+    const int64_t* ot = otab + (size_t)e * OBS_TAB_W;
+    const int64_t* tab = tables + (size_t)e * unit_tables::UNIT_TABLES_W;
+    const int64_t tick = trow[(size_t)e * unit_draws::TICK_ROW_W + unit_draws::TICK_ROW_TICK];
+    const double cap = of_bits(OBS_SQUASH_CAP_BITS);
+    bool bad = false;
+    using namespace unit_store;
+    // -- 1.1 body --
+    const int64_t f = u[UNIT_COL_FACING_Q];
+    put_v(v, OBS_V_FACING_COS, div((double)fixedpoint::cos_q16((int32_t)f), (double)OBS_FP_ONE));
+    put_v(v, OBS_V_FACING_SIN, div((double)fixedpoint::sin_q16((int32_t)f), (double)OBS_FP_ONE));
+    const int64_t turn = unit_lib::scaled(u, unit_tables::UNIT_HOOK_TURN,
+                                          ot[OBS_TAB_TURN_RATE_CLASS_Q]);
+    put_v(v, OBS_V_OMEGA, squash(ratio(u[UNIT_COL_OMEGA_Q], turn), cap));
+    put_v(v, OBS_V_TURN_LEFT,
+          div((double)unit_lib::wrap_q16(u[UNIT_COL_FACING_TARGET_Q] - f), (double)OBS_PI_Q16));
+    put_v(v, OBS_V_PUSHED_X, squash(ratio(u[UNIT_COL_PVX], ot[OBS_TAB_V_FALL_Q]), cap));
+    put_v(v, OBS_V_PUSHED_Y, squash(ratio(u[UNIT_COL_PVY], ot[OBS_TAB_V_FALL_Q]), cap));
+    put_v(v, OBS_V_EFFORT, squash(ratio(u[UNIT_COL_EFFORT], OBS_FP_ONE), cap));
+    put_v(v, OBS_V_REACT, ratio(u[UNIT_COL_REACT_TICKS], ot[OBS_TAB_REACT_TICKS]));
+    const unit_lib::Flags fl = unit_lib::composed_flags(u, tab, false, &bad);
+    put_v(v, OBS_V_PRONE, fl.is_prone ? 1.0 : 0.0);
+    put_v(v, OBS_V_CAN_MOVE, fl.can_move ? 1.0 : 0.0);
+    put_v(v, OBS_V_CAN_ACT, fl.can_act ? 1.0 : 0.0);
+    put_v(v, OBS_V_CAN_AIM, fl.can_aim ? 1.0 : 0.0);
+    {   // _status_left: per kind the longest remaining_ticks of the list
+        int64_t best[OBS_N_STATUS_KINDS];
+        for (int k = 0; k < OBS_N_STATUS_KINDS; ++k) best[k] = 0;
+        const int64_t* s = u + UNIT_COL_STATUSES;
+        for (int i = 0; i < unit_lib::STATUS_ROWS; ++i) {
+            const int64_t kind = s[4 * i];
+            if (kind < 0) break;
+            if (kind < OBS_N_STATUS_KINDS && s[4 * i + 2] > best[kind]) best[kind] = s[4 * i + 2];
+        }
+        for (int k = 0; k < OBS_N_STATUS_KINDS; ++k)
+            put_v(v, OBS_V_STATUS_LEFT_0 + k,
+                  squash(ratio(best[k], ot[OBS_TAB_STATUS_SCALE + k]), cap));
+    }
+    // -- 1.2 weapon and kit (_kit_values) --
+    const int64_t w = u[UNIT_COL_WEAPON_ID];                 // NO_ROW: no weapon
+    const int64_t lo = u[UNIT_COL_LOADOUT_NAME];             // NO_ROW: no loadout
+    const int64_t* L = lo >= 0 ? ot + OBS_TAB_LOADOUT + lo * OBS_LOADOUT_W : nullptr;
+    const int64_t* W = w >= 0 ? ot + OBS_TAB_WEAPON + w * OBS_WEAPON_W : nullptr;
+    {
+        const int64_t mags_total = L ? L[OBS_LOADOUT_MAGAZINES] : 0;
+        double rounds = 1.0, mags = 1.0, untracked = 1.0, reloading = 0.0, reload_left = 0.0;
+        const unit_lib::MagStatus m = W ? unit_lib::mag_status(u, tab, tick, &bad)
+                                        : unit_lib::MagStatus{false, 0, -1, false};
+        if (m.tracked) {
+            rounds = ratio(m.rounds, W[OBS_WEAPON_MAG_SIZE]);
+            if (m.spares < 0) {
+                mags = untracked = 1.0;
+            } else {
+                mags = squash(ratio(m.spares, mags_total > 1 ? mags_total : 1), cap);
+                untracked = 0.0;
+            }
+            reloading = m.reloading ? 1.0 : 0.0;
+            if (m.reloading)
+                reload_left = ratio(u[UNIT_COL_RELOAD_DONE_TICK] - tick,
+                                    unit_lib::handling_ticks(u, W[OBS_WEAPON_RELOAD_TICKS]));
+        }
+        put_v(v, OBS_V_ROUNDS, rounds);
+        put_v(v, OBS_V_MAGS, mags);
+        put_v(v, OBS_V_AMMO_UNTRACKED, untracked);
+        put_v(v, OBS_V_RELOADING, reloading);
+        put_v(v, OBS_V_RELOAD_LEFT, reload_left);
+    }
+    for (int k = 0; k < OBS_HAND_GRENADE_SLOTS; ++k) {
+        const int64_t have = L ? L[OBS_LOADOUT_GRENADES + k] : 0;
+        if (have > 0) {
+            put_v(v, OBS_V_GRENADE_0 + 2 * k, ratio(u[UNIT_COL_GRENADE_COUNTS + k], have));
+            put_v(v, OBS_V_GRENADE_KIND_OK_0 + 2 * k, 1.0);
+        }
+    }
+    const int64_t release = u[UNIT_COL_THROW_RELEASE_TICK];
+    if (release >= 0) {
+        put_v(v, OBS_V_THROW_WINDUP, 1.0);
+        put_v(v, OBS_V_THROW_LEFT, ratio(release - tick,
+                                         unit_lib::handling_ticks(u, ot[OBS_TAB_HAND_WINDUP_TICKS])));
+        put_v(v, OBS_V_THROW_KIND, (double)u[UNIT_COL_THROW_KIND]);
+    } else {
+        put_v(v, OBS_V_THROW_KIND, -1.0);
+    }
+    put_v(v, OBS_V_CHARGES, ratio(u[UNIT_COL_HAS_EXPLOSIVE], L ? L[OBS_LOADOUT_EXPLOSIVES] : 0));
+    put_v(v, OBS_V_HAS_CHARGE_KIND, (L && L[OBS_LOADOUT_CHARGE]) ? 1.0 : 0.0);
+    const int64_t pdone = u[UNIT_COL_PLANT_DONE_TICK];
+    if (pdone >= 0) {
+        put_v(v, OBS_V_PLANTING, 1.0);
+        put_v(v, OBS_V_PLANT_LEFT,
+              ratio(pdone - tick, unit_lib::handling_ticks(u, ot[OBS_TAB_PLANT_TICKS])));
+        put_v(v, OBS_V_PLANT_TIMER,
+              ratio(u[UNIT_COL_PLANT_FUSE_TICKS], ot[OBS_TAB_C4_FUSE_MAX_TICKS]));
+    }
+    const int64_t mr = u[UNIT_COL_MELEE_ID];
+    if (mr >= 0 && u[UNIT_COL_LAST_BLOW_TICK] >= 0) {
+        const int64_t rof = ot[OBS_TAB_WEAPON + mr * OBS_WEAPON_W + OBS_WEAPON_ROF_TICKS];
+        const int64_t left = u[UNIT_COL_LAST_BLOW_TICK] + rof - tick;
+        put_v(v, OBS_V_MELEE_COOL, ratio(left > 0 ? left : 0, rof));
+    }
+    put_v(v, OBS_V_HAS_MELEE, mr != OBS_NO_ROW ? 1.0 : 0.0);
+    if (u[UNIT_COL_LAST_SHOVE_TICK] >= 0) {
+        const int64_t cd = ot[OBS_TAB_SHOVE_COOLDOWN_TICKS];
+        const int64_t left = u[UNIT_COL_LAST_SHOVE_TICK] + cd - tick;
+        put_v(v, OBS_V_SHOVE_COOL, ratio(left > 0 ? left : 0, cd));
+    }
+    put_v(v, OBS_V_CLASS, (double)lo);
+    put_v(v, OBS_V_WEAPON, (double)w);
+    if (W) {
+        put_v(v, OBS_V_RANGE, squash(ratio(W[OBS_WEAPON_RANGE_TILES], ot[OBS_TAB_L_REF]), cap));
+        put_v(v, OBS_V_ROF, squash(ratio(W[OBS_WEAPON_ROF_TICKS], ot[OBS_TAB_REF_ROF_TICKS]), cap));
+        put_v(v, OBS_V_SPREAD,
+              squash(ratio(unit_lib::scaled(u, unit_tables::UNIT_HOOK_SPREAD, W[OBS_WEAPON_CONE_AIM_Q]),
+                           ot[OBS_TAB_REF_CONE_Q]), cap));
+    }
+    put_v(v, OBS_V_TRIGGER, u[UNIT_COL_LIVE_TRIGGER] != 0 ? 1.0 : 0.0);
+    // -- 1.5 the clock and the team --
+    const int64_t limit = ot[OBS_TAB_LIMIT_TICKS];
+    put_v(v, OBS_V_TIME_LEFT, ratio(limit - tick, limit));
+    const int64_t* tm = teams + ((size_t)e * n_teams + team) * OBS_TEAM_W;
+    const int64_t n_t = tm[OBS_TEAM_N];
+    int64_t mates = 0, ammo = 0;
+    for (int q = 0; q < n_units; ++q) {                     // TeamKnowledge.mates
+        const int64_t* m = env_rows + (size_t)q * UNIT_STORE_W;
+        if (!m[UNIT_COL_VALID] || m[UNIT_COL_LIFE_STATE] != OBS_LIFE_ALIVE ||
+            m[UNIT_COL_IS_ZOMBIE] || m[UNIT_COL_TEAM] != (int64_t)team)
+            continue;
+        ++mates;
+        const int64_t mw = m[UNIT_COL_WEAPON_ID];
+        if (mw < 0) continue;
+        const unit_lib::MagStatus ms = unit_lib::mag_status(m, tab, tick, &bad);
+        if (!ms.tracked) continue;
+        const int64_t ml = m[UNIT_COL_LOADOUT_NAME];
+        int64_t s = ms.spares;
+        if (s < 0) s = ml >= 0 ? ot[OBS_TAB_LOADOUT + ml * OBS_LOADOUT_W + OBS_LOADOUT_MAGAZINES] : 0;
+        ammo += ms.rounds + s * ot[OBS_TAB_WEAPON + mw * OBS_WEAPON_W + OBS_WEAPON_MAG_SIZE];
+    }
+    put_v(v, OBS_V_MATES_ALIVE, ratio(mates, n_t));
+    int64_t total = 0;
+    const int64_t tl = tm[OBS_TEAM_LOADOUT];
+    if (tl >= 0) {
+        const int64_t* TL = ot + OBS_TAB_LOADOUT + tl * OBS_LOADOUT_W;
+        const int64_t tw = TL[OBS_LOADOUT_WEAPON];
+        if (tw >= 0)
+            total = n_t * TL[OBS_LOADOUT_MAGAZINES] *
+                    ot[OBS_TAB_WEAPON + tw * OBS_WEAPON_W + OBS_WEAPON_MAG_SIZE];
+    }
+    put_v(v, OBS_V_TEAM_AMMO, squash(ratio(ammo, total), cap));
+    (void)bad;   // a status kind outside the registry / a weapon index past the table:
+                 // the store's encoder refuses both, so a valid store never sets it
+}
+
+// ---------------------------------------------------------------------------
+// #29 P8.1 TEST-ONLY probes of the float kit (part FLOATKIT of the check).
+// ---------------------------------------------------------------------------
+__global__ void k_probe_half(const double* x, uint16_t* out, int n, int via_f32) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    // via_f32: THE BREAK (double rounding through float32), never the kit
+    out[i] = via_f32 ? to_half_bits((double)to_f32(x[i])) : to_half_bits(x[i]);
+}
+__global__ void k_probe_f32(const double* x, float* out, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = to_f32(x[i]);
+}
+__global__ void k_probe_muladd(const double* a, const double* b, const double* c, double* out,
+                               int n, int fused) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    // fused: THE BREAK (what contraction would build), never the kit
+    out[i] = fused ? fma(a[i], b[i], c[i]) : add(mul(a[i], b[i]), c[i]);
+}
+__global__ void k_probe_squash(const double* x, double* out64, float* out32, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const double s = squash(x[i], of_bits(OBS_SQUASH_CAP_BITS));
+    out64[i] = s;
+    out32[i] = to_f32(s);
+}
+
 void need(bool ok, const char* what) {
     if (!ok) throw std::invalid_argument(std::string("obs_block: ") + what);
 }
@@ -210,6 +455,97 @@ void obs_block(int n_env, std::uintptr_t store, int n_units, int store_w,
     if (err != cudaSuccess)
         throw std::runtime_error(std::string("obs_block: launch failed: ") +
                                  cudaGetErrorString(err));
+}
+
+void obs_vector(int n_env, std::uintptr_t store, int n_units, int store_w,
+                const UnitTablesDevice& tables, std::uintptr_t rowmap, int n_rows, int n_slots,
+                int n_teams, std::uintptr_t obs_table, int table_w, std::uintptr_t teams,
+                std::uintptr_t tick_row, std::uintptr_t params, std::uintptr_t ended,
+                std::uintptr_t vector) {
+    need(n_env >= 1 && n_units >= 1 && n_rows >= 1 && n_slots >= 1 && n_teams >= 1,
+         "a non-positive size");
+    need(n_rows == n_teams * n_slots, "n_rows is not n_teams x n_slots");
+    need(store_w == unit_store::UNIT_STORE_W, "the store's width is not UNIT_STORE_W");
+    need(table_w == OBS_TAB_W, "the obs table's width is not OBS_TAB_W (regenerate obs_layout.h)");
+    need(tables.n_env() == n_env && tables.width() == unit_tables::UNIT_TABLES_W,
+         "the device tables' shape");
+    need(store && rowmap && obs_table && teams && tick_row && params && ended && vector,
+         "a null device pointer");
+    cudaStream_t s = tstream();
+    k_obs_vector<<<dim3((n_rows + 63) / 64, n_env), 64, 0, s>>>(
+        reinterpret_cast<const int64_t*>(store), n_units, tables.values(),
+        reinterpret_cast<const int32_t*>(rowmap), n_rows, n_slots, n_teams,
+        reinterpret_cast<const int64_t*>(obs_table), reinterpret_cast<const int64_t*>(teams),
+        reinterpret_cast<const int64_t*>(tick_row), reinterpret_cast<const int64_t*>(params),
+        reinterpret_cast<const uint8_t*>(ended), reinterpret_cast<float*>(vector));
+    const cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess)
+        throw std::runtime_error(std::string("obs_vector: launch failed: ") +
+                                 cudaGetErrorString(err));
+}
+
+namespace {
+template <typename T>
+T* dev_copy(const T* host, int n) {
+    T* d = nullptr;
+    if (cudaMalloc(&d, sizeof(T) * (size_t)(n > 0 ? n : 1)) != cudaSuccess)
+        throw std::runtime_error("obs probe: cudaMalloc failed");
+    if (host) cudaMemcpy(d, host, sizeof(T) * (size_t)n, cudaMemcpyHostToDevice);
+    return d;
+}
+template <typename T>
+void dev_back(T* host, T* d, int n) {
+    cudaMemcpy(host, d, sizeof(T) * (size_t)n, cudaMemcpyDeviceToHost);
+    cudaFree(d);
+}
+void probe_done(const char* what) {
+    const cudaError_t err = cudaDeviceSynchronize();
+    if (err != cudaSuccess)
+        throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(err));
+}
+}  // namespace
+
+void obs_probe_half(const double* x, uint16_t* out, int n, bool via_f32) {
+    double* dx = dev_copy(x, n);
+    uint16_t* d = dev_copy<uint16_t>(nullptr, n);
+    k_probe_half<<<(n + 255) / 256, 256>>>(dx, d, n, via_f32 ? 1 : 0);
+    probe_done("obs_probe_half");
+    dev_back(out, d, n);
+    cudaFree(dx);
+}
+
+void obs_probe_f32(const double* x, float* out, int n) {
+    double* dx = dev_copy(x, n);
+    float* d = dev_copy<float>(nullptr, n);
+    k_probe_f32<<<(n + 255) / 256, 256>>>(dx, d, n);
+    probe_done("obs_probe_f32");
+    dev_back(out, d, n);
+    cudaFree(dx);
+}
+
+void obs_probe_muladd(const double* a, const double* b, const double* c, double* out, int n,
+                      bool fused) {
+    double* da = dev_copy(a, n);
+    double* db = dev_copy(b, n);
+    double* dc = dev_copy(c, n);
+    double* d = dev_copy<double>(nullptr, n);
+    k_probe_muladd<<<(n + 255) / 256, 256>>>(da, db, dc, d, n, fused ? 1 : 0);
+    probe_done("obs_probe_muladd");
+    dev_back(out, d, n);
+    cudaFree(da);
+    cudaFree(db);
+    cudaFree(dc);
+}
+
+void obs_probe_squash(const double* x, double* out64, float* out32, int n) {
+    double* dx = dev_copy(x, n);
+    double* d64 = dev_copy<double>(nullptr, n);
+    float* d32 = dev_copy<float>(nullptr, n);
+    k_probe_squash<<<(n + 255) / 256, 256>>>(dx, d64, d32, n);
+    probe_done("obs_probe_squash");
+    dev_back(out64, d64, n);
+    dev_back(out32, d32, n);
+    cudaFree(dx);
 }
 
 const char* obs_layout_fingerprint() { return OBS_LAYOUT_FINGERPRINT; }

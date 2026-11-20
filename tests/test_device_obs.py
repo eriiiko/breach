@@ -11,7 +11,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-for _p in (ROOT, ROOT / "src"):
+for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
@@ -129,3 +129,116 @@ def test_built_is_what_the_landed_patches_own():
         assert (got[k] is None) == (want[k] is None), k
         if got[k] is not None:
             assert sorted(got[k]) == sorted(want[k]), k
+
+
+# ---------------------------------------------------------------------------
+# #29 P8.1: the obs table (device_obs.table_values / team_values)
+# ---------------------------------------------------------------------------
+def _ship_session():
+    from dataclasses import replace
+
+    import breach_physics as bp
+    import level_loader
+    import rl_env
+    from simulation.match_session import MatchSession
+    from simulation.obs_spec_v1 import ObsContext
+    lv = level_loader.load("ship_demo", str(ROOT / "levels"))
+    spec = replace(lv.match, teams=tuple(replace(t, controller="bots") for t in lv.match.teams))
+    ses = MatchSession(lv, spec, seed=1, breach_physics=bp)
+    S = max(rl_env._team_slots(lv))
+    T = len(ses.spec.teams)
+    return ses, ObsContext.build(ses.sim, ses.spec, S, n_teams=T), T
+
+
+def _row(name):
+    return {n: o for n, o, _ in device_obs.table_layout()}[name]
+
+
+def test_every_float_the_obs_table_carries_is_the_reference_objects_own_bits():
+    """Property: every float the obs table carries (the three plane
+    densities, every environment profile's temperature_max / pressure_min /
+    pressure_max, the species' own profiles) is, bit for bit, the float the
+    host builders read from the reference's OWN object (the episode's
+    ``ObsContext``, the ``[env_profiles.*]`` rows, each unit's
+    ``environment``), never a Q16 row. Breaks when a float is re-quantized,
+    rounded through float32, read from another object, or a row lands at
+    another offset."""
+    import numpy as np
+    from simulation import unit_schema as us
+    from simulation.species import SPECIES_REGISTRY
+    ses, ctx, _ = _ship_session()
+    t = device_obs.table_values(ses.sim, ctx)
+    bits = lambda x: int(np.array(float(x)).view(np.int64))  # noqa: E731
+    for name, attr in (("POISON_MIN_DENSITY_BITS", "poison_min_density"),
+                       ("TEARGAS_BLIND_DENSITY_BITS", "teargas_blind_density"),
+                       ("SMOKE_DENSE_BITS", "smoke_dense")):
+        assert int(t[_row(name)]) == bits(getattr(ctx, attr)), name
+    pw = len(device_obs.PROFILE_FIELDS)
+    fields = ("temperature_max", "pressure_min", "pressure_max")
+    for block, objs in (("PROFILE", list(us.TABLES["env_profiles"]().values())),
+                        ("SPECIES_PROFILE", [s.environment for s in SPECIES_REGISTRY.values()])):
+        for i, p in enumerate(objs):
+            for k, f in enumerate(fields):
+                assert int(t[_row(block) + i * pw + k]) == bits(getattr(p, f)), (block, i, f)
+    # each unit's own environment is a row the table carries, bit for bit
+    for u in ses.sim.units:
+        env = u.environment
+        if u.env_profile_name is not None:
+            i = us.table_row("env_profiles", u.env_profile_name)
+            b = _row("PROFILE") + i * pw
+        else:
+            i = list(SPECIES_REGISTRY).index(u.species_id)
+            b = _row("SPECIES_PROFILE") + i * pw
+        for k, f in enumerate(fields):
+            assert int(t[b + k]) == bits(getattr(env, f)), (u.id, f)
+
+
+def test_every_integer_the_obs_table_carries_is_the_reference_value():
+    """Property: the obs table's integers are the values ``build_vector``
+    reads: the ``ObsContext`` scalars and status scales, the sim's OWN
+    weapon rows in the unit schema's row order (mag size, range, rof, reload,
+    the cone door of spread_deg), the loadout rows (magazines, explosives,
+    charge, weapon row, the per-kind grenade counts in the hand family's
+    order), and per team its n and loadout row. Breaks when a value is read
+    from another table, a row order drifts from the schema's indexing (the
+    store's ``weapon_id`` / ``loadout_name`` would index the wrong row), or
+    a column's divisor moves."""
+    from simulation import combat
+    from simulation import unit_schema as us
+    from simulation.loadouts import get_tables as lt
+    from simulation.weapons import PLANT_WEAPON
+    ses, ctx, T = _ship_session()
+    sim = ses.sim
+    t = device_obs.table_values(sim, ctx)
+    for name, want in (("L_REF", ctx.l_ref), ("REF_ROF_TICKS", ctx.ref_rof_ticks),
+                       ("REF_CONE_Q", ctx.ref_cone_q), ("V_FALL_Q", ctx.v_fall_q),
+                       ("REACT_TICKS", ctx.react_ticks),
+                       ("SHOVE_COOLDOWN_TICKS", ctx.shove_cooldown_ticks),
+                       ("LIMIT_TICKS", ctx.limit_ticks),
+                       ("C4_FUSE_MAX_TICKS", ctx.c4_fuse_max_ticks),
+                       ("TURN_RATE_CLASS_Q", sim._marine_turn_rate_q16),
+                       ("ZOMBIES", ctx.spec.zombies), ("N_TEAMS", T)):
+        assert int(t[_row(name)]) == int(want), name
+    rows = sim.weapons_tables.weapons.by_name
+    assert int(t[_row("HAND_WINDUP_TICKS")]) == int(rows["hand_grenade"].throw_windup_ticks)
+    assert int(t[_row("PLANT_TICKS")]) == int(rows[PLANT_WEAPON].plant_ticks)
+    s0 = _row("STATUS_SCALE")
+    assert tuple(int(x) for x in t[s0:s0 + len(ctx.status_scale)]) == tuple(ctx.status_scale)
+    ww = len(device_obs.WEAPON_FIELDS)
+    for name in us.TABLES["weapons"]():
+        w, b = rows[name], _row("WEAPON") + us.table_row("weapons", name) * ww
+        assert [int(x) for x in t[b:b + ww]] == [
+            int(w.mag_size), int(w.range_tiles), int(w.rof_interval_ticks),
+            int(w.reload_ticks), int(combat.cone_q16_of_deg(w.spread_deg))], name
+    lw = len(device_obs.LOADOUT_FIELDS) - 1 + len(ctx.hand_rows)
+    for name, lo in lt().loadouts.by_name.items():
+        b = _row("LOADOUT") + us.table_row("loadouts", name) * lw
+        assert int(t[b]) == int(lo.magazines) and int(t[b + 1]) == int(lo.explosives)
+        assert int(t[b + 2]) == int(bool(lo.charge))
+        assert int(t[b + 3]) == us.table_row("weapons", lo.weapon)
+        assert [int(x) for x in t[b + 4:b + lw]] == [int(lo.grenades.get(r, 0))
+                                                    for r in ctx.hand_rows]
+    teams = device_obs.team_values(ses.spec, T)
+    for i, team in enumerate(ses.spec.teams):
+        assert int(teams[i, 0]) == int(team.n)
+        assert int(teams[i, 1]) == us.table_row("loadouts", team.loadout)
