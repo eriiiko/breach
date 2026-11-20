@@ -41,7 +41,7 @@ flooded room). Four rooms:
     gate is wood until that is ruled; no sim change here.
   * THE WADING ROOM (north, 18 x 11), flooded to 0.15 m. A STOVE: one steel
     tile against the north wall carrying a ``heat_source`` that holds it at
-    ``STOVE_MAX_TEMP`` game degrees above ambient (dull red heat, steady
+    ``STOVE_MAX_TEMP`` game degrees above ambient (orange heat, steady
     light from the solid's own emission; the source sits ON the steel, radius
     0, so it never rails the air). Beside it a wood wall (west) and a
     furniture fuel pile (east), which can catch from it. The match is fought
@@ -144,10 +144,11 @@ STOVE = (28, 6)                           # one steel tile on the north wall
 WOOD_WALL = (27, 6, 27, 9)                # west of the stove, touching it
 FUEL = (29, 6, 30, 7)                     # east of the stove, touching it
 # The heat source ON the stove tile. Steel's thermal_mass is 32 (heat >> 5),
-# so HEAT_PER_S raises the bare tile ~50 game degrees a second before losses;
-# MAX_TEMP holds it at dull red heat (~880 K on the honest map), well above
-# furniture's ignition_temp (280) and wood's (300), so its neighbours can
-# catch. Radius 0: the deposit lands on the steel alone (on an air tile it
+# so HEAT_PER_S raises the bare tile ~100 game degrees a second before
+# losses (hot in ~10 s); MAX_TEMP holds it at orange heat (~1290 K on the
+# honest map: at 600, ~890 K, its light barely showed in wade_by_firelight),
+# well above furniture's ignition_temp (280) and wood's (300), so its
+# neighbours can catch (headless: the wood wall at ~38 s). Radius 0: the deposit lands on the steel alone (on an air tile it
 # would rail the gas).
 STOVE_HEAT_PER_S = 3200.0
 STOVE_MAX_TEMP = 1000.0
