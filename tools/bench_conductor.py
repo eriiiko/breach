@@ -28,7 +28,9 @@ Per (level, N):
   ms is ``cudaEventElapsedTime`` between its event and the next (the stream's
   clock: kernel time plus any time the stream sat idle waiting for the host),
   its host ms the steady clock between the two marks (the Python and launch
-  cost). The books read's own segment is host time.
+  cost). The books read's own segment is host time (it waits for the GPU),
+  and so is the host fold after it (``books fold (host)``: the physics
+  books' fold, the per-env refusal checks, the edit books' fold).
 - host syncs per tick (``bp.host_sync_log_begin`` / ``_end`` around one tick,
   every counted sync and the tick sync points by name).
 - device memory per env: ``cudaMemGetInfo``'s used bytes before the
@@ -155,6 +157,8 @@ def _group(seg) -> str:
     lab = seg["label"]
     if lab == "books read":
         return "books read"
+    if lab == "books fold (host)":
+        return "fold"
     if lab in SLOT7 or lab.startswith("7 tail"):
         return "slot 7"
     return "unit side"
@@ -164,12 +168,12 @@ def format_rows(rows) -> str:
     out = []
     out.append(f"{'level':<12} {'N':>3} {'ms/tick':>8} {'ms/env':>7} {'syncs':>5} "
                f"{'MB/env':>7} {'GPU unit':>8} {'GPU s7':>7} {'host unit':>9} {'host s7':>7} "
-               f"{'read':>6}  top GPU sub-slots")
+               f"{'read':>6} {'fold':>6}  top GPU sub-slots")
     for r in rows:
         if "error" in r:
             out.append(f"{r['level']:<12} {r['n']:>3}  {r['error']}")
             continue
-        g = {"unit side": 0.0, "slot 7": 0.0, "books read": 0.0}
+        g = {"unit side": 0.0, "slot 7": 0.0, "books read": 0.0, "fold": 0.0}
         hh = dict(g)
         for s in r["segments"]:
             g[_group(s)] += s["gpu_ms"]
@@ -180,7 +184,8 @@ def format_rows(rows) -> str:
         out.append(f"{r['level']:<12} {r['n']:>3} {r['ms_per_tick']:>8.2f} "
                    f"{r['ms_per_env_tick']:>7.3f} {r['syncs_per_tick']:>5.1f} "
                    f"{r['mem_per_env_mb']:>7.1f} {g['unit side']:>8.2f} {g['slot 7']:>7.2f} "
-                   f"{hh['unit side']:>9.2f} {hh['slot 7']:>7.2f} {hh['books read']:>6.2f}  {tops}")
+                   f"{hh['unit side']:>9.2f} {hh['slot 7']:>7.2f} {hh['books read']:>6.2f} "
+                   f"{hh['fold']:>6.2f}  {tops}")
     return "\n".join(out)
 
 
@@ -219,6 +224,8 @@ def main(argv=None) -> int:
     ap.add_argument("--ticks", type=int, default=60)
     ap.add_argument("--profile-ticks", type=int, default=20)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--table", default=None, metavar="JSON",
+                    help="print the table of a sweep's --out file and exit")
     ap.add_argument("--run", action="store_true", help="one (level, N) in this process")
     ap.add_argument("--level", default="ship_demo")
     ap.add_argument("--n", type=int, default=1)
@@ -226,6 +233,9 @@ def main(argv=None) -> int:
                     help="the CUDA build of breach_physics (every backend starts OFF: the "
                          "recording runs the CPU path, the conductor brackets slot 7's)")
     args = ap.parse_args(argv)
+    if args.table:
+        print(format_rows(json.loads(Path(args.table).read_text())))
+        return 0
     Path(args.levels_dir).mkdir(parents=True, exist_ok=True)
     if args.run:
         from bench_bot_matches import import_build

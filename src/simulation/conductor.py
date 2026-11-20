@@ -84,9 +84,12 @@ class ConductorOverflow(RuntimeError):
     edit door) dropped records past its capacity (named at the books read)."""
 
 
-#: The deferred arena's capacity in int64 words (every face's counts of one
-#: tick at N = 1 hold a few hundred).
+#: The deferred arena's capacity in int64 words: every face's counts of one
+#: tick hold about 260 words per env (measured at N = 64: 16448), so the
+#: arena is sized per env (a capacity, raised in P7e.5 from a flat 2^14 that
+#: N = 64 crossed), never below the N = 1 floor.
 BOOKS_CAP = 1 << 14
+BOOKS_CAP_PER_ENV = 1 << 10
 
 
 def _refusing_slots() -> dict:
@@ -303,7 +306,7 @@ class DeviceConductor:
         self.has_heat = any(bool(s._heat_sources) for s in sims)
         self.has_pumps = any(bool(s._pumps) for s in sims)
         self.ticks = 0
-        self.last_books: list = [dict() for _ in sims]
+        self.last_books: dict = {}           # book -> (N,) this tick's applier books
         self.last_profile = None
         self.swarm_death_rows = [None] * N
 
@@ -448,7 +451,7 @@ class DeviceConductor:
         if profile:
             bp.conductor_profile_begin()
             pr._PROFILE_MARK = bp.conductor_profile_mark
-        bp.conductor_books_begin(BOOKS_CAP)
+        bp.conductor_books_begin(max(BOOKS_CAP, BOOKS_CAP_PER_ENV * self.N))
         bp.resident_tail_defer(True)
         try:
             self._walk(bp.conductor_label)
@@ -476,6 +479,7 @@ class DeviceConductor:
             self.last_profile = list(bp.conductor_profile_end())
             self.last_profile.append(("books read", None,
                                       1000.0 * (_time.perf_counter() - t_read)))
+        t_fold = _time.perf_counter()
         try:
             rows = bp.resident_tail_finish() if bp.resident_tail_pending() else None
         finally:
@@ -483,7 +487,12 @@ class DeviceConductor:
         if rows is not None:
             self.swarm_death_rows = list(rows)
         self.ticks += 1
-        self._books_read(words, entries)
+        try:
+            self._books_read(words, entries)
+        finally:
+            if profile:
+                self.last_profile.append(("books fold (host)", None,
+                                          1000.0 * (_time.perf_counter() - t_fold)))
 
     def _walk(self, L) -> None:
         from simulation import physics_runner as pr, unit_kernels as uk
@@ -656,7 +665,10 @@ class DeviceConductor:
         from simulation.physics_runner import fold_edit_queue_books
         N = self.N
         w = np.asarray(words, dtype=np.int64)
-        self.last_books = [dict() for _ in range(N)]
+        self.last_books = {}
+
+        def first(a) -> int:
+            return int(np.flatnonzero(np.asarray(a))[0])
 
         def refuse(cls, e, what, *a):
             ex = cls(f"device conductor (env {e}, {where}): {what}", *a)
@@ -668,49 +680,56 @@ class DeviceConductor:
             where = f"tick {int(self.sims[0].tick) - 1}, slot {label!r}"
             if kind == "counts":                       # (coverage, faults, refused) x N
                 c = counts_by_env(v, N)
-                for e in range(N):
-                    if c[1, e]:
-                        refuse(ConductorFault, e, f"{int(c[1, e])} row(s) left the range "
-                               f"the kernel was proved for")
-                    if c[2, e] and label in _refusing_slots():
-                        refuse(_refusing_slots()[label], e,
-                               f"{int(c[2, e])} refused by name (a refused count)")
+                r_ = c[2] if label in _refusing_slots() else np.zeros(N, np.int64)
+                if c[1].any() and (not r_.any() or first(c[1]) <= first(r_)):
+                    e = first(c[1])
+                    refuse(ConductorFault, e, f"{int(c[1, e])} row(s) left the range "
+                           f"the kernel was proved for")
+                if r_.any():
+                    e = first(r_)
+                    refuse(_refusing_slots()[label], e,
+                           f"{int(c[2, e])} refused by name (a refused count)")
             elif kind == "list_dropped":
-                for e in range(N):
-                    if v[e]:
-                        refuse(ConductorOverflow, e, f"a list dropped {int(v[e])} "
-                               f"record(s) past its capacity")
+                if v.any():
+                    e = first(v)
+                    refuse(ConductorOverflow, e, f"a list dropped {int(v[e])} "
+                           f"record(s) past its capacity")
             elif kind == "books":
                 b = applier.books_dict(v.reshape(N, -1))
-                for e in range(N):
-                    for book, exc in _book_refusals():
-                        if int(b[book][e]):
-                            refuse(exc, e, f"{book} = {int(b[book][e])}")
-                    for k_, x in b.items():
-                        lb = self.last_books[e]
-                        lb[k_] = lb.get(k_, 0) + int(x[e])
+                bad = [(first(b[book]), book, exc) for book, exc in _book_refusals()
+                       if np.asarray(b[book]).any()]
+                if bad:
+                    e, book, exc = min(bad, key=lambda t: t[0])
+                    refuse(exc, e, f"{book} = {int(b[book][e])}")
+                for k_, x in b.items():
+                    self.last_books[k_] = self.last_books.get(k_, 0) + np.asarray(
+                        x, dtype=np.int64)
             elif kind in ("door_counts", "object_counts"):
                 c = v.reshape(N, -1)
-                for e in range(N):
-                    if c[e, 1]:
-                        refuse(ConductorFault, e, f"{int(c[e, 1])} fault(s)")
-                    if kind == "object_counts" and c[e, 2]:
-                        from simulation.unit_kernels import ObjectSlotRefused
-                        refuse(ObjectSlotRefused, e, "a WEGO grenade")
+                f_ = c[:, 1]
+                r_ = c[:, 2] if kind == "object_counts" else np.zeros(N, np.int64)
+                if f_.any() and (not r_.any() or first(f_) <= first(r_)):
+                    e = first(f_)
+                    refuse(ConductorFault, e, f"{int(c[e, 1])} fault(s)")
+                if r_.any():
+                    from simulation.unit_kernels import ObjectSlotRefused
+                    refuse(ObjectSlotRefused, first(r_), "a WEGO grenade")
             elif kind == "flush_books":
                 slots = self.flush.slots
                 books = v[:N * slots].reshape(N, slots)
-                for e in range(N):
-                    word = int(v[N * slots + e]) & ((1 << 64) - 1)
-                    if word != (1 << 64) - 1:
-                        code, row = word >> 32, word & 0xffffffff
-                        name, why = ed.FLUSH_FAULTS.get(code, ("?", "an unknown code"))
-                        refuse(ed.EditFlushRefused, e, f"the flush refused ({name}: {why}; "
-                               f"row {row})", e, code, row)
-                    if int(books[e, self.flush.fail_slot]):
-                        refuse(ed.EditQueueFailed, e,
-                               f"{int(books[e, self.flush.fail_slot])} edit result(s) "
-                               f"left their field's range")
+                words_ = v[N * slots:N * slots + N]
+                fails = books[:, self.flush.fail_slot]
+                if (words_ != -1).any() or fails.any():
+                    for e in range(N):
+                        word = int(words_[e]) & ((1 << 64) - 1)
+                        if word != (1 << 64) - 1:
+                            code, row = word >> 32, word & 0xffffffff
+                            name, why = ed.FLUSH_FAULTS.get(code, ("?", "an unknown code"))
+                            refuse(ed.EditFlushRefused, e, f"the flush refused ({name}: "
+                                   f"{why}; row {row})", e, code, row)
+                        if int(fails[e]):
+                            refuse(ed.EditQueueFailed, e, f"{int(fails[e])} edit result(s) "
+                                   f"left their field's range")
                 for e, s in enumerate(self.sims):
                     fold_edit_queue_books(self.bp.EDIT_QUEUE_LAYOUT, s.gmap, books[e],
                                           s.draws)

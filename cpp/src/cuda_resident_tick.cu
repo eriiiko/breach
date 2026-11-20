@@ -996,9 +996,11 @@ std::vector<std::vector<int32_t>> resident_tail_finish() {
         throw std::logic_error("resident_tail_finish: no deferred fold is pending");
     // The caller's one books read has synchronised the tick stream: the
     // tail's D2H has landed. Checked without a wait (a query is no sync).
-    if (cudaStreamQuery(tstream()) != cudaSuccess)
+    const cudaError_t q = cudaStreamQuery(tstream());
+    if (q == cudaErrorNotReady)
         throw std::logic_error("resident_tail_finish: the tick stream is still busy (the "
                                "conductor's books read must come first)");
+    cuda_check(q, "resident_tail_finish: the tick stream");
     ResidentTickState::PendingFold p = S.pending;
     S.pending = ResidentTickState::PendingFold{};
     std::vector<std::vector<int32_t>> rows;
