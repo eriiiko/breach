@@ -75,7 +75,7 @@ strategy. Every rule below serves that.
 | `radiation-light.md` | radiation sweep, emissive table, extinction planes, integer reference, light accessor |
 | `explosions-fire.md` | payloads, generic explosion, divergence, blast reach, tile deposit, fire, timed charge, heat source |
 | `device-residency.md` | stamp kernel, batched resident engine, build id, Class P / T |
-| `device-units.md` | unit store, device tables, unit library, tick row, event ring, request list, per-env serial applier, spray slot, device edit door, attack lists, device topology seam, door table, signal slots, timed charges and heat sources, entity section export |
+| `device-units.md` | unit store, device tables, unit library, tick row, event ring, request list, per-env serial applier, spray slot, device edit door, attack lists, device topology seam, door table, signal slots, timed charges and heat sources, entity section export, device conductor |
 | `swarm.md` | swarm store, its digest section, facade, species table, heading law, brood entity + spawn, dot view, bite-dose plane, count plane |
 | `units.md` | unit, schema, traits, turning, impulse, speeds, throttle, footprint samples, coupling, wind load, body temperature, corpse law |
 | `horde.md` | horde field, noise, A*, the conversion door |
@@ -178,6 +178,7 @@ amends the rule file, never this line's length.
 | Attack lists | `src/simulation/attack_lists.py` | The cell buffer (a spray's phase-A cells, spans held by SPRAY_CELLS) and the claims list (every credit claim in order): record lists, never a second buffer or claims table |
 | Timed charges and heat sources | `unit_schema.TIMED_CHARGE_TABLE` / `HEAT_SOURCE_TABLE` + `cpp/src/cuda_unit_hazards.cuh` | THE device form of slot 9e(d') and 9e(d''): every detonation applied at once through the one payload function; the heat chain bounded and refused by name past the blast log |
 | Entity section export | `unit_kernels.EntityExport` + `entities/serialize.record_head` / `record_tail` | THE digest's entity and signal sections from the device tables; never a second serializer |
+| Device conductor | `src/simulation/conductor.py` + `cpp/src/cuda_unit_books.cu` | THE device tick (Class T): the reference's slots in order on resident state, the host writing only the latches, every count read ONCE per tick; never a second walk |
 | Door table | `unit_schema.DOOR_TABLE` + `DOOR_TILE_TABLE` + `unit_kernels.doors_of` / `doors_to_host` + `cpp/src/cuda_unit_doors.cuh` | THE device form of `Simulation._doors` (the first entity table) and of its 9e(d) sweep, a stage of the one applier; never a second door record or sweep |
 | Swarm store | `src/simulation/swarm.py` (`ROSTER`, `allocate_swarm_store`) | THE per-unit state of swarm units (larvae, fauna): SoA per species, per map; never a `Unit`, never the device unit store, never a class per species |
 | Swarm digest section | `swarm.swarm_carrier` / `swarm_section_bytes` + `tests/field_digest.py` | Swarm state enters determinism artifacts ONLY through the presence-gated `__swarm__` carrier |
