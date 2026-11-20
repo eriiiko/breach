@@ -699,3 +699,395 @@ like-for-like substep count; within noise of "no cost".
 |---|---|---|---|
 | 1. Completeness and correctness of the units change | Opus | SOUND WITH FIXES | (1) PROVED: twin debt is 12 twins, not `[twins.eos]` alone: `eos_solver.h`, `cuda_eos_step.h`, `cuda_resident_tick.h` and `bulk_transport.cpp` are `files` of eos, water, trace_tail, div_source, energy_flux, radiation_sweep, temperature, fire, stamp, water_tail, swarm_larva (P) and stamp_rows (T); mark all level, or drop the cosmetic rename and comment reword to shrink it. (2) PROVED: §7.5's test pins the SL leg through `eos_sl_advect_ref`, not `step()`'s backtrace (`eos_solver.cpp:831`); dropping the fold there passes it. Measure the SL leg through the live step (e.g. a wind step located in metres via `dbg_mg_inputs` div_u at 1.0 and 0.5 m); state the mass leg as Σ(N1−N0)·dx²/(L_m·dt). (3) PROVED config, INFERRED effect: §7.3's dial list misses `[blast] expansion_m3_per_strength` (calibrated at 0.333 m; 3× the mass at the same u after U), `heat_mj_per_strength`, `[physics.combustion] burn_rate` and `draw_r` (P-O2b widened the draw while resupply ran at 1/3 speed). (4) INFERRED, low: the range guard must sit inside `ensure_fold_table`'s poisoning try (`cuda_eos_resident.cu:919-932`), the `k_flux_q` pattern, and the guard is a behaviour change at 1.0 m when dt_s > 1 s (unreachable today). (5) PROVED, low: the bench twin must use `np.float32(dx)` and n_sub; `dx` on `eos_sl_advect_ref` / `cuda_eos_sl_advect` is required with no default; synthetic callers (`test_thermal_mass_axis.py:764/900/1006`, `cuda_p62_check.py:117`) need a chosen dx. (6) PROVED, info: the float-ratchet argument is moot (the TUs are not in `SIM_TUS`), and `step()` keeps `dt_s_d` for `k_flux_q`. Checked sound: no missed transport site; bit identity at 1.0 m on all four paths; the range and n_sub claims; the outflow limiter at any Courant; trace diffusion per tile² breaks nothing. Noted, not breakage: above 64 m/s at 0.333 m (blasts) mass stays capped at 1 tile/substep, so the solve/mass mismatch survives in that regime. |
 | 2. Gates, regression, rollout, systems reuse | Opus | SOUND WITH FIXES | (1) PROVED: eight ship_demo (0.333 m) match pins move for the right reason, not two: `test_bots_v1.py:503`, `test_zombie_control.py:225` (also `tools/match_pin_check.py`'s), `test_exposure.py:588`, `test_grenade_kinds.py:667`, `test_horde_behaviours.py:52`, `test_turning_law.py:563`, `test_turn_rate.py:317`, `test_unit_impulse.py:883`; each gets a dated "#217 patch U" re-pin comment. The box pins (`_PRE_122_BOX`, `_STAGE1_BOX`, `_RE_PIN_1_BOX`) are 1.0 m oracles that must NOT move (1.0 m inferred for three). (2) PROVED: mark 14 twins level (adds combustion and edit_queue to lens 1's twelve). (3) PROVED: this PC has an RTX 3060 + nvcc 12.3; order is code → re-pins → `--mark-level` ×14 last → `cpp/build_cuda.bat` in the patch worktree → `tools/cuda_green.py` → full suite → merge from that checkout; plus `tools/match_pin_check.py --backend cuda` and `--backend resident` against the new pin. (4) Tests at 1/3 m with measured margins need a category each: re-measure and restate with rationale (`test_drag2_venting_gate.py` legs 4/5, leg 2's strict xfail XPASS goes to Erik, add it to the `k_drag2` dial note; `test_air_boundary.py` reflection/refill gates; `test_eos_checkerboard.py` XPASS goes to Erik); Erik-ruled properties where red is a real finding, never re-pinned (`test_wind_doorway_e2e.py`, `test_wind_studio.py:101`, `test_gen_ship_vents_air.py` `PRESSURE_BAND`); transport-independent, must stay green (`test_trace_resolution`, `test_sky_exchange`, `test_explosion`, `test_fire_vfx_ref`). (5) PROVED: the branch is behind origin/main (#221 test_arena, #97 water_studio); bring it up to main and re-grep. (6) Rule: the E2E reproduction is missing; `tools/wind_drift_probe.py` (plume drift ≈ 0.35-0.5·|u|) on smoke_light_studio and fire_studio, before and after, is the reproduction and the acceptance. (7) `_WIND_VREF`/`_WIND_VSENS` are measured fits, not Erik dials: a named render-only follow-up patch right after U; render `tools/look_shots.toml` before and after; `tests/data/fire_smoke_studio_flame_inputs.npz` goes stale (re-dump in the tuning session). (8) Replays recorded before U at 0.333 m hit `ReplayDivergence` by design (`FORMAT_VERSION` stays 8); RL runs, saved soldiers and imitation records made before U are on old physics (resume needs `--allow-code-change`; tell the game-ai-lead role); tournament pins `docs/rl_agent_rung1_1d_pins/*.json` move. (9) PROVED: the rule line must fire where the device folds live: `fields-gas.md`'s `paths:` miss `eos_solver.h`, `cuda_eos_step.cu`, `cuda_eos_resident.cu`, `cuda_sl_advection.cu`. (10) §7.2 slips: the float-ratchet claim is vacuous; `test_b1`/`test_b2` stay green because no physics runs; `bp.EOSSolver()`'s default dx = 0.333 so its direct users change too (books-only asserts). (11) `stubs/breach_physics.pyi:1272,1348` regenerated; `dx` required on the SL entries. Scope: one patch is right. |
+
+## 8. Blast-regime stability (phase 1: cause and design, 2026-11-20)
+
+This is the stack's third patch (Erik, 2026-11-20). Phase 1 measures the
+cause and designs the fix; no sim code changed.
+
+Every number comes from the live path at `2425bc6a` (patch U built), on the
+CPU build on the Work Desktop. The instrument is the new `--stability` mode of
+`tests/_eos_checkerboard_bench.py` (commit `6dd0ac78`). Per tick it reports:
+
+- `n_sub`, the substep count.
+- `Csub` = max|u_entry|·dt_s/dx and `Ctick` = max|u_entry|·dt/dx.
+- N's extremes over N0.
+- The mass-weighted T, `Tmw` = ΣE/ΣN − T_amb.
+- The stored P against the state pressure p* = C·E.
+- `eps` = γ·dt·max|div u*|, the compression the solve linearizes. Its right-hand side is p*(1 − eps).
+- The kick loop's kinetic-energy budget, in % of the room's tick-0 thermal energy E0.
+
+`--tps` runs the whole game at another tick rate. That EMULATES updating the
+pressure k = tps/24 times per 1/24 s. The other slots then run more often too;
+this is noted where it matters.
+
+PROVED means measured, or read in the code. INFERENCE says so.
+
+### 8.1 Measurements
+
+**smoke_light_studio, 0.333 m, 24 tps, first charge.** This is a legacy row:
+it mints 1 N of air at the centre, and its `heat_amount` of 5000 rails at
+T_MAX_PHYS.
+
+| tick | nsub | umax | Csub | Ctick | eps | Nmin | Nmax | Tmw | P mean / p* mean | kick % | drag % | clamp % |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 27 | 4 | 7.5 | 0.23 | 0.94 | 0.88 | 0.56 | 1.16 | 72 | 1.03 / 1.25 | 0.00 | 0.00 | 0 |
+| 28 | 8 | 20.2 | 0.32 | 2.53 | 2.63 | 0.185 | 1.54 | 60 | 1.06 / 1.21 | 0.01 | 0.00 | 0 |
+| 29 | 8 | 41.0 | 0.64 | 5.14 | 2.91 | 0.004 | 2.21 | 29 | 0.64 / 1.10 | 15.3 | 6.1 | 8.5 |
+| 30 | 8 | 193.5 | 3.03 | 24.2 | 18.0 | 0.004 | 49.3 | 20 | 0.55 / 1.07 | 3.9 | 2.1 | 2.1 |
+| 33 | 8 | 96.4 | 1.51 | 12.1 | 18.7 | 0.000 | 113.6 | 1 | 0.30 / 1.01 | 1.2 | 0.7 | 0.6 |
+| 35 | 8 | 89.8 | 1.40 | 11.2 | 13.1 | 0.000 | 81.1 | −3 | 0.19 / 1.00 | 1.0 | 0.5 | 0.5 |
+
+Over ticks 25-36, in % of E0:
+
+- The kick debited 36.2 % from the gas as kinetic energy.
+- Drag returned 16.0 %.
+- The velocity cap destroyed 19.2 % (counted).
+- The T_MIN rail minted 3.2 %.
+- Step 1 changed KE by −0.7 %, unbooked.
+
+The largest pile, at tick 33, held N 113.6 with p* 130 atm, while its stored P
+was 0.91 atm. At tick 34 a pile of N 54 had p* 71 and stored P 0.11.
+
+**Variants of the same scene:**
+
+| variant | what it changes | result |
+|---|---|---|
+| `N_SUB_MAX` 48 | transport substeps only; Csub ≤ 0.25 (0.78 peak) | the first charge survives (Nmin 0.016). The second goes wild the same way: Nmax 126, Nmin 0, stored P ≤ 1.0 atm against a p* mean of 3.9 |
+| 48 tps | the pressure updated 2× per 1/24 s | wild (Nmax up to 200) |
+| 96 tps | 4× | each charge recovers within ~0.5 s; Nmax reaches 35 transiently |
+| 192 / 384 tps | 8× / 16× | tame: Nmax ≤ 3.6, no empty cell, P = p*, kick and clamp ≈ 0. The wind is 190 m/s at detonation, under 9 m/s by 0.4 s, and 3-5 m/s by 1.5 s |
+| `tile_size_m` 1.0 | — | first charge: Ctick ≤ 3.3, eps ≤ 3.2, no empty cell. Second and third: 4-11 empty cells, kick up to 11.8 % of E0 per tick; it recovers by ~3.3 s |
+
+**The quiet test_arena, 30 s.** The scene is a sealed glass box with no vents
+and no fire. The seal pushes 0.5 atm into the wall-layer cells.
+
+| run | max wind | Ctick | eps | Nmin | Tmw at end |
+|---|---|---|---|---|---|
+| 24 tps (shipped) | 4 m/s at tick 1; 35-54 m/s from 3 s on (rms 2.5-3.2) | 2-6.7 | ≤ 4.9 | 0.09-0.13 | −3.0 K |
+| 48 tps | 2-8 m/s | ≤ 0.5 | ≤ 0.17 | 0.75-0.9 | −0.1 K (20 s) |
+| 96 tps | 0.4-0.6 m/s | ≤ 0.02 | ≤ 0.01 | 0.89 | 0.0 K (15 s) |
+| 24 tps, `k_drag2` 0 | 446 m/s at 2 s; 999.6 (U_MAX) at 4 s | 56-125 | 7-9 | 0.005 | −142 K; 720 T_MAX_PHYS rail hits |
+
+At 24 tps the hot spot sits at one convex wall corner, (47, 77), in a cell
+thinned to N 0.17-0.27. 14-16 of the 20 fastest cells touch a solid. The wind
+has no odd-even share (cb share of u_x 0.00); N has −0.2.
+
+**Two baselines that set the cost picture:**
+
+- **ship_demo, idle (no units).** n_sub = 8 on every tick from about tick 24.
+  - The return vent's aperture cell (51, 47) is empty from tick 24.
+  - Its 246-tile room drains: mean N 0.95 → 0.27 in 20 s.
+  - Meanwhile the supply aperture tile (16, 46) climbs to 3.6 N0.
+  - The estimator's K·dt·|∇P|/N̂ term at the empty cell (N̂ floored at 1e-3) pins n_sub at the cap.
+  - Winds there are only 1-3.5 m/s until the room is nearly empty (20 m/s at 20 s).
+- **The GOLDEN_AGGREGATE scenario** (1.0 m, hull breach to vacuum): n_sub = 8 on 119 of 120 ticks, max wind 78.7 m/s on every tick, 4 cap hits.
+
+### 8.2 The cause
+
+1. **PROVED: the limit is the single pressure update per tick, not the transport's Courant number.**
+   - **What the code does.** The substep loop (`eos_solver.cpp:811`) wraps only 1a (SL of u) and 1d (mass and energy flux). p* (:951), the solve (:998), the kick (:1009), step 6 (:1347) and the recovery (:1665) run once per tick. So u is frozen across the substeps, except for its own SL.
+   - **The experiment.** With Csub ≤ 0.25 (N_SUB_MAX 48), the second charge still goes wild. With the pressure updated 8× (192 tps), all three charges are tame.
+   - **The onset.** Over ticks 27-29, Ctick rises 0.94 → 2.53 → 5.14 and eps 0.88 → 2.63 → 2.91, while Csub never exceeds 0.64. Mass moves several tiles per pressure update, and the solve linearizes a compression above 1: at tick 28 the rhs p*(1 − eps) is negative on 8 cells.
+   - **The published condition.** Kwatra et al. 2009 take dt from |u| for the whole step; the code substeps the transport alone. At 0.333 m and 24 tps, one tile per update is 8 m/s; at 1.0 m it is 24 m/s.
+   - **Why U exposed it.** Patch U made the transport honest, which tripled Ctick at 0.333 m for the same wind. That is also why 1.0 m needs a bigger blast before it fails.
+2. **PROVED: emptied cells are sinks the solve cannot fill within a tick, so piles are never pushed apart.**
+   - The row mass m_i = 1/aK_i (`:1831`) is huge where p* is tiny. That pins those cells' P near 0, and a pile next to them solves to a fraction of an atm (N 113.6, p* 130, P 0.91).
+   - The stored P mean falls to 0.19 atm while the state pressure mean stays at 1.00. The "pressure loss" is in the stored P, not in the air: the air's energy is all still present.
+3. **PROVED: near-empty cells are kicked hard and then steer their neighbours' mass.**
+   - The kick divides by the cell's own N̂, floored at 1e-3 (`:1088`). The solve's face mobility uses the arithmetic face mean (`:1869`).
+   - The face velocity of steps 1d and 6 is the unweighted mean (u_i+u_j)/2.
+   - In the wild phase, 18-207 cells a tick hit the cap. The cells at ≥ 90 m/s have median N 0.15-0.39 N0, while the 50-110× piles move at 5-20 m/s.
+   - Piles form against walls: the pile's neighbour list holds solids.
+4. **PROVED: the ~90 m/s plateau is the drag stage's ceiling, not a wind.**
+   - Quadratic drag maps any speed u to u/(1 + kd2·u), with kd2 = k_drag2·dt = 0.009375 (`:1262`). Its limit is 1/kd2 = 106.7 m/s.
+   - A cell capped at 1000 m/s (U_MAX) leaves at 96.4 m/s; one capped at c_amb = 300 leaves at 78.7. Both values recur in the traces: 96.4 in the studio, 78.7 in the golden scenario.
+   - With k_drag2 = 0 the quiet arena runs to U_MAX in 4 s. Today the drag dial is the hidden limiter.
+5. **PROVED: why the temperature falls while the books close.**
+   - The kick debits ΔKE from `gas_energy` at the post-kick speed (`:1104`, e_kick_ke_sum).
+   - The cap then scales u down and books the removed KE to `e_clamp_destroyed_sum` (`:1213`). That is an export, and it never returns to the gas. Over ticks 25-36 it was 19.2 % of E0, about 56 K of mass-weighted temperature.
+   - Step 1 changes KE outside every counter: −0.7 % in the studio window, −10.8 % in the k_drag2 = 0 arena.
+   - The mass-weighted T fell from +103 to −3 K. The "−94" was the CELL-UNWEIGHTED mean, which is dominated by emptied cells sitting at T_MIN.
+   - For scale: a cell moving at 567 m/s carries kinetic energy equal to its whole thermal energy (k_ke = 9.1e-4 K/(m/s)²).
+6. **PROVED: the quiet-arena winds are the same failure at low amplitude.**
+   - At 24 tps, Ctick reaches 2-6.7 and eps 4.9; at 48 tps they stay ≤ 0.5 and ≤ 0.17. At 96 tps the wind is 0.4-0.6 m/s.
+   - **INFERENCE:** the 2-8 m/s left at 48 tps, where the per-update Courant number is ≤ 0.5, does not come from the update cadence. It is the collocated coupling (§3; F4 and F5 below) at a convex wall corner, and curing it belongs to (d)+(a).
+   - Of the −3.0 K arena drift, kick − drag accounts for ~0.35 K and the rails for ~0.5 K. The rest lies outside the EOS. It was not split further, and it vanishes at 96 tps.
+7. **PROVED: idle ship_demo pays for 8 substeps on every tick because of one emptied vent aperture** (§8.1). It is a cost of the same 1/N̂ term, paid today.
+
+The previous session inferred the cause to be "donor-cell above Courant 1 at
+the substep cap". **That inference is refuted:** the onset happens at
+Csub ≤ 0.64, and the N_SUB_MAX 48 run fails with Csub ≤ 0.25. The limiter does
+truncate above Courant 1 (F6), but only after the failure has begun.
+
+### 8.3 Numerics review (independent, code-only)
+
+A reviewer read the code only, with no runs, and tested 1D float toys that
+transcribe steps 1-7. Its findings, against what the live 2D integer path
+shows:
+
+| # | finding (reviewer) | live path, 0.333 m | label |
+|---|---|---|---|
+| F1 | the advective CFL is enforced on transport only; p*, solve, kick and step 6 run once per tick | N_SUB_MAX 48 fails and 192 tps is tame; the onset is at Ctick 2.5-5 with Csub ≤ 0.64 (§8.2.1) | CONFIRMED |
+| F2 | the cap destroys heat: bracket 1 debits at the uncapped speed, and bracket 4's removal is exported | the cap destroyed 19.2 % of E0 over the first blast's 12 ticks, and 32 % in the k_drag2 = 0 arena. That is most of the net kick debit (36.2 − 16.0) | CONFIRMED |
+| F3 | near-empty cells pin P near 0, so a pile solves to ~0.25 atm | N 113.6 / p* 130 → P 0.91; N 54 / p* 71 → P 0.11; P mean 0.19 against a p* mean of 1.00 | CONFIRMED |
+| F4 | the odd-even null mode (wide kick against compact solve) | the §2-§3 measurements; the quiet-arena wind has no odd-even share, N has −0.2 | CONFIRMED for N (already in §3); it does not drive the arena's fast wind |
+| F5 | the 1e-3 kick floor plus the unweighted face mean let massless cells move their neighbours' mass | fast cells have median N 0.15-0.39 N0 while piles move at 5-20 m/s; the arena's hot spot is a thinned cell at a wall corner | CONFIRMED (structure and correlation); INFERENCE for how much of the pile-building it causes |
+| F6 | the donor-cell limiter silently truncates above substep Courant 1 | true from tick 30 (Csub 1.3-4.7), but cells empty at Csub 0.32-0.64, and the N_SUB_MAX 48 run fails with no substep above 0.78 | REFUTED as the trigger; CONFIRMED as code behaviour in the wild phase |
+| F7 | momentum is not conserved (SL u against flux N), so KE changes outside the books | the unbooked KE column: −0.7 % of E0 over the first blast, −10.8 % in the k_drag2 = 0 arena | CONFIRMED in sign (a loss) and order of size; INFERENCE for its share of the arena drift |
+| F8 | the blast source is S·dt ≈ 144 tile volumes on one tile, which needs ~288 m/s face speed | fire_studio frag: eps on the detonation tick is 202 = γ·144.3; the source tile's N falls to 0.09 by tick +3 | CONFIRMED |
+
+Where I disagree with its recommendation:
+
+- **"A cap on n that never binds."** The cost would be unbounded: by its own criterion S·dt/n ≤ 0.3, the frag alone asks n ≈ 400. I keep a cap and bound the regime past it instead (§8.6: the budget ceiling, with its KE returned as heat).
+- **"Spread the blast source so S·dt/n ≤ 0.3."** That changes how a calibrated blast delivers its volume. It is a source-data decision for the blast session with Erik, not for this patch (§8.4).
+- **Face projection (Rhie-Chow / MAC) as the second patch.** I agree in substance: it is the stack's (d)+(a). Its design must take F5 with it: a density-weighted face velocity, and a kick whose mobility is the solve's face mobility.
+
+I agree with substepping the whole tick (F1) and with the energy-neutral cap
+(F2); both are in §8.6.
+
+### 8.4 The wind sources (survey; measurement only, no source changed)
+
+The verdicts:
+
+- (i): the input is unrealistic, a source-data or dial problem for a later session with Erik.
+- (ii): the input is fine and the solver amplifies it.
+- (iii): both.
+
+| source | live, 0.333 m, after U | back-of-envelope (assumptions) | verdict |
+|---|---|---|---|
+| Vents (ship_demo, `q_circ` 16) | 1-3.5 m/s at the return grille at first. Its aperture cell is empty from tick 24 and n_sub sits at 8. The room drains to 0.27 N0 in 20 s, with 20 m/s by then; the supply tile reaches 3.6 N0 | 16 tile volumes/s = 4.4 m³/s through one 0.333 × 2.5 m grille (0.83 m²), i.e. 5.3 m/s; a real grille gives 1-3 m/s. A fan stalls at a few hundred Pa and never draws a room to vacuum. The rate is in tile volumes, so it scales with dx² | (iii) |
+| Generic frag (`frag_standard`, fire_studio) | 22 m/s at +3 ticks, then a 3-9 m/s slosh with a ~15-tick period for > 4 s. At 192 tps it decays 10 → 1 m/s in 3 s | 0.184 kg of Comp B ≈ 0.9 MJ. Isobaric expansion bound (γ−1)/γ·E/p0 ≈ 2.6 m³, against the row's 40 m³. Heat 10 MJ, against 0.9. A real 0.18 kg charge gives ~50-100 m/s at 2.5 m for 2-3 ms, displacing ~0.1-0.3 m of air | (iii) |
+| Studio charges (`studio_small/medium/large`, legacy rows) | 85-96 m/s (the drag ceiling) for the rest of the run; the first one raises the room's mean T by 103 K | `heat_amount` 5000 heat units = 156 MJ at 0.333 m (31 kJ per unit). It rails at T_MAX_PHYS, so ~50 MJ lands, against ~0.9 MJ for its 0.184 kg fill | (iii) |
+| Fire plumes (fire_smoke_studio, six fires) | 0.5-1.7 m/s within 4 tiles of the fire at 24 tps (0.7-3.7 at 96 tps); the room median is 0.13-0.17 | a top-down plane has no vertical plume (1-5 m/s). In-plane, expansion outflow Q/(ρc_pT) over the fire's perimeter is cm/s, and entrainment inflow ≲ 1 m/s | neither: plausible, not amplified |
+| Pumps / airlocks | not reached cheaply: airlock_demo's pump idles with no unit on the plate | 8 N/s through one port tile, the same class as the vents | INFERENCE: (iii), like vents |
+
+### 8.5 Options and the choice
+
+| option | cures | cost | verdict |
+|---|---|---|---|
+| raise `N_SUB_MAX` | nothing structural | n_sub × transport | rejected: measured to fail (§8.1) |
+| a positivity flux limiter at any Courant | nothing: N is already ≥ 0 (the outflow limiter), and the failure happens at Csub < 1 | — | rejected (PROVED: positive and still wild) |
+| semi-Lagrangian or flux-form SL mass transport | transport accuracy only; mass still moves with no pressure response, and non-conservative SL breaks the exact books | — | rejected |
+| solve/kick consistency (face mobility in the kick, density-weighted face velocity) | F4/F5: the amplifier and the quiet residual | moves every 1.0 m result | right, and it is (d)+(a), later in the stack |
+| **limit the wind** (Erik's idea) with the drag dial | lowers the plateau of a numerically made wind; the kick keeps feeding it, and drag turns it into heat | free | treats the symptom. The dial is a physical behaviour and Erik's call. Today it is already the hidden limiter (§8.2.4) |
+| limit the wind: lower U_MAX or a speed cap | lowers the plateau, but the cap destroys KE (F2), so a lower cap drains heat faster | free | treats the symptom and worsens F2 |
+| limit the wind: a Courant cap tied to the tick, u ≤ dx/dt (8 m/s at 0.333 m) | stability, by construction | free | changes physics: every wind, blast push and breach outflow is capped at 8 m/s, and the cap depends on dx and tps. Rejected as the cure |
+| **substep the whole tick** (F1's remedy), with a bounded budget, a ceiling tied to that budget, and an energy-neutral cap | F1; F3 (empties do not form); F2; bounds F5/F6 | k solves, only on ticks with fast air | **chosen** |
+
+A wind limit cures the cause only where the limit IS the stability condition,
+the per-update Courant number. The choice below includes exactly that: a
+ceiling tied to the sub-tick budget. It is not the cure. It binds only past the
+budget, where the rest of the design cannot reach.
+
+### 8.6 The design: whole-step sub-ticks (k), a budget ceiling, an energy-neutral cap
+
+**(A) Sub-ticks.**
+
+- `EOSSolver::step(dt)` runs steps 0-7 k times, at `dt_k = dt/k`, inside the ONE call.
+- The per-tick resets (the counter block at `:354-401`) run once at entry. Every counter accumulates across the sub-ticks, and the digests are taken on the last one.
+- Each sub-tick keeps today's inner advection substeps (`n_sub` at CFL_ADV 0.5, within dt_k).
+- `k = 1` runs today's code path verbatim.
+
+**The choice of k: one integer, once per tick at entry.** This is the n_sub
+idiom: one reduction, no float in the per-cell path.
+
+- `k_u = ceil(max|u_entry|·dt / (C_P·dx))`, with C_P = 1: one tile per pressure update, Kwatra's condition.
+- `k_kick = ceil(du_max·dt / (C_P·dx))`. `du_max` is today's K·dt·|∇P_prev|/N̂ term, taken over cells with N ≥ 5 % of ambient only, so an emptied aperture does not pin k (§8.1).
+- `k_div = ceil(γ·dt·max|div u_entry| / ε*)`, with ε* = 0.5 (the reviewer's bound). It keeps the solve's right-hand side positive.
+- `k_src = ceil(max S·dt / (4·C_P))`: the face speed S·dx/4 that a source asks for, in tiles per update.
+- `k = clamp(max(k_u, k_kick, k_div, k_src), 1, K_MAX)`, with K_MAX = 8, the value of Erik's frozen N_SUB_MAX. It is a new perf dial, `[physics.eos] K_MAX`, bound in PhysicsRunner only.
+- The inner `n_sub` of each sub-tick comes from the same entry estimate at dt_k: `ceil(n_adv/k)`, capped at N_SUB_MAX.
+- So the device needs ONE read for both. The existing `tick_sync_point("max_n_sub")` returns k and n_sub together, each the batch's maximum; envs past their own count are masked (`sub_off`). No new sync.
+
+**(B) The budget ceiling (the backstop).**
+
+- The cap stage's per-cell ceiling becomes `min(cap2_plane_[i], U_bud²)`, with U_bud = K_MAX·C_P·dx/dt: 64 m/s at 0.333 m, 192 m/s at 1.0 m, 48 m/s at 0.25 m.
+- Past the budget, the velocity the next update transports therefore never exceeds one tile per update.
+- It moves air no slower than today. The substep budget already limits real mass motion to this speed (§7.4: one tile per substep × 8). What changes is that the velocity seen by the kick, the solve, step 6 and the wind load now agrees with the mass that actually moves.
+- It is a value of an existing stage, as the Interior drag rule requires (extend its stages, never a parallel damping site).
+
+**(C) The energy-neutral cap (F2).**
+
+- The cap stage returns its removed KE to `gas_energy_i` on accountable cells, exactly as the drag stage does (`:1295`).
+- It books that heat to a new counter, `e_cap_heat_sum`, in the identity's EOS group.
+- `e_clamp_destroyed_sum` becomes retired-and-zero (the D10 convention), so the identity's transcriptions keep their names.
+- The reasoning: the kick's KE came out of the gas's heat, so what the cap removes goes back. No energy leaves the books, and the T_MIN rail stops minting energy for cells the cap had drained.
+- Every Python transcription of the identity gains the new term:
+  - tests: `tests/test_e1_hot_rail.py`, `test_thermostat_books.py`, `test_p_e3_drag.py`, `test_drag2_venting_gate.py`, `test_bulk_gas_payload.py`, `test_heat_source.py`;
+  - benches: `_sealedbox_bisect_bench`, `_quiet_books_bench`, `_blast_bench`, `_fire_bench`, `_vent_bench`, `_drag2_sweep_bench`, `_eos_checkerboard_bench`;
+  - the tool `tools/storm_ledger.py`;
+  - the CUDA checks that read it: `cuda_kick_check`, `cuda_s8a_check`, `cuda_combustion_burn_check`.
+
+**What the implementer inventories first.** Every per-tick quantity in
+`step()`, sorted into three kinds. The table goes into §8's as-built.
+
+- **Rates folded with dt:** re-fold them at dt_k. These are `dt_q`, `Kdt_raw`, `aK`'s dt²/dx², `absorb_dt_q`, `kd_q`, `kd2_q` with `rad_dead_q32`, `k_flux_q`, the dt in `eos_transport_step_q`, and the div source's S·dt through the rhs.
+- **Per-tick, applied once:** decide each one. `sponge_udamp` is a per-tick factor, not folded with dt. Apply it on the last sub-tick only, or fold it to a per-sub-tick root. The implementer chooses, against the B3c sponge's own gate, `test_air_boundary.py`.
+- **State carried across sub-ticks:** `p_prev` comes from the previous sub-tick's solve, and it is also the warm start.
+
+**Determinism and twins.**
+
+- k is an integer from integer reductions. Every fold is a per-sub-tick host double quantized once (the `k_flux_q` idiom), and no float enters the per-cell path.
+- The device fold table (`ensure_fold_table`, `cuda_eos_resident.cu`) gains k in its key. A refused row fails the env, as today.
+- Twins changed in the same patch:
+  - `eos_solver.cpp/.h`, the reference;
+  - `cuda_eos_step.cu`, the per-call path;
+  - `cuda_eos_resident.cu` and `physics_runner._resident_chain`, the one resident chain. The outer loop wraps the EOS stage there, never in one caller;
+  - `cuda_kick_compression.cu` and `eos_kick_compression_reference`, for bracket 4 and the ceiling;
+  - the bindings.
+- `tools/twin_debt.py --mark-level` runs in the last commit, and `.cuda_green` must equal HEAD.
+
+**1.0 m bit identity.**
+
+- **Kept** wherever k = 1 and the cap does not bind. That covers quiet 1.0 m scenes.
+- **Lost** where either happens. That includes the GOLDEN_AGGREGATE scenario, which lives in the changed regime: a breach to vacuum, with n_sub 8 and 78.7 m/s on every tick and 4 cap hits. k_u alone is 4 there.
+- So **GOLDEN_AGGREGATE is re-baselined once, with this section as its rationale.**
+- The A/B lockstep harness proves the k = 1 path unchanged: force K_MAX = 1 and compare against HEAD, field by field and tick by tick, on the golden scenario and on a quiet 0.333 m scene.
+- The 1.0 m box pins (`_PRE_122_BOX`, `_STAGE1_BOX`, `_RE_PIN_1_BOX`) hold if their matches never leave k = 1. That is to be measured; if one moves, it is category A, with this rationale.
+
+### 8.7 Cost (Erik: training speed)
+
+Measured on ship_demo (70 × 100), physics only, over 48 ticks. The solve's
+share is the difference between `mg_cycles` 8 and 0.
+
+| backend | tick | EOS stage at n_sub 8 | solve | per transport substep |
+|---|---|---|---|---|
+| CPU | 17.9-18.2 ms | 14.5-14.8 ms | 1.7-3.6 ms | ~1.5 ms |
+| GPU resident | 6.25-6.38 ms | 3.14-3.18 ms | ~1.3-1.4 ms | ~0.22 ms |
+
+A sub-tick costs one solve, plus the kick, step 6 and the recovery (INFERENCE:
+~0.3-0.5 ms beyond the solve on CPU), plus its inner substeps. Estimates:
+
+- **A quiet tick at k = 1** costs exactly what it costs today. If the emptied vent aperture stops pinning n_sub at 8, idle ship_demo's EOS falls from 14.7 to ~5 ms on CPU and from 3.2 to ~1.7 ms on the GPU. That is the fix's intent, but it is INFERENCE; the gate measures it.
+- **A blast tick at k = 8, with n_sub 1-2,** costs ~8 × (1.6-1.8) ≈ 13-15 ms on the GPU (today 3.2) and ~40-50 ms on CPU (today 14.7).
+  - From the 192-tps emulation, k > 1 lasts ~0.4-0.6 s per studio charge, with k = 8 for its first 2-4 ticks.
+  - It lasts ~0.25 s per frag.
+- **On average, with a grenade every 5 s,** that is about +0.5 ms per tick on the GPU (+8 %), before any saving at the vents (INFERENCE).
+- **A breach venting at 1.0 m** runs at k = 4 on every tick while it vents (the golden scenario): ~3-4× the EOS cost there.
+- **A lever, to be measured in the patch, not decided here.** Each sub-tick's solve is easier (σ/k) and warm-starts from the previous one, so fewer V-cycles per sub-tick may still converge. That re-opens the pressure arc's `mg_cycles = 8` measurement, so it goes in only with its numbers.
+
+### 8.8 What it changes
+
+- **At 0.333 m, blasts stay physical in the solver's sense:** no empty cells or piles, P = p*, and no heat drain.
+  - Blast winds past 64 m/s are held at the ceiling.
+  - The frag's one-tile source asks for ~288 m/s, so part of its 40 m³ is not delivered in its tick. The source carries no state, so that part is lost, not deferred. INFERENCE: its knockdown range shrinks.
+  - That is a blast calibration moving. Restoring it is the job of the blast retune patch, with Erik; the source data is 15× too large anyway (§8.4).
+- **At 1.0 m:** as in §8.6. The ceiling is 192 m/s.
+- **The quiet arena** (INFERENCE, from the 48-tps emulation): 2-8 m/s instead of 35-54, and a drift of −0.1 K instead of −3.0 K. The residual goes to (d)+(a).
+- **Goldens and pins:**
+  - GOLDEN_AGGREGATE moves, once.
+  - The eight ship_demo pins move with the blasts (category A).
+  - The box pins are to be measured.
+  - The field digest needs no version bump: no field, dtype or currency changes.
+
+### 8.9 Gates, oracles, property tests, the reproduction
+
+**The E2E reproduction, before and after,** with `tests/_eos_checkerboard_bench.py
+--stability` on the live path:
+
+- **smoke_light_studio, 72 ticks.** Before: the table of §8.1. After, all of these must hold:
+  - Nmax ≤ 4 and Nmin ≥ 0.05;
+  - stored P within 5 % of the p* mean on every tick;
+  - Tmw never below its pre-blast value minus the thermal solver's losses;
+  - the clamp column at 0;
+  - the plume-weighted wind back under 10 m/s within 1 s of each charge (the shape of the 192-tps emulation).
+- **fire_studio frag** (`--detonate 24,16,24`): no slosh past 1 s. Today it runs at 3-9 m/s for > 4 s.
+- **`--arena`, 30 s:** max wind and drift, against today's.
+- **ship_demo idle:** n_sub, k and the EOS ms per tick, before and after.
+- **`tools/wind_drift_probe.py`** on smoke_light_studio and the fire_studio frag: the median of drift ÷ wind stays ≈ 1 (patch U's result).
+
+**Property tests,** in a new `tests/test_eos_substep_whole_tick.py`. Each
+names the property it protects and the change that must break it; none pins a
+count.
+
+1. **A pressure update never moves mass more than C_P tiles.**
+   - The check: on every tick of a forced fast flow, max|u|·dt/(k·dx) ≤ C_P + one quantum, read from the solver's own k and u. Two flows: a uniform 60 m/s wind in a sealed room at 0.333 m, and a frag.
+   - It must break if k is dropped from the substep loop (the loop wrapping 1a/1d only), or if the estimator loses a term.
+2. **No cell empties or piles in a sealed blast.**
+   - The check: over 2 s of smoke_light_studio's first charge, every accountable cell keeps N within [0.02, 10]·N0.
+   - It must break with K_MAX forced to 1, which reproduces today's 113×.
+3. **The stored pressure tracks the air.**
+   - The check: in the same run, |mean P − mean p*| / mean p* < 5 % on every tick.
+   - It must break with K_MAX = 1.
+4. **The cap returns what it removes.**
+   - The check: for a cell kicked past its cap, Δgas_energy over the kick loop equals −kick bracket + drag + cap heat, exactly, and e_clamp_destroyed_sum == 0.
+   - It must break if bracket 4 reverts to an export.
+5. **The energy closure identity still closes,** exactly in int64 across whole ticks, with k > 1 (the frag run).
+   - The check: the existing gate, `test_e1_hot_rail`'s transcription of the identity, with the new term.
+   - It must break if a counter resets per sub-tick instead of per tick.
+6. **k = 1 is today's code.**
+   - The check: the A/B lockstep harness (K_MAX = 1 against HEAD, every field, every tick) on a quiet 0.333 m scene and on the golden scenario.
+   - It must break on any edit to the k = 1 path.
+7. **CPU == CUDA at k > 1.**
+   - `cuda_s8a_check` at tolerance 0.
+   - `cuda_batch_invariance_check`, with envs at different k (one env blasting, one quiet).
+   - `cuda_prestage_parity_check`.
+   - `cuda_tick_capture_check`, still with the two named syncs.
+
+**Before merge:**
+
+- the full suite;
+- GOLDEN_AGGREGATE re-baselined, with this rationale;
+- the energy gates: `test_no_transport_mint`, `test_gas_energy_tile_flip`, and `_quiet_books_bench.py` and `_sealedbox_bisect_bench.py` EXACT;
+- `tools/cuda_green.py`;
+- `match_pin_check.py --backend cuda/resident`;
+- the checkerboard `--table`, for information (k = 1 there).
+
+### 8.10 The reds
+
+Expected to turn green (INFERENCE unless marked):
+
+- finding 1, the studio blast;
+- `test_air_boundary.py` ambient gate 2. It is the same runaway at k_drag2 = 0; the signature is PROVED in the arena (U_MAX and the T_MAX_PHYS rail), but that test's own scene is still to be run;
+- `test_grenade_kinds`, the self-knockdown, which comes from the frag's sustained winds. The knockdown calibration moves with (B);
+- `test_fire_feedback`, where the plume turns inward from about tick 48. It looks like the same limit cycle as the slosh measured after the frag.
+
+Other causes, one line each:
+
+- the quiet-arena winds below ~8 m/s: the collocated coupling, for (d)+(a);
+- the CUDA conductor's vent-ledger fault: vents drain rooms at a constant mass rate (§8.4, source data);
+- `test_wind_doorway_e2e` and `test_gen_ship_vents_air` (Erik-ruled): patch U's faster transport equalizes pressure. Category C, not instability;
+- `test_wave_push`, and the non-vacuity guards of `test_unit_schema` / `test_unit_store`: match and blast dynamics that will move again with (B). Re-classify them after the patch.
+
+### 8.11 Place in the stack
+
+**Before (e).** The two are independent in quiet rooms, where k = 1. Three
+reasons to go first:
+
+- (e)'s own gates, the full suite and the pressure arc's convergence re-run, are confounded today by blasts that go wild.
+- (e) changes the multigrid, which this patch calls k times per tick, so its residue measurement belongs on the final cadence.
+- The reds of §8.10 belong to this patch, not to (e).
+
+Proposed order: U, stability, (e), (d)+(a), diffusion in m²/s.
+
+### 8.12 Systems
+
+**(a) Existing canonical systems the fix must use:**
+
+- **PhysicsRunner / PhysicsEngine:** the sub-tick loop lives in `EOSSolver::step` and `_resident_chain`, never in Python glue; `K_MAX` is bound in PhysicsRunner only.
+- **Interior drag:** the ceiling and the cap's heat belong to the existing cap stage, not a new site. Drag stays as it is.
+- **Energy closure identity / Gas energy seam / Gas energy recovery:** one new counter in the EOS group. The recovery and its rails run per sub-tick and write back only when a rail binds.
+- **Face-flux energy step:** runs per sub-tick at dt_k, with k_flux_q re-folded.
+- **Trace transport:** unchanged. Trace rides each sub-tick's face flux, and `eos_transport_step_q(dt_k, n_sub, dx)` stays THE transport scalar.
+- **Fixed-point kits:** no new rounding.
+- **Batched resident engine:** one chain, one sync (k read with max_n_sub), masked envs, books into the one arena.
+- **Class P / Class T + the twin ledger, CUDA harness, A/B lockstep harness, GOLDEN_AGGREGATE, Pinned match plays:** see §8.6 and §8.9.
+- **Benches:** `_eos_checkerboard_bench.py --stability`; never a new probe.
+
+**(b) New reusable systems:** none. The sub-tick count is a property of the
+EOS step. Its draft rule line goes to `energy-books.md` and `fields-gas.md`,
+where the loop lives:
+
+> *The EOS updates pressure at least once per C_P tiles of air motion. Steps 0-7 run k times per tick, with k from the one entry estimate (wind, kick, divergence, source), capped at K_MAX; a transport-only substep loop is never the stability mechanism. Past K_MAX, the cap stage's budget ceiling holds, and every cap returns its KE as heat.*
+
+The bench's `--stability` mode joins the draft bench rule of §6(b).
+
+### 8.13 For Erik (at most three rulings)
+
+1. **`K_MAX = 8`,** a perf dial at the value of your frozen N_SUB_MAX. A blast or breach tick then costs up to ~4× the EOS on the GPU, for a fraction of a second.
+2. **The budget ceiling holds blast winds at 64 m/s at 0.333 m** (192 m/s at 1.0 m), so blast knockdown moves. The source data belongs to the blast and vent session:
+   - the frag: 40 m³ / 10 MJ, against ~2.6 m³ / 0.9 MJ;
+   - the studio charges: 156 MJ;
+   - the vents: constant mass flow, in tile volumes.
+3. **The drag dial (`k_drag2`) stays as it is.** Today it is the hidden limiter. Whether real air should be slowed more is your call; this patch does not use it.
