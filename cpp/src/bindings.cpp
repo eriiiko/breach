@@ -108,7 +108,9 @@ static ResidentFields resident_fields_from(const py::dict& dev, int h, int w,
     f.flow_vx = get("flow_vx"); f.flow_vy = get("flow_vy");
     f.floor_height = get("floor_height");
     f.sponge_sigma = get("sponge_sigma"); f.sponge_udamp = get("sponge_udamp");
-    f.div_source = get("div_source");   // #29 P7c.2: the device-taken source (0: upload)
+    // #29 P7c.2: the device-taken source (0: upload). #29 P7e.1: its own key,
+    // since the resident set holds the PENDING plane under "div_source".
+    f.div_source = get("div_source_taken");
     return f;
 }
 

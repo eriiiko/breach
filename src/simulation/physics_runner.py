@@ -2170,7 +2170,7 @@ def run_resident_batch(runners, gmaps, sim_time, water_before_base=None,
 
     # 3b. the EOS stage (the device pre-stage, the masked substep loops).
     if div_source_dev is not None:          # #29 P7c.2: the device-taken source
-        dev["div_source"] = int(div_source_dev)
+        dev["div_source_taken"] = int(div_source_dev)
     e0.run_substeps_resident(dev, h, w, cons, sim_time, ambient,
                              n_amb=amb[1], p_amb=int(amb[2]),
                              n_env=n_env, engines=engines)

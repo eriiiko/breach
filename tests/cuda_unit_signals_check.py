@@ -819,7 +819,7 @@ def _motion_probe(maps, rng):
             for t in ("nodes", "node_ins", "pumps", "pump_ins", "door_drives"):
                 tabs[t].begin()
             uk.signals_emit(st, _applier_for(st), _dev_planes([_planes(sim.gmap)]),
-                            dict(tabs, doors=doors), np.array([0]))
+                            dict(tabs, doors=doors), trow([0]))
             pc = ot.table_layout(us.SIGNAL_TABLE).column("pub").offset
             got = [r[pc] for r in tabs["signals"].records()[0]]
             if got != exp:
