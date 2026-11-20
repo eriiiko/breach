@@ -309,7 +309,189 @@ class DeviceEditDoor:
                                    f"capacity {cap}")
 
 
+    def reset_env(self, e: int) -> None:
+        """Env ``e``'s reset alone (an env reset inside a batch): its rows
+        empty, its seq 0; the other envs' windows untouched."""
+        self._buf.reset_env(int(e))
+
+    def append_probe(self, e: int, edits, tiles) -> None:
+        """TEST-ONLY (#29 P7e.3): host rows (``door_rows``' form, the tiles'
+        edit index local to ``edits``) appended to env ``e`` as a device
+        producer writes them: each row's key must continue the env's seq
+        (refused by name otherwise, nothing written)."""
+        ok = self.bp.edit_door_append_probe(
+            self._buf, int(e), np.ascontiguousarray(edits, dtype=np.int64).reshape(-1, EDIT_COLS),
+            np.ascontiguousarray(tiles, dtype=np.int64).reshape(-1, TILE_COLS))
+        if not ok:
+            raise DoorInterleave(f"edit door: rows appended to env {int(e)} do not continue "
+                                 f"its seq or do not fit its capacity")
+
+
+# ---------------------------------------------------------------------------
+# #29 P7e.3 -- STEP (c): slot 6b's flush FROM THE DEVICE DOOR
+# ---------------------------------------------------------------------------
+#: The build's refusals, by code (``cpp/src/cuda_edit_flush.h``
+#: ``EditFlushFault``): each is a row ``field_edit.pack_for_device`` refuses,
+#: raises on or falls back on -- inside a device tick there is no host to
+#: fall back to, so the env is refused by name. The pack's "noisy edits
+#: without MatchDraws" has no device form: the tick row always carries the
+#: sim's MatchDraws key (``unit_draws.tick_row`` reads ``sim.draws``), so a
+#: sim without them is refused at the latch, never at the flush.
+FLUSH_FAULTS = {
+    1: ("door_overflow", "the door dropped rows past its capacity (DoorOverflow)"),
+    2: ("field", "a field ordinal with no device policy"),
+    3: ("water_depth", "a water_depth edit (the host pack's fallback: "
+                       "field_edit.DEVICE_REFUSED_FIELDS)"),
+    4: ("gas_slice", "a gas edit on a slice outside [0, G) (the host pack's fallback: "
+                     "numpy's index wrap)"),
+    5: ("conservative", "a CONSERVATIVE slice through the gas policy (the host raises)"),
+    6: ("mode", "an EditMode outside ADD / REMOVE / MAX"),
+    7: ("den", "a denominator outside (0, 2^62) (the host pack's fallback)"),
+    8: ("noise_low", "a noisy row's low bound outside [0, ONE]"),
+    9: ("key", "keys that are not the window's consecutive seqs (a lost or foreign row)"),
+    10: ("tile", "a tile outside its env's edits or the grid"),
+    11: ("product", "an integer product |amount x weight x mult x scale| >= 2^125 (the "
+                    "host pack's fallback)"),
+    12: ("contrib", "a contribution >= 2^55 (the host pack's fallback)"),
+}
+
+#: The planes the flush reads and writes, in the binding's order (``None``
+#: is_ambient: a space map).
+FLUSH_PLANES = (("gas", np.int32), ("temperature", np.int32), ("gas_energy", np.int64),
+                ("fire", np.int32), ("heat", np.int32), ("solid", np.bool_),
+                ("is_vacuum", np.bool_), ("is_ambient", np.bool_),
+                ("thermal_solid", np.bool_), ("flammable", np.bool_))
+
+
+class EditFlushRefused(RuntimeError):
+    """An env whose window the device flush refuses (:data:`FLUSH_FAULTS`):
+    nothing of that env was applied. ``env``, ``code``, ``name``, ``row``."""
+
+    def __init__(self, msg, env, code, row):
+        super().__init__(msg)
+        self.env, self.code, self.row = int(env), int(code), int(row)
+        self.name = FLUSH_FAULTS.get(self.code, ("?", ""))[0]
+
+
+class EditQueueFailed(RuntimeError):
+    """K2's failure slot (``cuda_edit_queue.cu``): an edit result left its
+    field's range (an int32 store, an int64 energy, a negative trace) -- the
+    host flush raises there."""
+
+
+class DeviceEditFlush:
+    """THE DEVICE FLUSH of slot 6b (#29 P7e.3, ``breach_physics.
+    EditFlushBuffer``): ``door``'s window -- every row a device producer wrote
+    since the last flush, across the tick boundary -- sorted per env into the
+    host's applied order ``(field, source, region, seq)``, range-checked as
+    ``pack_for_device`` checks it, laid out as ``_edit_buffer`` lays it out
+    (tick word and key from THE TICK ROW, the ambient from the tables) and fed
+    to the device edit queue's K1 / K2, then the door reset (rows empty, seq
+    0): all on the device, nothing downloaded until :meth:`books`, THE ONE
+    READ (the books and the refusals together)."""
+
+    def __init__(self, door: DeviceEditDoor, bp=None):
+        bp = door.bp if bp is None else bp
+        lay = dict(bp.edit_flush_layout())
+        names = {int(lay[name]): name for _c, (name, _w) in FLUSH_FAULTS.items()}
+        if names != {c: n for c, (n, _w) in FLUSH_FAULTS.items()} \
+                or int(lay["n_codes"]) != len(FLUSH_FAULTS) + 1:
+            raise ValueError(f"edit flush: the compiled fault codes {lay} are not "
+                             f"simulation.edit_door's")
+        self.bp, self.door = bp, door
+        self.n_env = door.n_env
+        self.slots, self.fail_slot = int(lay["slots"]), int(lay["fail"])
+        self._buf = bp.EditFlushBuffer(self.n_env, door.edit_cap, door.tile_cap)
+
+    def _ptrs(self, planes: dict):
+        out = np.zeros(len(FLUSH_PLANES), dtype=np.uint64)
+        for k, (name, dt) in enumerate(FLUSH_PLANES):
+            a = planes.get(name)
+            if a is None:
+                if name == "is_ambient":
+                    continue
+                raise ValueError(f"edit flush: plane {name!r} missing")
+            if np.dtype(a.dtype) != np.dtype(dt) or int(a.shape[0]) != self.n_env:
+                raise ValueError(f"edit flush: plane {name!r} is {a.dtype} {a.shape}, "
+                                 f"want {np.dtype(dt)} with {self.n_env} envs")
+            out[k] = int(a.data.ptr)
+        h, w = (int(x) for x in planes["solid"].shape[1:3])
+        return out, h, w
+
+    def run(self, tick_row, tables, planes: dict, n_gases: int, o2_idx: int,
+            n2_idx: int) -> None:
+        """Slot 6b: the flush from the door (see the class). ``tick_row`` a
+        ``unit_draws.TickRow``, ``tables`` the batch's device tables
+        (``DeviceStore.tables``), ``planes`` :data:`FLUSH_PLANES` as device
+        arrays. Launches only."""
+        from simulation import unit_draws
+        from simulation.rng_salts import Salt
+        ptr = unit_draws.row_ptr(tick_row, self.n_env, "edit flush")
+        p, h, w = self._ptrs(planes)
+        self._buf.run(self.door.buffer, tables, ptr, p, h, w, int(n_gases), int(o2_idx),
+                      int(n2_idx), int(Salt.FIELD_NOISE))
+
+    def run_host_pack(self, packs, planes: dict, n_gases: int, o2_idx: int,
+                      n2_idx: int) -> None:
+        """THE GATE'S REFERENCE: the same K1 / K2 fed from the host packs
+        (``field_edit.pack_for_device`` per env, ``None`` for an env with no
+        edit) as the resident tick feeds them (``physics_runner._edit_buffer``)."""
+        from simulation.physics_runner import _edit_buffer
+        from simulation.rng_salts import Salt
+        buf, n_e, n_t = _edit_buffer(list(packs), self.n_env)
+        p, h, w = self._ptrs(planes)
+        self._buf.run_host_pack(buf, n_e, n_t, p, h, w, int(n_gases), int(o2_idx),
+                                int(n2_idx), int(Salt.FIELD_NOISE))
+
+    def books(self) -> np.ndarray:
+        """THE ONE READ: ``(N, EDQ_SLOTS)`` books; refuses by name an env the
+        build refused (:class:`EditFlushRefused`, the lowest env first) or
+        whose results K2 refused (:class:`EditQueueFailed`)."""
+        b, f = self._buf.books()
+        b = np.asarray(b, dtype=np.int64)
+        for e, word in enumerate(np.asarray(f, dtype=np.uint64)):
+            word = int(word)
+            if word != (1 << 64) - 1:
+                code, row = word >> 32, word & 0xffffffff
+                name, why = FLUSH_FAULTS.get(code, ("?", "an unknown code"))
+                raise EditFlushRefused(f"edit flush: env {e} refused ({name}: {why}; row "
+                                       f"{row})", e, code, row)
+        for e in range(self.n_env):
+            if int(b[e, self.fail_slot]):
+                raise EditQueueFailed(
+                    f"device edit queue: env {e}: {int(b[e, self.fail_slot])} edit "
+                    f"result(s) left their field's range (an int32 store, an int64 "
+                    f"energy, a negative trace) -- the host flush raises here")
+        return b
+
+    def fold(self, gmaps, rngs) -> np.ndarray:
+        """:meth:`books`, then each env's folded into its map and draws as
+        the host flush writes them (``physics_runner.fold_edit_queue_books``,
+        the resident tick's own fold)."""
+        from simulation.physics_runner import fold_edit_queue_books
+        b = self.books()
+        for e, (g, r) in enumerate(zip(gmaps, rngs)):
+            fold_edit_queue_books(self.bp.EDIT_QUEUE_LAYOUT, g, b[e], r)
+        return b
+
+    def rows(self, n_edits):
+        """The gate's download of the built buffers, per env: ``(edits (E,
+        16), tiles (T, 4), env scalars (4,))`` with the tiles' edit index made
+        env-local again (``n_edits`` the env's edit count, which the device
+        never hands the host)."""
+        er, tr, off, env = self._buf.rows()
+        cap = self.door.edit_cap
+        out = []
+        for e in range(self.n_env):
+            n = int(n_edits[e])
+            t = tr[int(off[e]):int(off[e + 1])].copy()
+            t[:, 0] -= e * cap
+            out.append((er[e * cap:e * cap + n].copy(), t, env[e].copy()))
+        return out
+
+
 __all__ = ["PACKED_COLS", "SRC_COL", "REGION_COL", "ARG_COL", "ARG_COLS",
            "region_args", "EDIT_COLS", "TILE_COLS",
            "EDIT_CAP", "TILE_CAP", "DoorInterleave", "DoorOverflow", "door_rows",
-           "edit_of", "replay", "DeviceEditDoor"]
+           "edit_of", "replay", "DeviceEditDoor", "FLUSH_FAULTS", "FLUSH_PLANES",
+           "EditFlushRefused", "EditQueueFailed", "DeviceEditFlush"]

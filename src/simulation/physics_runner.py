@@ -989,20 +989,8 @@ class PhysicsRunner:
         / clip books, the gas-energy seam channels (a channel key appears on
         its first non-zero deposit, as ``_gas_energy_book`` adds it) and the
         draws' word count."""
-        lay = self.bp.EDIT_QUEUE_LAYOUT
-        b = list(self.engine.edit_queue_books)
-        dep, clip = lay["dep"], lay["clip"]
-        for g in range(int(gmap.gas.shape[0])):
-            gmap.trace_deposit_books[g] += int(b[dep + g])
-            gmap.trace_clip_books[g] += int(b[clip + g])
-        for ch, slot in (("field_edit", lay["ge_field_edit"]),
-                         ("field_edit_wave", lay["ge_field_edit_wave"]),
-                         ("field_edit_atm", lay["ge_field_edit_atm"])):
-            if int(b[slot + 1]):
-                gmap.gas_energy_books[ch] = (gmap.gas_energy_books.get(ch, 0)
-                                             + int(b[slot]))
-        if pack.rng is not None and hasattr(pack.rng, "drawn"):
-            pack.rng.drawn += int(b[lay["noise"]])
+        fold_edit_queue_books(self.bp.EDIT_QUEUE_LAYOUT, gmap,
+                              list(self.engine.edit_queue_books), pack.rng)
 
     def _physics_head(self, gmap, sim_time):
         """#29 P5: the head of :meth:`step` every path runs before slot 7's
@@ -2217,6 +2205,28 @@ def run_resident_batch(runners, gmaps, sim_time, water_before_base=None,
     for r, g, c in zip(runners, gmaps, ctxs):
         r._resident_finish(g, c)
     return [list(d) for d in destroyed]
+
+
+def fold_edit_queue_books(lay, gmap, b, rng) -> None:
+    """THE fold of one env's device edit-queue books ``b`` (``EDQ_SLOTS``
+    words, ``lay`` the binding's ``EDIT_QUEUE_LAYOUT``) into its map and
+    draws, as the host flush writes them: the per-gas trace deposit / clip
+    books, the gas-energy seam channels (a channel key appears on its first
+    non-zero deposit, as ``_gas_energy_book`` adds it) and the draws' word
+    count. The resident tick's fold and the device door's flush
+    (``edit_door.DeviceEditFlush.fold``, #29 P7e.3) both call it."""
+    dep, clip = lay["dep"], lay["clip"]
+    for g in range(int(gmap.gas.shape[0])):
+        gmap.trace_deposit_books[g] += int(b[dep + g])
+        gmap.trace_clip_books[g] += int(b[clip + g])
+    for ch, slot in (("field_edit", lay["ge_field_edit"]),
+                     ("field_edit_wave", lay["ge_field_edit_wave"]),
+                     ("field_edit_atm", lay["ge_field_edit_atm"])):
+        if int(b[slot + 1]):
+            gmap.gas_energy_books[ch] = (gmap.gas_energy_books.get(ch, 0)
+                                         + int(b[slot]))
+    if rng is not None and hasattr(rng, "drawn"):
+        rng.drawn += int(b[lay["noise"]])
 
 
 def _check_edit_tables(bp) -> None:
