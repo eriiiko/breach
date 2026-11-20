@@ -2711,10 +2711,10 @@ class GameRenderer:
         this frame -- the follow camera (#128) then drops to free."""
         K = rl.KeyboardKey
         dx = dy = 0.0
-        if (wasd and rl.is_key_down(K.KEY_A)) or rl.is_key_down(K.KEY_LEFT):  dx -= 1
-        if (wasd and rl.is_key_down(K.KEY_D)) or rl.is_key_down(K.KEY_RIGHT): dx += 1
-        if (wasd and rl.is_key_down(K.KEY_W)) or rl.is_key_down(K.KEY_UP):    dy -= 1
-        if (wasd and rl.is_key_down(K.KEY_S)) or rl.is_key_down(K.KEY_DOWN):  dy += 1
+        if rl.is_key_down(K.KEY_A) or rl.is_key_down(K.KEY_LEFT):  dx -= 1
+        if rl.is_key_down(K.KEY_D) or rl.is_key_down(K.KEY_RIGHT): dx += 1
+        if rl.is_key_down(K.KEY_W) or rl.is_key_down(K.KEY_UP):    dy -= 1
+        if rl.is_key_down(K.KEY_S) or rl.is_key_down(K.KEY_DOWN):  dy += 1
         if dx == 0 and dy == 0:
             return False
         speed = pan_speed_tiles_per_s

@@ -824,8 +824,12 @@ def part_apply(trials=int(os.environ.get("UNIT_DAMAGE_APPLY_TRIALS", "8"))):
                 t = tabs[e]
 
                 def put(name, vals):
+                    # a per-species column is one block per species (the
+                    # table grows with the species registry: #106 added the
+                    # octopus); the scene's rows are all species 0 (human),
+                    # so the drawn block is species 0's, the rest stay real
                     c = tlay.column(name)
-                    t[c.offset:c.offset + c.width] = vals
+                    t[c.offset:c.offset + len(vals)] = vals
                 armor_z = rng.integers(0, 3 * ONE, N_DAMAGE_TYPES)
                 res_z = rng.integers(0, 8 * ONE, N_DAMAGE_TYPES)
                 armor_s = rng.integers(0, 3 * ONE, N_DAMAGE_TYPES)
