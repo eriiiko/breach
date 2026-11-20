@@ -468,3 +468,22 @@ the lead so you decide all these things." Concretely:
   stroke, one jet 7.8 ML, train 4.01 m/s = 7.3x the crawl). Cost: one
   session; the new gates add ~50 s to the suite. Pictures:
   `docs/octopus_p6f_shots_2026-10-31/`.
+- 2026-11-20 (merge of main 7cba57dd, worktree agent, Opus) -- 1191 main
+  commits merged in (`docs/octopus_merge_main_2026-11-20.md`; 29 files
+  conflicted). The octopus now rides main's systems: main's `throttle_q` is
+  its analog speed (`creature_speed_q16`, throttle 0 = main's walk = the full
+  crawl), main's `DirectControl` drives it under `--play creature` (the
+  octopus keyboard scheme and `[control.keyboard]` deleted), slot 5b writes
+  the unit through `set_pos` / `turning.place` (Q16), slot 1a skips a
+  creature, the grad-P push became main's wind row with a body response,
+  `is_creature` moved into `species.py`, the device conductor refuses a
+  creature, CLAUDE.md long rows -> index lines + `.claude/rules/creatures.md`.
+  What failed first: main's pose layer refused the octopus GLB and killed
+  every window at frame 0 (creature looks skipped there); the device table
+  header went stale with a second species; a stale `wasd` term broke the
+  window replays. Lesson: run the E2E driver right after the merge commit,
+  before the full suite. Eight questions for Erik in the report (Q1 the
+  walk, Q2 the keyboard's missing mid speed and the always-on mouse aim).
+  Cost: one long session; the full suite ~42 min, `cuda_green` ~70 min on a
+  machine shared with another session's runs (two CUDA checks hit
+  out-of-memory once).
