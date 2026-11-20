@@ -1381,13 +1381,12 @@ def _run_water_perf(renderer, sim, lights_in, light_sky,
         fn = orig[key]
 
         def timed(*a, **kw):
-            t0 = time.perf_counter()
             timers[key].begin()
             out = fn(*a, **kw)
             timers[key].end()
             cur[key] += timers[key].result_ms()
-            if key == "sim":
-                cur["sim_cpu"] += (time.perf_counter() - t0) * 1000.0
+            if key == "sim":       # the pass's own clock (no query wait)
+                cur["sim_cpu"] += wp.last_simulate_ms
             return out
         return timed
 
