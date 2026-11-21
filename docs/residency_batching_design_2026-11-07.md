@@ -4161,6 +4161,151 @@ again for the build: the bank file of §4.6 is not needed by this number;
 moving the restage's host packing into the pre-build halves it. No golden
 re-baselined; no host value moved; no table column added.
 
+**P8.10a AS-BUILT (2026-11-21, branch `29-p810a-device-backend`, stacked on
+P8.9b's head `21a9c97d`).** THE DEVICE BACKEND OF THE BATCHED ENVIRONMENT is
+`BatchedEnv(run, backend="device")`, ONE API with `cpu_farm`: `rl_env`
+dispatches to `rl_env_device.DeviceEnv` (`src/rl_env_device.py`, imported
+only on that backend), one `DeviceConductor` of N envs with the device
+observation, picture, books and decoder attached. WHAT A STEP RETURNS: the
+observation, `info["full_view"]` and the `final_` sets are torch tensors that
+ARE the env's device buffers (DLPack views made once; the `final_` set the
+backend's own buffers, this step's ended rows copied from
+`DeviceObservation.final`, the rows that ended last step zeroed: the farm's
+per-step semantics P8.8b left here); `reward`, `terminated`, `truncated`,
+`counters`, the team blocks, `rows_ended`, `masked_choices` fresh device
+copies (bool casts on the card), taken BEFORE any reset re-seeds the books;
+host numpy only for what the host holds anyway (`tick`, `episode`,
+`episode_seed`, `level`, `ticks`, `ended` from the books read's ended-now
+flags, `checkpoints`, `result` from one download of the books' scalars on an
+ending step only). Torch, not CuPy: the trainer's type, and the views are
+built once (no per-step DLPack). Actions arrive as torch / CuPy / numpy and go
+to `DeviceDecoder.set_decisions` (one device write). A steady step makes the
+conductor's two syncs per tick and nothing else (`terminated` costs nothing:
+a device tensor, its host twin `info["ended"]` rides the books read). STEP:
+the decision, `decimation` conductor ticks (each env's ending tick noted from
+`ended_now`, its later ticks not counted; the checkpoints of the envs due that
+tick from ONE `download` of them and the host digest), the served copies, the
+`final_` rows, the results, then the AUTO-RESET of every env that ended
+(`DeviceConductor.reset_env` with its next episode), so the returned live
+observation is the new episode's tick 0, as on the farm. EPISODES: both
+backends build an episode through the new `rl_env.episode_match` (the farm's
+`EnvRunner.reset` now calls it); the device builds `MatchSession(level, spec,
+seed, commander="none")`. THE PRE-BUILD (decision 4): the simplest form first
+(the build at the ending step, synchronous), measured: on the room at N = 256
+in steady state (100 measured steps after 40) the reset was 26 % of the step (build
+31 ms + restage 42 ms per step of 284 ms), so ONE optimisation was added:
+`DeviceConductor.tick(idle=)` runs host work once the walk is ENQUEUED and
+before the books read waits (no thread), and the env builds envs' NEXT
+episodes there while `cudaStreamQuery` says the tick stream is busy (the envs
+that ended in the step first, then the others in turn, at most N held), a
+pre-built episode taken by its env's next reset: room N = 256 896 -> 1085
+env-steps/s (+21 %, the build hidden in the card's time; the restage, 39 ms
+per step, stays synchronous), room N = 64 624 -> 638 (the idle window is
+small there), equality and the sync count unchanged with it on (the default).
+WHO DRIVES: `[run] commander` (new, `control_source.COMMANDERS` "bots" |
+"none", default "bots" = today) is honoured by `create_match_controllers`
+alone (`MatchSession(commander=)`) on both backends; the device backend
+refuses any value but "none" by name ("the commander has no device form yet
+(#29 P8.6b part 2)"); every marine team `policy`, the horde `zombies` /
+`idle`, a named profile ("counters" refused), spec v1, and a level set that
+cannot share one batch (`batch_signature`: grid, gas table, tilt, tick rate,
+U, doors, covers, places, listed per level) are refused by name at the build,
+before the card. THE CARRIED-OVER DOORS (critique 19): COVERAGE COUNTERS --
+`BatchedEnv.coverage()` on both backends, ONE set of functions over numpy or
+CuPy (`rl_env.coverage_*`): per head the options chosen on valid rows, per
+mask the options legal, per counter the cells that moved, the endings (no
+sync on the card); THE PRE-FLIGHT -- `rl_env_device.preflight(run)`: random
+episodes of the run's own levels on BOTH backends, compared at every step by
+the gate's own loop (`compare_backends`), coverage equal, and the run's
+weighted reward terms that never moved listed (`rl_env.unexercised`;
+REPORTED in the snapshot record, not refused: whether a zero is a fault -- a
+weighted zombie term on a room with no zombie, a clock never reached -- is the
+run's design); `require_snapshot`'s DEVICE BRANCH -- after the farm's checks:
+an empty twin ledger, the CPU build's id at HEAD (`cpu_module_probe`, a
+subprocess), every compiled layout fingerprint this checkout's
+(`DEVICE_LAYOUTS`: store, events, requests, applier, object tables, draws,
+observation, swarm tables), then the pre-flight (costly, last); the run
+manifest's `device` record (CPU build id, layout fingerprints) refused on a
+resume change; CHECKPOINTS -- `(episode, tick, field_digest, tick_digest)` at
+the farm's cadence (tick 0 from the fresh host sim, the cadence and the last
+tick from a download), and `[run] checkpoint_every_ticks` (new, both
+backends, default `[replay]`'s, 0 = none) because they are expensive (below);
+`masked_choices`, `RewardBooksMismatch` and every conductor fault surface as
+the farm's types and messages with `.env`, after which the backend refuses
+every call (`DeviceEnvFailed`). Stale "P8b" text made true in the rules
+(device-units, hand-verbs), `resident_batch.py`, `sensor_accessor.py`, four
+CUDA headers (comments only; the observation twin re-marked level) and
+`tests/test_applier_layout.py`'s docstring. GATES (`tests/cuda_env_check.py`
++ `tests/test_cuda_env.py`): EQUALITY on the room N = 1 (172 steps, 3
+episodes), N = 4 (714 steps, 19 endings at 19 distinct steps), N = 8 (540
+steps, 24 endings), ship_demo with zombies N = 1 (133 steps, 2 episodes) and
+N = 4 (130 steps, 8 endings at 7 distinct steps): 1 689 steps, 56 episodes
+ended, 31 918 env-ticks, every returned field raw-bit equal at every step,
+the masks shown identical before each draw, the coverage counters equal; NOT
+YET BUILT and named (served zeros, not gated, cells where the farm differs):
+far_f/route (11.6 M), vector/route_len (18 492) and the order / place /
+compass columns (zero on both sides with the commander off): P8.6b part 1's.
+REFUSALS each by name (a team on bots, commander "bots", room + ship_demo,
+"counters", an out-of-range hand: the host's `ValueError` "action out of
+range: env 1, row 1, head 'hand'" with `.env` 1, then `DeviceEnvFailed`).
+SYNCS 8 per steady step (decimation 4: 2 per tick, `max_n_sub` and the books
+read) at N = 1 and 2, actions handed over as a device array, counted after
+a warm-up with the collector run and held off. HANDOVER: every returned
+observation / full-view / final_ tensor pointer-identical to the env's
+buffers on every step. BREAKS, each red: `reset_late` (step 42, the live
+vector), `final_kept` (step 43, `final_obs` vector), `episode_env` (step 42,
+`episode_seed`), `decide_late` (step 0, the vector). COST (ship_demo, the
+card shared with a sibling agent's runs): a host episode build 26 / 27 ms
+and a restage 25 / 23 ms at N = 4 / 64; ONE checkpoint (download + digest of
+one env) 21.5 ms at N = 4, 74.9 ms at N = 64 -- the download moves every env's
+store and tables to land one (`DeviceConductor.download`), so at the default
+cadence the checkpoints cost 134 ms per step on the room and 544 ms per step
+(46 %) on ship_demo at N = 256. THROUGHPUT (`tools/rl_smoke.py`, now
+`--backend device` with torch draws on the card and the step split by part;
+the farm with 15 workers; seed 77, decimation 4, short windows of 10 to 55
+steps after 5 warm-up steps, synchronous builds, default checkpoint cadence
+unless "ckpt 0"; env-steps/s, soldier-decisions/s = every row of every
+env-step, room U = 2, ship_demo U = 12):
+
+| level | N | farm | device | device host ms / step: conductor ticks, checkpoints, resets, served + final_, coverage | device GPU ms / step: sim, observation + full view + books, decoder |
+|---|---|---|---|---|---|
+| room | 1 | 67.8 / 136 | 22.7 / 45 | 38.4, 0.5, 0.7, 1.1, 1.2 | 29.9, 0.92, 0.33 |
+| room | 16 | 349.9 / 700 | 296.7 / 593 | 43.3, 5.0, 1.0, 1.2, 1.2 | 37.3, 1.01, 0.24 |
+| room | 64 | 440.0 / 880 | 505.1 / 1010 | 89.5, 20.7, 8.8, 2.3, 1.5 | 74.3, 1.35, 1.10 |
+| room | 256 | 521.3 / 1043 | 727.8 / 1456 | 201.4, 134.0, 7.1, 2.9, 1.3 | 176.5, 3.36, 1.12 |
+| room, ckpt 0 | 256 | -- | 1349.4 / 2699 | 175.8, --, 6.3, 2.5, 1.2 | 158.1, 2.59, 0.32 |
+| room, ckpt 0, steady, sync / pre-built | 256 | -- | 896 / 1085 | 205 / 190, --, 73 / 39 (+28 hidden), 3.7, 1.3 | -- |
+| ship_demo | 1 | 8.3 / 100 | 16.0 / 192 | 55.2, 1.7, 1.1, 1.2, 1.2 | 43.0, 3.40, 1.13 |
+| ship_demo | 16 | 47.9 / 574 | 119.6 / 1435 | 96.4, 25.7, 5.8, 1.7, 1.3 | 89.3, 4.98, 0.45 |
+| ship_demo | 64 | 62.1 / 745 | 231.1 / 2773 | 212.4, 58.8, 0.0, 1.0, 1.5 | 193.0, 7.11, 1.82 |
+| ship_demo | 256 | (not run: 256 farm sims past the 16 GB) | 216.9 / 2603 | 628.1, 543.9, 0.0, 1.0, 1.4 | 586.5, 17.0, 0.51 |
+| ship_demo, ckpt 0 | 256 | -- | 421.3 / 5055 | 601.1, --, 0.0, 1.1, 1.4 | 547.1, 16.7, 0.38 |
+
+What limits each row: at N = 1 the conductor's walk (many small
+launches per tick, latency bound: the room's 2 units cost 30 ms of GPU per
+step) -- the farm's one process is faster there on the room; from N = 16 on
+the sim's GPU time (the physics and unit slots, the observation, full view
+and books only 1 to 3 %, the decoder below 1 %) and, at the default cadence,
+the checkpoint downloads (the largest addition: 46 % at ship_demo N = 256);
+on the room at N = 256 in steady state the reset's restage (17 % with the
+pre-build). The env's own Python (coverage, copies, final_) is 2 to 5 ms a
+step. ship_demo N = 64: 3.7x the farm; N = 256 with checkpoints off 6.8x the
+farm's best; the room 1.1x to 2.6x at N >= 64. Choices where the design was
+silent: torch (not CuPy) as the returned type; fresh device copies for the
+non-observation arrays (the farm's contract) rather than the books' served
+buffers; the result from the books' scalars (one download on an ending
+step); the pre-flight reports zero-exercise terms instead of refusing; the
+pre-build is built in the conductor's idle window (the brief's "between steps
+on the env's own thread", with a real overlap) and holds at most N episodes.
+WHAT P8.10b NEEDS: the obs dict / `team_rows` are torch views (copy into the
+rollout before the next step), actions as a CUDA tensor `(N, U, 5)` int, the
+reward / rows_ended / terminated as device tensors, `info["ended"]` host (the
+loop's control flow), `coverage()` for its live check. WHAT THE EPISODE RECORD
+(old P8c) NEEDS: per step `DeviceDecoder.decisions` and `.state` (the decoded
+rows, P8.6a) plus `episode`, `episode_seed`, `level` and the checkpoints
+`info` already carries -- no host tap. No golden re-baselined; no host value
+moved; no table column added.
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:
