@@ -663,9 +663,12 @@ table (physics critic, finding 5). v2's model, for a many-tile body:
    in patch A0 into one function both reads call.
 3. **The pressure:** a coverage-weighted mean over the windward ring tiles,
    `qbar = sum(omega_i W_i) / sum(omega_i)`, truncated. The direction:
-   `d = sum(omega_i (W_i >> 32) v_i)` (the load-weighted wind; the shift
-   keeps the sum in 128 bits), `|d|` by the kit's `isqrt`; no windward tile or
-   `d = 0` returns at once (no division by zero, determinism critic 9).
+   `d = sum(omega_i (W_i >> sh) v_i)`, the load-weighted wind, with
+   `sh = max(0, bitlen(max_i W_i) - 31)` taken from the ring's largest term
+   (a pure function of the read, the same on both backends), so the weights
+   keep 31 bits whatever the wind's strength and the sum stays in 128 bits;
+   `|d|` by the kit's `isqrt`; no windward tile or `d = 0` returns at once (no
+   division by zero, determinism critic 9).
 4. **The force:** the area the prop shows `d`, its projected width times its
    height. `w_proj = (2A |dx s - dy c| + 2B |dx c + dy s|) / |d|` (Q16 tiles;
    the formula the physics critic derived independently). The magnitude is
