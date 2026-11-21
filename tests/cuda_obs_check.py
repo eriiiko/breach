@@ -1394,6 +1394,99 @@ def corpus_turn():
     return [play("slow_turn", lv, spec, TURN_SEED, setup=turn_setup, max_ticks=TURN_TICKS)]
 
 
+#: P8.4b's list hand match: ship_demo, ``all_round``, both teams ``idle``
+#: (only the hand intents move anything), cut at :data:`LIST_TICKS`. At tick 0
+#: (the reference and the twin alike): marine A of team 0 stands beside a door
+#: made a HULL door (horde.is_hull_door: the wall tile beside its span marked
+#: vacuum; no corpus level has a hull door), that door made WIRED (a level wire to it: the
+#: observation reads ``sim.level.wires``; the door drive table was built at
+#: load, so the play is unchanged), a mate B and an enemy E within the frag
+#: radius of each other and of A, a REMOTE charge (det_tick None) of A's at
+#: A's feet; then A takes a hold order with E as its priority target, and B
+#: walks at half throttle. The columns no played match moves (``hull``,
+#: ``wired``, ``remote``, ``priority``, ``throttle``, ``frag_catch``).
+LIST_SEED = 75
+LIST_TICKS = 24
+
+
+def _free(sim, x, y) -> bool:
+    g = sim.gmap
+    h, w = g.solid.shape
+    return 0 <= x < w and 0 <= y < h and not g.solid[y, x] and not g.is_vacuum[y, x]         and not g.is_ambient[y, x]
+
+
+def list_setup(session):
+    from dataclasses import replace as dc_replace
+    from types import SimpleNamespace as NS
+
+    from simulation import horde, unit_fixed
+    from simulation.charges import PlantedCharge
+    sim = session.sim
+    one = unit_fixed.FP_ONE
+    a, b = [u for u in sorted(sim.units, key=lambda u: int(u.id))
+            if not u.is_zombie and int(u.team) == 0][:2]
+    enemy = [u for u in sorted(sim.units, key=lambda u: int(u.id))
+             if not u.is_zombie and int(u.team) == 1][0]
+    spot = None
+    for d in sim._doors:
+        if not d.alive:
+            continue
+        span = {(int(ty), int(tx)) for ty, tx in d.span}
+        ring = sorted({(ty + dy, tx + dx) for ty, tx in span
+                       for dy, dx in ((0, -1), (0, 1), (-1, 0), (1, 0))} - span)
+        wall = [(y, x) for y, x in ring if sim.gmap.solid[y, x]]
+        for y, x in ring:
+            if not wall or not _free(sim, x, y):
+                continue
+            near = [(x + ox, y + oy) for oy in range(-2, 3) for ox in range(-2, 3)
+                    if (ox, oy) != (0, 0) and _free(sim, x + ox, y + oy)]
+            if len(near) >= 2:
+                spot = (d, x, y, near, wall[0])
+                break
+        if spot:
+            break
+    assert spot is not None, "list hand match: no door with a wall and room beside it"
+    # the door made a HULL door: the wall tile beside its span marked vacuum
+    # (no level of the corpus has one; ship_demo's hull is walls, not doors)
+    sim.gmap.is_vacuum[spot[4][0], spot[4][1]] = True
+    assert horde.is_hull_door(sim.gmap, spot[0].span)
+    door, x, y, near, _ = spot
+    a.set_pos_q(x * one, y * one)
+    (bx, by), (ex, ey) = near[0], near[1]
+    b.set_pos_q(bx * one, by * one)
+    enemy.set_pos_q(ex * one, ey * one)
+    wire = NS(input="open", target_ordinal=int(door.ordinal))
+    sim.level = dc_replace(sim.level, wires=tuple(getattr(sim.level, "wires", ()) or ()) + (wire,))
+    ammo = sim.weapons_tables.charge_rows[0]
+    sim.planted_charges.append(PlantedCharge(x, y, ammo, int(a.id), det_tick=None))
+    sim._vision_cache = None
+    sim.start_team_picture(range(len(session.spec.teams)))
+
+
+def list_script(sim):
+    from simulation import room_graph, unit_fixed
+    from simulation.unit_orders import graph_of
+    a, b = [u for u in sorted(sim.units, key=lambda u: int(u.id))
+            if not u.is_zombie and int(u.team) == 0][:2]
+    enemy = [u for u in sorted(sim.units, key=lambda u: int(u.id))
+             if not u.is_zombie and int(u.team) == 1][0]
+    one = unit_fixed.FP_ONE
+    if int(sim.tick) == 0 and a.alive:
+        where = int(room_graph.place_at(graph_of(sim), a.center_tile_y(), a.center_tile_x()))
+        sim.order_intent(int(a.id), 2, where, 0, int(enemy.id))
+    if b.alive and int(sim.tick) in (2, 10):
+        sim.set_move_dir(int(b.id), 0, one, one // 2)
+
+
+def corpus_list():
+    from dataclasses import replace
+    lv = ship_level()
+    spec = replace(lv.match, sight="all_round",
+                   teams=tuple(replace(t, controller="idle") for t in lv.match.teams))
+    return [play("list_hand", lv, spec, LIST_SEED, setup=list_setup, script=list_script,
+                 max_ticks=LIST_TICKS)]
+
+
 def part_gate():
     ca, cb, cdn = Census(), Census(), Census()
     for p in corpus_a():
@@ -1410,6 +1503,8 @@ def part_gate():
         gate(f"(d door) {p.name}", [p], cdn)
     for p in corpus_turn():
         gate(f"(d turn) {p.name}", [p], cdn)
+    for p in corpus_list():
+        gate(f"(d list) {p.name}", [p], cdn)
     ca.judge("census (a)", strict=False)
     cb.judge("census (b)", strict=False)
     cdn.judge("census (d)", strict=False)
@@ -1425,7 +1520,7 @@ def part_gate():
     judge_picture(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                   + corpus_door())
     judge_list(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
-               + corpus_door() + corpus_turn())
+               + corpus_door() + corpus_turn() + corpus_list())
     for p in corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round():
         a0, a1 = p.cover_alive
         if a0 != a1:
