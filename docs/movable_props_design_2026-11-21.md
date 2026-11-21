@@ -1105,3 +1105,329 @@ reaches an agent only through the wind, heat and movement it changes. A
 trained soldier cannot see a table until a new spec adds a prop block. Ruling
 R15: no training level holds movable props until that spec exists.
 
+---
+
+# Part B. Arc 2: fire on props
+
+**Read this part as a design, not a build order.** v1's fire law was UNSOUND
+(physics critic, finding 1: it neither held its flame nor closed the books).
+v2 redesigns it the way that critic asked, puts a worked plateau calculation
+in, and lists what remains UNVERIFIED (9.8). Arc 2 gets its own critique round
+(physics and books, determinism) before any of its patches is built.
+
+## 9. Fire
+
+### 9.1 The ruling, and the decision
+
+Erik ruled (1.1): a burning prop heats what is beside and underneath it, and
+the heat source moves with the stamp.
+
+**DECISION: a prop owns its fuel, its burn state and its heat; tiles never
+hold a prop's fuel or a prop's fire. Each burn cell is a BOOKED energy
+reservoir.** The tile law (`cpp/src/combustion.cpp`) lands most of a fire's
+heat, `H_bed`, in the burning SOLID's own tile: the fuel bed that holds the
+flame plateau (combustion.cpp, the bed deposit; `config.toml`
+`[physics.combustion]`, the P-R4 block). For a prop the fuel bed is the prop's
+own cell. So:
+- the bed heat lands in the cell and is booked as the tile law's solid heat is
+  (`CombustionSolver.e_comb_solid_heat_sum`);
+- the cell exchanges heat with its tiles through a booked seam term, both
+  ways (so a prop warms from a hot room and takes that heat out of the room:
+  v1's unbooked warming, which created about 9.1 MJ for a 20 kg table warmed
+  280 K, is gone; physics critic, finding 7);
+- the gas-side parcel `H_fuel` goes to the gas as in the tile law;
+- the O2 demand takes the tile law's form (9.4);
+- the products follow the tile law's split (9.5, R5).
+
+When the prop moves, its reservoir moves with it (the heat is the prop's);
+what it already gave the room stays in the room, so a sliding burning table
+leaves a hot trail, not a fire.
+
+**Alternative it beat (v1):** the cell's temperature as an unbooked node
+warmed by the body-temperature step, the burn's heat paid at `H_fuel` alone
+into the tiles. It gave a burning prop about 9% of a burning tile's heat per
+unit of O2, so a prop fire went out unless a tile fire held it up, and its
+warming minted energy (physics critic, findings 1 and 7).
+
+**Alternative it beat (the lend):** the prop lends its fuel to the tiles under
+it each tick and takes back what is left. Rejected: the tile `fire` and
+`temperature` stay with the tile when the prop leaves (a burning table leaves
+its fire on the floor), and the lend and take-back are topology-like writes
+every tick.
+
+### 9.2 One side burning: four cells
+
+**DECISION (R10): every prop has exactly four burn cells**, the quadrants of
+its own frame (front-right, front-left, back-right, back-left; 3.2 step 6),
+each with its own reservoir, fuel and burning flag. That is the smallest form
+that lets "a table burn on one side and not the other side" along either axis
+and one corner alone, and it gives #235 the per-part burn amounts it asks for.
+
+Fire spreads from cell to cell through the tiles: a cell's seam warms the gas
+of its tiles, and the cells' tile sets meet along the prop's midlines, so a
+burning cell warms air its neighbour also exchanges with. The furniture row
+has conductivity 0 ("fire eats it via flammability instead", `config.toml`),
+so no conduction inside the prop is the material row's own answer.
+
+**Alternatives:** one cell (fails Erik's question); two halves (cannot burn one
+long side); one cell per covered tile (a variable-length member, a side table,
+up to 30 cells).
+
+### 9.3 The cell's state and its heat
+
+Per cell (synced, section 2.1): `e_cell` (int64 heat counts above ambient, the
+currency every solid capacity is denominated in, `J_per_count` = 0.4759 J,
+`materials.py`), `fuel_q` (Q16 units of N_O2 left to burn), `burning`, and
+`o2_acc` (the sub-count demand accumulator).
+
+Load constants per cell: the cell's mass `m/4`; its heat capacity `C_cell =
+(m/4) x specific_heat` (the material row's own `specific_heat`, 1620
+J/(kg K) for furniture), quantized in heat counts per game degree; its seam
+area `A_cell` = a quarter of the box's surface (`(2LD + 2LH + 2DH) / 4`);
+its fuel `(m/4) / KG_FUEL_PER_N_O2` units of N_O2 (`materials.py`, the tile
+law's own fuel per unit of O2, 0.3716 kg).
+
+The cell temperature is `T_cell = e_cell / C_cell` in game degrees (Q16), the
+temperature solver's own currency, so it compares directly with the material
+row's `ignition_temp` (280 game degrees for furniture, 573 K). v1 mixed game
+degrees and the body law's degrees C (physics critic 7); v2 never touches the
+body law.
+
+### 9.4 The laws, per cell, per tick
+
+1. **The seam (slot 9c).** `Q_seam = h_conv A_cell (T_cell - T_air) +
+   eps sigma A_cell (T_cell_K^4 - T_air_K^4)`, with `h_conv` the solid|gas
+   convection the thermal model already uses (`[physics.thermal] h_conv` =
+   6.0 W/(m^2 K), `materials._build_conduction_tables`), `eps` the material
+   row's `heat_atten` (0.5 for furniture), `T_air` the mean gas temperature
+   over the cell's blocking tiles. Its two parts land in different places:
+   - the CONVECTIVE part, signed, goes to or from the gas of the cell's
+     blocking tiles through the gas energy seam (`GameMap.gas_energy_deposit`,
+     channel `prop_seam`, split over the tiles with the fixed-total weights
+     `k_q`), debited from or credited to `e_cell`;
+   - the RADIATIVE part, out only, is emitted into the radiation sweep as a
+     source on the cell's tiles (a new emission channel of the one traversal,
+     `dyn_emit_q`, stamped like `dyn_heat_atten_q`), debited from `e_cell`
+     and booked by the sweep like any emitter's output. The sweep lands it on
+     walls, solids and smoke the way it lands a burning crate's radiation.
+     Incoming radiation reaches the cell through the gas: the sweep deposits
+     what the prop's tiles absorb into their gas (`e_gas_deposit_sum`,
+     energy-books.md), and the convective part carries it on.
+   The emission uses the emissive table (`cpp/src/emissive_table.*`, THE
+   E°(T) map), never a second T^4. Why the radiative part: without it the
+   seam is linear in `T` against a gain that is linear in `T` (through
+   `hotf`), and a linear balance has no stable plateau (9.6 (d)). The tile law
+   holds its plateau by radiation for the same reason.
+2. **Ignition (slot 9d, with the tiles' ignition).** A cell lights when
+   `T_cell >= ignition_temp` of its material row, it has fuel, and the oxygen
+   test passes: the O2 mole fraction over the cell's blocking tiles, defined
+   in integers as `X = sum(N_O2) / sum(N_O2 + N_N2)` over those tiles (the
+   tile law defines its test over one tile's open 4-neighbours,
+   `combat.apply_temperature_ignition`; determinism critic 13), scaled by the
+   O2 pressure factor (`cpp/src/o2_pressure_factor.h`: "a new O2 read goes
+   through it"), against `o2_frac_ext`. Heat starts it ("A fire is started by
+   DELIVERING HEAT", `.claude/rules/explosions-fire.md`). How easily a class
+   catches is its material row's `ignition_temp` and heat capacity, never a
+   per-prop flag (R12).
+3. **The demand (slot 9e(d'''), right after the heat sources).** The tile
+   law's form (`[physics.combustion]` P-O2b and R3 blocks):
+
+   ```
+   demand_j = burn_rate x I_cls x hotf(T_cell) x o2f_j x W_hop[d_j] x w_path_j
+   ```
+
+   over the cell's reach: hop 1 its own blocking tiles (`w_path` 1), hop 2
+   their open 4-neighbours outside the cell's set (`w_path` = the stamped
+   permeability of the hop-1 tile it is reached through, the tile law's
+   multiplicative path rule); `W_hop` the tile law's table (1, then 2/3);
+   `o2f_j` the demand-side linear O2 fraction of tile `j` (`(X_j - X_ext) /
+   (X_full - X_ext)`); `hotf = (T_cell - T_ext) / fire_T_span`, capped at
+   `hotf_cap` 10, with `T_ext = ignition_temp - ignition_to_ext_delta`.
+   `I_cls` is the class's burn calibration (R4), the one number the tile law
+   gets from its intensity logistic and a prop does not have. A demand below
+   one count accumulates in `o2_acc` (synced: it crosses ticks) as the tile
+   law's `dem_acc` does.
+4. **The draw, in a fixed order (determinism critic, finding 1).** The draws
+   are a stage of the per-env serial applier, PROP_BURN, right after
+   HEAT_SOURCES: props in row order, cells FR, FL, BR, BL, the reach in
+   row-major order, each draw capped by the O2 STILL LEFT in its tile. The CPU
+   runs the identical loop. **Why serial and not an integer proportional
+   split:** the burn's writes (the products through the topology seam, the
+   gas parcel and the seam through the gas energy seam) are exactly the kind
+   of writes the HEAT_SOURCES stage already makes serially per env
+   (`cpp/src/cuda_unit_hazards.cuh`); a proportional split would make the
+   grant order-free but its writes would still need ordering through those
+   seams, so it would add a parallel grant pass without removing the serial
+   one. ACCEPTED GAP: where two burning props reach one tile, the lower row
+   drinks first (the tile law splits contested O2 evenly); blocking sets never
+   overlap, so this happens only in hop-2 tiles. The tile combustion (slot 7)
+   runs before 9e, so tiles drink before props, in a fixed order.
+5. **What a draw `dO2` does:**
+   - **bed heat** `H_bed x dO2` into `e_cell` (booked `e_prop_bed_sum`, the
+     prop ledger's source term, as `e_comb_solid_heat_sum` is the solid
+     ledger's);
+   - **gas parcel** `H_fuel x dO2` into the gas of the tile it was drawn from,
+     through the gas energy seam (channel `prop_burn_gas`), as the tile law's
+     gas-side yield lands in its claimed air cell;
+   - **products** through the shared products function (9.5);
+   - **fuel** `fuel_q -= dO2`, floored at zero.
+6. **Going out.** A cell stops burning when `T_cell < T_ext`, when the O2 test
+   fails, or when its fuel is zero. Burnt out (all four cells empty): the prop
+   stays, still blocks and can be pushed, its mass unchanged (ACCEPTED GAP),
+   drawn charred (#235); R18.
+
+### 9.5 The products (R5)
+
+The tile law takes the soot share (`soot_yield` 0.5) of the consumed O2 out
+of the bulk with its energy and makes the rest inert N2, so total N is
+conserved (`cpp/src/combustion.cpp`, the Dalton split and
+`e_soot_shed_sum`). v1's `swap_o2_to_inert` kept all of `dO2` as N2 and also
+minted the soot, so gas plus trace grew by `0.5 dO2` (about 3.5% pressure in a
+room that smothers; physics critic 12). v2 lifts the tile law's per-claim
+product step into ONE shared function (patch B0: the tile law calls it
+bit-identically; its device form beside `cuda_combustion.cu`), and the prop
+burn calls the same function through the topology seam. No second product
+law, no `swap_o2_to_inert`.
+
+Why not `extract_gas_n` + `inject_gas_n`: those move bulk with its energy out
+of and into a cell as two booked moves at two temperatures with two
+roundings; the products step is an in-place conversion whose energy rule
+(the soot share sheds its energy, the N2 keeps the cell's) is the tile law's
+own. The amendment to the Gas pump primitives line says so (section 14.2).
+
+### 9.6 The steady-state plateau, worked
+
+Does a burning table hold its flame, at what temperature, how many kW reach
+the room, and how long does its fuel last? Scratch script
+`C:/tmp/props226/v2/plateau.py` (not in the repo), from `config.toml`
+(`burn_rate` 0.018, `o2_frac_ext` 0.13, `o2_frac_full` 1.0, `ignition_to_ext_delta`
+200, `fire_T_span` 180, `hotf_cap` 10, `H_BED_M` 38.73, `H_FUEL_M` 4.0,
+`h_conv` 6.0, the furniture row's 280 / 0.5 / 1620) and `materials.py`
+(`J_per_count` 0.4759, `KG_FUEL_PER_N_O2` 0.3716). One cell of a 20 kg table,
+1.6 x 0.8 x 0.75 m, at 0.333 m tiles. Its output, verbatim:
+
+```
+== the cell
+table 20.0 kg 1.6x0.8x0.75 m; cell mass 5.0 kg, C_cell 8.1 kJ/K, A_cell 1.54 m2, own tiles 2.89, hop-2 cells 7.21
+H_bed 1.208 MJ/unit, H_fuel 124.8 kJ/unit; o2f(0.21) 0.0920
+fuel per cell 13.45 units of N_O2 (5.0 kg / 0.3716)
+
+== (a) I = 0.152, the tile law's measured crate operating point
+  Ta     0 game: net at ignition (280)    -5187 W; fixed points []
+  Ta   100 game: net at ignition (280)    -3543 W; fixed points [(115.5, 'stable')]
+
+== (b) I that puts the plateau at the tile law's measured crate plateau, 917 K = 624 game
+  Ta     0: I_cls 1.137; fixed points [(106.7, 'unstable'), (624.0, 'stable')]
+    at T* 624 game: draw 30.07 mN_O2-units/s per cell, bed 36.32 kW, gas parcel 3.75 kW per cell
+    whole table (4 cells): 160.3 kW into the room; burnout 448 s (7.5 min)
+    net at ignition 280: 6380 W  (>0: a lit cell climbs on its own; lower fixed point [106.7])
+    stability d(net)/dT at T*: -77.2 W/K (<0 stable); relaxation time C/|slope| 105 s
+    seam split at T*: convection 5.77 kW, radiation 30.55 kW
+  Ta   100: I_cls 1.085; fixed points [(624.0, 'stable')]
+    at T* 624 game: draw 28.70 mN_O2-units/s per cell, bed 34.67 kW, gas parcel 3.58 kW per cell
+    whole table (4 cells): 153.0 kW into the room; burnout 469 s (7.8 min)
+    net at ignition 280: 7419 W  (>0: a lit cell climbs on its own; lower fixed point [])
+    stability d(net)/dT at T*: -80.2 W/K (<0 stable); relaxation time C/|slope| 101 s
+    seam split at T*: convection 4.84 kW, radiation 29.83 kW
+
+== (c) the gas load: where the table's heat lands, per tile, against a burning crate tile
+  table: 160.3 kW over 30 tiles = 5350 W of GAS heating per tile
+  crate tile (tile law, I 0.152, o2f 0.0825, same hotf 3.02): gas parcel 794 W over its own tile (+ bed 7.69 kW into the SOLID, which radiates)
+  ratio prop gas heating per tile / crate's gas parcel: 6.7x  (test_e1_hot_rail trips at 2x H_fuel)
+
+== (d) without the radiative term (convection only): linear against linear
+  gain slope per unit I 58.7 W/K; loss slope 9.2 W/K; I below 0.157 always dies, above it runs to hotf_cap (T 1880 game)
+
+== (e) oxygen: the cell's draw against the O2 in reach
+  O2 in reach of one cell 2.12 units; draw 0.0301/s -> 70 s to empty it with NO resupply
+
+== (f) the design's split: convection + gas parcel to the gas, radiation into the sweep as an emitter
+  per cell at T*: convection 5.77 kW + gas parcel 3.75 kW to the GAS; radiation 30.55 kW into the sweep
+  table: 38.1 kW to the gas over 30 tiles = 1271 W per tile = 1.60x a crate tile's gas parcel; 122.2 kW radiated
+```
+
+What it says:
+- **(a)** At the burn rate a lone crate actually runs at (I 0.152), a table
+  cell cannot hold a flame: at its ignition point it loses 5.2 kW more than it
+  makes, and it settles near the room's temperature. A prop has far more
+  surface per tile of floor than a crate tile, so the crate's number does not
+  carry over.
+- **(b)** With `I_cls` about 1.1 the cell holds a STABLE plateau at 624 game
+  degrees (917 K, the tile law's measured crate plateau), with an unstable
+  point at 107 game degrees below the ignition point: once lit by heat, a cell
+  climbs to the plateau on its own, and a cell cooled below 107 dies. At the
+  plateau the table gives the room about 160 kW and burns its 20 kg out in
+  about 7.5 minutes. The plateau relaxes with a time constant of about 100 s.
+  That is the default of R4.
+- **(c)** If all of that heat went into the gas of the table's tiles, they
+  would take 6.7 times the gas-side heat of a burning crate tile; doubling
+  the crate's gas-side yield already trips `test_e1_hot_rail` (`config.toml`,
+  the `H_FUEL_M` block). That is why the radiative part goes into the sweep.
+- **(d)** A seam with no radiative term cannot plateau: the gain and the loss
+  are both linear in temperature, so the fire either always dies or runs to
+  `hotf_cap` (1880 game degrees).
+- **(e)** One cell's reach holds 2.1 units of O2; at the plateau it would
+  empty it in about 70 s with no resupply. The `o2f` factor throttles the
+  draw as the O2 falls, so starvation sags the plateau instead of a cliff;
+  whether resupply holds it at 917 K is UNVERIFIED.
+- **(f)** With the design's split the gas takes 38 kW over about 30 tiles,
+  1.6 times a crate tile's gas parcel per tile, under the 2x that is known to
+  trip the rail but above 1x: marginal, and UNVERIFIED (9.8).
+
+### 9.7 The books
+
+- **The prop ledger.** A parallel identity like the solid ledger
+  (`TemperatureSolver.solid_energy_books_sum`, energy-books.md):
+  `sum e_cell == e_prop_bed_sum - e_prop_seam_sum - e_prop_emit_sum`, exact in
+  int64 per tick, where `e_prop_seam_sum` is the signed convective transfer
+  and `e_prop_emit_sum` the radiative emission.
+- **The gas identity keeps its four groups.** The prop's writes into the gas
+  enter through existing groups: the convective seam and the gas parcel
+  through the gas energy seam (the seams group, channels `prop_seam` and
+  `prop_burn_gas`), the radiation through the sweep's gas deposit (the
+  thermal-solver group), the products through the shared products function's
+  booking (the combustion group's soot-shed counter). No fifth group.
+- **The sweep's books** gain the prop emission as a source term (its own
+  counter), the way a solid's emission is booked; the integer reference
+  (`docs/ray_engine_v2_scheme_study_2026-09-13/sweep_ref_q.py`) gets it FIRST
+  ("any change lands THERE FIRST").
+- **Fuel.** Not an energy column, as a tile's `wall_hp` is not. Per tick,
+  exact: `fuel spent == O2 drawn`, `e_prop_bed_sum` delta `== H_bed x O2
+  drawn` to the multiply's truncation, the gas parcel `== H_fuel x O2 drawn`
+  likewise.
+- **When the prop moves.** Nothing is transferred: the reservoir is the
+  prop's, the heat already given is the room's, and the next exchange happens
+  where the prop now is.
+
+### 9.8 What remains UNVERIFIED, and why arc 2 needs its own critique
+
+- **The emission channel.** Whether the radiation sweep can take a per-tile
+  external emission source as a channel of the one traversal, and book it,
+  without a second traversal. If it cannot, the radiative part has nowhere to
+  go but the gas, and (c) says that trips the rail. This is the first question
+  arc 2's critique must settle; the fallback is to wait for P5's gas
+  radiative loss channel.
+- **The gas load at 1.6x a crate tile.** Below the measured 2x that trips
+  `test_e1_hot_rail`, above 1x; only a bench with a burning table says.
+- **The plateau target.** 917 K is the crate plateau measured at the slow-burn
+  dials before M3 re-derived `H_bed` (`config.toml`, the `H_BED_M` history);
+  whether today's crate still sits there is UNVERIFIED, and `I_cls` is
+  calibrated against it.
+- **`I_cls` above 1.** The tile law's intensity is a logistic state; whether
+  its range reaches 1.1 is UNVERIFIED. For the prop it is only a calibration
+  number, so the name may change.
+- **The seam area and `eps`.** A quarter of the box's surface and the row's
+  `heat_atten` are the design's choices, not measured.
+- **O2 resupply** through the prop's own permeability (9.6 (e)).
+- **The signed gas energy deposit on the device.** `GameMap.gas_energy_deposit`
+  adds a signed integer on the host; its device twin in `gas_energy.h` with a
+  negative argument, and a floor at zero energy, are UNVERIFIED.
+- **Whether the played resident tick re-uploads host gas written at 9e** (the
+  pumps are the precedent; not traced, determinism critic).
+- **The inherited tile-size dependence.** `KG_FUEL_PER_N_O2` is fixed at the
+  0.333 m tile while a unit of N_O2 scales with the tile's volume, 9x off at
+  1.0 m (physics critic 15); a prop's fuel inherits it.
+
+The critique round for arc 2 should be a physics-and-books critic and a
+determinism critic, on this section and patches B0 to B2 of section 11.
+
