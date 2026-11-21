@@ -164,6 +164,7 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
     used1 = _device_used()
     obs_ms = vision_ms = window_ms = window_shape = picture_ms = list_ms = windows_ms = None
     books_ms = books_due_ms = None
+    full_ms = terminal_ms = None
     obs_due = None
     if dev_obs is not None:
         import cupy as cp
@@ -195,7 +196,26 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         b.record(st)
         b.synchronize()
         windows_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
+        # P8.8: the full view (one decision's, every env)
+        a.record(st)
+        for _ in range(obs_builds):
+            dev_obs.build_full()
+        b.record(st)
+        b.synchronize()
+        full_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
         dev_obs.params[:, PARAM_DECIMATION] = saved_dec
+        # P8.8b: a terminal build (every env ending on one tick: the worst
+        # case; its two small uploads included), its buffers zeroed after
+        if hasattr(dev_obs, "build_terminal"):
+            every = np.ones(n, dtype=bool)
+            a.record(st)
+            for _ in range(obs_builds):
+                dev_obs.build_terminal(every, mark=False)
+            b.record(st)
+            b.synchronize()
+            terminal_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
+            for v in dev_obs.final.values():
+                v[...] = 0
         # P8.2: who sees whom (one launch, every env: the per-tick cost) and a
         # representative window call per decision (the `watched` shape: per
         # env, per roster row, one 25 x 25 window around the row's unit from
@@ -349,6 +369,8 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         "decode_ms": None if dec_ms is None else round(float(dec_ms), 4),
         "decision_ms": None if dec_set_ms is None else round(float(dec_set_ms), 4),
         "decoder_obs_ms": None if dec_obs_ms is None else round(float(dec_obs_ms), 4),
+        "full_ms": None if full_ms is None else round(float(full_ms), 4),
+        "terminal_ms": None if terminal_ms is None else round(float(terminal_ms), 4),
         "window_ms": None if window_ms is None else round(float(window_ms), 4),
         "window_shape": window_shape,
         "segments": [{"label": k, "gpu_ms": round(float(np.mean(seg_gpu[k])), 4),
@@ -409,9 +431,28 @@ def format_rows(rows) -> str:
                    + ("" if r.get("decode_ms") is None
                       else f", decoder {r['decode_ms']:.3f} ms per tick (decode + horde latch), "
                            f"{r['decision_ms']:.3f} ms per decision hand-over, "
-                           f"{r['decoder_obs_ms']:.3f} ms per decision of its columns"))
+                           f"{r['decoder_obs_ms']:.3f} ms per decision of its columns")
+                   + ("" if r.get("full_ms") is None
+                      else f", full view {r['full_ms']:.3f} ms per decision (in the blocks)"
+                           + ("" if r.get("terminal_ms") is None
+                              else f", a terminal build of every env {r['terminal_ms']:.3f} ms")
+                           + ("" if r.get("decode_ms") is None or r.get("books_ms") is None
+                              else f"; THE WHOLE per decision (observation + full view + "
+                                   f"books + decoder) {whole_ms(r):.3f} ms")))
     return "\n".join(out)
 
+
+
+def whole_ms(r) -> float:
+    """#29 P8.8: one decision's whole device cost, GPU ms for all N envs: the
+    decision's blocks (the observation and the full view), ``decimation``
+    ticks of vision and the team picture, the books (one tick serving the
+    step, the others not), the decoder (a decode per tick, the hand-over and
+    its columns)."""
+    d = r["decimation"]
+    return (r["obs_build_ms"] + d * (r["vision_ms"] + r["picture_ms"])
+            + (d - 1) * r["books_ms"] + r["books_due_ms"]
+            + d * r["decode_ms"] + r["decision_ms"] + r["decoder_obs_ms"])
 
 def sweep(args) -> int:
     rows = []

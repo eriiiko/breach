@@ -1499,12 +1499,15 @@ class DeviceObservation:
         return self._torch
 
     def team_rows(self, team: int) -> dict:
-        """Team ``team``'s rows of every served key as torch views
-        (``BatchedEnv.team_rows``' slicing: ``[:, t*S:(t+1)*S]``)."""
+        """Team ``team``'s rows of every served OBSERVATION key as torch views
+        (``BatchedEnv.team_rows``' slicing: ``[:, t*S:(t+1)*S]``): THE policy
+        feed, so never a full-view key (P8.8: the full view is the value
+        network's, ``info["full_view"]``, never a key of ``obs``)."""
         t, S = int(team), self.S
         if not 0 <= t < self.T:
             raise IndexError(f"device observation: team {t} of {self.T}")
-        return {k: v[:, t * S:(t + 1) * S] for k, v in self.torch().items()}
+        return {k: v[:, t * S:(t + 1) * S] for k, v in self.torch().items()
+                if k not in FULL_KEYS}
 
     def host(self, keys=None) -> dict:
         """THE GATE'S DOWNLOAD (a sync; never inside a tick): the buffers as

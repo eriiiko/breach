@@ -2359,6 +2359,10 @@ def part_handover():
               f"dtypes and shapes")
     for t in range(p.T):
         rows = obs.team_rows(t)
+        leak = sorted(set(rows) & set(dobs.FULL_KEYS))
+        if leak or not set(dobs.FULL_KEYS) <= set(ts):
+            fail(f"handover: team_rows({t}) hands the full view's keys {leak} (the policy "
+                 f"feed), or torch() lacks them")
         for k, v in rows.items():
             base = obs.buffers[k]
             want = int(base.data.ptr) + t * p.S * int(base.strides[1])
