@@ -179,9 +179,138 @@ UNVERIFIED by the critic: that P0's refactor could re-mark twin levels without
 touching a kernel; whether `paths:` globs that match nothing fail
 `test_claude_rules_paths.py`.
 
-## Critic: determinism and the device path
+## Critic: determinism and the device path (Opus, 2026-11-21)
 
-Pending.
+**VERDICT: SOUND WITH FIXES.** The integer stamp rule holds: exact, the same
+in any visiting order, CPU and device trig agree bit for bit. The holes are in
+what the design leaves unspecified: how several writers share one tile or one
+row, what happens when state is LANDED on a sim by a path other than stepping,
+and the int64 ranges. Scratch: `C:/tmp/props226/critic_det/` (`kit.py`,
+`exp1.py` to `exp4.py`, `rerun.txt`).
+
+### Findings, most severe first
+
+1. **The prop burn's O2 draw is "capped by the O2 there", but several writers
+   draw from the same tile.** BLOCKER. The four quadrant cells split one
+   tile's samples (3.7's tile (12,7): FR 2 / FL 6 / BR 2 / BL 6), and a tile
+   partly covered by one prop can be covered by another. In parallel (section
+   8: "one thread per prop, order-free") each cell caps against the full O2
+   and the tile is over-drawn into negative gas; sequentially the result
+   depends on cell and prop order and CPU and device disagree unless the order
+   is fixed. The deposits through the device edit door must arrive in the
+   reference's order too. Fix: the burn is a stage of the per-env serial
+   applier, like HEAT_SOURCES (`cuda_unit_hazards.cuh`): props in row order,
+   cells FR, FL, BR, BL, tiles row-major, each draw capped by the O2 still
+   left; the CPU runs the identical loop. Or an integer proportional split per
+   tile. Warming and ignition are per-prop pure reads and can stay parallel.
+2. **On the device, the contact and shove pushes write other bodies' rows,
+   and the device `add` is not atomic.** FIX. `cuda_unit_lib.cuh:798`
+   `impulse_add` is a plain read-modify-write built for one writer. Two props
+   hitting one unit race. device-units.md:42: "a slot that does what is not a
+   row write [goes] through the Request list". Fix: the 3p contact rule emits
+   PUSH requests the serial applier applies in prop row order; the 1b shove on
+   a prop the same. Wind (each prop writes its own row) stays per prop.
+3. **The device stamp kernel as described lets prop rows erase the units'
+   permeability write.** FIX. `cuda_stamp.cu` K2 does `atomicMax(&winner[idx],
+   r)` over every row and K3 lets only the winner write: prop rows appended
+   after unit rows always win. `prop_owner` and `prop_mob_cap` have no reset
+   in K1 (stale owners survive a prop leaving). Fix: K2 picks a winner among
+   unit-mode rows only; K1 zeroes both planes; P3's oracle includes a unit and
+   a prop on one tile and two props' partly covered tiles overlapping.
+4. **Nothing refuses overlapping blocking sets at load, so the device's "plain
+   write" of owner and cap is a race.** FIX. 4.5 only shows the MOVE keeps the
+   sets disjoint. 3.3's "MIN over nonzero caps" contradicts "plain write".
+   Fix: the load door refuses blocking sets that overlap, sit on a
+   non-enterable tile or leave the grid; or owner and cap are atomicMin writes
+   on both backends.
+5. **The contact rule reads another prop's state in the middle of the pass,
+   and its partner is undefined.** FIX. "Resting or slower", the lever and "J
+   handed to that prop" read the other prop while it moves in the same pass:
+   row-order dependent on the CPU, a race on the device. When one candidate
+   hits several props, a unit and a wall, "the obstacle body" is singular and
+   unspecified. Fix: double-buffer pose and velocity (read start-of-slot,
+   write scratch, commit after the refusal pass); the partner a pure function
+   of the hit set (all hit bodies with an integer split of J, or a stated id
+   rule); how momentum is booked when the other prop is not slower.
+6. **The sleep cache is invalidated by "wake", not by pose.** FIX. A pose can
+   change with all velocity and impulse zero on every path that LANDS state:
+   `props_to_host` into a twin, the gate's download, a chained run's host
+   replay, #228's carrying. Each would re-emit stale rows. Fix: key the cache
+   on (x_q, y_q, th_q) compared every tick, or recompute every tick on the
+   device (section 8 prices it under 0.1 ms). Property: write a new pose with
+   zero velocity; the rows equal a fresh computation.
+7. **The two undigested planes are read across ticks.** FIX. Built at slot 6,
+   read at the next tick's slot 3 and 3p. A pure function of end-of-tick
+   poses, so equal digests agree only if every reset or state-landing path
+   rebuilds them; the swarm precedent is same-tick (swarm.md:94). Fix: rebuild
+   both at reset and on every state landing; put them in
+   `_RESIDENT_UNIT_PLANES`; declared field outputs at tol 0 in the lockstep.
+8. **The patch plan is missing device twins and a refusal.** FIX. P6 omits:
+   the device slot-3 movement reading `prop_mob_cap`; the 1b shove target
+   choosing props; the DOORS stage's `prop_owner` read (in the Class-T
+   applier, not the played tick); the device `angular_q` taking its lever
+   clamp from the body. P2 to P5 never make `DeviceConductor` refuse a level
+   with props. Fix: the refusal by name in P2; the four twins in P6's list and
+   lockstep scenes.
+9. **int64 ranges are not proved; the host plan would wrap where the reference
+   does not.** FIX. The wind load W is below 2^80 and the device takes it in
+   128 bits (`cuda_unit_impulse.cu:28-30`); the host "one int64 pass over the
+   wind-load terms" overflows. The prop wind impulse `((W>>16) * wind_kw_q *
+   w_proj) >> 32` is a three-factor product beyond 128 bits. The host store is
+   numpy int64 where the reference laws use Python ints. No mass or inertia
+   bound: the contact numerator `m_p * m_u * v` overflows at about 10 t.
+   `w_proj` divides by |wind|, which can be 0. Fix: ranges on mass, inertia,
+   `wind_kw_q` and the sides at the class door; the wind in two 128-bit steps
+   mirroring `add_wind`; the host reference in Python ints or overflow-checked
+   where vectorised; device faults by name; an early return on zero wind.
+10. NOTE. P1's oracle cannot see the boundary conventions: over 300 random
+    poses a closed inside test versus an open one differs 0 times; on one
+    aligned fixture closed gives k = 35, open 15. Add aligned fixtures and the
+    exact headings 0, +-102944, 205887 to property 8.
+11. NOTE. Property 2's stated failure condition is wrong: c^2 + s^2 deviates
+    by +-2.1e-5 (up to about 11 counts at an 8-tile prop, more than the "+2"
+    pad); what keeps the bounding box complete is the 8192-count half-sample
+    offset. Restate it (completeness with pad 0).
+12. NOTE. Property 17 (mirror physics) will fail for reasons that are not
+    bugs: mirroring x maps the heading to pi - th, not exact in the kit (39 152
+    of 82 355 headings differ); mirroring y maps to -th, exact. The wind
+    read's row-major tie rule is not mirror-symmetric. Specify the y-mirror
+    and scenes without wind ties.
+13. NOTE. Smaller gaps: the substep formula's `R_max * |w|` is Q32 and needs
+    `>> 16`, and how v, w and their remainders split across substeps is not
+    stated; record row names must be tokens (`t_q_fr`, not `t_q[4]`,
+    serialize.py `_NAME_RE`); `sim.entities` must hold the store's row views
+    so `runtime_digest_rows` reads live columns (property: moving a prop
+    changes the entity bytes); a sub-count O2 accumulator would be synced
+    state and join the record tail; the O2 ignition test over a tile list
+    needs an integer definition (combat.py:968+ defines it over one tile's
+    open 4-neighbours).
+
+### Checked and found true
+
+- CPU and device trig are the same code (`unit_fixed.cos_q16` / `sin_q16`
+  call the C++ kit). Checked over every heading: 0 gives (65536, 0), +-102944
+  gives (0, +-65536), 205887 gives (-65536, 0); |c|, |s| never exceed 65536.
+- The 2^45 bound is right; `stamp_check.py` re-run reproduces its result byte
+  for byte, and with the kit's c, s the bounding box is still complete.
+- One LSB of heading changed coverage in 0 of 60 poses of an 8 x 4 prop.
+- The float planes are safe: p_k = n / 2^16 is exact in float32, the solvers
+  take it through an exact quantize, MIN and MAX commute, atomicMin on the
+  bits of a non-negative float is exact; `obstacles` stays static.
+- No golden moves: the digest's field list is explicit; the entity section's
+  preamble is a constant.
+- The refusal pass is order-free and one pass suffices, given the start-plane
+  owner test (chains, cycles and ties resolve symmetrically once finding 5 is
+  fixed). A unit and a prop wanting one tile: the unit wins (slot 3 before
+  3p).
+- Sleep is an exact identity; no order flips a prop between asleep and awake.
+- Nothing needs randomness.
+- `cuda_topology.cuh` is Class T: P5 needs no `.cuda_green`. The tile
+  combustion (slot 7) and the swap (9e) run in a fixed order.
+- No new host sync per tick.
+
+UNVERIFIED by the critic: that the played resident tick re-uploads host gas
+written at 9e (pumps are the precedent; not traced).
 
 ## Critic: physics and the books (Opus, 2026-11-21)
 
