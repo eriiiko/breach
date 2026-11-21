@@ -172,6 +172,13 @@ class WaterSettings:
     alpha_max: float
     caustic_strength: float
     caustic_max: float
+    # #97 reassessment prototypes (branch 97-reassess, not merged): the
+    # caustic's FORM ("gather": the analytic Jacobian per pixel, W4;
+    # "scatter": Wallace's grid of light rasterised onto the floor) and the
+    # floor's BEND ("legacy": refract_strength in map UV; "snell": the floor
+    # read where the caustic's own refraction map sends the view ray)
+    caustic_form: str
+    floor_bend: str
     ca_amount: float
     height_scale: float
     height_edge: float
@@ -230,6 +237,11 @@ class WaterSettings:
 _INT_KEYS = ("debug_view", "foam_cells_per_tile", "wave_count",
              "swell_wave_count")
 _VEC_KEYS = {"water_color": 3, "foam_bubble_m": 2}
+# the string dials and the values each may take (the first is the default
+# the shipped look renders with)
+CAUSTIC_FORMS = ("gather", "scatter")
+FLOOR_BENDS = ("legacy", "snell")
+_STR_KEYS = {"caustic_form": CAUSTIC_FORMS, "floor_bend": FLOOR_BENDS}
 # 0 = the picture; 1 = (slope x, slope y, RMS strength, 1); 2 = (foam
 # amount, foam cover, 0, 1); 3 = (hxx, hxy, hyy, caustic gain) -- the
 # caustic (W4)
@@ -257,6 +269,8 @@ def water_settings(cfg) -> WaterSettings:
         v = getattr(sec, name)
         if name in _INT_KEYS:
             ok = isinstance(v, int) and not isinstance(v, bool)
+        elif name in _STR_KEYS:
+            ok = isinstance(v, str) and v in _STR_KEYS[name]
         elif name in _VEC_KEYS:
             ok = (isinstance(v, (list, tuple)) and len(v) == _VEC_KEYS[name]
                   and all(isinstance(c, (int, float))
@@ -969,6 +983,120 @@ def caustic_term(light, det, s: WaterSettings) -> np.ndarray:
     The picture is the floor's albedo times it, like any light."""
     return (np.asarray(light, np.float64)
             * caustic_gain(det, s)[..., None])
+
+
+# ---------------------------------------------------------------------------
+# PROTOTYPE (#97 reassessment, branch 97-reassess): the caustic in SCATTER
+# form and the Snell floor bend
+# ---------------------------------------------------------------------------
+#
+# Wallace's own form (WebGL Water, 2011): a fine grid over the water surface,
+# each grid point moved by the refraction map X(x) = x + a grad h (the same
+# map as the gather's, a = depth x CAUSTIC_K) onto the floor, each grid
+# triangle rasterised ADDITIVELY into a light image with the ratio of its
+# area before and after (the light density it carries). Every bit of light
+# lands somewhere: over a period the image's mean is the incident light
+# (the gather's per-pixel 1/|det J| of ONE preimage is not: W4 finding 1).
+# The GL face is shaders/water_scatter.vs/.fs over the slope image the
+# water shader writes in its slope pass (shaders/water_scatter_slope.glsl).
+#
+# The grid: one surface sample per light-image cell, the sample of cell k at
+# (k + SCATTER_OFFSET) cells (not the cell's centre), each quad split along
+# its anti-diagonal: on a flat surface every cell centre then lies strictly
+# inside exactly one triangle (no tie for the rasteriser to break), so a
+# flat surface gives exactly 1 everywhere -- exactly no caustic.
+
+SCATTER_CELLS_PER_TILE = 24          # light-image cells per tile, per axis
+SCATTER_OFFSET = 0.25                # a sample's place in its cell (cells)
+SCATTER_RATIO_MAX = 1.0e4            # one triangle's density cap (a fold)
+# the two triangles of quad (i, j): corners as (di, dj), anti-diagonal split
+_SCATTER_TRIS = (((0, 0), (1, 0), (0, 1)), ((1, 0), (1, 1), (0, 1)))
+
+
+def scatter_light(disp, periodic: bool = False) -> np.ndarray:
+    """THE scatter (the twin of ``shaders/water_scatter.vs/.fs``): the light
+    image (ny, nx) a unit-density light makes on the floor after each grid
+    sample moved by ``disp`` (ny, nx, 2: x, y in CELLS). Grid sample (j, i)
+    sits at ``(i, j) + SCATTER_OFFSET`` before the move; triangle t of quad
+    (i, j) deposits ``area_before / area_after`` (capped at
+    SCATTER_RATIO_MAX) into every cell whose CENTRE it covers (the GL
+    rasteriser's sampling). ``periodic``: the grid wraps (one period of a
+    surface; the image wraps too); otherwise one extra row and column of
+    samples, clamped to the last, so every centre has a quad over it, and
+    light moved off the image is lost."""
+    d = np.asarray(disp, np.float64)
+    ny, nx = d.shape[:2]
+    jj, ii = np.mgrid[0:ny + 1, 0:nx + 1]
+    if periodic:
+        dv = d[jj % ny, ii % nx]
+    else:
+        dv = d[np.minimum(jj, ny - 1), np.minimum(ii, nx - 1)]
+    pos = np.stack([ii, jj], -1) + SCATTER_OFFSET + dv     # (ny+1, nx+1, 2)
+    img = np.zeros((ny, nx))
+    for tri in _SCATTER_TRIS:
+        P = [pos[dj:dj + ny, di:di + nx].reshape(-1, 2) for di, dj in tri]
+        e1, e2 = P[1] - P[0], P[2] - P[0]
+        cross = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
+        # area before = 1/2 (a unit right triangle): the ratio is 1/|cross|
+        ratio = np.minimum(1.0 / np.maximum(np.abs(cross), 1e-300),
+                           SCATTER_RATIO_MAX)
+        sgn = np.where(cross >= 0.0, 1.0, -1.0)
+        lo = np.floor(np.minimum(np.minimum(P[0], P[1]), P[2]) - 0.5) + 1
+        hi = np.floor(np.maximum(np.maximum(P[0], P[1]), P[2]) - 0.5)
+        span = (hi - lo + 1).astype(np.int64)
+        keep = np.all(span > 0, axis=1)
+        if not keep.any():
+            continue
+        m = int(span[keep].max())
+        for oy in range(m):
+            for ox in range(m):
+                k = lo + np.array([ox, oy])
+                inside = keep & (k[:, 0] <= hi[:, 0]) & (k[:, 1] <= hi[:, 1])
+                c = k + 0.5
+                ok = inside.copy()
+                for a_, b_ in ((0, 1), (1, 2), (2, 0)):
+                    ea = P[b_] - P[a_]
+                    w = (ea[:, 0] * (c[:, 1] - P[a_][:, 1])
+                         - ea[:, 1] * (c[:, 0] - P[a_][:, 0]))
+                    ok &= w * sgn > 0.0
+                if not ok.any():
+                    continue
+                kx = k[ok, 0].astype(np.int64)
+                ky = k[ok, 1].astype(np.int64)
+                if periodic:
+                    kx, ky, r = kx % nx, ky % ny, ratio[ok]
+                else:
+                    on = (kx >= 0) & (kx < nx) & (ky >= 0) & (ky < ny)
+                    kx, ky, r = kx[on], ky[on], ratio[ok][on]
+                np.add.at(img, (ky, kx), r)
+    return img
+
+
+def scatter_disp(slope, depth, cell_m: float) -> np.ndarray:
+    """The refraction map's move of each grid sample, in CELLS: ``depth x
+    CAUSTIC_K x slope / cell_m`` (the gather's map, x -> x + a grad h)."""
+    return (np.asarray(slope, np.float64)
+            * (np.asarray(depth, np.float64) * CAUSTIC_K / cell_m)[..., None])
+
+
+def scatter_gain(light_img, s: WaterSettings) -> np.ndarray:
+    """The scatter's caustic gain on the floor's source light: ``(min(E,
+    caustic_max) - 1) x caustic_strength``, E the light image (incident
+    light 1) -- the gather's :func:`caustic_gain` with E in place of
+    ``1 / |det|``. Exactly 0 where E == 1 (a flat surface)."""
+    e = np.asarray(light_img, np.float64)
+    return (np.minimum(e, s.caustic_max) - 1.0) * s.caustic_strength
+
+
+def floor_offset_snell(slope, depth) -> np.ndarray:
+    """The floor point seen through the surface, metres from the pixel,
+    under ``floor_bend = "snell"``: a vertical view ray refracted by the
+    surface lands where the caustic's map sends the light, ``depth x
+    CAUSTIC_K x slope`` (the gather is then exact for the one preimage it
+    sees). ``"legacy"`` is ``-N.xy x refract_strength x min(depth, 1)`` in
+    MAP UV (the opposite sign, and a length that grows with the map)."""
+    return (np.asarray(slope, np.float64)
+            * (np.asarray(depth, np.float64) * CAUSTIC_K)[..., None])
 
 
 # ---------------------------------------------------------------------------

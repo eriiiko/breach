@@ -1079,6 +1079,9 @@ class GameRenderer:
             self.water_pass.set_splats(self._unit_wake_splats(
                 (*units_marines, *units_zombies)))
             self.water_pass.simulate()
+            # PROTOTYPE (#97 reassessment): the caustic in scatter form
+            # (caustic_form = "scatter"; nothing under the default "gather")
+            self.water_pass.scatter_caustic(self._relief_view_rect())
         self.gas_relief.render_product(self.lighting, relief_on,
                                        tile_rect=self._relief_view_rect())
         self._smoke_cast = self._smoke_cast_inputs(relief_on)

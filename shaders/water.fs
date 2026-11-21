@@ -102,7 +102,15 @@
 //                          sqrt(k_ripples^2 + k_swell^2), 1),
 //                          2 = (foam amount, foam cover, 0, 1),
 //                          3 = (hxx, hxy, hyy, caustic gain) (W4)
-//   u_caustic              (caustic_strength, caustic_max, 1 - 1/n, 0) (W4)
+//   u_caustic              (caustic_strength, caustic_max, 1 - 1/n, form)
+//                          (W4; form 0 = gather, 1 = scatter: the #97
+//                          reassessment's PROTOTYPE, branch 97-reassess)
+//   u_caustic_img          the scatter's light image (unit 7; R = light,
+//                          incident 1; G = coverage), read only in scatter
+//   u_caustic_box          (origin x, y tiles, cells per tile / image w, / h)
+//   u_floor_bend           0 = legacy (refract_strength, map UV), 1 = snell
+//                          (the caustic's own map; the reassessment's
+//                          PROTOTYPE)
 //   u_foam_on              1 once the foam image exists (W2)
 //   u_foam_a               (small bubble period m, large period m,
 //                           foam_cover, foam_shadow)
@@ -180,6 +188,10 @@ uniform float u_alpha_min;
 uniform float u_alpha_max;
 // --- W4: the caustic (strength, max, the refraction law's 1 - 1/n, 0) ------
 uniform vec4 u_caustic;
+// --- PROTOTYPE (#97 reassessment): the scatter's light image + floor bend ---
+uniform sampler2D u_caustic_img;
+uniform vec4 u_caustic_box;
+uniform int u_floor_bend;
 // --- Phase 2 (mood pass) uniforms ------------------------------------------
 // Chromatic aberration (subtle polish): the floor refraction r/g/b are sampled
 // at slightly different offsets (scaled 1 ± u_ca_amount per channel). Tiny.
@@ -523,7 +535,8 @@ void main() {
     // curvature, read only when the caustic is on (or drawn).
     FlowLayers flayers = flowLayers(world_uv, tileDepth);
     vec3 hess;
-    bool wantCurv = u_caustic.x > 0.0 || u_debug_view == 3;
+    bool scatter = u_caustic.w > 0.5;
+    bool wantCurv = (u_caustic.x > 0.0 && !scatter) || u_debug_view == 3;
     vec3 detail = detailSurface(flayers, wtex.a, wantCurv, hess);
     if (u_debug_view == 1) {
         finalColor = vec4(detail.xy, detail.z, 1.0);
@@ -531,7 +544,7 @@ void main() {
     }
     // the caustic's gain here (W4): the fine surface's refraction map
     float cGain = wantCurv ? causticGain(causticDet(hess, depthPos)) : 0.0;
-    if (u_debug_view == 3) {
+    if (u_debug_view == 3 && !scatter) {
         finalColor = vec4(hess, cGain);
         return;
     }
@@ -590,6 +603,15 @@ void main() {
     // with the reused light buffer at the refracted UV (§4-F) — NEVER sample
     // the world RT this pass draws into (read-while-write feedback).
     vec2 off = N.xy * u_refract_strength * clamp(depthPos, 0.0, 1.0);
+    // PROTOTYPE (#97 reassessment): the floor read where the caustic's own
+    // refraction map sends the (vertical) view ray -- depth (1 - 1/n) grad h,
+    // metres (the twin's floor_offset_snell) -- in world UV (offW) and art
+    // UV (off). Legacy: one offset for both, as it always was.
+    vec2 offW = off;
+    if (u_floor_bend == 1) {
+        offW = vec2(dhdx, dhdy) * (depthPos * u_caustic.z) / u_grid_m;
+        off = offW * u_art_uv_rect.zw;
+    }
     // --- chromatic aberration (subtle polish, phase 2) ------------------
     // Sample the floor diffuse r/g/b at slightly different refraction offsets
     // (the offset scaled by 1 ± u_ca_amount per channel) — a faint prismatic
@@ -609,9 +631,22 @@ void main() {
     // exposed, shadowed by the smoke and curved). Without the ambient term
     // the floor is black wherever no raycast source reaches, so shallow
     // water read as a black void only visible inside the flashlight.
-    vec3 floorL = texture(u_light_a, world_uv + off).rgb * u_light_gain
+    vec3 floorL = texture(u_light_a, world_uv + offW).rgb * u_light_gain
                 * smoke_sh;
     floorL *= lightCurveGain(floorL);
+    // PROTOTYPE (#97 reassessment): the SCATTER form -- the light image
+    // (shaders/water_scatter.vs, the twin's scatter_light) at the floor point
+    // this pixel shows; the gain the gather's with E for 1/|det|.
+    if (scatter && u_caustic.x > 0.0) {
+        vec2 uvc = ((world_uv + offW) / u_texel - u_caustic_box.xy)
+                 * u_caustic_box.zw;
+        vec2 ec = texture(u_caustic_img, uvc).rg;
+        cGain = (min(ec.r, u_caustic.y) - 1.0) * u_caustic.x;
+        if (u_debug_view == 3) {
+            finalColor = vec4(ec, 0.0, cGain);
+            return;
+        }
+    }
     // W4: the CAUSTIC rides the source light the floor takes (the twin's
     // caustic_term = floorL x cGain): spread light darkens it, focused light
     // brightens it, no light none; the ambient is not refracted light.
@@ -622,7 +657,7 @@ void main() {
     float foamShade = 1.0;
     if (u_foam_on == 1) {
         foamShade = 1.0 - u_foam_a.w * clamp(
-            texture(u_foam, world_uv + off).r / u_foam_a.z, 0.0, 1.0);
+            texture(u_foam, world_uv + offW).r / u_foam_a.z, 0.0, 1.0);
     }
     floorC *= foamShade;
 

@@ -1455,6 +1455,17 @@ alpha_max = 0.95
 # (still_pool_flashlight).
 caustic_strength = 1.0         # 1 = the area method's own contrast; 0 = off
 caustic_max = 3.0              # the most a focus multiplies the light (> 1): the bright lines' cap
+# PROTOTYPES of the #97 reassessment (branch 97-reassess, NOT merged; Erik
+# decides by eye). caustic_form: "gather" (W4, the shipped law above, per
+# pixel) or "scatter" (Wallace's own form: a fine grid of the surface, each
+# point moved by the same refraction map onto the floor and rasterised
+# additively into a light image -- light is conserved, the mean is the
+# incident light; costs a slope pass + a grid draw over the view's water).
+# floor_bend: "legacy" (refract_strength x the normal, in MAP UV, the opposite
+# sign to Snell) or "snell" (the floor read where the caustic's own map sends
+# the view ray: depth x (1 - 1/1.333) x slope; refract_strength then unused).
+caustic_form = "gather"
+floor_bend = "legacy"
 # Chromatic aberration (subtle polish): floor refraction r/g/b sampled at
 # offsets scaled 1 ± ca_amount per channel. Tiny — a barely-there prismatic
 # fringe. 0 = off (single sample).

@@ -61,6 +61,19 @@ new pass. Its law is ``renderer/water_foam.py`` (the twin). The draw reads it
 bilinear and thresholds a bubble raft (``noise_bake.bake_foam_rgba``) into
 lace. Picture state only: never synced, never read by the simulation.
 
+PROTOTYPES (#97 reassessment, branch 97-reassess, NOT merged; Erik
+decides by eye): ``caustic_form = "scatter"`` computes the caustic in
+Wallace's own form -- :meth:`WaterPass.scatter_caustic`, before the scene
+RT: a SLOPE pass (``shaders/water.fs`` with its main swapped for
+``shaders/water_scatter_slope.glsl``: THE fine surface, sampled on a grid of
+``SCATTER_CELLS_PER_TILE`` per tile over the view's water) and the SCATTER
+(``shaders/water_scatter.vs/.fs``: the grid moved by the refraction map and
+rasterised additively into a light image), both in ONE ``core.PingPong``
+(the slope image, then the light image); the draw reads the light image in
+place of the per-pixel Jacobian. ``floor_bend = "snell"`` reads the floor
+where that map sends the view ray. Defaults ("gather", "legacy") render
+as before.
+
 Every dial is ``[graphics.water]``, read every frame through
 ``water_surface.water_settings`` (the one refusing door) and pushed to the
 shader by :meth:`WaterPass.refresh_settings` when it changed.
@@ -79,7 +92,9 @@ import pyray as rl
 from . import core
 from . import water_foam
 from .lighting import art_src_and_uv_rect
-from .water_surface import (CAUSTIC_K, LAYERS, MAX_WAVES, FlowFrame,
+from .water_surface import (CAUSTIC_K, LAYERS, MAX_WAVES,
+                            SCATTER_CELLS_PER_TILE, SCATTER_OFFSET,
+                            SCATTER_RATIO_MAX, FlowFrame,
                             WaterSettings, flow_frame, pack_flow,
                             relative_agitation, swell_dir0, wave_uniforms,
                             wet_box)
@@ -94,6 +109,15 @@ SHADERS_DIR = Path(__file__).resolve().parent.parent / "shaders"
 _UNIT_SMOKE, _UNIT_FLOW = 5, 6
 _UNIT_FOAM, _UNIT_BUBBLES = 8, 9
 _STEP_UNITS = {"u_water": 8, "u_flow": 9, "u_foam": 10}
+# PROTOTYPE (#97 reassessment): the scatter's light image in the draw, and
+# the units of its two direct-GL passes
+_UNIT_CAUSTIC = 7
+_SLOPE_UNITS = {"u_water": 8, "u_flow": 9, "u_height": 10}
+_GL_CULL_FACE = 0x0B44
+_GL_BLEND = 0x0BE2
+_GL_SCISSOR_TEST = 0x0C11
+_GL_FRAMEBUFFER = 0x8D40
+_GL_COLOR_BUFFER_BIT = 0x4000
 FOAM_TEX_SIZE = 256
 _UNSET = object()
 
@@ -118,6 +142,37 @@ def _bubble_texture() -> rl.Texture:
     """The foam's bubble bake (W2), RGBA32F, REPEAT, mipmapped, trilinear."""
     from .noise_bake import bake_foam_rgba
     return _static_texture(bake_foam_rgba(FOAM_TEX_SIZE))
+
+
+def load_scatter_slope_fs() -> str:
+    """PROTOTYPE (#97 reassessment): the scatter's SLOPE pass program --
+    :func:`load_water_fs` with its ``main`` renamed (dead code) and
+    ``shaders/water_scatter_slope.glsl``'s main appended, so the slope it
+    writes is THE fine surface the draw shows. Pure text, no GL."""
+    src = load_water_fs()
+    if src.count("void main()") != 1:
+        raise RuntimeError("shaders/water.fs must hold one main()")
+    tail = (SHADERS_DIR / "water_scatter_slope.glsl").read_text(
+        encoding="utf-8")
+    return src.replace("void main()", "void water_draw_main()") + "\n" + tail
+
+
+def _slope_pass_vs() -> str:
+    """``pass_quad.vs`` plus the two outputs water.fs declares as inputs
+    (unused by the slope pass; declared so the program links everywhere)."""
+    vs = core.PASS_QUAD_VS.read_text(encoding="utf-8")
+    return vs.replace("void main() {",
+                      "out vec2 fragTexCoord;\nout vec4 fragColor;\n"
+                      "void main() {\n    fragTexCoord = vec2(0.0);\n"
+                      "    fragColor = vec4(1.0);", 1)
+
+
+def _load_program(vs: str, fs: str) -> rl.Shader:
+    sh = rl.load_shader_from_memory(vs, fs)
+    if sh.id == 0 or sh.id == rl.rl_get_shader_id_default():
+        raise RuntimeError("water scatter program failed to compile/link "
+                           "(see raylib log)")
+    return sh
 
 
 def load_foam_fs() -> str:
@@ -198,6 +253,21 @@ class WaterPass:
         self._splat_dabs = np.zeros((0, water_foam.SPLAT_COLS))
         self.splats_last_frame = 0
 
+        # PROTOTYPE (#97 reassessment): the scatter caustic -- its PingPong
+        # (allocated on the first scatter frame, sized to the view's water),
+        # its two programs, the image's placement for the draw, and every
+        # uniform the draw program was given (replayed into the slope
+        # program, which reads the same surface uniforms)
+        self.caustic: Optional[core.PingPong] = None
+        self.caustic_on = False
+        self.caustic_rect: Optional[tuple] = None
+        self._caustic_box = (0.0, 0.0, 1.0, 1.0)
+        self._slope_shader = None
+        self._scatter_shader = None
+        self._pass_locs: dict = {}
+        self._uvals: dict = {}
+        self._slope_sent: dict = {}
+
         # [art.align] transform (level format v2 §1.3) — same convention as
         # LightingPass.draw_lit_world. None = legacy full-stretch draw.
         self.art_align = None
@@ -236,17 +306,20 @@ class WaterPass:
         return loc
 
     def _set_f(self, name: str, v: float) -> None:
+        self._uvals[name] = ("f", float(v))
         rl.set_shader_value(self.shader, self._loc(name),
                             rl.ffi.new("float[1]", [float(v)]),
                             rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
 
     def _set_i(self, name: str, v: int) -> None:
+        self._uvals[name] = ("i", int(v))
         rl.set_shader_value(self.shader, self._loc(name),
                             rl.ffi.new("int[1]", [int(v)]),
                             rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
 
     def _set_vec(self, name: str, v) -> None:
         n = len(v)
+        self._uvals[name] = ("v", tuple(float(x) for x in v))
         kind = {2: rl.ShaderUniformDataType.SHADER_UNIFORM_VEC2,
                 3: rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3,
                 4: rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4}[n]
@@ -306,7 +379,10 @@ class WaterPass:
         self._set_vec("u_water_color", s.water_color)
         # W4: the caustic (strength, max, the refraction law's 1 - 1/n)
         self._set_vec("u_caustic", (s.caustic_strength, s.caustic_max,
-                                    CAUSTIC_K, 0.0))
+                                    CAUSTIC_K,
+                                    1.0 if s.caustic_form == "scatter"
+                                    else 0.0))
+        self._set_i("u_floor_bend", 1 if s.floor_bend == "snell" else 0)
         self._set_f("u_agit_ref", s.agitation_ref)
         # W1b: the swell (strengths, spread), the lattice and the sharpness,
         # the swell's still direction, the waves per layer
@@ -352,6 +428,155 @@ class WaterPass:
                     MAX_WAVES * len(LAYERS))
         self._set_vec("u_flow_lim", (s.flow_max_offset_m, s.flow_edge_depth_m,
                                      s.flow_phase_noise_m, s.flow_speed_ref))
+
+    # ---- PROTOTYPE (#97 reassessment): the scatter caustic --------------
+
+    def _pass_set(self, gp, prog, name: str, *v) -> None:
+        """A uniform of a bound direct-GL program (location cached)."""
+        key = (prog.id, name)
+        loc = self._pass_locs.get(key)
+        if loc is None:
+            loc = self._pass_locs[key] = rl.get_shader_location(prog, name)
+        if loc < 0:
+            return
+        gl = gp.gl
+        if len(v) == 1 and isinstance(v[0], int):
+            gl.Uniform1i(loc, v[0])
+        elif len(v) == 1:
+            gl.Uniform1f(loc, float(v[0]))
+        elif len(v) == 2:
+            gl.Uniform2f(loc, float(v[0]), float(v[1]))
+        else:
+            gl.Uniform4fv(loc, 1, gl.floats(v))
+
+    def _sync_slope_uniforms(self) -> None:
+        """Replay into the slope program every draw-program uniform that
+        changed since (the surface's dials, the frame's flow and waves):
+        raylib setters, OUTSIDE any direct-GL block."""
+        sh = self._slope_shader
+        T = rl.ShaderUniformDataType
+        for name, (kind, v) in self._uvals.items():
+            if self._slope_sent.get(name) == (kind, v):
+                continue
+            self._slope_sent[name] = (kind, v)
+            loc = rl.get_shader_location(sh, name)
+            if loc < 0:
+                continue
+            if kind == "f":
+                rl.set_shader_value(sh, loc, rl.ffi.new("float[1]", [v]),
+                                    T.SHADER_UNIFORM_FLOAT)
+            elif kind == "i":
+                rl.set_shader_value(sh, loc, rl.ffi.new("int[1]", [v]),
+                                    T.SHADER_UNIFORM_INT)
+            else:
+                n = len(v)
+                rl.set_shader_value(
+                    sh, loc, rl.ffi.new(f"float[{n}]", list(v)),
+                    {2: T.SHADER_UNIFORM_VEC2, 3: T.SHADER_UNIFORM_VEC3,
+                     4: T.SHADER_UNIFORM_VEC4}[n])
+        if self._waves is not None:
+            loc = rl.get_shader_location(sh, "u_waves")
+            if loc >= 0:
+                rl.set_shader_value_v(
+                    sh, loc,
+                    rl.ffi.cast("void *", rl.ffi.from_buffer(self._waves)),
+                    T.SHADER_UNIFORM_VEC4, MAX_WAVES * len(LAYERS))
+
+    def scatter_caustic(self, view_tiles: Optional[Sequence[float]] = None
+                        ) -> bool:
+        """PROTOTYPE (#97 reassessment): the caustic in SCATTER form for
+        this frame, when ``caustic_form = "scatter"`` (else nothing): over
+        the draw's rect (the wet box x the view) dilated one tile, at
+        ``SCATTER_CELLS_PER_TILE`` cells per tile, (1) the SLOPE pass writes
+        the fine surface's slope and depth per sample into the PingPong's
+        back, (2) the other buffer is cleared over the rect, (3) the SCATTER
+        draws the grid's triangles moved by the refraction map into it,
+        additively (blend ONE, ONE; no culling: a folded triangle is turned
+        over, not gone). The light image is then the PingPong's front, read
+        by :meth:`draw`. Must run OUTSIDE any texture mode (beside
+        :meth:`simulate`). Returns whether it ran."""
+        s = self.settings
+        self.caustic_on = False
+        if (s is None or s.caustic_form != "scatter"
+                or s.caustic_strength <= 0.0):
+            return False
+        rect = self.draw_rect(view_tiles)
+        if rect is None:
+            return False
+        x0, y0, x1, y1 = rect
+        x0, y0 = max(0, x0 - 1), max(0, y0 - 1)
+        x1, y1 = min(self.w, x1 + 1), min(self.h, y1 + 1)
+        R = int(SCATTER_CELLS_PER_TILE)
+        cw, ch = (x1 - x0) * R, (y1 - y0) * R
+        pp = self.caustic
+        if pp is None or pp.width < cw or pp.height < ch:
+            w_new = max(cw, pp.width if pp is not None else 0)
+            h_new = max(ch, pp.height if pp is not None else 0)
+            if pp is not None:
+                pp.unload()
+            pp = self.caustic = core.PingPong(w_new, h_new, fp32=True)
+            pp.set_filter(True)              # the draw reads it bilinear
+        if self._slope_shader is None:
+            self._slope_shader = _load_program(_slope_pass_vs(),
+                                               load_scatter_slope_fs())
+            self._scatter_shader = _load_program(
+                (SHADERS_DIR / "water_scatter.vs").read_text(
+                    encoding="utf-8"),
+                (SHADERS_DIR / "water_scatter.fs").read_text(
+                    encoding="utf-8"))
+        self._sync_slope_uniforms()
+        cell_m = self.tile_size_m / R
+        sl, sc = self._slope_shader, self._scatter_shader
+        # additive blending for the scatter (raylib's own state, restored
+        # below); DirectPasses keeps GL_BLEND off until the scatter turns it on
+        rl.rl_set_blend_factors(rl.RL_ONE, rl.RL_ONE, rl.RL_FUNC_ADD)
+        rl.begin_blend_mode(rl.BlendMode.BLEND_CUSTOM)
+        with core.DirectPasses() as gp:
+            gl = gp.gl
+            # (1) the slope pass
+            gp.use(sl)
+            self._pass_set(gp, sl, "u_boxes", 0.0, 0.0, float(cw), float(ch))
+            self._pass_set(gp, sl, "u_target", float(pp.width),
+                           float(pp.height))
+            self._pass_set(gp, sl, "u_sgrid", float(x0), float(y0), float(R),
+                           SCATTER_OFFSET)
+            for name, unit in _SLOPE_UNITS.items():
+                self._pass_set(gp, sl, name, unit)
+            gp.bind(_SLOPE_UNITS["u_water"], self.water_tex.id)
+            gp.bind(_SLOPE_UNITS["u_flow"], self.flow_tex.id)
+            gp.bind(_SLOPE_UNITS["u_height"],
+                    (self._height_tex if self._height_tex is not None
+                     else self.flow_tex).id)
+            pp.direct_pass(gp, 1)
+            # (2) clear the light image's rect
+            gl.BindFramebuffer(_GL_FRAMEBUFFER, pp.back_target.id)
+            gl.Viewport(0, 0, pp.width, pp.height)
+            gp.viewport = (pp.width, pp.height)
+            gl.Enable(_GL_SCISSOR_TEST)
+            gl.Scissor(0, 0, cw, ch)
+            gl.ClearColor(0.0, 0.0, 0.0, 0.0)
+            gl.Clear(_GL_COLOR_BUFFER_BIT)
+            gl.Disable(_GL_SCISSOR_TEST)
+            # (3) the scatter: cw x ch quads, two triangles each
+            gp.use(sc)
+            self._pass_set(gp, sc, "u_slope", 8)
+            self._pass_set(gp, sc, "u_rect", 0.0, 0.0, float(cw), float(ch))
+            self._pass_set(gp, sc, "u_target", float(pp.width),
+                           float(pp.height))
+            self._pass_set(gp, sc, "u_move", CAUSTIC_K / cell_m,
+                           SCATTER_OFFSET, SCATTER_RATIO_MAX, 0.0)
+            gp.bind(8, pp.front_id)
+            gl.Enable(_GL_BLEND)
+            gl.Disable(_GL_CULL_FACE)
+            pp.direct_pass(gp, cw * ch)
+            gl.Enable(_GL_CULL_FACE)
+            gl.Disable(_GL_BLEND)
+        rl.end_blend_mode()
+        self._caustic_box = (float(x0), float(y0), R / float(pp.width),
+                             R / float(pp.height))
+        self.caustic_rect = (x0, y0, x1, y1)
+        self.caustic_on = True
+        return True
 
     # ---- per-frame update ----------------------------------------------
 
@@ -698,7 +923,11 @@ class WaterPass:
         # W2: the foam image (none yet: the flow texture stands in and
         # u_foam_on = 0 never reads it) and the bubble bake
         self._set_i("u_foam_on", 1 if self.foam is not None else 0)
+        self._set_vec("u_caustic_box", self._caustic_box)
         units = ((_UNIT_SMOKE, "u_smoke_cover", cover),
+                 (_UNIT_CAUSTIC, "u_caustic_img",
+                  self.caustic.front if (self.caustic is not None
+                                         and self.caustic_on) else None),
                  (_UNIT_FLOW, "u_flow", self.flow_tex),
                  (_UNIT_FOAM, "u_foam",
                   self.foam.front if self.foam is not None else None),
@@ -732,6 +961,14 @@ class WaterPass:
         if self._step_shader is not None:
             rl.unload_shader(self._step_shader)
             self._step_shader = None
+        if self.caustic is not None:
+            self.caustic.unload()
+            self.caustic = None
+        for attr in ("_slope_shader", "_scatter_shader"):
+            if getattr(self, attr) is not None:
+                rl.unload_shader(getattr(self, attr))
+                setattr(self, attr, None)
 
 
-__all__ = ["WaterPass", "load_water_fs", "load_foam_fs"]
+__all__ = ["WaterPass", "load_water_fs", "load_foam_fs",
+           "load_scatter_slope_fs"]

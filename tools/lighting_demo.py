@@ -1397,9 +1397,10 @@ def _run_water_perf(renderer, sim, lights_in, light_sky,
 
     for _ in range(WATER_PERF_WARMUP_TICKS):
         lit_step()
-    timers = {"draw": GLTimer(), "sim": GLTimer()}
-    cur = {"draw": 0.0, "sim": 0.0, "sim_cpu": 0.0}
-    orig = {"draw": wp.draw, "sim": getattr(wp, "simulate", None)}
+    timers = {"draw": GLTimer(), "sim": GLTimer(), "caustic": GLTimer()}
+    cur = {"draw": 0.0, "sim": 0.0, "sim_cpu": 0.0, "caustic": 0.0}
+    orig = {"draw": wp.draw, "sim": getattr(wp, "simulate", None),
+            "caustic": wp.scatter_caustic}
 
     def wrap(key):
         fn = orig[key]
@@ -1415,13 +1416,14 @@ def _run_water_perf(renderer, sim, lights_in, light_sky,
         return timed
 
     wp.draw = wrap("draw")
+    wp.scatter_caustic = wrap("caustic")
     if orig["sim"] is not None:
         wp.simulate = wrap("sim")
     rows = []
     try:
         for i in range(PERF_WARMUP_FRAMES + frames):
             lit_step()
-            cur.update(draw=0.0, sim=0.0, sim_cpu=0.0)
+            cur.update(draw=0.0, sim=0.0, sim_cpu=0.0, caustic=0.0)
             renderer.begin_frame()
             renderer.compose_world(units_marines=sim.marines(),
                                    units_zombies=sim.zombies(),
@@ -1431,9 +1433,10 @@ def _run_water_perf(renderer, sim, lights_in, light_sky,
             renderer.end_frame()
             if i >= PERF_WARMUP_FRAMES:
                 rows.append((wp.last_update_ms, cur["sim_cpu"], cur["sim"],
-                             cur["draw"]))
+                             cur["draw"], cur["caustic"]))
     finally:
         wp.draw = orig["draw"]
+        wp.scatter_caustic = orig["caustic"]
         if orig["sim"] is not None:
             wp.simulate = orig["sim"]
     a = np.asarray(rows, np.float64)
@@ -1449,8 +1452,12 @@ def _run_water_perf(renderer, sim, lights_in, light_sky,
         print(f"[water perf] foam step CPU ms {stat(a[:, 1])} ; GPU ms "
               f"{stat(a[:, 2])}")
     print(f"[water perf] draw GPU ms {stat(a[:, 3])}")
+    # PROTOTYPE (#97 reassessment): the scatter caustic's two passes (0
+    # under the default caustic_form = "gather")
+    print(f"[water perf] scatter caustic GPU ms {stat(a[:, 4])} "
+          f"(caustic_form = {wp.settings.caustic_form!r})")
     print(f"[water perf] TOTAL GPU ms "
-          f"{(a[:, 2] + a[:, 3]).mean():6.3f}")
+          f"{(a[:, 2] + a[:, 3] + a[:, 4]).mean():6.3f}")
     print("OK -- water perf pass complete (--water-perf)")
 
 
