@@ -1482,6 +1482,14 @@ The order: U + stability (one merge), (e), (d)+(a), diffusion in m²/s.
 4. **The drag dial `k_drag2` stays as it is.** It was the hidden speed limit; the ceiling now does that job. Its law per second does not change with sub-ticks. Whether real air should be slowed more is your call. *Default: unchanged at 0.225.*
 5. **Training cost.** A training batch pays for its loudest env: at 64 envs in the range room, about +14-43 % per tick with each env sub-ticking only as often as it needs, against +55-88 % if all envs did. Cutting that further means fewer solver cycles on the extra sub-ticks, measured in the patch. *Default: build per-env sub-ticks; report the measured cost before training runs on it.*
 
+**Ruled (Erik, 2026-11-21): "5 decisions: yes to all".** All five as
+defaulted: (1) K_MAX = 8, a physics dial shared by training and play; (2) the
+64 m/s ceiling holds for blasts and breaches; (3) the cap's removed energy
+returns as heat, only what that step's push supplied, and rule D6 is amended
+for the cap; (4) `k_drag2` unchanged in this patch; (5) per-env sub-ticks are
+built, and the measured training cost is reported before any training runs on
+it. The build follows §8.6 with these values.
+
 ### 8.15 Critique (one critic at a time, verdicts recorded before the next)
 
 | lens | model | verdict | findings (resolved in v2 of §8; the disposition table follows) |
