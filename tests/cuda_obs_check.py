@@ -1216,13 +1216,24 @@ def corpus_cover():
 ROUND_TICKS = 480
 
 
+def round_setup(session):
+    """P8.4a: the all_round match's hand state at tick 0 (the reference and
+    the twin alike): the lowest-id marine turns at the slowest the trait door
+    allows (hook TURN = ONE / 8), so an enemy it sees behind it is out of
+    reach of ``ticks_to_within``'s cap (4 x the class half turn): the cap
+    case no shipped unit reaches."""
+    from simulation import unit_fixed, unit_traits
+    m = _marines(session.sim)[0]
+    unit_traits.compile_unit(session.sim, m, {"TURN": unit_fixed.FP_ONE // 8})
+
+
 def corpus_round():
     from dataclasses import replace
 
     import _pinned_matches as pm
     lv = ship_level()
     spec = replace(lv.match, sight="all_round")       # the "bots" match is the level's own
-    return [play("ship_all_round", lv, spec, 61, max_ticks=ROUND_TICKS)]
+    return [play("ship_all_round", lv, spec, 61, setup=round_setup, max_ticks=ROUND_TICKS)]
 
 
 #: P8.3's door hand match: the training room with a door (``range_door``),
