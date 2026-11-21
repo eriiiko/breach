@@ -215,6 +215,7 @@ amends the rule file, never this line's length.
 | Test conventions | `tests/` | `test_*` collected, `_*` harness; properties, never snapshots; GL checks in a subprocess |
 | Suite timing | `tools/suite_timing.py` + `tests/_suite_kinds.py` + `tests/slow_tests.txt` + `tests/conftest.py` | A test is `slow` only by measurement (the generated list), never a hand mark; under xdist every test that drives the GPU or a window joins ONE group through the classifier |
 | Affected tests | `tools/affected_tests.py` | THE change-based tier for work in progress: the tests a change can reach, read from the source; may over-select, never under-select; never the merge gate |
+| Affected card checks | `tools/affected_cuda.py` | THE change-based tier for card checks: the `cuda_*` checks a change can reach (Python closure, the bindings it calls, the C++ definitions those run); may over-select, never under-select; never the merge gate |
 | Pinned match plays | `tests/_pinned_matches.py` (`watch`, `pinned_play`, `WHICH`) | The two pinned ship_demo matches (`bots`, `bots_v1`) are played ONCE per pytest process and shared (#205): a test that only WATCHES one of them hangs its observer on `watch(which, on_tick)`, never a fresh `run_match`; a test that changes the match in any way (monkeypatch, spec, seed, level, a mutated unit) plays its own. Observers never write to a view. Self-checking: the bots_v1 G8p pin and the ship_demo controller pin compare the shared play's outcome and per-tick unit stream with their pins |
 
 ### Render / UI
