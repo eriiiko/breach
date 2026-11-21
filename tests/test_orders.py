@@ -409,13 +409,15 @@ def test_only_the_order_modules_name_the_order_columns():
     ``control_bots.py`` (the commander's read of the held order) and
     ``obs_spec_v1.py`` (the soldier's own order shown to it, #195 1g: obs
     spec 1.5 / 2.2, the design's 5.2 -- an INPUT to the agent, not a
-    decision of the game) -- so nothing in the game reads an order for a
+    decision of the game) and ``device_obs.py`` (the device form of that
+    same observation, #29 P8.8 / P8.6b: it stages the columns' store
+    indices for the card's builders, held equal to ``obs_spec_v1``) -- so nothing in the game reads an order for a
     decision before rung 4. Breaks if a reader appears without a design
     line."""
     allowed = {"simulation/unit_orders.py", "simulation/unit_schema.py",
                "simulation/damage.py", "simulation/ai_zombie.py",
                "simulation/simulation.py", "control_bots.py",
-               "simulation/obs_spec_v1.py"}
+               "simulation/obs_spec_v1.py", "simulation/device_obs.py"}
     pat = re.compile(r"\border_(what|where|until|target)\b")
     hits = set()
     for p in (ROOT / "src").rglob("*.py"):
