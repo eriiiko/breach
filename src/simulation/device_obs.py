@@ -233,14 +233,14 @@ def table_values(sim, ctx) -> np.ndarray:
         "HAND_FUSE_MAX_TICKS": ctx.hand_fuse_max_ticks,
         # what build_vector's omega divides by: Simulation.unit_turn_rate_q16's
         # class value (the TURN hook's base)
-        "TURN_RATE_CLASS_Q": sim._marine_turn_rate_q16,
+        "TURN_RATE_CLASS_Q": sim._marine_turn_rate_q16,  # traits-class: the class value; the kernel applies the TURN hook (unit_lib::scaled)
         "HALF_TURN_TICKS": ctx.half_turn_ticks, "LINE_CLEAR_TILES": ctx.line_clear_tiles,
         "ZOMBIE_NEAR_TILES": ctx.zombie_near_tiles, "X_MAX_Q": ctx.x_max_q,
         "ZOMBIE_CLASS": ctx.zombie_class, "CAP_Q": ctx.cap_q,
         "FRAG_RADIUS": ctx.frag_radius, "MAX_THROW_RANGE": ctx.max_throw_range,
         "N_TEAMS": ctx.n_teams, "ZOMBIES": int(ctx.spec.zombies),
-        "HAND_WINDUP_TICKS": rows["hand_grenade"].throw_windup_ticks,
-        "PLANT_TICKS": rows[PLANT_WEAPON].plant_ticks,
+        "HAND_WINDUP_TICKS": rows["hand_grenade"].throw_windup_ticks,  # traits-class: the kernel applies HANDLING (unit_lib::handling_ticks)
+        "PLANT_TICKS": rows[PLANT_WEAPON].plant_ticks,  # traits-class: the kernel applies HANDLING
         "POISON_MIN_DENSITY_BITS": _f64_bits(ctx.poison_min_density),
         "TEARGAS_BLIND_DENSITY_BITS": _f64_bits(ctx.teargas_blind_density),
         "SMOKE_DENSE_BITS": _f64_bits(ctx.smoke_dense),
@@ -275,8 +275,8 @@ def table_values(sim, ctx) -> np.ndarray:
         out[b + 0] = int(w.mag_size)
         out[b + 1] = int(w.range_tiles)
         out[b + 2] = int(w.rof_interval_ticks)
-        out[b + 3] = int(w.reload_ticks)
-        out[b + 4] = int(combat.cone_q16_of_deg(w.spread_deg))
+        out[b + 3] = int(w.reload_ticks)  # traits-class: the kernel applies HANDLING
+        out[b + 4] = int(combat.cone_q16_of_deg(w.spread_deg))  # traits-class: the kernel applies SPREAD (unit_lib::scaled)
     # environment profiles: [env_profiles.*] rows, then every species' own
     pw = len(PROFILE_FIELDS)
     profs = [("PROFILE", list(us.TABLES["env_profiles"]().values())),
