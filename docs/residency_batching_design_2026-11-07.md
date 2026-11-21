@@ -3859,6 +3859,116 @@ conductor's 13.2 / 52.1 / 180.8 ms per tick; 2.0 syncs per tick at every N. No g
 host value moved; no table column, ring record or unit kernel added
 (`unit_kernels.horde` takes `latch=None`).
 
+**P8.8 AS-BUILT (2026-11-21, branch `29-p88-obs-fullview`, stacked on P8.6a's
+head `f5a8531f`, unmerged).** THE FULL VIEW (`full_list`, `full_mask`,
+`full_uid`, `full_match`, `full_watched`, the table's five whole keys) is
+`DeviceObservation.build_full` over `bp.obs_full` (`cpp/src/cuda_obs_list.cu`,
+beside the entry builders it calls; four launches on the tick stream at the end
+of every decision build, no sync): `k_full_aim` (one thread per (env, ray, store
+row): `FullView.aim` -- every other living unit at its live centre as a
+candidate, (d2, uid, cx, cy) order, the cone of `_cone_of`, the first clear sight
+line -- along the facing (0) and the facing target (1) into `full_aim (N, 2,
+U)`), `k_full_list` (one thread per (env, row, block): the soldier itself (alive:
+its mate entry; dead or turned: the corpse of 5.6, `age` from the picture's death
+tick), the other living marines by (team, slot, id), the zombies, the live
+objects (grenade rows then charge rows: `live_objects`' order; the uid the
+object's place in the KEPT block) and the living doors by (d2, id); each block's
+place follows from the counts, the room cut objects first, then zombies, then
+doors, never a marine (a marine overflow is a fault)), `k_full_watched` (one
+thread per (env, row, cell): `obs_sight::window_cell` FROM every living enemy's
+live centre, zombies included, OR-ed) and `k_full_match` (one thread per (env,
+row): the living counts, the standing H(t) summed in the full view's marine order
+(slot, id) through `obs_pic::bar_ratio`, the horde awake / dormant, the clock).
+WHAT IS SHARED, by calling: the list's `entry_common`, `put_angle`,
+`unit_columns`, `mate_entry` (now taking the caller's aim answer and whether the
+lane pair is written), `enemy_tail` (cols 27, 29-38, split out of `seen_entry`
+with the mates' aims as a functor: the list passes `aim_of`, the full view its
+every-unit aim), `object_entry`, `door_entry`, `next_min` / `key_less`; lifted
+into `cpp/src/cuda_obs_rows.cuh` from `cuda_obs.cu` (one copy, the list and the
+vector now call them): `aim_cone`, `bearing_q16`, `ticks_to_within`,
+`ticks_toward` (`_enemy_geometry`'s ticks), `status_left`, `kit_of`
+(`_kit_values`: the vector's kit columns and the full view's extra columns read
+ONE function); `bar_ratio` lifted from the books' TU into
+`cpp/src/cuda_obs_picture.cuh`. The full view's own: its every-unit aim, live
+centres and motion, the line of fire to the live centre and `mate_in_way` per
+entry, the extra columns (`full_extra`: knowledge, kit, the four statuses of
+`FULL_STATUS_KINDS`, the order's kind) and the mate entries' order block (cols
+47-51, `order_tail` over a static PLACE TABLE, `device_obs.place_values`: the room
+graph's rooms by id and openings by `ORDER_OPENING_BASE + id` with their centres,
+`_place_centre`'s first match). `DeviceObservation.team_rows` (the policy feed)
+hands no full key. Choices where the design was silent: the full view lives in
+the list's TU (its builders are that TU's); the order block of a full-view mate
+entry is built here (the full list is one whole key the table gives P8.8), the
+place table rides `DeviceObservation`; `tests/obs_column_owners.toml`'s patch
+order is the LANDING order, so P8.8 / P8.8b now precede P8.6b (whose columns stay
+unowned); a fault word `full_faults` read by the gate. Gates (`tests/
+cuda_obs_check.py`, `PATCH = "P8.8"`, raw bits at every decision tick, every
+earlier column still equal): part GATE N = 1 on bots 338, bots_v1 69, range_door
+51, hand 81, range_hall 9, hall_cover 7, ship_all_round 121, door_grenade 38,
+slow_turn 11, list_hand 7, fire_hand 16, clock_hand 13 and corpus (c) 330
+env-decisions, equal on the first run; batches ship_demo N = 2 / 4 (493 / 805)
+and the room N = 2 / 4 (112 / 220) equal; coverage: mate entries 15 894, enemies
+the team sees 7 530 / holds a record of 2 154 / does not know of 31 210, zombie
+entries 19 184, objects seen 10 871 / known 377 / unknown 3 200, door entries
+349 580, corpse rows 1 352, rows past the cap 6 110, watched cells 728 703, order
+blocks 4 582, mate aims on a unit 4 461; every `full_match` column moved (5 to 35
+distinct values). THE WALL the other way round (part WALL): the unseen enemy's row
+perturbed moves the team's full list in every case (cone 7, all_round 6) while it
+moves no policy value. Breaks, each red at bots tick 4: `full_vis` (the full view
+from the team's visible set: 2 586 values), `full_tie` (ties by the higher id:
+door entry 53), `full_cap` (the room one short: entry 63). Cost: see P8.8b.
+
+**P8.8b AS-BUILT (2026-11-21, the same branch).** THE TERMINAL OBSERVATION. The
+reference (`rl_env._worker_main` "step"): when `EnvRunner.step` ends the match
+(its tick loop breaks at the ending tick, on or off the decimation's phase), the
+worker calls `r.observe` into the shared `final_` arrays of that env -- every
+observation key, the masks, `valid` / `in_match` and the full view -- on the
+session's state right after the ending tick, before the reset; the shared arrays
+keep the last ending's values, and `BatchedEnv._final` serves them for the envs
+that ended in the step, zeros on every other row. THE DEVICE FORM:
+`DeviceObservation.terminal(ended_now)`, ONE call line in `DeviceConductor.tick`
+right after THE ONE BOOKS READ (whose words already carry the books' ended-now
+flags: no sync of its own), calls `build_terminal(envs)`: the very blocks of a
+decision (`build`) over the `final_` buffers, with a parameter row whose episode
+tick is each env's own tick (the cadence test passes off the phase; the
+decimation kept, the masks read it) and a skip row clear for exactly the ending
+envs (the latch the books just set is not read), both uploaded only on such a
+tick; the live buffers untouched (the reference fills them with the next
+episode's tick 0: P8.9's). An env's `final_` buffers hold zeros before its first
+ending and its last terminal observation after it (the shared arrays' semantics;
+the per-step zeroing of the other rows is `BatchedEnv`'s, P8.10a). The tick the
+device serves is the reference's: the books end at the walk's end of tick k with
+the tick row at k, `sim.tick` = k when the worker observes. Gates (`PATCH =
+"P8.8b"`, at every decision tick and every ending tick of every GATE / BATCH run):
+every ended env's owned `final_` columns raw-bit equal to its terminal reference
+(the check's `host_observation` right after the ending tick; a tap-driven match
+takes the aims the twin holds then, the stand-in of the last decision) and
+unchanged at every later check, every env not ended all zeros, and at an ending
+off the cadence every live buffer of every env unchanged by the tick. Endings
+compared: part GATE 14 (5 on the cadence, 9 off; 13 by elimination, 1 by the
+clock: clock_hand), zero checks 1 086, live buffers held 2; batches 12 endings (5
+on, 7 off: ship_demo ends 1664 / 300 / 970 / 275, the room 222 / 222 / 218 /
+208), frozen checks 1 213, zero checks 1 631, live held 5. Breaks, each red:
+`term_early` (every tick's state built for the envs not ended: the final_ set
+written before the ending, clock_hand / bots tick 4), `term_next` (built at the
+next decision tick instead: clock_hand tick 48, bots tick 1349, `final_valid`
+zeros against the reference), `term_other` (written for the next env too: batch
+ship_demo N = 2 tick 300, env 0's final_ set not zeros). Unchanged: every earlier
+part; 2.00 syncs per steady tick at N = 1 and 2 (part SYNCS alone; run after part
+BATCH in the same process the N = 1 count picks up allocation syncs at
+`cuda_applier.cu` / `cuda_unit_store.cu` / ... sites on one tick: pre-existing,
+order-dependent, not the observation's). Cost (`tools/bench_conductor.py --obs`,
+ship_demo, GPU time for all envs, every env due, the card shared with another
+agent): the full view 1.956 / 2.434 / 6.010 ms per decision at N = 1 / 64 / 256
+(inside the decision's blocks: 2.535 / 5.117 / 14.362 ms); a terminal build of
+every env at once 2.630 / 5.220 / 14.475 ms (an ending tick only); THE WHOLE per
+decision (blocks with the full view, 4 ticks of vision and picture, the books,
+the decoder) 3.176 / 6.196 / 15.606 ms against the conductor's 11.4 / 49.9 /
+173.3 ms per tick; the full list's serial blocks (one thread per (row, block),
+60 doors by successive minima, a sight walk per enemy entry) dominate it, not yet
+profiled further. No golden re-baseline; no host value moved; no table column,
+ring record or unit kernel added.
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:

@@ -84,6 +84,14 @@ reward books; the books run at :meth:`DeviceObservation.stage` after the
 picture and the blocks, under ``reward_profile`` (a named profile of
 ``reward_v1.PROFILES``; ``"counters"`` refused by name).
 
+P8.8: THE FULL VIEW (:meth:`DeviceObservation.build_full`, ``obs_full`` in
+``cpp/src/cuda_obs_list.cu``), the value network's view, built with every
+decision through the list's own entry builders; :meth:`DeviceObservation.
+team_rows` (the policy feed) hands none of its keys. P8.8b: THE TERMINAL
+OBSERVATION (:meth:`DeviceObservation.terminal`, called by the conductor right
+after its books read): the decision's blocks into the ``final_`` buffers of the
+envs whose match ended that tick.
+
 THE HAND-OVER: ``torch.from_dlpack`` on each CuPy buffer (the tensor's data
 pointer IS the buffer's). The kernels run on THE tick stream, a BLOCKING
 stream (``cudaStreamCreate``), so torch / CuPy work on the legacy default
