@@ -20,7 +20,7 @@ Run:
 Controls (keymap audited — O is intentionally unused; see the FULL map
 printed at startup / drawn in the panel, tools/lighting_demo.py §keybinds):
     WASD / arrows  — pan camera
-    Q / E / wheel  — zoom
+    Q / E / wheel  — zoom (the wheel over the right panel scrolls it)
     Space          — pause / resume sim
     R              — arm DETONATE mode (then left-click detonates at cursor)
     Left click     — detonate a frag grenade at the cursor tile (armed only)
@@ -509,6 +509,12 @@ class PanelState:
         self.status_msg = ""
         self.status_until = 0.0
 
+        # Panel scroll: how far the content is moved up (px, >= 0), and the
+        # content's height as the last frame's draw measured it (the clamp's
+        # bound; one frame behind, which no wheel step can notice).
+        self.scroll = 0.0
+        self.content_h = 0.0
+
     def get(self, key: str):
         return self._v[key]
 
@@ -567,6 +573,28 @@ def _section_header(label: str, x: int, y: int) -> int:
     rl.gui_label(rl.Rectangle(x, y, PANEL_W - 20, 14),
                  f"-- {label} --")
     return y + 18
+
+
+PANEL_PAD = 10            # top / left / bottom margin of the panel content
+PANEL_SCROLL_STEP = 40.0  # px per wheel notch
+
+
+def clamp_panel_scroll(scroll: float, content_h: float, view_h: float) -> float:
+    """The panel's scroll offset held to [0, content_h - view_h] (0 when the
+    content fits). Pure: the one bound every scroll write goes through."""
+    return min(max(float(scroll), 0.0), max(0.0, float(content_h) - float(view_h)))
+
+
+def wheel_panel_scroll(scroll: float, wheel: float, content_h: float,
+                       view_h: float) -> float:
+    """The offset after a wheel move (up = positive = content moves down)."""
+    return clamp_panel_scroll(scroll - wheel * PANEL_SCROLL_STEP,
+                              content_h, view_h)
+
+
+def mouse_over_panel(mouse_x: float, map_px_w: float) -> bool:
+    """The panel is the strip right of the map, full window height."""
+    return mouse_x >= map_px_w
 
 
 # ---------------------------------------------------------------------------
@@ -1993,6 +2021,14 @@ def main() -> None:
     # Pressure overlay is now built into the renderer (renderer/pressure_overlay.py),
     # shared with the main game. No demo-local allocations needed.
 
+    # The wheel over the panel scrolls the panel (_draw_panel), so the map's
+    # wheel zoom treats the panel as a captured pointer (the renderer's own
+    # contract, GameRenderer.pointer_captured). Q/E and -/+ still zoom.
+    _renderer_captured = renderer.pointer_captured
+    renderer.pointer_captured = lambda: (
+        _renderer_captured() or mouse_over_panel(rl.get_mouse_x(),
+                                                 cfg.map_px_w))
+
     # ---- the shared light assembly (renderer/frame_lights.py) ----
     # The SAME seam main.py uses, so the studio gets the level's lamps + the
     # rotating beacon with no drift, as the sweep's cone emitters (a fire
@@ -2810,8 +2846,18 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     rl.draw_line_ex(rl.Vector2(px, 0), rl.Vector2(px, cfg.map_px_h),
                     2.0, rl.Color(120, 120, 140, 255))
 
-    x = px + 10
-    y = 10
+    # Scroll: the wheel over the panel moves the content (the map's wheel zoom
+    # is held off there, see main()); the content is clipped to the panel.
+    view_h = cfg.map_px_h
+    if mouse_over_panel(rl.get_mouse_x(), px):
+        state.scroll = wheel_panel_scroll(
+            state.scroll, rl.get_mouse_wheel_move(), state.content_h, view_h)
+    state.scroll = clamp_panel_scroll(state.scroll, state.content_h, view_h)
+    rl.begin_scissor_mode(px, 0, pw, view_h)
+
+    x = px + PANEL_PAD
+    y = PANEL_PAD - int(state.scroll)
+    y0 = y
 
     # Title + perf on same line. B2 P5 (design §8 "watch the HUD frame
     # time"): Frame is the whole-loop smoothed ms/frame -- SAME definition
@@ -2977,6 +3023,17 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y += 12
     rl.draw_text("F1-F7=overlays M=3D B=bilinear H=flipY [/]=lightZ (O unused)",
                  x, y, 10, rl.Color(120, 120, 140, 255))
+    y += 12
+    rl.end_scissor_mode()
+
+    # Content height as drawn (for next frame's clamp) + a thin scroll thumb.
+    state.content_h = (y - y0) + 2 * PANEL_PAD
+    if state.content_h > view_h:
+        thumb_h = max(20, int(view_h * view_h / state.content_h))
+        travel = view_h - thumb_h
+        thumb_y = int(travel * state.scroll / (state.content_h - view_h))
+        rl.draw_rectangle(px + pw - 5, thumb_y, 4, thumb_h,
+                          rl.Color(120, 120, 140, 200))
 
 
 # ---------------------------------------------------------------------------
