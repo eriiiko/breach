@@ -15,7 +15,11 @@ paths:
 
 Fires on contact with these files. CLAUDE.md's index says what each system is
 and who must use it; this file holds the constraints the code cannot say. Run
-the suite as `pytest tests -q` with this machine's breach env (`docs/dev_setup.md`).
+the suite with this machine's breach env (`docs/dev_setup.md`).
+
+**The merge gate** (it holds for every system below):
+- The full suite is run ONCE per merge as two halves: every test but the card tests (`pytest tests -q -k "not cuda"` + `pytest agents/tests -q`) and the card gate (`tools/cuda_green.py`, whose own `-k` selection is the complement). Never a plain `pytest tests -q` AND cuda_green: on a checkout with a CUDA build the plain run already holds the ~94 card tests, about 65 min run twice (Erik, 2026-11-21: "full suite = everything except the card tests, plus the card gate"; nothing is tested less, only not twice; measured in `docs/test_time_profile_2026-11-21.md`).
+- The split is cuda_green's name selection and its complement, so the halves partition `tests/` by construction; the Staging gate asserts it on every run. A change's own tiers (`-m "not slow"`, Affected tests) are never the merge gate.
 
 ## Field digest
 - A membership or dtype change, or a change of a field's integer currency (`trace_fine_bits`), is a version bump + all goldens regenerated in the same commit.
@@ -31,7 +35,7 @@ the suite as `pytest tests -q` with this machine's breach env (`docs/dev_setup.m
 
 ## Suite timing
 - `tests/slow_tests.txt` is GENERATED (`tools/suite_timing.py --write-slow` over a full run's `--durations=0` output); never hand-edit it and never hand-mark a test `slow`. A test missing from the list is fast until the next measurement.
-- `-m "not slow"` is the tier for work in progress and NEVER the merge gate: the full suite, all determinism gates, stays it.
+- `-m "not slow"` is the tier for work in progress and NEVER the merge gate: the full suite in its two halves (the merge gate, above), all determinism gates, stays it.
 - Under pytest-xdist (`-n N --dist loadgroup`) every test that drives the GPU or opens a window joins the one `device` group through `tests/_suite_kinds.py::is_device`, so no two run at once. A new kind of device launch is a pattern there, never a hand mark on a test. A plain run keeps collection order and reads no source.
 
 ## Affected tests
