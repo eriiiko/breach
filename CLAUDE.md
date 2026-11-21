@@ -33,7 +33,11 @@ strategy. Every rule below serves that.
   with a misleading ModuleNotFoundError.
 - **pytest: always `pytest tests -q`**, never bare `pytest` from repo root.
   While working, `-m "not slow"` or `python tools/affected_tests.py --run`
-  is enough; the full suite stays the gate before a merge.
+  is enough. The gate before a merge is the full suite, run ONCE: every test
+  but the card tests (`pytest tests -q -k "not cuda"` + `pytest agents/tests -q`)
+  plus the card gate (`tools/cuda_green.py`). A plain `pytest tests -q` on a
+  checkout with a CUDA build runs the card tests a second time (Erik,
+  2026-11-21: nothing tested less, only not twice).
 - C++/CUDA: `cpp/` via CMake; per-machine scripts `cpp/build_*.bat`, on Linux
   `cpp/build_linux.sh` (both modules; `containers/breach.def` builds with it).
   CPU build → `cpp/build/Release`; CUDA build → `cpp/build_cuda/`.
@@ -91,7 +95,7 @@ strategy. Every rule below serves that.
 | `render-units.md` | 3D units, held props, pose layer, static props, larva bodies |
 | `audio.md` | sound layer, sound samples |
 | `levels.md` | level data layer, generators, recipes, archetype grammar, layout stage, LevelSpec, brood placement |
-| `determinism-gates.md` | tests, field digest, test conventions, E2E driver, benches |
+| `determinism-gates.md` | tests, field digest, test conventions, E2E driver, benches, staging gate |
 | `characters.md` | character kit, game-ready step, toon look, worker builder |
 
 ## Canonical systems — check before building anything new
@@ -211,6 +215,7 @@ amends the rule file, never this line's length.
 | Test conventions | `tests/` | `test_*` collected, `_*` harness; properties, never snapshots; GL checks in a subprocess |
 | Suite timing | `tools/suite_timing.py` + `tests/_suite_kinds.py` + `tests/slow_tests.txt` + `tests/conftest.py` | A test is `slow` only by measurement (the generated list), never a hand mark; under xdist every test that drives the GPU or a window joins ONE group through the classifier |
 | Affected tests | `tools/affected_tests.py` | THE change-based tier for work in progress: the tests a change can reach, read from the source; may over-select, never under-select; never the merge gate |
+| Affected card checks | `tools/affected_cuda.py` | THE change-based tier for card checks: the `cuda_*` checks a change can reach (Python closure, the bindings it calls, the C++ definitions those run); may over-select, never under-select; never the merge gate |
 | Pinned match plays | `tests/_pinned_matches.py` (`watch`, `pinned_play`, `WHICH`) | The two pinned ship_demo matches (`bots`, `bots_v1`) are played ONCE per pytest process and shared (#205): a test that only WATCHES one of them hangs its observer on `watch(which, on_tick)`, never a fresh `run_match`; a test that changes the match in any way (monkeypatch, spec, seed, level, a mutated unit) plays its own. Observers never write to a view. Self-checking: the bots_v1 G8p pin and the ship_demo controller pin compare the shared play's outcome and per-tick unit stream with their pins |
 | Device check plays | `tests/_check_parts.py` + the session fixtures of `tests/test_cuda_obs.py` / `test_cuda_conductor.py` / `test_cuda_conductor_batch.py` | A device check plays each match of its corpus ONCE per subprocess and every part reads that play; its wrapper tests share ONE subprocess run, each judged on its own part; never a per-test subprocess that re-plays a shared corpus |
 
@@ -360,6 +365,7 @@ amends the rule file, never this line's length.
 | Headless match runner | `tools/run_match.py` | THE one way a match runs to a result without a window; tests and benches call `run_match` |
 | Bot tournament | `tools/bot_tournament.py` | THE measure of a bot change: tuning seeds, held-out report |
 | E2E driver | `tools/e2e_drive.py` | THE headless end-to-end reproduction and frame profiler; bug fixes start here |
+| Staging gate | `tools/staging_gate.py` + `tools/staging_machines.toml` | THE way several ready branches share one full suite and one cuda_green, on one throwaway staging commit (one machine, or split `cpu` / `cuda` over two); never merges to main, never resolves a conflict |
 
 ## Working style
 

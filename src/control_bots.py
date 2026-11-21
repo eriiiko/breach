@@ -56,6 +56,7 @@ Pyray-free; works with ``renderer=None``.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -1293,7 +1294,11 @@ class BotTeam(ControlSource):
         d = _direction_q(point[0] - uc[0], point[1] - uc[1])
         if d is None:
             return None
-        reach_q = quantize_scalar(float(_d2(uc, point)) ** 0.5)
+        # math.sqrt (IEEE, correctly rounded), never ``** 0.5`` (the C
+        # runtime's pow, which may differ between machines): the reach is
+        # latched game state. tools/reach_sqrt_sweep.py proves the two
+        # agree on every reachable integer d2.
+        reach_q = quantize_scalar(math.sqrt(float(_d2(uc, point))))
         return (d, reach_q)
 
     def frag_point(self, c):

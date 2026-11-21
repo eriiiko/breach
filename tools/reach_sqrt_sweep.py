@@ -20,6 +20,10 @@ fails the sweep. (First run, 2026-11-20: 3 of the 2**31 integers differ,
 a root above 38000 tiles, past the int32 Q16 range of the reach column
 (d2 < 2**30) as well.)
 
+The same proof covers ``control_bots.BotTeam``'s lob (``_lob``), which had
+the identical expression over the identical domain (the squared distance
+between two integer tile coordinates) and took the same change.
+
 The old form is reproduced in bulk by ``np.power(k, <array of 0.5>)``: with
 an ARRAY exponent numpy calls the same C ``pow`` CPython's float ``**``
 calls (a scalar 0.5 exponent takes numpy's sqrt shortcut instead). The tool
