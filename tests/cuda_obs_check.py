@@ -2827,13 +2827,15 @@ DEC_RUNS = (("policy crowd 102", "ship_demo", 102, 600, True),
             ("policy crowd 110", "ship_demo", 110, 600, True),
             ("policy crowd 116", "ship_demo", 116, 600, True),
             ("policy ship_demo 133", "ship_demo", 133, 600, False),
-            ("policy room 83", ROOM, 83, 400, False), ("policy room 87", ROOM, 87, 400, False))
-#: Run seeds are chosen: a seed whose play opens or closes a door beside gas
-#: a blast heated past the topology seam's proved range (|T_abs| < 2^28,
-#: cpp/src/cuda_topology.cuh) is refused by the device DOORS stage
-#: (ApplierFault at '9e(d) doors') on the tap path as well -- a finding of
-#: P8.6a (e.g. crowd 100, ship_demo 81), not the decoder's; 11 of 30 seeds
-#: scanned hit it.
+            ("policy room 83", ROOM, 83, 400, False), ("policy room 87", ROOM, 87, 400, False),
+            ("policy crowd 100", "ship_demo", 100, 600, True),
+            ("policy ship_demo 100", "ship_demo", 100, 600, False))
+#: The last two runs open or close a door beside gas a blast heated past the
+#: topology seam's OLD proved range (|T_abs| < 2^28): the device DOORS stage
+#: refused them (ApplierFault at '9e(d) doors', crowd 100 tick 112, ship_demo
+#: 100 tick 48) -- P8.6a's finding, 11 of 30 seeds scanned; #29 TOPOLOGY RANGE
+#: moved the refusal to the term bound (cpp/src/cuda_topology.cuh), and they
+#: are kept as the scene that holds it.
 #: The decision kit at tick 0 (the runner's session and the twin alike): the
 #: hand loadout with these counts of every hand-grenade kind, in every
 #: marine's hands, so every throw kind with every reach occurs.

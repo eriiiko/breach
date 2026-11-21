@@ -1136,6 +1136,280 @@ def part_padding():
 
 
 # ---------------------------------------------------------------------------
+# PART RANGE (#29 TOPOLOGY RANGE): the seam over the WHOLE temperature range
+# ---------------------------------------------------------------------------
+#: The seam's moved-energy term bound (cpp/src/cuda_topology.cuh TERM_BOUND):
+#: a moving cell's N * (|T_abs| + 1) below it is the proved range.
+TERM_BOUND = 1 << 60
+I32_TOP, I32_BOTTOM = (1 << 31) - 1, -(1 << 31)
+NB4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
+
+
+def _heat(g, y, x, t_rel, rem=0):
+    """A fixture's hot cell THROUGH THE ENERGY FIELD (never a temperature
+    write: Gas temperature is a mirror): E := N * (t_rel + T_AMB) + rem, the
+    mirror re-read by the seam's own refresh."""
+    n = g.gas_bulk_n_at(y, x)
+    g.gas_energy[y, x] = n * (int(t_rel) + int(g.gas_t_amb_raw())) + int(rem)
+    g.gas_energy_refresh_cell(y, x)
+
+
+def _open_acct(g, y, x):
+    return (0 <= y < g._h and 0 <= x < g._w and not g.solid[y, x]
+            and g.gas_is_accountable(y, x))
+
+
+def _restore(g, pre):
+    for n in applier.PLANE_NAMES:
+        getattr(g, n)[...] = pre[n]
+
+
+def _range_temps(g, rng):
+    """The relative temperatures swept: the old bound's edge (T_abs = 2^28 - 1)
+    and just past it (2^28), the physics' ceiling (T_MAX_PHYS), past it (a
+    seam write's unrailed mirror), the int32 plane's top and bottom, and
+    dense random draws over the plane's whole range."""
+    t_amb = int(g.gas_t_amb_raw())
+    from config import CFG
+    phys = int(round(float(CFG.physics.thermal.T_MAX_PHYS) * ONE))
+    out = [("old edge", (1 << 28) - 1 - t_amb), ("just past old", (1 << 28) - t_amb),
+           ("T_MAX_PHYS", phys), ("2 x T_MAX_PHYS", 2 * phys), ("int32 top", I32_TOP),
+           ("int32 bottom", I32_BOTTOM)]
+    out += [(f"random {i}", int(rng.integers(I32_BOTTOM, I32_TOP + 1))) for i in range(6)]
+    return out
+
+
+def _edge_t(g, n):
+    """The largest |T_abs| a cell of bulk ``n`` may carry in the proved range
+    (n * (|T_abs| + 1) < TERM_BOUND), as a relative temperature."""
+    return TERM_BOUND // n - 2 - int(g.gas_t_amb_raw())
+
+
+def _set_bulk(g, y, x, n):
+    _set_gas(g, y, x, O2, n // 2)
+    _set_gas(g, y, x, INERT_N2, n - n // 2)
+
+
+def _host_carries_on(g, fn, *args):
+    """The host on a state the device refuses: it CARRIES ON (Python's ints);
+    returns True when it completed. The caller restores the map."""
+    try:
+        fn(*args)
+        return True
+    except (ValueError, OverflowError):
+        return False
+
+
+def _range_door(P, g, d, rng, seen):
+    """One door's span over the swept temperatures: the donors (unseal) or
+    the span cells (seal) heated, the op compared, the op back compared;
+    at max bulk the term bound's edge (done) and just past it (the device
+    refuses by name, nothing written; the host carries on)."""
+    span = sorted(tuple(int(v) for v in t) for t in d.span)
+    sset = set(span)
+    closed = bool(g.solid[span[0]])
+    hot = sorted({(t[0] + dy, t[1] + dx) for t in span for dy, dx in NB4
+                  if (t[0] + dy, t[1] + dx) not in sset
+                  and _open_acct(g, t[0] + dy, t[1] + dx)}) if closed else \
+        [t for t in span if _open_acct(g, *t)]
+    if not hot:
+        return
+    if not closed and not g.can_seal_tiles(span):
+        seen["a door the host refuses to seal at any T (skipped)"] += 1
+        return
+    first, back = ("unseal", "seal") if closed else ("seal", "unseal")
+
+    def run(op):
+        args = (0, len(span)) + ((MAT_DOOR_CLOSED,) if op == "seal" else ())
+        return P.op(op, *args, tiles=span, tag=f"range door {d.id}")
+    for label, t_rel in _range_temps(g, rng):
+        pre = _planes(g)
+        for (y, x) in hot:
+            _heat(g, y, x, t_rel)
+        if run(first):
+            seen[f"{first}: done at {label}"] += 1
+            if run(back):
+                seen[f"{back} back: done after {label}"] += 1
+        else:
+            fail(f"range door {d.id}: {first} at {label} (T {t_rel}) was refused")
+        _restore(g, pre)
+    # bulk counts at their maxima (a bulk plane just below 2^30 each: the
+    # seal's receivers stay inside int32), T at the term bound's edge
+    n = (1 << 31) - 4
+    for label, t_rel, want_done in (("max bulk, term edge", _edge_t(g, n), True),
+                                    ("max bulk, term edge (cold side)",
+                                     -(TERM_BOUND // n - 2) - int(g.gas_t_amb_raw()), True),
+                                    ("max bulk, past the term bound", _edge_t(g, n) + 2, False)):
+        pre = _planes(g)
+        cell = hot[0]
+        _set_bulk(g, cell[0], cell[1], n)
+        _heat(g, cell[0], cell[1], t_rel)
+        if want_done:
+            if run(first):
+                seen[f"{first}: done at {label}"] += 1
+            else:
+                fail(f"range door {d.id}: {first} at {label} was refused")
+        else:
+            args = (0, len(span)) + ((MAT_DOOR_CLOSED,) if first == "seal" else ())
+            P.device_only(first, args, span, "fault")
+            seen[f"{first}: refused by name at {label}"] += 1
+            fn = g.unseal_tiles if first == "unseal" else (
+                lambda s: g.seal_tiles(s, MAT_DOOR_CLOSED))
+            if _host_carries_on(g, fn, span):
+                seen[f"{first}: the host carries on at {label}"] += 1
+        _restore(g, pre)
+
+
+def _l_block(g):
+    """A 2 x 2 block of open accountable tiles whose ring is open and
+    accountable: the L span (y, x), (y, x + 1), (y + 1, x + 1) and its donor
+    (y + 1, x), which borders TWO span tiles (read again after a refresh)."""
+    for y in range(2, g._h - 3):
+        for x in range(2, g._w - 3):
+            if all(_open_acct(g, y + a, x + b) for a in range(-1, 3) for b in range(-1, 3)):
+                return [(y, x), (y, x + 1), (y + 1, x + 1)], (y + 1, x)
+    return None, None
+
+
+def _range_multi_read(P, g, seen):
+    """The unseal's donor read twice (it borders two span tiles; its mirror
+    is refreshed after the first drain and may RISE by the remainder): a
+    mirror of its energy at the plane's top with the largest remainder, at
+    max bulk on the term edge, and a donor whose mirror is NOT its energy
+    (small bulk: done; bulk past the unconditional bound: refused by name,
+    nothing written -- the range the old proof accepted unsoundly)."""
+    span, don = _l_block(g)
+    if span is None:
+        fail("range: no 2 x 2 open block for the L span (vacuous)")
+        return
+    if not P.op("seal", 0, 3, MAT_DOOR_CLOSED, tiles=span, tag="range L"):
+        fail("range: the L span did not seal (vacuous)")
+        return
+    y, x = don
+    t_amb = int(g.gas_t_amb_raw())
+    cases = []
+    for t_rel in (I32_TOP - 40, (16000 << 16), I32_BOTTOM + 40):
+        cases.append((f"mirror, small bulk, remainder N - 1, T {t_rel}", 7, t_rel, 6, None, True))
+    n = (1 << 31) - 4
+    cases.append(("mirror, max bulk, term edge", n, TERM_BOUND // n - 2 - t_amb, n - 1, None,
+                  True))
+    # not a mirror: the energy written behind the mirror's back
+    cases.append(("not a mirror, small bulk", 9, 0, 0, 9 * (I32_TOP + t_amb) + 5, True))
+    big = 1 << 30
+    cases.append(("not a mirror, bulk 2^30 (past the unconditional bound)", big, 0, 0,
+                  big * (t_amb + 1000), False))
+    for label, nb, t_rel, rem, e_raw, want_done in cases:
+        pre = _planes(g)
+        _set_bulk(g, y, x, nb)
+        _heat(g, y, x, t_rel, rem)
+        if e_raw is not None:
+            g.gas_energy[y, x] = int(e_raw)        # the mirror left behind
+        if want_done:
+            if P.op("unseal", 0, 3, tiles=span, tag=f"range L {label}"):
+                seen[f"unseal L: done, {label}"] += 1
+            else:
+                fail(f"range L: unseal refused ({label})")
+        else:
+            P.device_only("unseal", (0, 3), span, "fault")
+            seen[f"unseal L: refused by name, {label}"] += 1
+            if _host_carries_on(g, g.unseal_tiles, span):
+                seen[f"unseal L: the host carries on, {label}"] += 1
+        _restore(g, pre)
+
+
+def _range_destroy(sim, seen):
+    """destroy_wall and on_tile_changed beside cells at the plane's extremes:
+    neither carries a temperature bound (no T_abs product; the solid books'
+    product is checked in 128 bits): equal to the host at every T."""
+    g = sim.gmap
+    st = _store([sim], 1)
+    walls = [(y, x) for y in range(2, g._h - 2) for x in range(2, g._w - 2)
+             if g.solid[y, x] and sum(_open_acct(g, y + a, x + b) for a, b in NB4) >= 2]
+    if not walls:
+        fail("range: no wall with two open neighbours (vacuous)")
+        return
+    wy, wx = walls[len(walls) // 2]
+    for label, t_rel, nb in (("int32 top", I32_TOP, None), ("int32 bottom", I32_BOTTOM, None),
+                             ("max bulk, term edge", None, (1 << 31) - 4)):
+        pre = _planes(g)
+        for a, b in NB4:
+            if _open_acct(g, wy + a, wx + b):
+                if nb is not None:
+                    _set_bulk(g, wy + a, wx + b, nb)
+                _heat(g, wy + a, wx + b, t_rel if t_rel is not None else _edge_t(g, nb))
+        if g.thermal_solid[wy, wx]:
+            g.temperature[wy, wx] = I32_TOP if t_rel != I32_BOTTOM else I32_BOTTOM  # a solid
+        mid = _planes(g)
+        b0 = _books(g)
+        dev = _dev_planes([mid])
+        g.destroy_wall(wy, wx)
+        hot = (wy + 1, wx) if _open_acct(g, wy + 1, wx) else (wy - 1, wx)
+        recs = [(hot[0], hot[1], MAT_HULL), (hot[0], hot[1], MAT_AIR)]
+        for (y, x, m) in recs:
+            g.material[y, x] = m
+            g.on_tile_changed(y, x)
+        post = _planes(g)
+        b1 = _books(g)
+        bk = unit_kernels.apply_effects(st, _applier_for(st), dev,
+                                        [applier.destroy_records([(wy, wx)])])
+        bk2 = unit_kernels.topology_probe(st, _applier_for(st), dev, [np.array(recs)])
+        ok = True
+        for n in applier.PLANE_NAMES:
+            fd = first_field_diff(n, dev[n].get()[0][None], post[n][None])
+            if fd is not None:
+                fail(f"range destroy {label}: plane {n} at {fd[1]}: host {fd[2]} "
+                     f"device {fd[3]}")
+                ok = False
+                break
+        for k in b0:
+            dv = int(bk.get(k, np.zeros(1))[0]) + int(bk2.get(k, np.zeros(1))[0])
+            if dv != b1[k] - b0[k]:
+                fail(f"range destroy {label}: book {k}: host {b1[k] - b0[k]} device {dv}")
+                ok = False
+        if int(bk["faults"][0]) or int(bk2["faults"][0]):
+            fail(f"range destroy {label}: a fault")
+            ok = False
+        if ok:
+            seen[f"destroy_wall + on_tile_changed: equal at {label}"] += 1
+        _restore(g, pre)
+
+
+def part_range():
+    seen = Counter()
+    rng = np.random.default_rng(2929)
+    for v in (0, 1):
+        sc = DoorScene(v)
+        for _ in range(5):
+            sc.tick()
+        P = Probe(f"range v{v}", sc.sim, Counter())
+        g = sc.sim.gmap
+        for d in sc.sim._doors:
+            if d.alive:
+                _range_door(P, g, d, rng, seen)
+        _range_multi_read(P, g, seen)
+        _range_destroy(sc.sim, seen)
+    need = ["unseal: done at just past old", "seal: done at just past old",
+            "unseal: done at T_MAX_PHYS", "seal: done at int32 top",
+            "unseal: done at int32 top", "unseal: done at int32 bottom",
+            "seal back: done after int32 top", "unseal: done at max bulk, term edge",
+            "seal: done at max bulk, term edge",
+            "unseal: refused by name at max bulk, past the term bound",
+            "seal: refused by name at max bulk, past the term bound",
+            "unseal: the host carries on at max bulk, past the term bound",
+            "destroy_wall + on_tile_changed: equal at int32 top",
+            "destroy_wall + on_tile_changed: equal at max bulk, term edge",
+            "unseal L: done, not a mirror, small bulk",
+            "unseal L: done, mirror, max bulk, term edge",
+            "unseal L: refused by name, not a mirror, bulk 2^30 (past the unconditional bound)"]
+    for k in need:
+        if not seen[k]:
+            fail(f"range: the case {k!r} was never taken")
+    print(f"range: the seam over the whole int32 temperature range, device == host "
+          f"(planes, books, closure) or refused by name with nothing written; cases: "
+          + ", ".join(f"{k} {v}" for k, v in sorted(seen.items())))
+
+
+# ---------------------------------------------------------------------------
 # PART OVERFLOW
 # ---------------------------------------------------------------------------
 def part_overflow():
@@ -1325,8 +1599,8 @@ def part_ship():
 
 
 # ---------------------------------------------------------------------------
-PARTS = ("tables", "probe", "scene", "batch", "levels", "padding", "overflow", "chained",
-         "ship")
+PARTS = ("tables", "probe", "range", "scene", "batch", "levels", "padding", "overflow",
+         "chained", "ship")
 
 
 def main(parts=None) -> int:
@@ -1337,7 +1611,8 @@ def main(parts=None) -> int:
     t0 = time.perf_counter()
     for p in parts:
         try:
-            {"tables": part_tables, "probe": part_probe, "scene": part_scene,
+            {"tables": part_tables, "probe": part_probe, "range": part_range,
+             "scene": part_scene,
              "batch": part_batch, "levels": part_levels, "padding": part_padding, "overflow": part_overflow,
              "chained": part_chained, "ship": part_ship}[p]()
         except Exception as ex:          # a part's crash fails it, the rest run
