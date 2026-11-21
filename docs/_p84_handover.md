@@ -60,6 +60,34 @@ New generated constants: `OBS_NEAR_U_LANES`, `OBS_AIM_NONE`,
 - PART WALL extended (`team_aims`): the unseen enemy's row perturbed (trigger
   flipped too) moves none of the team's P8.4a answers.
 
+### Part a's gate evidence (2026-11-21, for the as-built paragraph)
+
+- Short gate `pytest tests/test_cuda_obs.py tests/test_device_obs.py
+  tests/test_device_picture.py -q`: 25 passed (385 s) at `3ddf5aa9`.
+- Part GATE (N = 1, raw bits, every decision tick; the lanes plane served):
+  bots 338, bots_v1 69, range_door 51, hand 81, range_hall 9, hall_cover 7,
+  ship_all_round 121, door_grenade 38, slow_turn 11 env-decisions. The
+  intermediates equal to the tap's values: bots 676 team lanes / 2126
+  aim_of / 1098 lines of fire / 1100 ticks; bots_v1 137 / 850 / 918 / 1168;
+  ship_all_round 242 / 1155 / 748 / 748; (2.0 M + 0.5 M + 1.0 M values).
+  Coverage: lane_crosses_mate 108, lane_several 272, lof_wall 792, lof_cover
+  2, lof_mate 1983, lof_clear 1889, aim_none 3532, aim_mate 786, aim_other
+  705, ttw_zero 1033, ttw_between 2094, ttw_cap 11. Census near_u/lanes
+  non-constant (22 214 non-default cells).
+- Batches: ship_demo N = 2 / 4 (493 / 805 env-decisions), room N = 2 / 4
+  (112 / 220). Syncs 2.00 per steady tick at N = 1 and 2.
+- WALL extended: cone 7, all_round 6 cases, unchanged.
+- Breaks, each red at its first decision: `lane_trunc` (bots tick 420, team
+  1's grid cell (5, 15): -1 vs 4; also bots_v1 188, range_door 188,
+  ship_all_round 424); `lane_wide` (bots tick 424, cell (5, 16): 4 vs -1;
+  bots_v1 188, range_door 188, ship_all_round 424). Both are caught first by
+  the team-grid comparison, which runs before the served-plane comparison in
+  the same tick.
+- New corpus (d) match `slow_turn` (`corpus_turn`): range_door, idle, unit 1
+  facing away from unit 0 with hook TURN = ONE/8: the only source of the
+  ticks_to_within cap (no played match puts a seen enemy past 4 half turns,
+  even with every marine slowed: measured on ship_all_round).
+
 ### What part b must know
 
 - The list's sort keys and the record centres: the picture block's REC
