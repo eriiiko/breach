@@ -174,8 +174,10 @@ void obs_aims(int n_env, std::uintptr_t store, int n_units, int store_w,
 // rows, the device vision (visible (N, T + 1, U), sees (N, U, U)), the
 // picture's block, P8.4a's answers (aim, lof, ttw, lane_own), the grenade /
 // charge / door tables, the is_vacuum / is_ambient planes (N, h, w) and the
-// wired flags (N, wired_cap) per door table row. The columns of later
-// patches (on_next_tick, prev_aim, the order block) are written 0. `faults`:
+// wired flags (N, wired_cap) per door table row, and (P8.6b) the place table
+// (N, place_cap, OBS_PLACE_W) int64 with its (N,) counts for the team-mate
+// entries' order block (cols 47-51, order_tail). The decoder's columns
+// (on_next_tick, prev_aim) are written 0 here. `faults`:
 // (N,) int32 bits OBS_LIST_FAULT_*; `brk`: the check's breaks
 // (OBS_LIST_BREAK_*), 0 in every real run.
 void obs_list(int n_env, std::uintptr_t store, int n_units, int store_w,
@@ -186,9 +188,41 @@ void obs_list(int n_env, std::uintptr_t store, int n_units, int store_w,
               std::uintptr_t aim, std::uintptr_t lof, std::uintptr_t ttw, std::uintptr_t lane_own,
               int gh, int gw, ObjectTable& grenades, ObjectTable& charges, UnitRecordList& doors,
               UnitRecordList& door_tiles, std::uintptr_t is_vacuum, std::uintptr_t is_ambient,
-              int h, int w, std::uintptr_t wired, int wired_cap, int n_entries,
+              int h, int w, std::uintptr_t wired, int wired_cap, std::uintptr_t places,
+              int place_cap, int place_w, std::uintptr_t place_count, int n_entries,
               std::uintptr_t list, std::uintptr_t list_mask, std::uintptr_t list_uid,
               std::uintptr_t faults, int brk);
+
+// ---------------------------------------------------------------------------
+// #29 P8.6b (part 1): THE ORDER (cpp/src/cuda_obs_orders.cu): the vector's
+// order block (cols 84-95) and the far window's route / place planes of
+// obs_spec_v1 for every env on its decision tick with its ended latch clear,
+// on the tick stream, no sync. Reads the store's order columns, the obs
+// table, the resident material / is_vacuum / is_ambient planes (N, h, w), the
+// door tables and the wired flags, THE ROOM GRAPH (device): has_graph (N,)
+// int32, the place plane and the room grid (N, h, w) int32, the openings (N,
+// open_cap, OBS_OPEN_W) int64 with (N,) counts; the place table. Scratch
+// (per env): open_prev (N, open_cap) uint8 (the ord_prev break's memory),
+// route_ok / route_pass (N, h, w) uint8, route_dist (N, h, w) int32,
+// route_q (N, 2, h, w) int32, route_door (N, door cap) uint8, route_keys
+// (N, n_rows, 2) int64; answers route_row (N, n_rows, OBS_ROUTE_ROW_W) int32
+// and route_blocks (N, n_rows, hb, wb) int32 (the flood's far block minima
+// per route slot). `faults`: (N,) int32 bits OBS_ORDER_FAULT_*; `brk`: the
+// check's breaks (OBS_ORDER_BREAK_*), 0 in every real run.
+void obs_orders(int n_env, std::uintptr_t store, int n_units, int store_w,
+                const UnitTablesDevice& tables, std::uintptr_t rowmap, int n_rows, int n_slots,
+                int n_teams, std::uintptr_t obs_table, int table_w, std::uintptr_t tick_row,
+                std::uintptr_t params, std::uintptr_t ended, std::uintptr_t material,
+                std::uintptr_t is_vacuum, std::uintptr_t is_ambient, int h, int w,
+                UnitRecordList& doors, UnitRecordList& door_tiles, std::uintptr_t wired,
+                int wired_cap, std::uintptr_t has_graph, std::uintptr_t graph_place,
+                std::uintptr_t graph_grid, std::uintptr_t openings, int open_cap, int open_w,
+                std::uintptr_t open_count, std::uintptr_t open_prev, std::uintptr_t places,
+                int place_cap, int place_w, std::uintptr_t place_count, std::uintptr_t route_ok,
+                std::uintptr_t route_pass, std::uintptr_t route_dist, std::uintptr_t route_q,
+                std::uintptr_t route_door, std::uintptr_t route_keys, std::uintptr_t route_row,
+                std::uintptr_t route_blocks, int hb, int wb, std::uintptr_t vector,
+                std::uintptr_t far_f, std::uintptr_t far_u, std::uintptr_t faults, int brk);
 
 // ---------------------------------------------------------------------------
 // #29 P8.4c: THE FOUR MASKS (cpp/src/cuda_obs_list.cu): action_spec_v1.

@@ -32,7 +32,8 @@
 // own lanes) are read from their buffers, never recomputed.
 //
 // Columns owned by later patches stay 0 here: on_next_tick / prev_aim (the
-// decoder's, P8.6a) and the order block 47-51 (P8.6b).
+// decoder's, P8.6a). The team-mates' order block 47-51 (P8.6b) is
+// order_tail, the full view's own function, called after mate_entry.
 //
 // #29 P8.4c: THE FOUR MASKS (obs_masks, k_masks below) live in this TU too,
 // one launch after the list's.
@@ -508,32 +509,42 @@ __device__ void door_entry(float* E, int k, const Doors& D, const View& v) {
     put(E, OBS_L_CLASS, -1.0);
     put(E, OBS_L_OPEN, row[OBJ_DOOR_COL_STATE] == OBS_DOOR_STATE_OPEN ? 1.0 : 0.0);
     const int64_t a = row[OBJ_DOOR_COL_TILE_START], n = row[OBJ_DOOR_COL_TILE_COUNT];
-    bool reach = false, hull = false;
-    const int NY[4] = {-1, 1, 0, 0}, NX[4] = {0, 0, -1, 1};
+    bool reach = false;
     for (int64_t i = a; i < a + n; ++i) {
         int64_t ty, tx;
         span_tile(D, i, &ty, &tx);
         if (unit_lib::reach_key(v.me, ty, tx) >= 0) reach = true;
-        for (int nb = 0; nb < 4 && !hull; ++nb) {
-            const int64_t ny = ty + NY[nb], nx = tx + NX[nb];
-            bool in_span = false;
-            for (int64_t j = a; j < a + n && !in_span; ++j) {
-                int64_t sy, sx;
-                span_tile(D, j, &sy, &sx);
-                in_span = sy == ny && sx == nx;
-            }
-            if (in_span) continue;
-            if (ny < 0 || ny >= D.h || nx < 0 || nx >= D.w) {
-                hull = true;
-            } else {
-                const size_t j = (size_t)ny * D.w + (size_t)nx;
-                hull = D.vac[j] || D.amb[j];
-            }
-        }
     }
+    // horde.is_hull_door: the observation's one copy (obs_rows::door_hull,
+    // P8.6b's route reads it too)
+    const bool hull = obs_rows::door_hull(D.tiles, a, n, D.vac, D.amb, D.h, D.w);
     put(E, OBS_L_IN_REACH, reach ? 1.0 : 0.0);
     put(E, OBS_L_HULL, hull ? 1.0 : 0.0);
     put(E, OBS_L_WIRED, (k < D.wired_cap && D.wired[k]) ? 1.0 : 0.0);
+}
+
+// _mate_tail's order block (cols 47-51) of team-mate store row m: its order's
+// kind, the place's centre from me (_place_centre over the env's place table:
+// rooms by id, openings by ORDER_OPENING_BASE + id), the same place as my
+// order's, the order's clock.
+__device__ void order_tail(float* E, const int64_t* m, const View& v, const int64_t* places,
+                           int n_places) {
+    const int64_t what = m[UNIT_COL_ORDER_WHAT];
+    put(E, OBS_L_ORDER_WHAT, (double)what);
+    if (!what) return;
+    const int64_t where = m[UNIT_COL_ORDER_WHERE];
+    for (int p = 0; p < n_places; ++p) {
+        const int64_t* pl = places + (size_t)p * OBS_PLACE_W;
+        if (pl[OBS_PLACE_WHERE] != where) continue;
+        put(E, OBS_L_ORDER_PLACE_DX, squash(ratio(pl[OBS_PLACE_X] - v.cx, v.lref), v.cap));
+        put(E, OBS_L_ORDER_PLACE_DY, squash(ratio(pl[OBS_PLACE_Y] - v.cy, v.lref), v.cap));
+        break;
+    }
+    const int64_t my_where = v.me[UNIT_COL_ORDER_WHAT] ? v.me[UNIT_COL_ORDER_WHERE] : OBS_NO_PLACE;
+    put(E, OBS_L_ORDER_SAME_PLACE, (my_where != OBS_NO_PLACE && where == my_where) ? 1.0 : 0.0);
+    const int64_t until = m[UNIT_COL_ORDER_UNTIL];
+    if (until != OBS_NO_LIMIT)
+        put(E, OBS_L_ORDER_LEFT, ratio(until - v.tick, v.ot[OBS_TAB_LIMIT_TICKS]));
 }
 
 // One thread per (env, row r, block b): block b's entries of row r, zeroed
@@ -548,9 +559,10 @@ __global__ void k_list(const int64_t* store, int U, const int64_t* tables, const
                        const int64_t* g_count, const int64_t* charges, const int64_t* c_count,
                        const int64_t* doors, const int64_t* door_count, int door_cap,
                        const int64_t* door_tiles, int tile_cap, const bool* vac, const bool* amb,
-                       int h, int w, const uint8_t* wired, int wired_cap, int n_entries,
-                       float* list, uint8_t* list_mask, int32_t* list_uid, int32_t* faults,
-                       int brk) {
+                       int h, int w, const uint8_t* wired, int wired_cap,
+                       const int64_t* places, int place_cap, const int32_t* place_count,
+                       int n_entries, float* list, uint8_t* list_mask, int32_t* list_uid,
+                       int32_t* faults, int brk) {
     const int e = blockIdx.y;
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n_rows * 5 || !env_due(e, trow, params, ended)) return;
@@ -619,6 +631,9 @@ __global__ void k_list(const int64_t* store, int U, const int64_t* tables, const
             }, have, prev, rev, &k);
             if (c < 0) break;
             mate_entry(E, c, v, aim_e[(size_t)t * U + c] != OBS_AIM_NONE, true, lane_own, gh, gw);
+            // P8.6b: _mate_tail's order block, the full view's own function
+            order_tail(E, rows + (size_t)c * UNIT_STORE_W, v,
+                       places + (size_t)e * place_cap * OBS_PLACE_W, place_count[e]);
             uid = k.id;
         } else if (b == 1 || b == 2) {                         // seen enemies / records
             const bool want_seen = b == 1;
@@ -910,30 +925,6 @@ __device__ void full_extra(float* E, const int64_t* it, const View& v, bool* bad
             squash(ratio(obs_rows::status_left(it, kinds[j]),
                          v.ot[OBS_TAB_STATUS_SCALE + kinds[j]]), v.cap));
     put(E, OBS_FX_ORDER_WHAT, (double)it[UNIT_COL_ORDER_WHAT]);
-}
-
-// _mate_tail's order block (cols 47-51) of team-mate store row m: its order's
-// kind, the place's centre from me (_place_centre over the env's place table:
-// rooms by id, openings by ORDER_OPENING_BASE + id), the same place as my
-// order's, the order's clock.
-__device__ void order_tail(float* E, const int64_t* m, const View& v, const int64_t* places,
-                           int n_places) {
-    const int64_t what = m[UNIT_COL_ORDER_WHAT];
-    put(E, OBS_L_ORDER_WHAT, (double)what);
-    if (!what) return;
-    const int64_t where = m[UNIT_COL_ORDER_WHERE];
-    for (int p = 0; p < n_places; ++p) {
-        const int64_t* pl = places + (size_t)p * OBS_PLACE_W;
-        if (pl[OBS_PLACE_WHERE] != where) continue;
-        put(E, OBS_L_ORDER_PLACE_DX, squash(ratio(pl[OBS_PLACE_X] - v.cx, v.lref), v.cap));
-        put(E, OBS_L_ORDER_PLACE_DY, squash(ratio(pl[OBS_PLACE_Y] - v.cy, v.lref), v.cap));
-        break;
-    }
-    const int64_t my_where = v.me[UNIT_COL_ORDER_WHAT] ? v.me[UNIT_COL_ORDER_WHERE] : OBS_NO_PLACE;
-    put(E, OBS_L_ORDER_SAME_PLACE, (my_where != OBS_NO_PLACE && where == my_where) ? 1.0 : 0.0);
-    const int64_t until = m[UNIT_COL_ORDER_UNTIL];
-    if (until != OBS_NO_LIMIT)
-        put(E, OBS_L_ORDER_LEFT, ratio(until - v.tick, v.ot[OBS_TAB_LIMIT_TICKS]));
 }
 
 // What the full view's rows read beside the list's View.
@@ -1358,14 +1349,18 @@ void obs_list(int n_env, std::uintptr_t store, int n_units, int store_w,
               std::uintptr_t aim, std::uintptr_t lof, std::uintptr_t ttw, std::uintptr_t lane_own,
               int gh, int gw, ObjectTable& grenades, ObjectTable& charges, UnitRecordList& doors,
               UnitRecordList& door_tiles, std::uintptr_t is_vacuum, std::uintptr_t is_ambient,
-              int h, int w, std::uintptr_t wired, int wired_cap, int n_entries,
+              int h, int w, std::uintptr_t wired, int wired_cap, std::uintptr_t places,
+              int place_cap, int place_w, std::uintptr_t place_count, int n_entries,
               std::uintptr_t list, std::uintptr_t list_mask, std::uintptr_t list_uid,
               std::uintptr_t faults, int brk) {
     auto need = [](bool ok, const char* what) {
         if (!ok) throw std::invalid_argument(std::string("obs_list: ") + what);
     };
     need(n_env >= 1 && n_units >= 1 && n_rows >= 1 && n_slots >= 1 && n_teams >= 1 && h >= 1 &&
-         w >= 1 && gh >= 1 && gw >= 1 && wired_cap >= 1, "a non-positive size");
+         w >= 1 && gh >= 1 && gw >= 1 && wired_cap >= 1 && place_cap >= 1,
+         "a non-positive size");
+    need(place_w == OBS_PLACE_W, "the place table's width is not OBS_PLACE_W");
+    need(places && place_count, "a null place table");
     need(n_rows == n_teams * n_slots, "n_rows is not n_teams x n_slots");
     need(n_entries == n_slots + OBS_ENTRIES_BEYOND_SLOTS,
          "n_entries is not n_slots + OBS_ENTRIES_BEYOND_SLOTS");
@@ -1400,7 +1395,8 @@ void obs_list(int n_env, std::uintptr_t store, int n_units, int store_w,
         doors.records_dev(), doors.count_dev(), doors.cap(), door_tiles.records_dev(),
         door_tiles.cap(), reinterpret_cast<const bool*>(is_vacuum),
         reinterpret_cast<const bool*>(is_ambient), h, w, reinterpret_cast<const uint8_t*>(wired),
-        wired_cap, n_entries, reinterpret_cast<float*>(list),
+        wired_cap, reinterpret_cast<const int64_t*>(places), place_cap,
+        reinterpret_cast<const int32_t*>(place_count), n_entries, reinterpret_cast<float*>(list),
         reinterpret_cast<uint8_t*>(list_mask), reinterpret_cast<int32_t*>(list_uid),
         reinterpret_cast<int32_t*>(faults), brk);
     const cudaError_t err = cudaGetLastError();

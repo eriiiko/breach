@@ -16,6 +16,7 @@
 #include "cuda_unit_lib.cuh"
 #include "fixed_point.h"
 #include "obs_layout.h"
+#include "object_tables_layout.h"
 #include "unit_tables_layout.h"
 #include "unit_draws_layout.h"
 #include "unit_store_layout.h"
@@ -206,6 +207,47 @@ __device__ inline Kit kit_of(const int64_t* u, const int64_t* ot, const int64_t*
         k.shove_cool = ratio(left > 0 ? left : 0, cd);
     }
     return k;
+}
+
+// The soldier of row r of env e: its store row (nullptr when the row is not
+// valid: no unit, not alive, not on team r / S). Lifted from the windows' TU
+// (#29 P8.6b: the order's kernels read it too; one copy).
+__device__ __forceinline__ const int64_t* row_unit(const int64_t* store, int U, const int32_t* rowmap,
+                                                   int e, int n_rows, int r, int n_slots) {
+    using namespace unit_store;
+    const int sr = rowmap[(size_t)e * n_rows + r];
+    if (sr < 0 || sr >= U) return nullptr;
+    const int64_t* u = store + ((size_t)e * U + sr) * UNIT_STORE_W;
+    if (u[UNIT_COL_LIFE_STATE] != OBS_LIFE_ALIVE || u[UNIT_COL_TEAM] != (int64_t)(r / n_slots))
+        return nullptr;
+    return u;
+}
+
+// horde.is_hull_door over a door's span (rows a .. a + n of its env's door-tile
+// table `tiles`, OBJ_DOOR_TILE_W wide): a span tile 4-bordering, outside the
+// span, the map's edge, vacuum or the ambient ring. Lifted from the list's
+// door entry (#29 P8.6b: the route's openable test reads it too; one copy for
+// the observation).
+__device__ inline bool door_hull(const int64_t* tiles, int64_t a, int64_t n, const bool* vac,
+                                 const bool* amb, int h, int w) {
+    using namespace object_tables;
+    const int NY[4] = {-1, 1, 0, 0}, NX[4] = {0, 0, -1, 1};
+    for (int64_t i = a; i < a + n; ++i) {
+        const int64_t ty = tiles[i * OBJ_DOOR_TILE_W + OBJ_DOOR_TILE_COL_TY];
+        const int64_t tx = tiles[i * OBJ_DOOR_TILE_W + OBJ_DOOR_TILE_COL_TX];
+        for (int nb = 0; nb < 4; ++nb) {
+            const int64_t ny = ty + NY[nb], nx = tx + NX[nb];
+            bool in_span = false;
+            for (int64_t j = a; j < a + n && !in_span; ++j)
+                in_span = tiles[j * OBJ_DOOR_TILE_W + OBJ_DOOR_TILE_COL_TY] == ny &&
+                          tiles[j * OBJ_DOOR_TILE_W + OBJ_DOOR_TILE_COL_TX] == nx;
+            if (in_span) continue;
+            if (ny < 0 || ny >= h || nx < 0 || nx >= w) return true;
+            const size_t k = (size_t)ny * w + (size_t)nx;
+            if (vac[k] || amb[k]) return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace obs_rows

@@ -24,8 +24,9 @@
 
 # The LANDING order (a gate owns its patch and every one before it): P8.8 /
 # P8.8b and the per-env reset P8.9a / P8.9b (which own no column) landed
-# before P8.6b (the commander's host view), so P8.6b's columns (the order
-# block, route, place) stay unowned until it lands.
+# before P8.6b; P8.6b (part 1: the order block, route and place read from the
+# device order state; NOT the commander) is the last patch owning a served
+# column, so from it every served column is built on the card.
 patches = ["P8.0", "P8.0b", "P8.1", "P8.2", "P8.3", "P8.4a", "P8.4b", "P8.4c",
            "P8.5a", "P8.7", "P8.6a", "P8.8", "P8.8b", "P8.9a", "P8.9b", "P8.6b",
            "P8.10a", "P8.10b"]

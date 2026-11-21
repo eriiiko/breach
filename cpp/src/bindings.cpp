@@ -870,10 +870,31 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("lane_own"), py::arg("gh"), py::arg("gw"), py::arg("grenades"),
           py::arg("charges"), py::arg("doors"), py::arg("door_tiles"), py::arg("is_vacuum"),
           py::arg("is_ambient"), py::arg("h"), py::arg("w"), py::arg("wired"),
-          py::arg("wired_cap"), py::arg("n_entries"), py::arg("list"), py::arg("list_mask"),
+          py::arg("wired_cap"), py::arg("places"), py::arg("place_cap"), py::arg("place_w"),
+          py::arg("place_count"), py::arg("n_entries"), py::arg("list"), py::arg("list_mask"),
           py::arg("list_uid"), py::arg("faults"), py::arg("brk"),
           "#29 P8.4b: obs_spec_v1.build_list (the list, its mask and its uids) for every "
-          "env on its decision tick.");
+          "env on its decision tick (P8.6b: the team-mates' order block over the place "
+          "table).");
+    // #29 P8.6b (part 1): the order (cpp/src/cuda_obs_orders.cu), on the tick
+    // stream, no sync.
+    m.def("obs_orders", &breach_cuda::obs_orders, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("tables"), py::arg("rowmap"),
+          py::arg("n_rows"), py::arg("n_slots"), py::arg("n_teams"), py::arg("obs_table"),
+          py::arg("table_w"), py::arg("tick_row"), py::arg("params"), py::arg("ended"),
+          py::arg("material"), py::arg("is_vacuum"), py::arg("is_ambient"), py::arg("h"),
+          py::arg("w"), py::arg("doors"), py::arg("door_tiles"), py::arg("wired"),
+          py::arg("wired_cap"), py::arg("has_graph"), py::arg("graph_place"),
+          py::arg("graph_grid"), py::arg("openings"), py::arg("open_cap"), py::arg("open_w"),
+          py::arg("open_count"), py::arg("open_prev"), py::arg("places"), py::arg("place_cap"),
+          py::arg("place_w"), py::arg("place_count"), py::arg("route_ok"),
+          py::arg("route_pass"), py::arg("route_dist"), py::arg("route_q"),
+          py::arg("route_door"), py::arg("route_keys"), py::arg("route_row"),
+          py::arg("route_blocks"), py::arg("hb"), py::arg("wb"), py::arg("vector"),
+          py::arg("far_f"), py::arg("far_u"), py::arg("faults"), py::arg("brk"),
+          "#29 P8.6b: obs_spec_v1's order block of the vector and the far route / place "
+          "planes (the route over the room graph's device table) for every env on its "
+          "decision tick.");
     // #29 P8.4c: the four masks (cpp/src/cuda_obs_list.cu), on the tick stream, no sync.
     m.def("obs_masks", &breach_cuda::obs_masks, py::arg("n_env"), py::arg("store"),
           py::arg("n_units"), py::arg("store_w"), py::arg("tables"), py::arg("rowmap"),

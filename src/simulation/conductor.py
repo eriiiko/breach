@@ -816,7 +816,8 @@ class DeviceConductor:
         self._advance()
         # 10'. orders expire; the ruleset's tick end (conversion, the prune)
         L("10' order expiry")
-        uk.expire_orders(st, tr)
+        if not (self.obs is not None and self.obs.expiry_brk):
+            uk.expire_orders(st, tr)         # (THE BREAK ord_expiry, P8.6b's check: skipped)
         if self.obs is not None and (self.obs.early_vision or self.obs.early_picture):
             self.obs.vision()                # THE BREAK (P8.2's check): one slot too early
             if self.obs.early_picture:       # THE BREAK (P8.3's check): before the conversion

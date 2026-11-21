@@ -533,3 +533,80 @@ def test_the_books_layout_holds_every_section_once():
     assert device_books.width(3, 12, 12) > device_books.width(2, 12, 12)
     assert device_books.width(2, 13, 12) > device_books.width(2, 12, 12)
     assert device_books.width(2, 12, 13) > device_books.width(2, 12, 12)
+
+
+# ---------------------------------------------------------------------------
+# #29 P8.6b (part 1): every served column built; the room graph (device)
+# ---------------------------------------------------------------------------
+def test_every_served_key_and_column_is_built_on_the_card():
+    """Property: with P8.6b every served key of the policy observation, the
+    masks, the full view and the reward -- and every named column / plane of
+    each -- is built by some device block (``device_obs.BUILT``); nothing the
+    env serves is left unowned or unbuilt. Breaks when the spec gains a key,
+    a column or a plane (a new idea is a new spec) without its device block,
+    so the device backend would serve a zero where the farm serves a value."""
+    served = _served_columns()
+    built = device_obs.BUILT
+    assert set(built) == set(served), (sorted(set(served) - set(built)),
+                                       sorted(set(built) - set(served)))
+    for k, names in served.items():
+        if names is None:
+            assert built[k] is None, k
+        else:
+            assert built[k] is not None and sorted(built[k]) == sorted(names), k
+
+
+def _graph_level():
+    import level_loader
+    return level_loader.load("ship_demo", str(ROOT / "levels"))
+
+
+def test_the_room_graphs_device_table_is_the_levels_own_graph():
+    """Property: the room graph's device table of a sim is the level's graph
+    itself -- the place plane answers ``room_graph.place_at`` at every tile,
+    the grid is ``graph.grid``, the openings are the graph's rows in its
+    order with their rectangles. Breaks when the table is built from a second
+    map of places (another tie between overlapping openings, a room id off by
+    one) or drops / reorders an opening."""
+    import numpy as np
+    from types import SimpleNamespace
+    from simulation import room_graph
+    lv = _graph_level()
+    g = lv.rooms
+    h, w = g.grid.shape
+    sim = SimpleNamespace(level=lv, gmap=SimpleNamespace(material=np.zeros((h, w), np.int8)))
+    has, place, grid, opens = device_obs.room_graph_values(sim, (h, w))
+    assert has == 1 and place.dtype == np.int32 and grid.dtype == np.int32
+    assert np.array_equal(grid, np.asarray(g.grid))
+    want = np.array([[room_graph.place_at(g, y, x) for x in range(w)] for y in range(h)])
+    assert np.array_equal(place, want)
+    assert [tuple(int(v) for v in r) for r in opens] == [
+        (int(o.id), int(o.x), int(o.y), int(o.w), int(o.h)) for o in g.openings]
+    from simulation.unit_orders import ORDER_OPENING_BASE
+    assert len(opens) > 0 and (place >= ORDER_OPENING_BASE).any()
+
+
+def test_a_level_without_a_graph_stages_no_place_and_an_opening_off_the_map_is_refused():
+    """Property: a sim without a room graph stages "no graph" (every tile
+    NO_PLACE, no opening), and an opening whose rectangle leaves the map is
+    refused by name (the host's walk would raise or wrap). Breaks when a
+    graph-less env reads another env's places, or an opening is clipped
+    silently."""
+    import dataclasses
+    import numpy as np
+    import pytest
+    from types import SimpleNamespace
+    from simulation.unit_orders import NO_PLACE
+    lv = _graph_level()
+    h, w = lv.rooms.grid.shape
+    bare = SimpleNamespace(level=SimpleNamespace(rooms=None),
+                           gmap=SimpleNamespace(material=np.zeros((h, w), np.int8)))
+    has, place, grid, opens = device_obs.room_graph_values(bare, (h, w))
+    assert has == 0 and (place == NO_PLACE).all() and (grid == -1).all() and len(opens) == 0
+    o0 = lv.rooms.openings[0]
+    off = dataclasses.replace(o0, x=w - 1, w=2)
+    g2 = dataclasses.replace(lv.rooms, openings=(off,) + tuple(lv.rooms.openings[1:]))
+    bad = SimpleNamespace(level=SimpleNamespace(rooms=g2),
+                          gmap=SimpleNamespace(material=np.zeros((h, w), np.int8)))
+    with pytest.raises(device_obs.DeviceObsRefused, match="not inside the map"):
+        device_obs.room_graph_values(bad, (h, w))

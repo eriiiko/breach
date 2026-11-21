@@ -14,7 +14,7 @@
 
 namespace obs_layout {
 
-constexpr const char* OBS_LAYOUT_FINGERPRINT = "21e96ae3a551ac715fa43e176a1f70cb24c5596ebbedb31406861e5cdcf7c02f";
+constexpr const char* OBS_LAYOUT_FINGERPRINT = "d2adfffe089375c1def7c54c7b4ef5ec76087f16efd124a88b3d663828236c33";
 
 constexpr int OBS_WIN = 25;
 constexpr int OBS_HALF = 12;
@@ -594,6 +594,29 @@ constexpr int OBS_FULL_FAULT_LAW = 4;
 constexpr int OBS_FULL_BREAK_FULL_VIS = 1;
 constexpr int OBS_FULL_BREAK_FULL_TIE = 2;
 constexpr int OBS_FULL_BREAK_FULL_CAP = 3;
+constexpr int OBS_FAR_F_ROUTE = 9;
+constexpr int OBS_FAR_U_PLACE = 4;
+constexpr int OBS_ROUTE_OUTSIDE_HALF = 48128;
+constexpr int64_t OBS_ROUTE_OUTSIDE_BITS = -4616189618054758400LL;
+constexpr int OBS_ORDER_NONE = 0;
+constexpr int OBS_ORDER_OPENING_BASE = 65536;
+constexpr int OBS_NO_TARGET = -1;
+constexpr int OBS_ROUTE_UNREACHED = 2147483647;
+constexpr int OBS_OPEN_ID = 0;
+constexpr int OBS_OPEN_X = 1;
+constexpr int OBS_OPEN_Y = 2;
+constexpr int OBS_OPEN_WIDTH = 3;
+constexpr int OBS_OPEN_HEIGHT = 4;
+constexpr int OBS_OPEN_W = 5;
+constexpr int OBS_ROUTE_ROW_SLOT = 0;
+constexpr int OBS_ROUTE_ROW_HERE = 1;
+constexpr int OBS_ROUTE_ROW_CDX = 2;
+constexpr int OBS_ROUTE_ROW_CDY = 3;
+constexpr int OBS_ROUTE_ROW_W = 4;
+constexpr int OBS_ORDER_FAULT_RANGE = 1;
+constexpr int OBS_ORDER_BREAK_ORD_PREV = 1;
+constexpr int OBS_ORDER_BREAK_ORD_TIE = 2;
+constexpr int OBS_ORDER_BREAK_ORD_PLACE = 3;
 
 // float16 bit patterns of k / (OBS_BLOCK * OBS_BLOCK), k = 0 .. OBS_BLOCK^2
 // (a __constant__ table's initialiser in the kernel's TU).
