@@ -1,0 +1,440 @@
+{
+  "version": 2,
+  "assets": [
+    {
+      "colour": "01-clean-quarters/anime/floor.png",
+      "height": "normal-v2/01-clean-quarters/anime/floor_height.png",
+      "normal": "normal-v2/01-clean-quarters/anime/floor_n.png",
+      "strength_pixels": 4,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 41749,
+      "max_normal_length_error": 0.006216943264007568,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "01-clean-quarters/anime/wall.png",
+      "height": "normal-v2/01-clean-quarters/anime/wall_height.png",
+      "normal": "normal-v2/01-clean-quarters/anime/wall_n.png",
+      "strength_pixels": 6,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 46428,
+      "max_normal_length_error": 0.006270289421081543,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "01-clean-quarters/pixel/floor.png",
+      "height": "normal-v2/01-clean-quarters/pixel/floor_height.png",
+      "normal": "normal-v2/01-clean-quarters/pixel/floor_n.png",
+      "strength_pixels": 4,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 52616,
+      "max_normal_length_error": 0.006093084812164307,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "01-clean-quarters/pixel/wall.png",
+      "height": "normal-v2/01-clean-quarters/pixel/wall_height.png",
+      "normal": "normal-v2/01-clean-quarters/pixel/wall_n.png",
+      "strength_pixels": 5,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 40606,
+      "max_normal_length_error": 0.006278872489929199,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "01-clean-quarters/realistic/floor.png",
+      "height": "normal-v2/01-clean-quarters/realistic/floor_height.png",
+      "normal": "normal-v2/01-clean-quarters/realistic/floor_n.png",
+      "strength_pixels": 5,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 52681,
+      "max_normal_length_error": 0.006031215190887451,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "01-clean-quarters/realistic/wall.png",
+      "height": "normal-v2/01-clean-quarters/realistic/wall_height.png",
+      "normal": "normal-v2/01-clean-quarters/realistic/wall_n.png",
+      "strength_pixels": 7,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 47692,
+      "max_normal_length_error": 0.006278872489929199,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "02-engine-room/anime/floor.png",
+      "height": "normal-v2/02-engine-room/anime/floor_height.png",
+      "normal": "normal-v2/02-engine-room/anime/floor_n.png",
+      "strength_pixels": 5,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 50288,
+      "max_normal_length_error": 0.0065146684646606445,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "02-engine-room/anime/wall.png",
+      "height": "normal-v2/02-engine-room/anime/wall_height.png",
+      "normal": "normal-v2/02-engine-room/anime/wall_n.png",
+      "strength_pixels": 7,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 47686,
+      "max_normal_length_error": 0.00640261173248291,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "02-engine-room/realistic/floor.png",
+      "height": "normal-v2/02-engine-room/realistic/floor_height.png",
+      "normal": "normal-v2/02-engine-room/realistic/floor_n.png",
+      "strength_pixels": 6,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 46843,
+      "max_normal_length_error": 0.0065146684646606445,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "02-engine-room/realistic/wall.png",
+      "height": "normal-v2/02-engine-room/realistic/wall_height.png",
+      "normal": "normal-v2/02-engine-room/realistic/wall_n.png",
+      "strength_pixels": 8,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 54404,
+      "max_normal_length_error": 0.006216943264007568,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "03-wood-quarters/realistic/floor-oak.png",
+      "height": "normal-v2/03-wood-quarters/realistic/floor-oak_height.png",
+      "normal": "normal-v2/03-wood-quarters/realistic/floor-oak_n.png",
+      "strength_pixels": 2,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 20352,
+      "max_normal_length_error": 0.00480198860168457,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "03-wood-quarters/realistic/wall-oak.png",
+      "height": "normal-v2/03-wood-quarters/realistic/wall-oak_height.png",
+      "normal": "normal-v2/03-wood-quarters/realistic/wall-oak_n.png",
+      "strength_pixels": 3,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 33456,
+      "max_normal_length_error": 0.005536258220672607,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "04-captains-lodge/realistic/floor-walnut-parquet.png",
+      "height": "normal-v2/04-captains-lodge/realistic/floor-walnut-parquet_height.png",
+      "normal": "normal-v2/04-captains-lodge/realistic/floor-walnut-parquet_n.png",
+      "strength_pixels": 2,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 29559,
+      "max_normal_length_error": 0.005598127841949463,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "04-captains-lodge/realistic/rug-persian.png",
+      "height": "normal-v2/04-captains-lodge/realistic/rug-persian_height.png",
+      "normal": "normal-v2/04-captains-lodge/realistic/rug-persian_n.png",
+      "strength_pixels": 0.8,
+      "size": [
+        1024,
+        1536
+      ],
+      "height_unique_levels": 24476,
+      "max_normal_length_error": 0.00431215763092041,
+      "wrap_gradients": false,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "04-captains-lodge/realistic/wall-walnut-brass.png",
+      "height": "normal-v2/04-captains-lodge/realistic/wall-walnut-brass_height.png",
+      "normal": "normal-v2/04-captains-lodge/realistic/wall-walnut-brass_n.png",
+      "strength_pixels": 5,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 38849,
+      "max_normal_length_error": 0.005719900131225586,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "05-garden-terrarium/realistic/floor-limestone.png",
+      "height": "normal-v2/05-garden-terrarium/realistic/floor-limestone_height.png",
+      "normal": "normal-v2/05-garden-terrarium/realistic/floor-limestone_n.png",
+      "strength_pixels": 4,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 43122,
+      "max_normal_length_error": 0.005536258220672607,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "05-garden-terrarium/realistic/wall-sage.png",
+      "height": "normal-v2/05-garden-terrarium/realistic/wall-sage_height.png",
+      "normal": "normal-v2/05-garden-terrarium/realistic/wall-sage_n.png",
+      "strength_pixels": 5,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 40627,
+      "max_normal_length_error": 0.005721867084503174,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "06-aquarium-pool/realistic/floor-mosaic.png",
+      "height": "normal-v2/06-aquarium-pool/realistic/floor-mosaic_height.png",
+      "normal": "normal-v2/06-aquarium-pool/realistic/floor-mosaic_n.png",
+      "strength_pixels": 3,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 33873,
+      "max_normal_length_error": 0.005536317825317383,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "06-aquarium-pool/realistic/wall-aqua-ceramic.png",
+      "height": "normal-v2/06-aquarium-pool/realistic/wall-aqua-ceramic_height.png",
+      "normal": "normal-v2/06-aquarium-pool/realistic/wall-aqua-ceramic_n.png",
+      "strength_pixels": 3,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 29760,
+      "max_normal_length_error": 0.005041539669036865,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "07-cockpit/anime/floor-ribbed.png",
+      "height": "normal-v2/07-cockpit/anime/floor-ribbed_height.png",
+      "normal": "normal-v2/07-cockpit/anime/floor-ribbed_n.png",
+      "strength_pixels": 4,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 43879,
+      "max_normal_length_error": 0.006216943264007568,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "07-cockpit/anime/wall-navy-teal.png",
+      "height": "normal-v2/07-cockpit/anime/wall-navy-teal_height.png",
+      "normal": "normal-v2/07-cockpit/anime/wall-navy-teal_n.png",
+      "strength_pixels": 6,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 50157,
+      "max_normal_length_error": 0.0061550140380859375,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "08-warehouse/realistic/floor-cargo.png",
+      "height": "normal-v2/08-warehouse/realistic/floor-cargo_height.png",
+      "normal": "normal-v2/08-warehouse/realistic/floor-cargo_n.png",
+      "strength_pixels": 5,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 41445,
+      "max_normal_length_error": 0.006216943264007568,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "08-warehouse/realistic/wall-cargo.png",
+      "height": "normal-v2/08-warehouse/realistic/wall-cargo_height.png",
+      "normal": "normal-v2/08-warehouse/realistic/wall-cargo_n.png",
+      "strength_pixels": 8,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 46400,
+      "max_normal_length_error": 0.006270289421081543,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "09-kitchen/realistic/floor-quarry.png",
+      "height": "normal-v2/09-kitchen/realistic/floor-quarry_height.png",
+      "normal": "normal-v2/09-kitchen/realistic/floor-quarry_n.png",
+      "strength_pixels": 3,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 27738,
+      "max_normal_length_error": 0.005288898944854736,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "09-kitchen/realistic/wall-white-ceramic.png",
+      "height": "normal-v2/09-kitchen/realistic/wall-white-ceramic_height.png",
+      "normal": "normal-v2/09-kitchen/realistic/wall-white-ceramic_n.png",
+      "strength_pixels": 3,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 38307,
+      "max_normal_length_error": 0.005536258220672607,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "10-washrooms/realistic/floor-hex.png",
+      "height": "normal-v2/10-washrooms/realistic/floor-hex_height.png",
+      "normal": "normal-v2/10-washrooms/realistic/floor-hex_n.png",
+      "strength_pixels": 3,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 27969,
+      "max_normal_length_error": 0.005536317825317383,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "10-washrooms/realistic/wall-mint.png",
+      "height": "normal-v2/10-washrooms/realistic/wall-mint_height.png",
+      "normal": "normal-v2/10-washrooms/realistic/wall-mint_n.png",
+      "strength_pixels": 3,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 33350,
+      "max_normal_length_error": 0.005475163459777832,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "11-crew-sleeping/anime/floor-linoleum.png",
+      "height": "normal-v2/11-crew-sleeping/anime/floor-linoleum_height.png",
+      "normal": "normal-v2/11-crew-sleeping/anime/floor-linoleum_n.png",
+      "strength_pixels": 1,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 21895,
+      "max_normal_length_error": 0.004299938678741455,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    },
+    {
+      "colour": "11-crew-sleeping/anime/wall-acoustic.png",
+      "height": "normal-v2/11-crew-sleeping/anime/wall-acoustic_height.png",
+      "normal": "normal-v2/11-crew-sleeping/anime/wall-acoustic_n.png",
+      "strength_pixels": 4,
+      "size": [
+        1254,
+        1254
+      ],
+      "height_unique_levels": 40572,
+      "max_normal_length_error": 0.006278812885284424,
+      "wrap_gradients": true,
+      "source_alignment_certified": false,
+      "seamless_repeat_certified": false
+    }
+  ]
+}

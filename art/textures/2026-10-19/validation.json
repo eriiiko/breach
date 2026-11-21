@@ -1,0 +1,502 @@
+{
+  "colour_count": 29,
+  "normal_count": 29,
+  "height_count": 29,
+  "normal_convention": "normalize(-dh/dcol,-dh/drow,1); row-down tile-lighting frame",
+  "status": "dimensions, vector length, positive Z and alpha passed; source alignment and repeat seams require visual/in-game review",
+  "assets": [
+    {
+      "asset": "01-clean-quarters/anime/floor.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.006216943264007568,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        3.0396065711975098,
+        4.5279107093811035
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "01-clean-quarters/anime/wall.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.006636977195739746,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        11.036948204040527,
+        10.083200454711914
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "01-clean-quarters/pixel/floor.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.006636977195739746,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        4.280436038970947,
+        4.232854843139648
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "01-clean-quarters/pixel/wall.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.006392478942871094,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        2.1427431106567383,
+        1.385433316230774
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "01-clean-quarters/realistic/floor.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.0063925981521606445,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        25.238967895507812,
+        92.61270904541016
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "01-clean-quarters/realistic/wall.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.006464540958404541,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        12.211589813232422,
+        94.77565002441406
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "02-engine-room/anime/floor.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.006514787673950195,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        8.301701545715332,
+        16.11642837524414
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "02-engine-room/anime/wall.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.006464540958404541,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        74.83120727539062,
+        13.548378944396973
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "02-engine-room/realistic/floor.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.006514787673950195,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        9.863370895385742,
+        33.980064392089844
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "02-engine-room/realistic/wall.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.006086826324462891,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        7.546517848968506,
+        18.7410945892334
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "03-wood-quarters/realistic/floor-oak.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.0047942399978637695,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        10.69776725769043,
+        15.13131332397461
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "03-wood-quarters/realistic/wall-oak.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.00529170036315918,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        9.750930786132812,
+        15.02365779876709
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "04-captains-lodge/realistic/floor-walnut-parquet.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.005165219306945801,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        11.879585266113281,
+        13.852472305297852
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "04-captains-lodge/realistic/rug-persian.png",
+      "size": [
+        1024,
+        1536
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGBA",
+      "max_normal_length_error": 0.004238128662109375,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        4.540798664093018,
+        2.599609375
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "04-captains-lodge/realistic/wall-walnut-brass.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.006392478942871094,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        6.041733264923096,
+        12.858054161071777
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "05-garden-terrarium/realistic/floor-limestone.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.006216943264007568,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        13.721956253051758,
+        12.875066757202148
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "05-garden-terrarium/realistic/wall-sage.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.006209135055541992,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        4.557150363922119,
+        14.385699272155762
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "06-aquarium-pool/realistic/floor-mosaic.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.005721867084503174,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        12.060872077941895,
+        39.77086639404297
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "06-aquarium-pool/realistic/wall-aqua-ceramic.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.00529170036315918,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        20.751195907592773,
+        4.83705472946167
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "07-cockpit/anime/floor-ribbed.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.006086826324462891,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        5.79744815826416,
+        6.6794257164001465
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "07-cockpit/anime/wall-navy-teal.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.006636977195739746,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        4.338649749755859,
+        19.590377807617188
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "08-warehouse/realistic/floor-cargo.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.0063925981521606445,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        10.09011173248291,
+        8.1010103225708
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "08-warehouse/realistic/wall-cargo.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.0061550140380859375,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        8.55555534362793,
+        16.80356216430664
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "09-kitchen/realistic/floor-quarry.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.00529170036315918,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        36.546783447265625,
+        9.8577880859375
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "09-kitchen/realistic/wall-white-ceramic.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.005721867084503174,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        2.727538585662842,
+        58.02286148071289
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "10-washrooms/realistic/floor-hex.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.00529170036315918,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        25.28973960876465,
+        3.0824029445648193
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "10-washrooms/realistic/wall-mint.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.00529170036315918,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        6.089048385620117,
+        4.704678535461426
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "11-crew-sleeping/anime/floor-linoleum.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.0044345855712890625,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        5.889952182769775,
+        6.1031365394592285
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    },
+    {
+      "asset": "11-crew-sleeping/anime/wall-acoustic.png",
+      "size": [
+        1254,
+        1254
+      ],
+      "height_mode": "I;16",
+      "normal_mode": "RGB",
+      "max_normal_length_error": 0.006086826324462891,
+      "coverage_matches": true,
+      "colour_opposite_edge_mean_difference_rgb8": [
+        6.829346179962158,
+        7.878256320953369
+      ],
+      "seamless_repeat_certified": false,
+      "pixel_registration_certified": false
+    }
+  ]
+}

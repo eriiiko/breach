@@ -1,0 +1,379 @@
+[
+  {
+    "asset": "01-clean-quarters/anime/floor.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.31775182485580444,
+      15.730515480041504,
+      34.17909622192383
+    ],
+    "height_unique_levels": 223,
+    "height_edge_jump_x_y": [
+      0.004262438043951988,
+      0.004941051825881004
+    ]
+  },
+  {
+    "asset": "01-clean-quarters/anime/wall.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.7105183601379395,
+      39.25825881958008,
+      45.636924743652344
+    ],
+    "height_unique_levels": 220,
+    "height_edge_jump_x_y": [
+      0.010992276482284069,
+      0.013231387361884117
+    ]
+  },
+  {
+    "asset": "01-clean-quarters/pixel/floor.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.31775182485580444,
+      24.259382247924805,
+      42.77342987060547
+    ],
+    "height_unique_levels": 227,
+    "height_edge_jump_x_y": [
+      0.011073586530983448,
+      0.054220233112573624
+    ]
+  },
+  {
+    "asset": "01-clean-quarters/pixel/wall.png",
+    "tilt_degrees_p50_p95_p99": [
+      1.3100018501281738,
+      32.9811897277832,
+      38.875213623046875
+    ],
+    "height_unique_levels": 189,
+    "height_edge_jump_x_y": [
+      0.006470275577157736,
+      0.0047940704971551895
+    ]
+  },
+  {
+    "asset": "01-clean-quarters/realistic/floor.png",
+    "tilt_degrees_p50_p95_p99": [
+      10.608214378356934,
+      27.91478729248047,
+      48.4974479675293
+    ],
+    "height_unique_levels": 232,
+    "height_edge_jump_x_y": [
+      0.04343121498823166,
+      0.15079589188098907
+    ]
+  },
+  {
+    "asset": "01-clean-quarters/realistic/wall.png",
+    "tilt_degrees_p50_p95_p99": [
+      1.7106355428695679,
+      44.68571472167969,
+      54.25371551513672
+    ],
+    "height_unique_levels": 203,
+    "height_edge_jump_x_y": [
+      0.02037714421749115,
+      0.15397630631923676
+    ]
+  },
+  {
+    "asset": "02-engine-room/anime/floor.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.9532653093338013,
+      35.752098083496094,
+      45.31874084472656
+    ],
+    "height_unique_levels": 244,
+    "height_edge_jump_x_y": [
+      0.009588145650923252,
+      0.07097601890563965
+    ]
+  },
+  {
+    "asset": "02-engine-room/anime/wall.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.7105183601379395,
+      50.111167907714844,
+      57.621925354003906
+    ],
+    "height_unique_levels": 211,
+    "height_edge_jump_x_y": [
+      0.2123464196920395,
+      0.02000187523663044
+    ]
+  },
+  {
+    "asset": "02-engine-room/realistic/floor.png",
+    "tilt_degrees_p50_p95_p99": [
+      1.3100018501281738,
+      34.127132415771484,
+      40.84930419921875
+    ],
+    "height_unique_levels": 209,
+    "height_edge_jump_x_y": [
+      0.0070019070990383625,
+      0.027691779658198357
+    ]
+  },
+  {
+    "asset": "02-engine-room/realistic/wall.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.9532653093338013,
+      47.86599349975586,
+      53.628108978271484
+    ],
+    "height_unique_levels": 251,
+    "height_edge_jump_x_y": [
+      0.005622790660709143,
+      0.0700347051024437
+    ]
+  },
+  {
+    "asset": "03-wood-quarters/realistic/floor-oak.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.7105183601379395,
+      2.9269680976867676,
+      13.874189376831055
+    ],
+    "height_unique_levels": 104,
+    "height_edge_jump_x_y": [
+      0.009441161528229713,
+      0.008709384128451347
+    ]
+  },
+  {
+    "asset": "03-wood-quarters/realistic/wall-oak.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.31775182485580444,
+      2.1305623054504395,
+      25.306344985961914
+    ],
+    "height_unique_levels": 227,
+    "height_edge_jump_x_y": [
+      0.01014791801571846,
+      0.01922631822526455
+    ]
+  },
+  {
+    "asset": "04-captains-lodge/realistic/floor-walnut-parquet.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.9532653093338013,
+      8.67321491241455,
+      18.860807418823242
+    ],
+    "height_unique_levels": 156,
+    "height_edge_jump_x_y": [
+      0.022084621712565422,
+      0.02564655989408493
+    ]
+  },
+  {
+    "asset": "04-captains-lodge/realistic/rug-persian.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.7105183601379395,
+      1.7106355428695679,
+      2.5600967407226562
+    ],
+    "height_unique_levels": 127,
+    "height_edge_jump_x_y": [
+      0.005989585071802139,
+      0.006736366078257561
+    ]
+  },
+  {
+    "asset": "04-captains-lodge/realistic/wall-walnut-brass.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.7105183601379395,
+      29.885053634643555,
+      40.86964797973633
+    ],
+    "height_unique_levels": 180,
+    "height_edge_jump_x_y": [
+      0.00357131683267653,
+      0.031532034277915955
+    ]
+  },
+  {
+    "asset": "05-garden-terrarium/realistic/floor-limestone.png",
+    "tilt_degrees_p50_p95_p99": [
+      2.995063304901123,
+      16.593374252319336,
+      29.885053634643555
+    ],
+    "height_unique_levels": 197,
+    "height_edge_jump_x_y": [
+      0.014988897368311882,
+      0.01500766072422266
+    ]
+  },
+  {
+    "asset": "05-garden-terrarium/realistic/wall-sage.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.7105183601379395,
+      23.8572940826416,
+      40.241024017333984
+    ],
+    "height_unique_levels": 226,
+    "height_edge_jump_x_y": [
+      0.0050254869274795055,
+      0.0038152418565005064
+    ]
+  },
+  {
+    "asset": "06-aquarium-pool/realistic/floor-mosaic.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.31775182485580444,
+      21.426420211791992,
+      27.874706268310547
+    ],
+    "height_unique_levels": 152,
+    "height_edge_jump_x_y": [
+      0.05047690123319626,
+      0.0846264511346817
+    ]
+  },
+  {
+    "asset": "06-aquarium-pool/realistic/wall-aqua-ceramic.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.7105183601379395,
+      15.296299934387207,
+      20.03273582458496
+    ],
+    "height_unique_levels": 124,
+    "height_edge_jump_x_y": [
+      0.011686526238918304,
+      0.005926133599132299
+    ]
+  },
+  {
+    "asset": "07-cockpit/anime/floor-ribbed.png",
+    "tilt_degrees_p50_p95_p99": [
+      8.83477783203125,
+      29.279333114624023,
+      39.60527038574219
+    ],
+    "height_unique_levels": 189,
+    "height_edge_jump_x_y": [
+      0.00961003266274929,
+      0.06458081305027008
+    ]
+  },
+  {
+    "asset": "07-cockpit/anime/wall-navy-teal.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.7105183601379395,
+      39.60527038574219,
+      48.4974479675293
+    ],
+    "height_unique_levels": 226,
+    "height_edge_jump_x_y": [
+      0.005735372193157673,
+      0.015070204623043537
+    ]
+  },
+  {
+    "asset": "08-warehouse/realistic/floor-cargo.png",
+    "tilt_degrees_p50_p95_p99": [
+      9.366175651550293,
+      32.80792236328125,
+      35.954125595094126
+    ],
+    "height_unique_levels": 189,
+    "height_edge_jump_x_y": [
+      0.007796230725944042,
+      0.013065654784440994
+    ]
+  },
+  {
+    "asset": "08-warehouse/realistic/wall-cargo.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.7105183601379395,
+      42.723724365234375,
+      57.5595703125
+    ],
+    "height_unique_levels": 231,
+    "height_edge_jump_x_y": [
+      0.0050598871894180775,
+      0.040869999676942825
+    ]
+  },
+  {
+    "asset": "09-kitchen/realistic/floor-quarry.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.9532653093338013,
+      18.589336395263672,
+      23.43661880493164
+    ],
+    "height_unique_levels": 131,
+    "height_edge_jump_x_y": [
+      0.034099504351615906,
+      0.04265878349542618
+    ]
+  },
+  {
+    "asset": "09-kitchen/realistic/wall-white-ceramic.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.31775182485580444,
+      14.310548782348633,
+      30.887483596801758
+    ],
+    "height_unique_levels": 164,
+    "height_edge_jump_x_y": [
+      0.004512617830187082,
+      0.20527257025241852
+    ]
+  },
+  {
+    "asset": "10-washrooms/realistic/floor-hex.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.31775182485580444,
+      19.369020462036133,
+      24.118619918823242
+    ],
+    "height_unique_levels": 119,
+    "height_edge_jump_x_y": [
+      0.051630862057209015,
+      0.00548206502571702
+    ]
+  },
+  {
+    "asset": "10-washrooms/realistic/wall-mint.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.31775182485580444,
+      16.162899017333984,
+      23.2584285736084
+    ],
+    "height_unique_levels": 151,
+    "height_edge_jump_x_y": [
+      0.029543109238147736,
+      0.04789067059755325
+    ]
+  },
+  {
+    "asset": "11-crew-sleeping/anime/floor-linoleum.png",
+    "tilt_degrees_p50_p95_p99": [
+      0.31775182485580444,
+      1.145517349243164,
+      6.542807102203369
+    ],
+    "height_unique_levels": 115,
+    "height_edge_jump_x_y": [
+      0.007417831104248762,
+      0.008762548677623272
+    ]
+  },
+  {
+    "asset": "11-crew-sleeping/anime/wall-acoustic.png",
+    "tilt_degrees_p50_p95_p99": [
+      2.9269680976867676,
+      17.165334701538086,
+      40.88184356689453
+    ],
+    "height_unique_levels": 191,
+    "height_edge_jump_x_y": [
+      0.024157987907528877,
+      0.010792133398354053
+    ]
+  }
+]
