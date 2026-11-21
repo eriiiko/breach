@@ -661,16 +661,19 @@ PARTS = {"scenes": part_scenes, "resident": part_resident, "match": part_match,
 
 
 def main(parts=None) -> int:
+    """Run ``parts`` (default: all) in ONE process, each judged alone
+    (``_check_parts.run_parts``: its own FAILS, a crash failing that part
+    only); ``scene:<name>`` runs one hand scene."""
+    import _check_parts
     from simulation import physics_runner as pr
     pr.set_residency(False)               # the reference runs the CPU path (the oracle)
     t0 = time.perf_counter()
-    for name in (parts or list(PARTS)):
+    names = list(parts or list(PARTS))
+    table = dict(PARTS)
+    for name in names:
         if isinstance(name, str) and name.startswith("scene:"):
-            print(f"PART scene {name[6:]}")
-            part_scenes([name[6:]])
-            continue
-        print(f"PART {name}")
-        PARTS[name]()
+            table[name] = (lambda _n=name[6:]: part_scenes([_n]))
+    _check_parts.run_parts(names, table, FAILS, PINNED_RESULT.clear)
     print(f"{time.perf_counter() - t0:.1f} s")
     print("CONDUCTOR_RESULT:", "PASS" if not FAILS else f"FAIL ({len(FAILS)})")
     return 0 if not FAILS else 1

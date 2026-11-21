@@ -212,6 +212,7 @@ amends the rule file, never this line's length.
 | Suite timing | `tools/suite_timing.py` + `tests/_suite_kinds.py` + `tests/slow_tests.txt` + `tests/conftest.py` | A test is `slow` only by measurement (the generated list), never a hand mark; under xdist every test that drives the GPU or a window joins ONE group through the classifier |
 | Affected tests | `tools/affected_tests.py` | THE change-based tier for work in progress: the tests a change can reach, read from the source; may over-select, never under-select; never the merge gate |
 | Pinned match plays | `tests/_pinned_matches.py` (`watch`, `pinned_play`, `WHICH`) | The two pinned ship_demo matches (`bots`, `bots_v1`) are played ONCE per pytest process and shared (#205): a test that only WATCHES one of them hangs its observer on `watch(which, on_tick)`, never a fresh `run_match`; a test that changes the match in any way (monkeypatch, spec, seed, level, a mutated unit) plays its own. Observers never write to a view. Self-checking: the bots_v1 G8p pin and the ship_demo controller pin compare the shared play's outcome and per-tick unit stream with their pins |
+| Device check plays | `tests/_check_parts.py` + the session fixtures of `tests/test_cuda_obs.py` / `test_cuda_conductor.py` / `test_cuda_conductor_batch.py` | A device check plays each match of its corpus ONCE per subprocess and every part reads that play; its wrapper tests share ONE subprocess run, each judged on its own part; never a per-test subprocess that re-plays a shared corpus |
 
 ### Render / UI
 

@@ -755,16 +755,25 @@ PARTS = {"scenes": part_scenes, "matches": part_matches, "swarm": part_swarm,
 
 
 def main(parts=None) -> int:
+    """Run ``parts`` (default: all) in ONE process, each judged alone
+    (``_check_parts.run_parts``: its own FAILS, the device solo plays
+    ``_SOLO`` cleared before each part as a fresh process has them, a crash
+    failing that part only); the host references of the scenes
+    (``_HOST_INTENTS``) are shared; ``group:<name>`` runs one scene group."""
+    import _check_parts
     from simulation import physics_runner as pr
     pr.set_residency(False)               # the host references run the CPU path
     t0 = time.perf_counter()
-    for name in (parts or list(PARTS)):
+    names = list(parts or list(PARTS))
+    table = dict(PARTS)
+    for name in names:
         if isinstance(name, str) and name.startswith("group:"):
-            print(f"PART scenes {name[6:]}")
-            part_scenes([name[6:]])
-            continue
-        print(f"PART {name}")
-        PARTS[name]()
+            table[name] = (lambda _n=name[6:]: part_scenes([_n]))
+
+    def reset():
+        _SOLO.clear()
+        pr.set_residency(False)           # every part starts on the CPU path, as main sets it
+    _check_parts.run_parts(names, table, FAILS, reset)
     print(f"{time.perf_counter() - t0:.1f} s")
     print("CONDUCTOR_BATCH_RESULT:", "PASS" if not FAILS else f"FAIL ({len(FAILS)})")
     return 0 if not FAILS else 1

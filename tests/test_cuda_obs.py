@@ -1,12 +1,15 @@
 """#29 P8 -- the device observation on the card (pytest wrapper of
-tests/cuda_obs_check.py). One test per property; each runs its part in an
-isolated CUDA subprocess (cuda_harness) and SKIPS cleanly without a CUDA
-build / device.
+tests/cuda_obs_check.py). One test per property; the selected tests share ONE
+isolated CUDA subprocess (cuda_harness; the session fixture ``obs_run``), in
+which every match of the corpus is played once and every part is judged
+alone; each test passes or fails on its own parts' verdicts and SKIPS cleanly
+without a CUDA build / device.
 """
 from __future__ import annotations
 
 import pytest
 
+import _check_parts
 import cuda_harness
 
 pytestmark = pytest.mark.skipif(
@@ -15,17 +18,45 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _run(parts, timeout=3600):
-    proc = cuda_harness.run_cuda_script(
-        "import cuda_obs_check, sys; "
-        f"sys.exit(cuda_obs_check.main({list(parts)!r}))",
-        timeout=timeout,
-    )
-    out = proc.stdout + "\n" + proc.stderr
-    assert "OBS_RESULT: PASS" in out, out[-6000:]
+#: test -> (its parts, the harness timeout its parts had alone, s). The shared
+#: run's timeout is the sum over the selected tests: each part keeps its own
+#: budget, and the run is a hang guard, never a speed gate.
+PARTS_OF = {
+    "test_the_device_observation_equals_the_host_one_on_the_corpus": (["gate"], 7200),
+    "test_the_device_decoder_decodes_as_the_policy_controller_does": (["dec_gate"], 7200),
+    "test_the_device_books_serve_every_named_profile_and_refuse_counters": (["books"], 7200),
+    "test_who_a_team_sees_depends_only_on_the_enemies_in_view": (["wall"], 3600),
+    "test_the_device_decoder_refuses_by_name_and_adds_no_sync": (["decoder"], 3600),
+    "test_each_env_of_a_batch_equals_its_own_reference": (["batch"], 7200),
+    "test_torch_gets_the_buffers_themselves_in_stream_order": (["handover"], 3600),
+    "test_the_observation_adds_no_host_sync_to_a_tick": (["syncs"], 3600),
+    "test_an_ended_env_keeps_its_observation": (["ended"], 3600),
+    "test_a_restaged_picture_plays_on_equal_to_its_reference": (["restage"], 3600),
+    "test_a_door_beside_blast_heated_gas_plays_on_equal": (["range_scenes"], 3600),
+    "test_the_observation_float_kit_rounds_like_the_host": (["floatkit"], 3600),
+    "test_sight_in_bulk_on_the_card_equals_rays_clear_and_window_clear": (["sight"], 3600),
+    "test_an_env_reset_mid_batch_observes_its_new_episode_as_the_farm_does": (["reset"], 7200),
+}
 
 
-def test_the_device_observation_equals_the_host_one_on_the_corpus():
+@pytest.fixture(scope="session")
+def obs_run(request):
+    """ONE subprocess of tests/cuda_obs_check.py for every selected test of
+    this module (DEVICE CHECK PLAYS): each match of the corpus is played once
+    and read by every part that needs it; each part is judged alone and each
+    test reads only its own parts' verdicts (``_check_parts``). Under xdist
+    every test here is in the one device group (``_suite_kinds.is_device``),
+    so they share one worker and this fixture runs once there."""
+    return _check_parts.shared_run(
+        request, __file__, PARTS_OF, "cuda_obs_check",
+        lambda body, timeout: cuda_harness.run_cuda_script(body, timeout=timeout))
+
+
+def _run(run, test_name):
+    _check_parts.assert_parts(run, PARTS_OF[test_name][0])
+
+
+def test_the_device_observation_equals_the_host_one_on_the_corpus(obs_run):
     """PROPERTY: on the pinned ship_demo matches, a training room and the
     hand match (corpus (d): the cases the others never reach), at every
     decision tick, every column / plane owned so far (the column-to-patch
@@ -121,10 +152,10 @@ def test_the_device_observation_equals_the_host_one_on_the_corpus():
     takes the last of equal lower neighbours (ord_tie), the place centre is
     the next table row (ord_place) or an expired order is still shown
     (ord_expiry)."""
-    _run(["gate"], timeout=7200)
+    _run(obs_run, "test_the_device_observation_equals_the_host_one_on_the_corpus")
 
 
-def test_each_env_of_a_batch_equals_its_own_reference():
+def test_each_env_of_a_batch_equals_its_own_reference(obs_run):
     """PROPERTY: in batches of N = 2 and 4 (ship_demo and the training
     room, different seeds per env, envs ending apart) every env's owned
     observation equals its own host reference at each of its decision
@@ -138,36 +169,36 @@ def test_each_env_of_a_batch_equals_its_own_reference():
     is written for an env that did not end (OBS_BREAK=term_other). From
     P8.6b a batch of order hand matches beside the list hand match (orders
     held in every env) is equal env by env."""
-    _run(["batch"], timeout=7200)
+    _run(obs_run, "test_each_env_of_a_batch_equals_its_own_reference")
 
 
-def test_torch_gets_the_buffers_themselves_in_stream_order():
+def test_torch_gets_the_buffers_themselves_in_stream_order(obs_run):
     """PROPERTY: the torch tensors of the observation (and team t's row
     views) share the CuPy buffers' memory, and the ordering the hand-over
     rests on holds: the tick stream is blocking and CuPy / torch run on the
     legacy default stream, so torch's read after a tick sees the block.
     BREAKS IF the hand-over copies, or the tick stream becomes non-blocking
     (then a torch read could race the block)."""
-    _run(["handover"])
+    _run(obs_run, "test_torch_gets_the_buffers_themselves_in_stream_order")
 
 
-def test_the_observation_adds_no_host_sync_to_a_tick():
+def test_the_observation_adds_no_host_sync_to_a_tick(obs_run):
     """PROPERTY: with the observation attached a conductor tick still makes
     only its two named syncs (max_n_sub, the books read), at N = 1 and 2,
     while blocks are built. BREAKS IF the observation downloads or syncs
     inside the tick."""
-    _run(["syncs"])
+    _run(obs_run, "test_the_observation_adds_no_host_sync_to_a_tick")
 
 
-def test_an_ended_env_keeps_its_observation():
+def test_an_ended_env_keeps_its_observation(obs_run):
     """PROPERTY: an env whose ended latch is set is skipped by the blocks
     (its buffers unchanged) and its books are frozen (P8.7) while its
     neighbour is rebuilt and equal to its reference. BREAKS IF a block or
     the books ignore the latch."""
-    _run(["ended"])
+    _run(obs_run, "test_an_ended_env_keeps_its_observation")
 
 
-def test_the_observation_float_kit_rounds_like_the_host():
+def test_the_observation_float_kit_rounds_like_the_host(obs_run):
     """PROPERTY: the device observation's float kit (cpp/src/cuda_obs_float.cuh)
     converts double -> float16 exactly as numpy does on EVERY float16
     rounding case (each half, each midpoint and its float64 neighbours, the
@@ -177,10 +208,10 @@ def test_the_observation_float_kit_rounds_like_the_host():
     conversion rounds twice through float32 (OBS_BREAK=half_f32), the kit's
     arithmetic is fused (OBS_BREAK=fused), or CUDA's log moves a served
     squashed value (then the shared log module is due)."""
-    _run(["floatkit"])
+    _run(obs_run, "test_the_observation_float_kit_rounds_like_the_host")
 
 
-def test_sight_in_bulk_on_the_card_equals_rays_clear_and_window_clear():
+def test_sight_in_bulk_on_the_card_equals_rays_clear_and_window_clear(obs_run):
     """PROPERTY (#29 P8.2): the device's bulk sight (rays and windows, both
     has_los forms, both window directions) equals ``vision.rays_clear`` /
     ``window_clear`` on dense random pairs and windows over real maps:
@@ -189,10 +220,10 @@ def test_sight_in_bulk_on_the_card_equals_rays_clear_and_window_clear():
     training room with cover crates; ends outside the map and pairs on one
     tile included. BREAKS IF the two forms are swapped (OBS_BREAK=forms), a
     window cell is walked the wrong way, or an env reads another's planes."""
-    _run(["sight"])
+    _run(obs_run, "test_sight_in_bulk_on_the_card_equals_rays_clear_and_window_clear")
 
 
-def test_who_a_team_sees_depends_only_on_the_enemies_in_view():
+def test_who_a_team_sees_depends_only_on_the_enemies_in_view(obs_run):
     """PROPERTY (#29 P8.2, THE WALL's first device gate): perturbing the
     store row of an enemy no member of a team sees leaves that team's
     visible set unchanged, the same perturbation of a seen enemy leaves it
@@ -206,20 +237,20 @@ def test_who_a_team_sees_depends_only_on_the_enemies_in_view():
     columns or the route / place planes. BREAKS IF the visible table is indexed by the
     wrong row or team, a target's own facing / hp decides whether it is
     seen, or an answer of the team reads a unit it does not see."""
-    _run(["wall"])
+    _run(obs_run, "test_who_a_team_sees_depends_only_on_the_enemies_in_view")
 
 
-def test_a_restaged_picture_plays_on_equal_to_its_reference():
+def test_a_restaged_picture_plays_on_equal_to_its_reference(obs_run):
     """PROPERTY (#29 P8.3, the seam a per-env reset uses): env 1 of a batch
     of two, its device picture scrambled mid-match and restaged from its
     reference's normal form (``DevicePicture.restage``), and env 0 left
     alone, both equal their reference picture at every later tick. BREAKS
     IF the restage drops a field, renumbers the object serials apart from
     the tables' rows, or writes another env's block."""
-    _run(["restage"])
+    _run(obs_run, "test_a_restaged_picture_plays_on_equal_to_its_reference")
 
 
-def test_the_device_books_serve_every_named_profile_and_refuse_counters():
+def test_the_device_books_serve_every_named_profile_and_refuse_counters(obs_run):
     """PROPERTY (#29 P8.7): under the "range" profile (its zombie and
     friendly-fire terms written 0) the device books equal the reference
     books every tick and the served arrays at every step's end, on a pinned
@@ -227,10 +258,10 @@ def test_the_device_books_serve_every_named_profile_and_refuse_counters():
     "counters" profile (numpy's pairwise float32 fold) is refused by name.
     BREAKS IF the books read a term from a constant instead of the obs
     table's profile rows, or the "counters" profile is served."""
-    _run(["books"], timeout=7200)
+    _run(obs_run, "test_the_device_books_serve_every_named_profile_and_refuse_counters")
 
 
-def test_the_device_decoder_decodes_as_the_policy_controller_does():
+def test_the_device_decoder_decodes_as_the_policy_controller_does(obs_run):
     """PROPERTY (#29 P8.6a): on corpus (c) -- in-process EnvRunner runs, every
     team a v1 ``policy``, seeded masked-random decisions, generated live --
     at EVERY tick the store's latch columns after the device decode equal the
@@ -247,10 +278,10 @@ def test_the_device_decoder_decodes_as_the_policy_controller_does():
     (dec_late), the horde latch is taken at the previous tick's end
     (dec_horde_late) or a pointer resolves against the next observation's
     list_uid (dec_next_uid)."""
-    _run(["dec_gate"], timeout=7200)
+    _run(obs_run, "test_the_device_decoder_decodes_as_the_policy_controller_does")
 
 
-def test_the_device_decoder_refuses_by_name_and_adds_no_sync():
+def test_the_device_decoder_refuses_by_name_and_adds_no_sync(obs_run):
     """PROPERTY (#29 P8.6a): a team the decoder does not drive is refused at
     the build, an out-of-range decision is refused at the tick's books read
     with ``check_actions``' own ValueError message, a tap column intent for a
@@ -261,20 +292,20 @@ def test_the_device_decoder_refuses_by_name_and_adds_no_sync():
     a per-tick upload, the refusals go, or the card's aim arithmetic changes
     its operation order where it moves a quantized value (OBS_BREAK=dec_div:
     dx / mag; it moves none on the square, so this break cannot turn red)."""
-    _run(["decoder"])
+    _run(obs_run, "test_the_device_decoder_refuses_by_name_and_adds_no_sync")
 
 
-def test_a_door_beside_blast_heated_gas_plays_on_equal():
+def test_a_door_beside_blast_heated_gas_plays_on_equal(obs_run):
     """PROPERTY (#29 TOPOLOGY RANGE): the corpus (c) runs that open or close
     a door beside gas a blast heated past |T_abs| < 2^28 (crowd 100,
     ship_demo 100) play through the device conductor with every decision and
     digest equal to the reference. BREAKS IF the topology seam's seal /
     unseal refuse inside the physics' range again (the pre-patch seam raised
     ApplierFault at '9e(d) doors' on both)."""
-    _run(["range_scenes"])
+    _run(obs_run, "test_a_door_beside_blast_heated_gas_plays_on_equal")
 
 
-def test_an_env_reset_mid_batch_observes_its_new_episode_as_the_farm_does():
+def test_an_env_reset_mid_batch_observes_its_new_episode_as_the_farm_does(obs_run):
     """PROPERTY (#29 P8.9b): episode after episode -- a training room, N = 4,
     every env auto-reset (``DeviceConductor.reset_env`` with the observation
     attached) at its own ending for at least three episodes, decisions drawn
@@ -290,4 +321,4 @@ def test_an_env_reset_mid_batch_observes_its_new_episode_as_the_farm_does():
     BREAKS IF a reset leaves the old episode's picture (OBS_BREAK=
     reset_picture), books (reset_books) or decoder slot state
     (reset_decoder), or keeps the ended latch (reset_ended)."""
-    _run(["reset"], timeout=7200)
+    _run(obs_run, "test_an_env_reset_mid_batch_observes_its_new_episode_as_the_farm_does")

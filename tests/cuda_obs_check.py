@@ -630,11 +630,23 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None,
         p.result = (dpic_outcome(r_.outcome), -1 if r_.team is None else int(r_.team),
                     int(r_.ticks))
     p.book_cov = ref.coverage()
+    _freeze(p)
     _PLAYED[key] = p
     print(f"  played {name}@{seed}: {p.end} ticks, {len(p.obs)} decisions "
           f"({time.perf_counter() - t0:.1f} s, host observation {1000 * t_obs / len(p.obs):.1f} "
           f"ms per decision)")
     return p
+
+
+def _freeze(p: Played) -> None:
+    """A play is shared by every part of the process that reads it (DEVICE
+    CHECK PLAYS): its per-decision arrays and its terminal observation are
+    made read-only, so a part that writes to them raises instead of handing a
+    later part an altered reference."""
+    for arrs in list(p.obs.values()) + ([p.final] if p.final is not None else []):
+        for a in arrs.values():
+            if isinstance(a, np.ndarray):
+                a.flags.writeable = False
 
 
 def twin(p: Played):
@@ -802,7 +814,7 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
             for e, p in enumerate(played):
                 if tick > p.end:
                     continue
-                want = p.obs[tick]
+                want = dict(p.obs[tick])           # a shared play: never written
                 mine = {kk: (got[kk[0]][e] if kk[1] is None else
                              got[kk[0]][e][..., _plane_index(kk[0], kk[1])]
                              if kk[0] in ("vector", "list") else
@@ -3273,9 +3285,13 @@ def part_wall():
         done = 0
         orders = wall_orders(s.sim)               # P8.6b: every marine holds an order
         for k in range(len(p.intents)):
+            if done >= 6:
+                # every case counted: the rest of the match would only tick
+                # (nothing after the sixth case is compared or counted)
+                break
             c.latch(list(p.intents[k]) + (orders if k == 0 else []), env=0)
             c.tick()
-            if int(c.sims[0].tick) % DECIMATION or done >= 6:
+            if int(c.sims[0].tick) % DECIMATION:
                 continue
             rows = c._rows.get()[0]
             vis = obs.visible.get()[0]
@@ -4511,14 +4527,30 @@ PARTS = {"gate": part_gate, "batch": part_batch, "handover": part_handover,
          "orders": part_orders}
 
 
+#: The per-run tallies the parts' judges read: cleared before every part, so a
+#: part judges only what IT ran (as in a fresh process), never another part's
+#: gate runs. The plays (``_PLAYED``) are NOT cleared: they are shared.
+_TALLIES = (TERMSTATS, VSTATS, LOFSTATS, AIMSTATS, PICSTATS, BOOKSTATS, BOOK_CENSUS, DECSTATS)
+
+
+def _reset_tallies() -> None:
+    for t in _TALLIES:
+        t.clear()
+
+
 def main(parts=None) -> int:
+    """Run ``parts`` (default: all) in ONE process: every match of the corpus
+    is played once (``_PLAYED``) and read by every part that needs it; each
+    part is judged alone (``_check_parts.run_parts``: its own FAILS, the
+    tallies cleared, a crash failing that part only)."""
+    import _check_parts
     from simulation import physics_runner as pr
     pr.set_residency(False)               # the reference runs the CPU path (the oracle)
     t0 = time.perf_counter()
     print(f"OBS check at {PATCH}: owned {owned()}")
-    for name in (parts or list(PARTS)):
-        print(f"PART {name}")
-        PARTS[name]()
+    _check_parts.run_parts(parts or list(PARTS), PARTS, FAILS, _reset_tallies)
+    n_host = sum(p.end for p in {id(p): p for p in _PLAYED.values()}.values())
+    print(f"host ticks played: {n_host} over {len({id(p) for p in _PLAYED.values()})} plays")
     print(f"{time.perf_counter() - t0:.1f} s")
     print("OBS_RESULT:", "PASS" if not FAILS else f"FAIL ({len(FAILS)})")
     return 0 if not FAILS else 1
