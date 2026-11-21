@@ -4264,6 +4264,84 @@ the one intent the tap still carries beside the decoder); whatever writes
 them, these blocks read them at the next decision with no change. No golden
 re-baselined; no host value moved.
 
+**DEVICE CHECK PLAYS AS-BUILT (2026-11-21, branch `29-obs-check-plays`, stacked
+on P8.6b part 1).** A TEST-TIME patch, no product code. Each match of a device
+check's corpus is PLAYED ONCE per subprocess and read by every part that needs
+it; each wrapper module's tests share ONE subprocess run (a session fixture),
+each test judged on its own part's verdict. The mechanism is
+`tests/_check_parts.py` (`run_parts` inside the check: every part with its own
+FAILS, the check's per-run tallies cleared before it so a judge counts only
+its own gate runs, a crash failing that part only, a `PART_VERDICT` line per
+part; `shared_run` / `split` / `assert_parts` on the pytest side, the
+`run_cuda_script` named in each wrapper so `_suite_kinds.is_device` still sees
+a device test; a process that dies inside a part fails that part and the
+parts after it run again in a fresh process). The obs check's plays are
+read-only after `play` (`_freeze`; the `constant` break now copies its dict
+instead of writing into the shared reference). What is played once: every
+obs corpus match (`_PLAYED`: the pinned pair, the rooms, the hand matches,
+corpus (c), the batch seeds), read by GATE, DEC_GATE, BOOKS, WALL, DECODER,
+BATCH, HANDOVER, SYNCS, ENDED, RESTAGE and RANGE_SCENES; the batch check's
+scene references (`_HOST_INTENTS`, already shared inside a process, now across
+SCENES / SWAP / SYNCS / FAULT); the conductor's PINNED matches, gated LIVE
+against their own recording play (`live_gate`: the conductor fed the
+recording's intent rows as they are written) instead of record + replay.
+Still their own: WALL's twin (it adds orders and perturbs the store), BOOKS'
+twins (another device reward profile), RESET (its own `EnvRunner`s), the batch
+check's device solo plays (`_SOLO`, cleared per part as a fresh process has
+them), the conductor's MATCH (it IS the replay-controller reference, the S2
+property, short) and SYNCS, and every break run. Duplicates: obs DEC_GATE vs
+GATE -- the same `gate_c` (corpus (c) at N = 1, a refusal failing its run
+only) and `judge_decoder`; GATE adds the census, which only counts what
+passed. FOLDED: in the shared run (no break) DEC_GATE reads GATE's runs'
+failures and DECSTATS and judges the decoder itself; alone or under a break it
+gates them. Conductor MATCH vs PINNED: NOT folded -- MATCH is the only gate
+whose reference is the replay controller re-simulating a recording and whose
+match ends on the CLOCK; PINNED now holds the live reference and the
+elimination endings. Obs WALL: capped at its sixth case (nothing after it was
+compared or counted: equal by construction; 7 / 6 cases before and after).
+Length assumptions: none pinned a tick in the checks touched (the books' and
+the terminal observation's elimination / clock cases are read off each
+match's own ending); conductor PINNED now runs to the match's own end
+(bounded by its clock, the ending tick asserted to be the reference's);
+`cuda_unit_verbs_check.part_done`'s elimination case sets the arena's clock
+past the run's horizon, so only an elimination ends it (it ends at tick 41
+today). WHAT IS PROVED, before / after: every count line of every part (the
+env-decisions per match, every coverage dict, every census, the terminal
+observation's cases, the books' results, the wall's cases, the batch's
+frozen env-ticks, the reset's env-ticks) is identical but the timings; two
+reported, unjudged lines moved (the syncs parts' WARM-UP tick, 11 -> 5 and
+6 -> 5 syncs: the scratch was grown by an earlier part). TIME, Home Desktop,
+before = one subprocess per test at `5fdd7f33` (the same parts and
+timeouts), after = `pytest tests/test_cuda_obs.py tests/test_cuda_conductor.py
+tests/test_cuda_conductor_batch.py -q`:
+
+| test file | before (s) | after (s) | host ticks before -> after |
+|---|---:|---:|---|
+| `test_cuda_obs.py` (14 tests) | 1114 (gate 271, batch 241, reset 182, dec_gate 101, wall 102, books 91, decoder 55, range 31, restage 20, small 20) | 767 (gate 250, batch 235, reset 187, books 30, range 30, wall 12, restage 6, decoder 3, dec_gate 0.3, small 8) | 17021 -> 9153 (33 plays; reset's own references unchanged) |
+| `test_cuda_conductor.py` (5) | 303 (pinned 158) | 272 (pinned 122) | 4242 -> 2621 |
+| `test_cuda_conductor_batch.py` (7) | 1243 | 1273 | unchanged (no play shared across its parts but the scene references) |
+| **total** | **2660** | **2313** | |
+
+Peak RSS of the shared obs process 3.7 GB (1.4 GB for the largest single
+part before): it holds every play of the corpus at once.
+BREAKS re-run by hand after the restructure, each red at the same kind of
+place: `dec_every` (GATE and DEC_GATE, both at `(c) policy crowd 102` tick 1,
+pending_throw), `dec_next_uid` (DEC_GATE, tick 0, live_aim), `constant`
+(GATE's census guard on `near_u/wall`), `bk_weight` (GATE `(a) bots` tick 419
+and BOOKS `books range bots` tick 422, d_balance), `term_other` and
+`bk_freeze` (BATCH ship_demo N = 2, ticks 300 / 301), `anchor`, `term_early`,
+`full_vis`, `list_cap` (GATE `(a) bots` tick 4), `ord_prev` (GATE order_hand
+tick 24), `early_picture` (GATE bots_v1 tick 271), `CONDUCTOR_BREAK=slot`
+(PINNED, the live gate, bots tick 428). Not re-run: GATE's other breaks
+(cone, early, cover, stale, divisor, lane_*, list_tie, mask_*, win_*, dmg_order,
+lifetime, serial_row, full_tie, full_cap, term_next, bk_order, bk_late,
+ord_tie, ord_place, ord_expiry: device-side switches inside the same `gate()`
+over the same read-only references) and RESET's (its plays are its own).
+INDEPENDENCE: the three wrapper files run under one-part breaks
+(`OBS_BREAK=forms`, `CONDUCTOR_BREAK=restage`, `CONDUCTOR_BATCH_BREAK=index`)
+failed exactly SIGHT, RESIDENT and SWAP, each with its own message; every
+other test passed.
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:
