@@ -170,7 +170,7 @@ the project instructions only when the code exists):
 | Water flow detail | W1, W1b | THE fine water surface: procedural travelling sines (ripples + swell) on one hex lattice, carried by the simulated flow (W1 shipped one ripple texture; W1b replaced it); a new surface detail is a term here, never a second wave source or a texture |
 | Water foam | W2 | THE foam: one amount image made, carried and lost per frame; a new cause of foam is a source term with its gain, never a second foam layer; picture state only |
 | Things in the water (terms of the Water foam row, the Particle primitive and the Lit-3D seam; no index row of their own) | W3 | The waterline is `lit3d._WATERLINE_GLSL` (the water pass's own floor law, in world height); a body or a droplet in the water makes foam only as a splat of `water_foam.splat_rate`, never a ripple field; the spray is the particle primitive's consumer, its landings foam dabs |
-| Water caustic (a term of the Water flow detail row, no index row of its own) | W4 | THE caustic: the Jacobian of the fine surface's refraction map on the floor's source light (`water_surface.caustic_*`); never a second wave source or a caustic texture of its own |
+| Water caustic (a term of the Water flow detail row, no index row of its own) | W4 | THE caustic: Wallace's scatter of the surface's refraction map into a light image, uncapped, read at the pixel on the floor's source light (`water_surface.scatter_light` / `caustic_*`); the floor bend is the same map (Snell); never a second wave source, a gather or a caustic texture of its own (as landed 2026-11-21, section 9c) |
 
 ## 8. Rulings with Erik, 2026-11-20
 
@@ -180,6 +180,14 @@ the project instructions only when the code exists):
 - **Not in this arc:** a water source and drain (Erik builds those); exploding barrels and cargo (#218); water with temperature, water putting out fire, ice, steam, floating, ground depth (milestone "Water, fire, ice v2", #219). Floor heights stay 0.
 - **Tilt** (the water solver's tilt input, and a camera that shows it): may come before this arc or inside it. Open; not in W0.
 - The marks layer (#180) is not built first; W5 waits for it.
+
+## 8b. Rulings with Erik, 2026-11-21 (after the reassessment's A/B page, section 9b)
+
+- "I'd like scatter, Snell, lamp glint": THE caustic is the scatter (the
+  gather goes); THE floor bend is Snell (`refract_strength` goes); the
+  lamps' reflections are option (a), the `lamp_glint` term in the water
+  shader, on by default. Landed in section 9c; look changes merge on green
+  and Erik looks when he likes.
 
 ## 9. Critique (one Opus critic, sections 2-3, against main 7cba57dd, 2026-11-20)
 
@@ -248,7 +256,7 @@ keys in W2; foam PingPong allocated lazily, reset on a backward tick; every patc
 asserts a dry level renders bit-identically; W3's gate is properties plus a live
 check (no wake shot, units stand still).
 
-## 9b. Reassessment prototypes (branch `97-reassess`, 2026-11-21, NOT merged)
+## 9b. Reassessment prototypes (branch `97-reassess`, 2026-11-21; landed as 9c)
 
 Three dials for Erik's by-eye reassessment; each default renders the shipped
 look (still_pool_flashlight and still_pool_closeup bit-identical to main
@@ -289,6 +297,144 @@ run-to-run noise, the same pixels and size as two runs of main differ).
   sphere-widened (Karis 2013), times the field's light there: a broken
   mirror image about 1 m across under each lamp. +0.25 ms with 7 lamps.
 
+
+## 9c. W4 landed: scatter, Snell, lamp glint (branch `97-reassess`, 2026-11-21)
+
+Erik's calls (section 8b) turned the prototypes of 9b into THE law; the
+losing forms are deleted, no choice dial is left.
+
+- **As built.** THE REFRACTION MAP `x -> x + depth (1 - 1/n) grad h`
+  (`CAUSTIC_K = 1 - 1/1.333`) of the WHOLE surface slope, the normal's own
+  (`water_surface.ripple_slope`, the tile ripple's central difference x
+  `ripple_scale`, + `detail_surface`), has two terms. THE FLOOR BEND
+  (`floor_offset`, Snell at small slopes): the floor's diffuse, its light
+  and the foam's shadow are read where the map sends the view ray, along the
+  slope (`refract_strength`'s bend was in map UV with the opposite sign).
+  THE CAUSTIC is Wallace's scatter: `WaterPass.scatter_caustic` (before the
+  scene RT, beside the foam step) runs a SLOPE pass (`shaders/water.fs` with
+  its main swapped for `shaders/water_scatter_slope.glsl`: the whole slope
+  and the depth per sample, 24 samples a tile at a quarter cell) and the
+  SCATTER (`shaders/water_scatter.vs/.fs`: each grid quad's two triangles
+  moved by the map and rasterised additively, unculled, with their area
+  ratio) into ONE `core.PingPong` (fp32), over the drawn rect dilated a
+  tile; the draw reads the light image `E` bilinear (held inside its written
+  rect, `u_caustic_lim`) and multiplies the floor's source light by `1 +
+  (E - 1) x caustic_strength`. THE CAP: none on the image -- its mean is
+  the incident light, so any cap loses light at every focus above it
+  (`caustic_max` 3 lost 18 % of the mean in the shipped still surface at
+  1.2 m, 23 % in flowing water at 0.3 m; even a cap at 100 lost 1.4 %).
+  `SCATTER_RATIO_MAX` 1e3 bounds ONE sliver triangle at a fold (it keeps a
+  cell far inside the world RT's half floats); at the shots' depths and
+  strengths it changes no mean (1e4, 1e3 and 256 identical but at 1.2 m
+  still: 1.0042 / 1.0042 / 0.9926). Brightness stays Erik's
+  `caustic_strength`. THE LAMPS' GLINTS (`lamp_glint`, on at 1): each
+  MOUNTED lamp of THE one light assembly (`LightSpec` kinds lamp, spot,
+  beacon: `water_surface.lamp_table`; main.py hands `set_lamp_specs` its
+  static and per-tick lists, the ones its cone rows are built from, the
+  static one cached by identity; every `demo_light_rows` call in
+  `tools/lighting_demo.py` hands its list, so the game, the demo, the
+  benches and the look shots feed it the same way) adds its GGX glint from
+  its cell centre `lamp_height_m` up, the lamp a sphere (Karis 2013 Eq. 10:
+  `alpha + r / (3 d)`, renormalised by Eq. 14; `lamp_radius_m` 0.225 gives
+  the lobe the prototype drew with `r / 2d` at 0.15), weighted by its
+  unoccluded share, times the field's light. A beam (spot, beacon) lights
+  only its wedge, its share `x 2 pi / spread` (the sweep's cone emission);
+  the 16 lamps nearest the drawn rect go to the shader (`lamp_select`).
+  The level has no lamp height: `lamp_height_m` stays a dial.
+- **Deleted.** The gather caustic (`caustic_det`, the gain on `1/|det J|`)
+  and with it the surface's Hessian everywhere it lived (`wave_sum`'s
+  second derivative, `turn_hessian`, the `hess` paths of `hex_waves` /
+  `detail_surface`, `waveSum`'s `curv`, `causticDet` / `causticGain`);
+  `refract_strength`; `caustic_max`; the prototype dials `caustic_form` and
+  `floor_bend`; `tests/test_water_caustic_scatter.py` (its properties
+  folded into the two files below); `surfaceHeight` (the shader's
+  `rippleSlope` is the one tile-ripple read). No test oracle needed any of
+  them. `lighting_demo`'s `_WATER_DIALS` lost Refract and Caust max and
+  gained Lamp glint, Lamp hgt m, Lamp r m. Debug view 3 is now (bend x, y
+  m, E, gain).
+- **Cost** (`--water-perf`, water_studio, world RT 4032 x 2256, two
+  alternated runs each; another session's cuda_green and full suite were
+  running on the card meanwhile, so read the differences, not the
+  absolutes): TOTAL water GPU 4.56 / 4.65 ms before (draw 4.41 / 4.50, the
+  gather's Hessian in it) -> 6.25 / 6.15 after (draw 3.68 / 3.61 with the
+  seven lamps' glints, scatter passes 2.45 / 2.41): +1.6 ms. CPU update
+  0.58 ms both. ship_demo (dry): 0.005 ms total before and after, the
+  scatter 0.002 (one compare).
+- **Properties** (`tests/test_water_caustic.py`, 12): a flat surface
+  scatters exactly 1 everywhere, gain and term exactly 0; THE SHIPPED
+  SURFACE (both layers' wave sets made periodic over 2.5 m, still and full
+  flow) at the tank's 1.2 m conserves the light within 2 % (measured 1.004 /
+  1.006; cells above 20x, and the old cap's loss shown); a synthetic surface
+  conserves below and past a fold; the scatter brightens where the map
+  focuses (correlation with `1/det J` > 0.95, the flipped map < 0); deeper
+  water focuses more, proportionally while small; no light, no caustic;
+  light moved off a bounded image is lost, not wrapped; THE PICTURE keeps
+  the light only read at the pixel (finding 1); the bend and the scatter
+  are one map, along the slope; the ripple slope is the normal's central
+  difference; the door and the deletions. `tests/test_water_lamp_glint.py`
+  (7): on by default; flat water mirrors a lamp under itself, gone 3
+  heights away; a tilted ripple throws it off its nadir; a beam glints only
+  in its wedge with its `2 pi / spread`; nothing when off or without a
+  mounted lamp (a flashlight, the cursor lamp, a transient excluded); the
+  lamps kept are the nearest to the drawn water; main.py and every demo
+  call site hand the assembly's lists. `tests/test_water_flow_detail.py`:
+  the wave-derivative test keeps the slope half (the Hessian half went
+  with the Hessian).
+- **GL vs twin** (`tests/gl_water_caustic_check.py`, 7, wrapper
+  `test_gl_water_caustic.py`): the slope pass per sample p99 1.44 % of the
+  slope's RMS (the tile ripple's share included), depth exact; the light
+  image cell for cell against `scatter_light` of the GL's own slopes: 0.30 %
+  of cells differ (a sliver's edge on a cell centre, fp32 against fp64),
+  the totals within 0.7 %, the interior mean 0.998; the floor read per
+  pixel: the bend p99 1.44 % of its RMS, E p99 0.09 % relative, the gain
+  `(E - 1) x strength` to fp16; a flat surface E == 1 at every cell and
+  the picture bit-identical to the caustic off; no light bit-identical; a
+  dry map runs no pass, allocates no image, compiles no program; the lamp
+  glint per pixel p99 0.02 % (flat) / 0.25 % (rippled) of its peak, a
+  flashlight alone bit-identical to the glint off.
+- **Dry level.** ship_demo costs the same (above); on the dry look shots
+  `unit_lamp_n` and `fss_overview` the water pass's `draw` and
+  `scatter_caustic` ran every frame and did nothing (no image, no program,
+  counted in-process), and the before / after pictures differ by 1.7 % /
+  0.22 % of pixels -- the harness's own run-to-run noise on those shots (two
+  renders of main differ by 1.0 % / 0.16 %, the same regions: a unit's and
+  a fire's animation), not bit-identity; the bit-identity is the GL
+  checks' (a dry map's RT unchanged; `water_dry_draws_nothing`).
+- **Findings.** (1) SCATTER WITH SNELL, READ THROUGH THE BEND, IS THE
+  GATHER AGAIN. The scatter's map is the light's path, taken vertical; a
+  pixel reading the light image where the bend sends it looks through the
+  very lens that made the pattern (a light along the view, which no source
+  at `light_z` is): the picture's mean is then the gather's bias (twin,
+  still water: +1.7 % at 0.15 m, +4.7 % at 0.3 m, +97 % at 1.2 m; flowing
+  0.3 m +113 %), and the 24-per-tile image is magnified into blobs (seen
+  in `still_pool_closeup`, kept for the page as `__coaxial`). The landed
+  draw reads `E` at the pixel's own floor point: the picture keeps the
+  image's mean and the net Erik approved; the floor, its light and the
+  foam's shadow take the bend. A light-direction-aware map (the field's
+  direction and `light_z` shifting where the light entered) would let
+  both read through the bend honestly; that is a modelling call for Erik.
+  (2) The lamp glint ADDS to the field's own glint (which already carries
+  the lamps' light at `light_z`'s elevation): on rough water the lamps'
+  light glints twice; `lamp_glint` is the dial (accepted). (3) Beam lamps
+  are covered; the flashlight, the cursor lamp and the transients are not
+  (no height in their spec; a flashlight's position is its lens tile; a
+  low source is what the field's one elevation already models): ACCEPTED
+  GAP. (4) The slope pass and the bend now read the tile ripple too, so a
+  blast's ripple focuses light (W4 finding 2's "a sim ripple that
+  answers"); the shipped `ripple_scale` 8 is a look gain, not metres.
+  (5) THE PROTOTYPE'S CRISP NET WAS PARTLY ITS READ. On the A/B page the
+  scatter read its light image at the LEGACY bend's point (`refract_strength`
+  in map UV: about 2.2x Snell's length in x, 1.25x in y, the opposite
+  sign): a defocusing lens over the pattern that thinned its bright lines.
+  Re-rendered here from main's tree (`still_pool_closeup`, scatter, with and
+  without the cap: the cap is not it; without the tile ripple's slope:
+  not it either), that read is what made the lines thin; read honestly at
+  the pixel the landed net is the light image itself, 24 cells a tile
+  bilinear against the world RT's 48 px a tile, softer at close zooms (and
+  close to the gather's softness in `still_pool_closeup`). Finer lines
+  cost: the scatter's passes scale with the cells (2.4 ms at 24 a tile;
+  ~4x at 48). For Erik: the three pictures are on the page
+  (`__proto_scatter`, `__after`, `__coaxial`).
 
 ## 10. Sources
 
