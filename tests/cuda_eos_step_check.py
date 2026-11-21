@@ -162,6 +162,7 @@ def part1_chained_trajectory() -> bool:
     t_gpu = 0.0
     max_pstar = 0
     max_n_sub = 0
+    max_k = 0
     for tick in range(n_ticks):
         # -- CPU reference tick (flags off) --------------------------------
         _set_eos_backends(False)
@@ -173,6 +174,7 @@ def part1_chained_trajectory() -> bool:
         ps, _dv, _nt = eos_cpu.dbg_mg_inputs()
         max_pstar = max(max_pstar, int(ps.max()))
         max_n_sub = max(max_n_sub, int(eos_cpu.dbg_last_n_sub))
+        max_k = max(max_k, int(eos_cpu.dbg_last_k))   # #217 §8
 
         # -- GPU chained tick (all four flags on) --------------------------
         _set_eos_backends(True)
@@ -200,6 +202,10 @@ def part1_chained_trajectory() -> bool:
                 bad += 1
                 print(f"  tick {tick}: counter {c} mismatch "
                       f"(cpu={cc} gpu={cg})")
+        if int(eos_cpu.dbg_last_k) != int(eos_gpu.dbg_last_k):   # #217 §8
+            bad += 1
+            print(f"  tick {tick}: k mismatch "
+                  f"(cpu={eos_cpu.dbg_last_k} gpu={eos_gpu.dbg_last_k})")
         if int(eos_cpu.dbg_last_n_sub) != int(eos_gpu.dbg_last_n_sub):
             bad += 1
             print(f"  tick {tick}: n_sub mismatch "
@@ -223,10 +229,20 @@ def part1_chained_trajectory() -> bool:
 
     # The scenario must actually stress the chain (hardness on the solve
     # INPUTS — the solved P stays near ambient by design, see the P6.3 gate).
-    if max_pstar < 20 * FP_ONE:
+    # #217 §8 (2026-11-21): the whole step now runs k sub-ticks, and
+    # dbg_mg_inputs holds the LAST sub-tick's p*, after k - 1 pressure
+    # updates have already spread the blast: the same scenario reads 9.2 atm
+    # there (it was >= 20 at one update per tick). The bar becomes 5 atm on
+    # that cache PLUS the sub-tick loop reached K_MAX (the chain ran its
+    # deepest loop on the GPU): the property gated (GPU == CPU bit for bit)
+    # is unchanged.
+    if max_pstar < 5 * FP_ONE:
         ok = False
         print(f"  scenario too tame: peak p* = {max_pstar / FP_ONE:.1f} atm "
-              f"< 20 atm")
+              f"< 5 atm")
+    if max_k < int(eos_cpu.K_MAX):
+        ok = False
+        print(f"  scenario too tame: max k {max_k} never hit K_MAX={int(eos_cpu.K_MAX)}")
     if max_n_sub < int(eos_cpu.N_SUB_MAX):
         ok = False
         print(f"  scenario too tame: max n_sub {max_n_sub} never hit "

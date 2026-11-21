@@ -119,6 +119,7 @@ def main() -> None:
           f"{float(np.hypot(g.wind_x[open_air] / Q, g.wind_y[open_air] / Q).max()):.1f} m/s")
     print(f"      counters (last tick): kick={int(eos.e_kick_ke_sum)} "
           f"drag={int(eos.e_drag_heat_sum)} clamp={int(eos.e_clamp_destroyed_sum)} "
+          f"cap_heat={int(eos.e_cap_heat_sum)} "
           f"absorb={int(eos.e_absorb_export_sum)} rail={int(eos.e_rail_sum)}")
     print(f"      hits: rad_clip={int(eos.rad_clip_hits)} "
           f"p_floor={int(eos.p_face_floor_hits)} "

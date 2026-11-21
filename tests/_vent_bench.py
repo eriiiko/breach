@@ -158,7 +158,7 @@ def main() -> None:
         post = _sum_obj(g.gas_energy[acct])
         expected = (int(eos.e_entry_resync_sum) + int(eos.e_transport_net_sum)
                     - int(eos.e_wipe_sum) - int(eos.e_kick_ke_sum)
-                    + int(eos.e_drag_heat_sum) - int(eos.e_work_export_sum)
+                    + int(eos.e_drag_heat_sum) + int(eos.e_cap_heat_sum) - int(eos.e_work_export_sum)
                     + int(eos.e_rail_sum))
         resid = (post - state["pre"]) - expected
         tally["dE_inside"] = tally.get("dE_inside", 0) + (post - state["pre"])
@@ -172,6 +172,7 @@ def main() -> None:
         tally["wipe"] += int(eos.e_wipe_sum)
         tally["kick"] += int(eos.e_kick_ke_sum)
         tally["drag"] += int(eos.e_drag_heat_sum)
+        tally["cap_heat"] = tally.get("cap_heat", 0) + int(eos.e_cap_heat_sum)   # #217 §8.6.5
         tally["transport"] += int(eos.e_transport_net_sum)
         tally["resync"] += int(eos.e_entry_resync_sum)
         tally["n_sub"].append(int(eos.dbg_last_n_sub))

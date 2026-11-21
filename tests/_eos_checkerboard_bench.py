@@ -678,6 +678,11 @@ def stability_trace(level, ticks, tile=None, tps=None, eos=None, arena=False,
       kick/drag/clamp/absorb  e_kick_ke_sum, e_drag_heat_sum,
                     e_clamp_destroyed_sum, e_absorb_export_sum
       dKEu          the KE change NO counter books (step 1, other slots)
+      k / Cupd / epsk  (#217 §8) the tick's sub-tick count, the Courant
+                    number per pressure update max|u_entry| * dt / (k dx) and
+                    the per-solve compression eps / k (k = 1 on a pre-§8
+                    build); Csub is per substep of dt / (k n_sub);
+      caph          (#217 §8.6.5) e_cap_heat_sum, the cap's returned heat
     ``tps`` (emulation only) runs the whole game at another tick rate, so
     the EOS's one pressure update per tick happens tps/24 times as often;
     the marine's turn law refuses high rates, and no unit turns in these
@@ -729,7 +734,7 @@ def stability_trace(level, ticks, tile=None, tps=None, eos=None, arena=False,
     print(f"# {('arena' if arena else level)} dx {dx} tps {tps:g} cells "
           f"{int(acct.sum())} N_SUB_MAX {e.N_SUB_MAX} k_drag2 {e.k_drag2:.4g}")
     print("tick nsub umax Csub Ctick Nmax Nmin Tmw Pmean p*mean eps "
-          "KE% kick% drag% clamp% rail% dKEu% clamps")
+          "KE% kick% drag% clamp% rail% dKEu% clamps k Cupd epsk caph%")
     rows, clamps0 = [], int(e.u_clamp_hits)
     for t in range(ticks):
         if detonate and t == int(round(detonate[2] * tps / 24.0)):
@@ -752,7 +757,8 @@ def stability_trace(level, ticks, tile=None, tps=None, eos=None, arena=False,
         E = g.gas_energy[acct].astype(np.float64)
         ke1 = _ke_books(n[acct], g.wind_x[acct], g.wind_y[acct], k_ke)
         kick, drag = float(e.e_kick_ke_sum), float(e.e_drag_heat_sum)
-        clamp = float(e.e_clamp_destroyed_sum)
+        # #217 §8.6.5: the cap's whole removal is destroyed + returned heat
+        clamp = float(e.e_clamp_destroyed_sum) + float(e.e_cap_heat_sum)
         booked = (kick - float(e.e_absorb_export_sum)
                   - float(e.e_sponge_export_sum) - clamp - drag)
         ps, dv, nt = e.dbg_mg_inputs()
@@ -760,16 +766,20 @@ def stability_trace(level, ticks, tile=None, tps=None, eos=None, arena=False,
         eps = float(np.abs(gam * dt * dv[am].astype(np.float64) / Q).max()) \
             if am.any() else 0.0
         nsub = int(e.dbg_last_n_sub)
+        kt = int(getattr(e, "dbg_last_k", 1) or 1)          # #217 §8
+        caph = float(getattr(e, "e_cap_heat_sum", 0))
         clamps = int(e.u_clamp_hits) - clamps0
         clamps0 = int(e.u_clamp_hits)
-        r = dict(tick=t, nsub=nsub, umax=umax, csub=umax * dt / (nsub * dx),
+        r = dict(tick=t, nsub=nsub, umax=umax, csub=umax * dt / (kt * nsub * dx),
                  ctick=umax * dt / dx, nmax=na.max() / N0, nmin=na.min() / N0,
                  tmw=(E.sum() / max(na.sum(), 1.0) - t_amb) / Q,
                  pmean=float(g.atmosphere[acct].astype(np.float64).mean()) / Q,
                  pstar=E.sum() / Q / Q / float(e.T_AMB_K) / len(E), eps=eps,
                  ke=100 * ke1 / E0, kick=100 * kick / E0, drag=100 * drag / E0,
                  clamp=100 * clamp / E0, rail=100 * float(e.e_rail_sum) / E0,
-                 dkeu=100 * ((ke1 - ke0) - booked) / E0, clamps=clamps)
+                 dkeu=100 * ((ke1 - ke0) - booked) / E0, clamps=clamps,
+                 k=kt, cupd=umax * dt / (kt * dx), epsk=eps / kt,
+                 caph=100 * caph / E0)
         rows.append(r)
         if t % every == 0 or t == ticks - 1:
             print(" ".join(f"{r[k]:.4g}" if isinstance(r[k], float) else str(r[k])

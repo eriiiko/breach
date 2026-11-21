@@ -187,6 +187,7 @@ PER_TICK_COUNTERS = ("eos.eth_transport_delta",
                      "eos.ke_drag_removed", "eos.e_drag_heat_sum",
                      "eos.e_kick_ke_sum", "eos.e_absorb_export_sum",
                      "eos.e_sponge_export_sum", "eos.e_clamp_destroyed_sum",
+                     "eos.e_cap_heat_sum",   # #217 §8.6.5
                      "eos.e_work_export_sum", "eos.e_rail_sum",
                      "eos.e_transport_net_sum", "eos.e_entry_resync_sum")
 
@@ -211,6 +212,7 @@ def counters(runner):
               "ke_drag_removed", "e_drag_heat_sum",
               "e_kick_ke_sum", "e_absorb_export_sum",
               "e_sponge_export_sum", "e_clamp_destroyed_sum",
+              "e_cap_heat_sum",   # #217 §8.6.5
               "e_work_export_sum", "e_rail_sum",
               "e_transport_net_sum", "e_entry_resync_sum")),
             (runner.combustion, "comb.",

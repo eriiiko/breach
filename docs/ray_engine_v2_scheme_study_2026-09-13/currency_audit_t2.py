@@ -101,7 +101,7 @@ def run(c_v, ticks=40, interior=10, block=4, t_hot_game=800.0):
         return (
             int(eos.e_entry_resync_sum) + int(eos.e_transport_net_sum)
             - int(eos.e_wipe_sum) - int(eos.e_kick_ke_sum)
-            + int(eos.e_drag_heat_sum) - int(eos.e_work_export_sum)
+            + int(eos.e_drag_heat_sum) + int(eos.e_cap_heat_sum) - int(eos.e_work_export_sum)
             + int(eos.e_rail_sum),
             int(tsol.e_gas_deposit_sum) + int(tsol.e_gas_cond_sum)
             + int(tsol.e_gas_rail_sum),

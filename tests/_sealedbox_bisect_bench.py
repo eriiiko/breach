@@ -436,6 +436,7 @@ class _Trace70:
             "eos_transport": int(e.e_transport_net_sum),
             "eos_kick_ke": int(e.e_kick_ke_sum),
             "eos_drag_heat": int(e.e_drag_heat_sum),
+            "eos_cap_heat": int(e.e_cap_heat_sum),        # #217 §8.6.5
             "eos_work_export": int(e.e_work_export_sum),
             "eos_rail": int(e.e_rail_sum),
             "eos_wipe": int(e.e_wipe_sum),
@@ -870,7 +871,7 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False,
             # names all seven terms.
             int(eos.e_entry_resync_sum) + int(eos.e_transport_net_sum)
             - int(eos.e_wipe_sum) - int(eos.e_kick_ke_sum)
-            + int(eos.e_drag_heat_sum) - int(eos.e_work_export_sum)
+            + int(eos.e_drag_heat_sum) + int(eos.e_cap_heat_sum) - int(eos.e_work_export_sum)
             + int(eos.e_rail_sum),
             # thermal solver, gas side (temperature_solver.h)
             int(tsolver.e_gas_deposit_sum) + int(tsolver.e_gas_cond_sum)

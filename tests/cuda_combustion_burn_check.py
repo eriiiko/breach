@@ -133,7 +133,7 @@ def _terms(sim):
     return (
         int(eos.e_entry_resync_sum) + int(eos.e_transport_net_sum)
         - int(eos.e_wipe_sum) - int(eos.e_kick_ke_sum)
-        + int(eos.e_drag_heat_sum) - int(eos.e_work_export_sum)
+        + int(eos.e_drag_heat_sum) + int(eos.e_cap_heat_sum) - int(eos.e_work_export_sum)
         + int(eos.e_rail_sum),
         int(ts.e_gas_deposit_sum) + int(ts.e_gas_cond_sum) + int(ts.e_gas_rail_sum),
         -int(comb.e_comb_draw_sum) + int(comb.e_comb_deliver_sum)

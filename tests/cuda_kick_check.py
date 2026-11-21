@@ -162,12 +162,14 @@ COUNTER_NAMES = ("u_clamp", "u_max", "_retired_work_clamp",
                  "ke_drag_removed", "e_drag_heat_sum",
                  "_retired_e_drag_drop_sum", "_retired_e_drag_rail_clipped",
                  "e_kick_ke_sum", "e_absorb_export_sum", "e_sponge_export_sum",
-                 "e_clamp_destroyed_sum", "rad_clip_hits", "e_ts_ke_sum")
+                 "e_clamp_destroyed_sum", "rad_clip_hits", "e_ts_ke_sum",
+                 # #217 §8.6.5 (ruling 3): the cap's returned heat, slot 15
+                 "e_cap_heat_sum")
 # The subset PART 1 requires to actually engage somewhere (coverage). The
 # retired slots (D10) and the slots this file's forcers structurally never
 # arm (11 e_sponge_export_sum — no ambient/sponge_udamp forcer here; 14
 # e_ts_ke_sum — no thermal_solid forcer here) must instead stay exactly 0.
-_LIVE_COUNTER_IDX = (0, 1, 5, 6, 9, 10, 12, 13)
+_LIVE_COUNTER_IDX = (0, 1, 5, 6, 9, 10, 12, 13, 15)
 _RETIRED_COUNTER_IDX = (2, 3, 4, 7, 8)
 _DORMANT_HERE_IDX = (11, 14)
 
@@ -219,7 +221,7 @@ def _uniform_cap2(h, w, cap_val):
     return np.full((h, w), cap_q * cap_q, dtype=np.int64)
 
 
-def _fold_cap2_plane(temperature, solid, is_vacuum, ts, eos):
+def _fold_cap2_plane(temperature, solid, is_vacuum, ts, eos, dt=None):
     """VELOCITY-CLAMP (P-V1, D2v2) formula A, ported to Python verbatim (the
     eos_solver.cpp / cuda_eos_step.cu scan) — used by PART 2 to rebuild the
     exact per-tick cap plane from `temperature` (must be tick-entry T, never
@@ -252,6 +254,12 @@ def _fold_cap2_plane(temperature, solid, is_vacuum, ts, eos):
     idx = np.nonzero(~rails)
     for pos, r in zip(zip(*idx), ratio[idx].tolist()):
         cap2[pos] = (c_amb2 * int(r)) >> 16
+    # #217 §8.6.4: the budget ceiling U_bud = K_MAX * dx / dt, quantized once,
+    # min'd into every non-filler cell (eos_budget_cap2_q32, the scan's rule)
+    if dt is not None and bool(eos.subtick_ceiling):
+        ub = int(_quantize(int(eos.K_MAX) * max(float(eos.dx), 1e-6) / float(dt)))
+        open_ = ~(solid | is_vacuum)
+        cap2[open_] = np.minimum(cap2[open_], ub * ub)
     return np.ascontiguousarray(cap2)
 
 
@@ -277,8 +285,11 @@ def _compare(tag, f_ref, res_ref, f_gpu, res_gpu):
             print(f"  {tag}: {k} {mism} MISMATCH (first @ {idx}: "
                   f"cpu={f_ref[k].flat[idx]} gpu={f_gpu[k].flat[idx]})")
     dig_ref, dig_gpu = res_ref[0], res_gpu[0]
-    cnts_ref = tuple(int(v) for v in res_ref[2:11])
-    cnts_gpu = tuple(int(v) for v in res_gpu[1][:9])
+    # + #217 §8.6.5: the reference's three appended slots (e_cap_heat_sum,
+    # e_clamp_destroyed_sum, e_kick_ke_sum) against the GPU's 15, 12, 9
+    cnts_ref = tuple(int(v) for v in res_ref[2:11]) + tuple(int(v) for v in res_ref[11:14])
+    cnts_gpu = tuple(int(v) for v in res_gpu[1][:9]) + (
+        int(res_gpu[1][15]), int(res_gpu[1][12]), int(res_gpu[1][9]))
     if dig_ref != dig_gpu or cnts_ref != cnts_gpu:
         ok = False
         print(f"  {tag}: result mismatch\n    ref digest={dig_ref} cnts={cnts_ref}"
@@ -399,6 +410,11 @@ def _make_rail_forcer(h=24, w=24):
     inp["wind_x"][cy2, :cx] = _quantize(-400.0)
     inp["wind_x"][cy2, cx:] = _quantize(400.0)
     inp["temperature"][cy2, cx] = _quantize(-292.0)  # G12: was -289.0
+    # #217 §8.6.5: a P step in GASSED air at rest (rows 9..12, col 19): its
+    # neighbours are kicked from rest past their cap, so the cap returns the
+    # kick's own share as heat (e_cap_heat_sum) -- the blast quadrant above
+    # kicks floor-N cells, whose N = 0 makes every bracket 0.
+    inp["p_new"][9:13, 19] = _quantize(60.0)
     for k in inp:
         inp[k] = np.ascontiguousarray(inp[k])
     return inp
@@ -481,14 +497,14 @@ def _accumulate(totals, res_ref, res_gpu):
     GPU-only arc #54 telemetry (no CPU-reference counterpart in this isolated
     call — design §2.3's new signed energy counters)."""
     totals[0:9] += np.array([int(v) for v in res_ref[2:11]], dtype=np.int64)
-    totals[9:15] += np.array([int(v) for v in res_gpu[1][9:15]], dtype=np.int64)
+    totals[9:16] += np.array([int(v) for v in res_gpu[1][9:16]], dtype=np.int64)   # + #217 slot 15
 
 
 def part1_isolated() -> bool:
     print("PART 1 — isolated GPU vs CPU reference (synthetic, all rails):")
     ok = True
     rng = np.random.default_rng(20260711)
-    totals = np.zeros(15, dtype=np.int64)   # KICK_CNT_SLOTS engagement coverage
+    totals = np.zeros(len(COUNTER_NAMES), dtype=np.int64)   # KICK_CNT_SLOTS engagement coverage
     n_cfg = 0
 
     # (a) the deterministic all-rails forcer, both cap regimes — VELOCITY-
@@ -694,6 +710,12 @@ def part2_trajectory() -> bool:
     runner = PhysicsRunner(bp)
     runner.eos.dx = float(g.tile_size_m)
     eos = runner.engine.eos
+    # #217 §8 (2026-11-21): this part REPLAYS one tick's single kick from its
+    # entry state, which holds only at k = 1. The sub-tick loop is switched
+    # off (a test seam, §8.6.6); the ceiling and the cap heat stay ON, so the
+    # replay still proves both (the reconstruction folds the ceiling in).
+    # The k > 1 chain's CPU == GPU is cuda_eos_step_check / cuda_s8a_check.
+    eos.subtick_loop = False
     inert_n2_idx = int(g.gases.name_to_id["inert_n2"])
     dt = 1.0 / float(CFG.clock.ticks_per_second)
 
@@ -750,12 +772,13 @@ def part2_trajectory() -> bool:
             eos.ke_drag_removed, eos.e_drag_heat_sum, 0, 0,
             eos.e_kick_ke_sum, eos.e_absorb_export_sum, eos.e_sponge_export_sum,
             eos.e_clamp_destroyed_sum, eos.rad_clip_hits, eos.e_ts_ke_sum,
+            eos.e_cap_heat_sum,   # #217 §8.6.5
         ], dtype=np.int64)
 
     n_ticks = 120
     max_n_sub = 0
     max_u_counts = 0
-    totals = np.zeros(15, dtype=np.int64)
+    totals = np.zeros(len(COUNTER_NAMES), dtype=np.int64)
     bad = 0
     for tick in range(n_ticks):
         # Snapshot the eos.step step-1-entry state (run_substeps calls
@@ -834,7 +857,7 @@ def part2_trajectory() -> bool:
         # (dbg_last_c_local_q) the isolated tail can no longer even use.
         # The scenario has no ts-gas cells (no thermal_solid plane), so
         # ts == solid on both sides (D4's fallback).
-        cap2 = _fold_cap2_plane(t0, g.solid, g.is_vacuum, g.solid, eos)
+        cap2 = _fold_cap2_plane(t0, g.solid, g.is_vacuum, g.solid, eos, dt)
 
         inp = {"wind_x": wx0, "wind_y": wy0, "temperature": t0,
                "gas_energy": ge0,
@@ -888,9 +911,9 @@ def part2_trajectory() -> bool:
         # state) must reproduce the LIVE solver's own per-tick reads
         # (cnt_delta[9:15]) even though `eos_kick_compression_ref` has no
         # return slot for them (D10 layout, 9-wide only).
-        extra_names = COUNTER_NAMES[9:15]
-        extra_gpu = tuple(int(v) for v in res_gpu[1][9:15])
-        extra_solver = tuple(int(v) for v in cnt_delta[9:15])
+        extra_names = COUNTER_NAMES[9:16]
+        extra_gpu = tuple(int(v) for v in res_gpu[1][9:16])
+        extra_solver = tuple(int(v) for v in cnt_delta[9:16])
         if extra_gpu != extra_solver:
             bad += 1
             print(f"  tick {tick}: GPU isolated-replay energy counters "

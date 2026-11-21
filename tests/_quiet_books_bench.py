@@ -14,7 +14,7 @@ The identity, exact in int64, EVERY tick:
 
     Δ Σ_accountable gas_energy  ==
           [ e_entry_resync_sum + e_transport_net_sum − e_wipe_sum
-            − e_kick_ke_sum + e_drag_heat_sum − e_work_export_sum
+            − e_kick_ke_sum + e_drag_heat_sum + e_cap_heat_sum − e_work_export_sum
             + e_rail_sum ]                                        (EOS §2.8)
         + [ e_gas_deposit_sum + e_gas_cond_sum + e_gas_rail_sum ]
                                                     (thermal solver, gas side)
@@ -102,7 +102,7 @@ def main() -> None:
         return (
             int(eos.e_entry_resync_sum) + int(eos.e_transport_net_sum)
             - int(eos.e_wipe_sum) - int(eos.e_kick_ke_sum)
-            + int(eos.e_drag_heat_sum) - int(eos.e_work_export_sum)
+            + int(eos.e_drag_heat_sum) + int(eos.e_cap_heat_sum) - int(eos.e_work_export_sum)
             + int(eos.e_rail_sum),
             int(tsolver.e_gas_deposit_sum) + int(tsolver.e_gas_cond_sum)
             + int(tsolver.e_gas_rail_sum),
