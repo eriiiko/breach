@@ -3609,6 +3609,107 @@ conductor's tick; the windows dominate the observation (86 % at N = 256),
 most likely `watched`'s walk per (record, cell), not yet split per kernel.
 No golden re-baseline; no host value moved.
 
+**P8.7 AS-BUILT (2026-11-21, branch `29-p87-obs-reward`, stacked on P8.5a's
+head `d470269e` while P8.4 / P8.5a's card gates ran).** THE DEVICE BOOKS are
+`simulation.device_books.DeviceBooks` (`DeviceObservation.books`) over
+`cpp/src/cuda_obs_books.cu` (`bp.obs_books`, ONE THREAD PER ENV, one launch on
+the tick stream): `rl_env.EnvRunner.step`'s loop body line for line -- the
+step's accumulators zeroed on a step's first tick (`start_step`), the old
+counters over the event ring (`count_events`, the rows ended before the tick
+frozen), `RewardBooks.end` (the walk over the ring in emission order through
+`_settle`, the turnings and the mismatch check per store row, the snapshot,
+the team part from the standing in store row order, the eliminations, the
+flush), then `MatchRules`' end (fewer than two marine teams alive or the limit
+tick), the result and `finish`, and on a decision tick or the ending tick the
+SERVED arrays (`reward` (N, U, 5), `counters` (N, U, K) and the three team
+blocks float32, `rows_ended`, `terminated`, `truncated` uint8: the shared
+memory's own dtypes and casts) in `DeviceBooks.served`. WHERE: the walk's `11'`
+line after the device team picture (whose bars they read) and after the tick's
+blocks (`DeviceObservation.stage`: vision, picture, blocks, books), so the
+ending tick's blocks are built as the reference builds its last observation.
+THE BLOCK: one int64 row per env (`device_books.layout`, compared with the
+compiled `obs_books_layout` at the build): the unit snapshot (`_units`), the
+standing (H, A per team, the zombies' H, the teams' dict order kept as the
+order a team first appears among the living non-zombies: `balance` and
+`sum(H.values())` add in that order), living / eliminated teams as bit sets,
+the rows' ended / pending / step-ended flags, the tick's scratch, the step's
+counters and raw, the old counters (float32 bits), rest / d_balance / outcome,
+the walk's working hp and life, the scalars (finished, the ENDING TICK, the
+result, terminated / truncated, the tick, the env's team count). THE WEIGHTS:
+obs-table rows `BOOK_TERMS` (the profile's eight terms) and `BOOK_G`
+(`reward_v1.group_weights` over `rl_env.COUNTER_NAMES`, (K, 5)), float64 bits
+read from the reference's own objects (`device_books.table_rows`);
+`DeviceObservation(..., reward_profile=, reward_overrides=)`, default
+"fireteam"; "counters" REFUSED by name (`device_books.profile_terms`). NUMPY'S
+ORDER (inventory K5, the experiment on numpy 2.5.3, kept as
+`tests/test_device_obs.py` properties): the named fold
+`(counters[:, :, None] * G[None]).sum(axis=1)` is SEQUENTIAL over the K
+counters from +0.0 (0 mismatches on 900 random (U, K) cases of 12 / 64 / 6 rows
+by 32 / 40 counters; all -0.0 products sum to +0.0, so the reduction starts
+from the identity, not the first term); the old counters' `a[r, c] += dmg` on
+float32 is NEP 50 (the damage cast to float32 once, a float32 add: 0
+mismatches in 200 000, 46 219 against float64-then-cast); the "counters"
+profile's last-axis float32 sums are pairwise (11 635 of 24 000 rows differ
+from a serial fold at K = 18): refused, as the design's version 2 decided.
+EVENTS: the ring carries every event the books read (it is `apply_packet`'s
+record of every `UnitHitEvent` / `UnitKilledEvent`, heals included: 250 heal
+hits over the corpus walked equal); the claims are already folded into each
+event's attacker; no event was missing, no ring record added, no unit kernel
+touched. THE MISMATCH (`RewardBooksMismatch`): a per-env count in the books'
+words, raised BY NAME with the env at the tick's one books read (kind
+`reward_books`); the fault bits (a skipped tick, a team off the layout) as
+`ConductorFault`. TERMINATION REACHES THE HOST with no third sync: the same
+words carry each env's "ended this tick" flag (`DeviceConductor.ended_now`
+after every tick); the served `terminated` stays a device array for the
+trainer. THE ENDED LATCH: set on the card at the ending tick (after that
+tick's blocks), `ENDED_TICK` kept for P8.8b's terminal observation; a set
+latch freezes the env's books (and skips every later block); the host stops
+stepping an ended episode, so the frozen books ARE its final books. Choices
+where the design was silent: `begin` is the identity on the card (nothing
+changes a unit between two conductor ticks, so the snapshot of the previous
+end is the tick's start and no team can be eliminated between ticks; a reset
+or a hand state restages the books with it -- P8.9b); the books keep every
+named profile through the obs table, the gate runs "fireteam" on the whole
+corpus and "range" on bots, the room and the clock match; the served arrays
+live beside the observation buffers (`DeviceBooks.served`), not in them; the
+standing holds at most 8 marine teams (`T_MAX`, refused past it). Gates
+(`tests/cuda_obs_check.py`, `PATCH = "P8.7"`; every earlier part unchanged and
+green): the books' WHOLE state equal to the reference's (`RefBooks`:
+`EnvRunner.step`'s loop over `RewardBooks` and `count_events`, every named
+profile) at EVERY tick as raw bits, and the served arrays at every step's end:
+bots 1350 ticks / 338 steps, bots_v1 273 / 68, range_door 201 / 50, hand 321 /
+80, range_hall 33 / 8, hall_cover 27 / 7, ship_all_round 481 / 120,
+door_grenade 151 / 37, slow_turn 41 / 10, list_hand 25 / 6, fire_hand 61 / 15
+and the new CLOCK HAND MATCH 49 / 12 (`clock_hand`: range_door, both teams idle,
+the time limit cut to 2 s: no played match ends by the clock); "range" on bots
+(338 decisions), range_door (51) and clock_hand (13) equal; batches ship_demo N
+= 2 / 4 (493 / 805 env-decisions, envs ending at 1664 / 300 / 970 / 275: the
+ended envs' books, served arrays and latch compared FROZEN every tick after
+their end) and the room N = 2 / 4 (112 / 220) equal. Coverage (fireteam, served
+counters non-zero cells): won 11, eliminated 11, clock 2, bars_enemy 51,
+bars_lost 356, kills_enemy 9, died 16, bars_zombie 44, share_bars 618,
+share_enemy_bars 810, share_alive 47, share_enemy_alive 47, share_zombie_bars
+384, bars_team 31, team_kills 4; ends by elimination 5, by the clock 1; results
+5 wins, 1 draw; the walk met 23 overkill hits, 250 heals, 1 corpse hit, 2
+turnings, 3 posthumous credits, 1757 uncredited hits. Census: every served key
+non-constant but `truncated` (0 under every named profile by design 6.5,
+exempt by name). Breaks, each red: `bk_order` (the tick's events walked in
+reverse: bots tick 452, `rest[0]` one ulp; bots_v1 tick 204, a row's
+`bars_lost` -- the order matters through the clip at zero health and the
+float sums of non-dyadic bar ratios, and the gate holds it), `bk_weight` (the
+terms read one row further: bots tick 419, `d_balance[0]`; clock_hand tick
+48, `outcome[0]`), `bk_late` (termination one tick late: the `won` / `clock`
+counters missing at every ending tick), `bk_freeze` (the books not frozen:
+batch ship_demo N = 2 env 1 at tick 301, N = 4 env 3 at 276, the room N = 4
+env 3 at 209). 2.00 syncs per steady tick at N = 1 and 2 (`max_n_sub`, the
+books read). Cost (`tools/bench_conductor.py --obs`, ship_demo, GPU time for
+all envs, the card shared with another run): the books 0.063 / 0.141 / 0.152 ms
+per tick at N = 1 / 64 / 256 and 0.143 / 0.343 / 0.396 ms on a tick that serves
+a step (the reward fold and the casts), i.e. about 0.33 / 0.77 / 0.85 ms per
+decision of 4 ticks against the whole observation's 0.698 / 2.835 / 8.527 ms;
+the serial walk per env dominates at small N. No golden re-baseline; no host
+value moved; no table column, ring record or unit kernel added.
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:
