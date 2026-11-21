@@ -73,10 +73,12 @@ def test_the_conductor_replays_a_recorded_match_equal_every_tick(conductor_run):
 
 def test_the_conductor_replays_the_pinned_matches_to_their_end(conductor_run):
     """PROPERTY (S3): the two pinned ship_demo matches (bots, bots_v1),
-    recorded and replayed through the conductor to their last tick, equal at
-    every tick, or refused BY NAME at a form the device does not have (never
-    compared past it). BREAKS IF any slot diverges over a full match, or a
-    range or capacity is crossed silently."""
+    recorded through the game's recorder and fed to the conductor from the
+    recording's intent rows to their end (whatever tick that is; the
+    recording play itself the reference, played once), equal at every tick
+    and ended at the reference's ending tick, or refused BY NAME at a form
+    the device does not have (never compared past it). BREAKS IF any slot
+    diverges over a full match, or a range or capacity is crossed silently."""
     _run(conductor_run, "test_the_conductor_replays_the_pinned_matches_to_their_end")
 
 

@@ -277,7 +277,9 @@ def test_the_device_decoder_decodes_as_the_policy_controller_does(obs_run):
     of a decision (OBS_BREAK=dec_every), the decode runs after the walk
     (dec_late), the horde latch is taken at the previous tick's end
     (dec_horde_late) or a pointer resolves against the next observation's
-    list_uid (dec_next_uid)."""
+    list_uid (dec_next_uid). In the shared run it reads part GATE's gate runs
+    of corpus (c) (the same ``gate_c``, so they run once); alone or under a
+    break it gates them itself."""
     _run(obs_run, "test_the_device_decoder_decodes_as_the_policy_controller_does")
 
 
