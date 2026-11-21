@@ -37,12 +37,14 @@ A steady step (no env ends, no checkpoint due) makes exactly the conductor's
 2 host syncs per tick and no other transfer: the decision is one device write
 (``DeviceDecoder.set_decisions``), every copy above a device kernel.
 
-EPISODES (decision 4, synchronous form): env e's episode k is
+EPISODES (decision 4): env e's episode k is
 ``rl_env.episode_match(run, levels, e, k)`` (the farm's own draw and spec),
 built on the host as ``MatchSession(level, spec, seed, commander="none")``
 and handed to ``DeviceConductor.reset_env`` at the step it ended, so the
 returned live observation is episode k + 1's tick 0, as on the farm. The
-first episode of every env is built with the backend.
+first episode of every env is built with the backend; the next ones are
+PRE-BUILT in the conductor ticks' idle host time (:meth:`DeviceEnv._idle`,
+``DeviceConductor.tick(idle=)``; ``prebuild = False`` builds at the reset).
 
 WHO DRIVES (design §12.3, P8.6a's refusals): every marine team ``policy`` (the
 device decoder), the horde ``zombies`` or ``idle``; ``[run] commander`` must
