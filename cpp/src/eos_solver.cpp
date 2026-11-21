@@ -385,6 +385,7 @@ void EOSSolver::step(
     e_absorb_export_sum = 0;
     e_sponge_export_sum = 0;
     e_clamp_destroyed_sum = 0;
+    e_cap_heat_sum = 0;          // #217 §8.6.5: reset ONCE per tick, never per sub-tick
     e_drag_heat_sum = 0;
     e_ts_ke_sum = 0;
     e_work_export_sum = 0;
@@ -429,6 +430,7 @@ void EOSSolver::step(
     if ((int)e0_.size()      != n) e0_.assign(n, 0);
     if ((int)pcur_.size()    != n) pcur_.assign(n, 0);
     if ((int)s_plane_.size() != n) s_plane_.assign(n, 0);
+    if ((int)kset_.size()    != n) kset_.assign(n, 0);     // #217 §8.6.2
 
     // ---- step 0: P_prev := P ---------------------------------------------
     for (int i = 0; i < n; ++i) p_prev[i] = atmosphere[i];
@@ -560,6 +562,17 @@ void EOSSolver::step(
     // — do not use it. Value at shipped dials: 728178 (≈ 11.11 in Q16.16).
     const double ru = (double)u_max_q / (double)c_amb_q;
     const int64_t ratio_umax = (int64_t)(ru * ru * 65536.0) + 1;
+    // #217 §8.6.4 (B), ruling 2: THE BUDGET CEILING. The cap stage's per-cell
+    // ceiling becomes min(cap2, U_bud^2), U_bud = K_MAX * C_P * dx / dt: past
+    // the sub-tick budget the velocity the next update transports never
+    // exceeds one tile per pressure update. A VALUE of the existing cap stage
+    // (the Interior drag rule: extend its stages, never a parallel site),
+    // folded into the plane at its one build (the scan below), so the kick
+    // trusts the plane verbatim as before (D5). Off (the legacy switch): the
+    // cap is the plane alone, HEAD.
+    eos_check_k_max(K_MAX);
+    const int64_t ubud2_q32 = subtick_ceiling ? eos_budget_cap2_q32(dt, dx, K_MAX)
+                                              : (int64_t)0;
 
     // ---- arc #54 P-G1a: the Dalton bulk sum HOISTED above the c_LOCAL /
     // cap2 scan (PURE CODE MOTION — nothing between the old and new sites
@@ -629,30 +642,11 @@ void EOSSolver::step(
         cap2_plane_[i] = (ratio >= ratio_umax)
             ? u_max2_q32                                       // rail; avoids the
             : mul128_shr(c_amb2_q32, ratio, 16);               // 2^65+ overflow path
+        // #217 §8.6.4: the budget ceiling (0 = off).
+        if (ubud2_q32 > 0 && cap2_plane_[i] > ubud2_q32) cap2_plane_[i] = ubud2_q32;
     }
-    const q16 absorb_dt_q = quantize((double)absorb_strength * dt_d);
-    // P-E3 (design §2.8): the drag scalar folds — kd_q = quantize(k_drag*dt),
-    // the absorb precedent exactly; heat_frac_q the plain dial fraction; the
-    // c_v reciprocal (Q.32, make_recip, the SAME shared idiom Pass 1's
-    // deposit already uses) folded ONCE per tick rather than per cell.
-    // Dormancy branches on kd_q (QUANTIZED), never on the float k_drag — a
-    // tiny k_drag (e.g. 1e-6) quantizes to 0 and a float-keyed branch would
-    // disagree with CUDA about which code ran (design's explicit warning).
-    const q16 kd_q = quantize((double)k_drag * dt_d);
-    // drag-law v2 (design §2/§7, docs/drag_law_v2_design_2026-08-23.md):
-    // kd2_q beside kd_q, the SAME per-tick-not-per-cell idiom, plus the
-    // MANDATORY dormant-dial-guarded rad_dead_q32 = U0^2 (U0 = ceil(2^16/
-    // kd2_q)) — the calm-cell fast-path threshold stage Q skips below. An
-    // unconditional ceil-divide would be a divide-by-zero at the shipped
-    // config (kd2_q == 0); kd2_q >= 1 => U0 <= 2^16 => U0^2 <= 2^32,
-    // comfortably int64. Dormancy branches on the QUANTIZED kd2_q, never the
-    // float (the kd_q idiom).
-    const q16 kd2_q = quantize((double)k_drag2 * dt_d);
-    int64_t rad_dead_q32 = 0;
-    if (kd2_q > 0) {
-        const int64_t U0 = ((int64_t)FP_ONE + (int64_t)kd2_q - 1) / (int64_t)kd2_q;
-        rad_dead_q32 = U0 * U0;
-    }
+    // (#217 §8.6.1: absorb_dt_q, kd_q, kd2_q and rad_dead_q32 are rates folded
+    // with dt -- they MOVED below the k choice and fold at the sub-tick's dt_k.)
     // (arc #54 P-G1a, D5/D11: `heat_frac_q`, `recip_cv` and
     // `recip_n_work_ref` are RETIRED with their dials — the drag deposit is
     // the derived k_ke bracket now, and step 4c's trust gate is gone.)
@@ -723,11 +717,70 @@ void EOSSolver::step(
     if (u_est_raw > u_est_cap) u_est_raw = u_est_cap;
     const q16 cfl_dx_q = quantize((double)CFL_ADV * dx_d);
     const int64_t numer_wide = mul128_shr((int64_t)dt_q, u_est_raw, 16);
-    int n_sub = std::max(1, ceil_div(
+    // #217 §8.6.3: n_adv is HEAD's estimate UNCAPPED (the cap moves into the
+    // per-sub-tick rule below, after the division by k).
+    const int n_adv = std::max(1, ceil_div(
         (q16)std::min<int64_t>(numer_wide, (int64_t)INT32_MAX), cfl_dx_q));
-    if (n_sub > N_SUB_MAX) n_sub = N_SUB_MAX;
+
+    // ======================================================================
+    // #217 §8.6.2 — THE SUB-TICK COUNT k, chosen ONCE at entry (the n_sub
+    // idiom: integer reductions, one fold). The K-SET: gas cells (not solid,
+    // vacuum or ring) with Dalton N >= N_K_MIN (the entry n_total_ above) and
+    // no vacuum / ring cell within R_K tiles (4-neighbour distance). Over it:
+    // max|u| (the entry wind), max|div u| (the entry wind's face-form
+    // divergence, the solve's own stencil) and, on a tick with a blast
+    // source, max|S| over the cells the source applies to. eos_subtick_k is
+    // the ONE k-rule (eos_solver.h). subtick_loop off: k == 1.
+    // ======================================================================
+    const EosKsetMax km = eos_kset_scan(
+        wind_x, wind_y, n_total_.data(), solid, is_vacuum,
+        ambient_mode ? is_ambient : nullptr,
+        (int)div_source.size() == n ? div_source.data() : nullptr,
+        h, w, inv_2dx_q, kset_.data());
+    const int64_t kset_max_rad = km.max_rad, kset_max_div = km.max_div,
+                  max_src = km.max_src;
+    const q16 gdt_q   = quantize(gamma_d * dt_d);
+    const q16 cp_dx_q = quantize(dx_d);              // C_P = 1 tile
+    const int k_ticks = subtick_loop
+        ? eos_subtick_k((int64_t)sqrt_q16(kset_max_rad), kset_max_div, max_src,
+                        dt_q, gdt_q, cp_dx_q, K_MAX)
+        : 1;
+    const int n_floor = eos_subtick_n_floor(k_ticks, K_MAX, CFL_ADV, subtick_ceiling);
+    const int n_sub = eos_subtick_n_sub(n_adv, k_ticks, N_SUB_MAX, n_floor);
     dbg_last_n_sub = n_sub;   // P6.2 telemetry (gate input reconstruction)
-    const double dt_s_d = dt_d / (double)n_sub;
+    dbg_last_k = k_ticks;     // #217 §8.9 telemetry
+    // dt_k: the sub-tick's dt, THE helper (exact: k is a power of two).
+    const float dt_k = eos_subtick_dt(dt, k_ticks);
+    const double dt_k_d = (double)dt_k;
+    const double dt_s_d = dt_k_d / (double)n_sub;
+
+    // ---- the rates folded with dt, re-folded ONCE at dt_k (§8.6.1's
+    // inventory; each a host double quantized once, the k_flux_q idiom) -----
+    const q16 dt_q_k     = quantize(dt_k_d);
+    const int64_t Kdt_raw_k = mul128_shr(K_raw, (int64_t)dt_q_k, 16);
+    const q16 absorb_dt_q = quantize((double)absorb_strength * dt_k_d);
+    // P-E3 (design §2.8): the drag scalar folds — kd_q = quantize(k_drag*dt),
+    // the absorb precedent exactly; heat_frac_q the plain dial fraction; the
+    // c_v reciprocal (Q.32, make_recip, the SAME shared idiom Pass 1's
+    // deposit already uses) folded ONCE per tick rather than per cell.
+    // Dormancy branches on kd_q (QUANTIZED), never on the float k_drag — a
+    // tiny k_drag (e.g. 1e-6) quantizes to 0 and a float-keyed branch would
+    // disagree with CUDA about which code ran (design's explicit warning).
+    const q16 kd_q = quantize((double)k_drag * dt_k_d);
+    // drag-law v2 (design §2/§7, docs/drag_law_v2_design_2026-08-23.md):
+    // kd2_q beside kd_q, the SAME per-tick-not-per-cell idiom, plus the
+    // MANDATORY dormant-dial-guarded rad_dead_q32 = U0^2 (U0 = ceil(2^16/
+    // kd2_q)) — the calm-cell fast-path threshold stage Q skips below. An
+    // unconditional ceil-divide would be a divide-by-zero at the shipped
+    // config (kd2_q == 0); kd2_q >= 1 => U0 <= 2^16 => U0^2 <= 2^32,
+    // comfortably int64. Dormancy branches on the QUANTIZED kd2_q, never the
+    // float (the kd_q idiom).
+    const q16 kd2_q = quantize((double)k_drag2 * dt_k_d);
+    int64_t rad_dead_q32 = 0;
+    if (kd2_q > 0) {
+        const int64_t U0 = ((int64_t)FP_ONE + (int64_t)kd2_q - 1) / (int64_t)kd2_q;
+        rad_dead_q32 = U0 * U0;
+    }
 
     // ---- arc #54 §2.1/§2.4: the FLUX constant, folded once per tick -------
     // k_work = (γ−1)/C = (γ−1)·T_AMB_K — the ONE unit bridge from the
@@ -785,7 +838,7 @@ void EOSSolver::step(
     // (the 1a backtrace and the 1d face coefficient). Before patch U this was
     // quantize(dt_s_d): air moved u·dt_s TILES, 1/dx too slow below 1 m.
     // Bit-identical to that at dx == 1.0 (eos_transport_step_q's header).
-    const q16 dtdx_s_q = eos_transport_step_q(dt, n_sub, dx);
+    const q16 dtdx_s_q = eos_transport_step_q(dt_k, n_sub, dx);   // #217 §8: at dt_k
     // donor-cell face coefficients (min-perm quantize x dt_s/dx — the exact
     // legacy bulk_flux_transport per-face chain, hoisted):
     {
@@ -808,6 +861,28 @@ void EOSSolver::step(
         }
     }
 
+    // ======================================================================
+    // #217 §8.6.1 — THE SUB-TICK LOOP: steps 1-7, k_ticks times at dt_k. The
+    // resets, step 0 (p_prev / wave_p written ONCE), the pre-stage scan, k,
+    // n_sub, cmask and coeffE/S ran once above. The warm start for sub-tick
+    // >= 2 is the previous sub-tick's stored P, read from `atmosphere` itself
+    // (step 5 is its only writer in this function), so `p_prev` is never
+    // touched after entry. The counters accumulate over the sub-ticks.
+    // ======================================================================
+    dbg_solves_last_step = 0;
+    dbg_subtick_umax.clear();
+    for (int tk = 0; tk < k_ticks; ++tk) {
+    const bool last_subtick = (tk == k_ticks - 1);
+    const int32_t* p_warm = (tk == 0) ? p_prev : atmosphere;
+    if (dbg_record_subtick_umax) {
+        int64_t mr = 0;
+        for (int i = 0; i < n; ++i) {
+            if (!kset_[i]) continue;
+            const int64_t rad = mul_wide(wind_x[i], wind_x[i]) + mul_wide(wind_y[i], wind_y[i]);
+            if (rad > mr) mr = rad;
+        }
+        dbg_subtick_umax.push_back(sqrt_q16(mr));
+    }
     for (int s = 0; s < n_sub; ++s) {
         const float dt_s = (float)dt_s_d;
 
@@ -967,7 +1042,7 @@ void EOSSolver::step(
         if (debug_pstar_from_prev) {
             // MEASUREMENT-ONLY (see eos_solver.h): the paper's own p_a
             // structure — pressure evolves as its own state. Diagnostic.
-            pstar_[i] = p_prev[i];
+            pstar_[i] = p_warm[i];   // #217 §8: the sub-tick's own previous P
         } else {
             const int64_t t_abs_wide = (((int64_t)s_eos_q * (int64_t)temperature[i]) >> 16) + (int64_t)t_amb_q;
             const q16 t_abs = (q16)t_abs_wide;
@@ -995,14 +1070,20 @@ void EOSSolver::step(
     // this live path.
     // BC: the SHIFT (P′ = P − P_amb), the ring→Dirichlet excl, and the σ-sponge
     // (B3b) all live inside mg_build_levels, gated on is_ambient != nullptr.
+    // #217 §8.6.1: the build at dt_k, the warm start the sub-tick's previous P,
+    // the sigma-sponge at sigma * k^2 (sigma_shift = 2 log2 k, exact).
+    int sigma_shift = 0;
+    for (int kk = k_ticks; kk > 1; kk >>= 1) sigma_shift += 2;
     const int n_levels = mg_build_levels(pstar_.data(), div_u_.data(),
-                                         n_total_.data(), p_prev,
+                                         n_total_.data(), p_warm,
                                          solid, is_vacuum, dyn_permeability,
-                                         h, w, dt,
+                                         h, w, dt_k,
                                          ambient_mode ? is_ambient : nullptr,
                                          p_amb,
-                                         ambient_mode ? sponge_sigma : nullptr);
+                                         ambient_mode ? sponge_sigma : nullptr,
+                                         sigma_shift);
     mg_run_solve_cpu(n_levels);
+    ++dbg_solves_last_step;
     MGLevel& L0 = levels_[0];
 
     // ======================================================================
@@ -1081,6 +1162,7 @@ void EOSSolver::step(
             const int64_t n_bulk_ke = (int64_t)n_total_[i];
             const bool ke_stores = accountable(i);
             int64_t u2_prev = ux * ux + uy * uy;   // ≤ 2^55
+            const int64_t u2_kick0 = u2_prev;      // #217 §8.6.5: KE0 (kick entry)
             if (gx != 0 || gy != 0) {   // micro-opt: du == 0 exactly at zero
                                         // gradient — skip the reciprocal
                                         // chain (bit-identical)
@@ -1088,8 +1170,8 @@ void EOSSolver::step(
                 if (nhat < n_floor_q) nhat = n_floor_q;
                 const q16 inv_n = reciprocal_q16(nhat);
                 // du = (K·dt)·∇P·(1/N̂) — staged 128-bit, the documented order.
-                ux -= mul128_shr(mul128_shr(Kdt_raw, gx, 16), (int64_t)inv_n, 16);
-                uy -= mul128_shr(mul128_shr(Kdt_raw, gy, 16), (int64_t)inv_n, 16);
+                ux -= mul128_shr(mul128_shr(Kdt_raw_k, gx, 16), (int64_t)inv_n, 16);
+                uy -= mul128_shr(mul128_shr(Kdt_raw_k, gy, 16), (int64_t)inv_n, 16);
             }
             // (b) THE COMPONENT GUARD, moved here and tightened to 2^27 —
             // UNCONDITIONAL (outside the micro-opt branch above, R3-#5a).
@@ -1098,12 +1180,14 @@ void EOSSolver::step(
             if      (uy >  KE_SAFE) { uy =  KE_SAFE; ++rad_clip_hits; }
             else if (uy < -KE_SAFE) { uy = -KE_SAFE; ++rad_clip_hits; }
             // BRACKET 1 — the ∇p kick (reversible exchange with the field).
+            int64_t u2_kick1 = 0;                  // #217 §8.6.5: KE1 (after the kick)
             {
                 const int64_t u2 = ux * ux + uy * uy;
                 const int64_t dE = ke_energy(n_bulk_ke, u2 - u2_prev);
                 if (ke_stores) { gas_energy[i] -= dE; e_kick_ke_sum += dE; }
                 else           { e_ts_ke_sum -= dE; }
                 u2_prev = u2;
+                u2_kick1 = u2;
             }
 
             // absorption damping u *= (1 − absorb·dt) (D4) — on the wide
@@ -1138,7 +1222,9 @@ void EOSSolver::step(
             // naive signed truncating multiply leaves a stuck −1-count floor
             // (fixed_point.h sign convention). Gated on ambient mode -> space
             // maps byte-identical (dormancy BY BRANCH); no-op where k(d)==0.
-            if (ambient_mode && sponge_udamp) {
+            // #217 §8.6.1: a PER-TICK factor (not scaled by dt): applied on the
+            // tick's LAST sub-tick only, so the factor stays exact.
+            if (ambient_mode && sponge_udamp && last_subtick) {
                 const int32_t kd = sponge_udamp[i];
                 if (kd > 0) {
                     const q16 kk2 = (kd < FP_ONE) ? (q16)(FP_ONE - kd) : 0;
@@ -1203,15 +1289,37 @@ void EOSSolver::step(
                 ux = (ux * (int64_t)u_cap_q) / (int64_t)umag;
                 uy = (uy * (int64_t)u_cap_q) / (int64_t)umag;
             }
-            // BRACKET 4 — the velocity cap: a numerical RAIL whose pre-clamp
-            // |u| is bounded only by the component guard, so its removed KE is
-            // DESTROYED and counted, never heated (D6 — heating from a rail is
-            // #54 through a new door).
+            // BRACKET 4 — the velocity cap. #217 §8.6.5, ruling 3 (Erik,
+            // 2026-11-21; rule D6 amended for the cap): of its removal
+            // `removed` (KEpre - KEc, >= 0), the part THIS sub-tick's kick
+            // supplied above both the entry speed and the cap,
+            //   heat = min(removed, max(0, KE1 - max(KE0, KEc))),
+            // returns to the cell's gas_energy as heat (e_cap_heat_sum, the EOS
+            // group); the rest is DESTROYED and counted (e_clamp_destroyed_sum,
+            // a tripwire: ~0 once the ceiling binds, non-zero only for a speed
+            // that arrived from outside the kick). heat <= removed and heat <=
+            // the kick's own debit from this cell (ke_energy is monotone), so
+            // nothing is minted. cap_heat off: everything destroyed (HEAD).
             {
                 const int64_t u2 = ux * ux + uy * uy;
                 const int64_t dE = ke_energy(n_bulk_ke, u2 - u2_prev);
-                if (ke_stores) e_clamp_destroyed_sum -= dE;
-                else           e_ts_ke_sum           -= dE;
+                if (ke_stores) {
+                    const int64_t removed = -dE;
+                    int64_t heat = 0;
+                    if (cap_heat && removed > 0) {
+                        const int64_t base = u2_kick0 > u2 ? u2_kick0 : u2;
+                        const int64_t sup = u2_kick1 - base;
+                        if (sup > 0) {
+                            heat = ke_energy(n_bulk_ke, sup);
+                            if (heat > removed) heat = removed;
+                        }
+                    }
+                    gas_energy[i] += heat;
+                    e_cap_heat_sum += heat;
+                    e_clamp_destroyed_sum += removed - heat;
+                } else {
+                    e_ts_ke_sum -= dE;
+                }
                 u2_prev = u2;
             }
 
@@ -1709,6 +1817,7 @@ void EOSSolver::step(
             temperature[i] = (int32_t)t_rel;
         }
     }
+    }   // #217 §8.6.1: end of the sub-tick loop (steps 1-7, k_ticks times)
     // The two step-4c checkpoints MOVE here with the law they measured: the
     // T plane's post-tick digest is now taken after the recovery, which is
     // where T finally exists for this tick (the P-E1 `digest_advect` move
@@ -1759,7 +1868,7 @@ int EOSSolver::mg_build_levels(
         const float* dyn_permeability,
         int h, int w, float dt,
         const bool* is_ambient, int32_t p_amb,
-        const int32_t* sponge_sigma) const {
+        const int32_t* sponge_sigma, int sigma_shift) const {
     const int n = h * w;
     if (n <= 0 || dt <= 0.0f) return 0;
     // BC: dormancy BY BRANCH — every ambient edit below is gated on this flag.
@@ -1900,7 +2009,9 @@ int EOSSolver::mg_build_levels(
                 if (L.excl[i] != 0) continue;
                 const int32_t s = sponge_sigma[i];
                 if (s <= 0) continue;
-                int64_t ms = L.m[i] + (int64_t)s;
+                // #217 §8.6.1: sigma * k^2 at a sub-tick of dt/k (the shift is
+                // 0 at k = 1: the per-tick sigma, bit for bit).
+                int64_t ms = L.m[i] + ((int64_t)s << sigma_shift);
                 if (ms > M_CAP) ms = M_CAP;
                 L.m[i] = ms;
             }
@@ -2176,6 +2287,90 @@ void EOSSolver::mg_run_solve_cpu(int n_levels) const {
 // `std::max((double)dx, 1e-6)` and dt_s is step()'s `dt_d / n_sub`, so at
 // dx == 1.0 the result is the pre-patch-U `quantize(dt_s_d)` bit for bit.
 // ===========================================================================
+// #217 §8.6.2 — THE K-SET SCAN, the ONE host transcription (EOSSolver::step
+// and the per-call CUDA pre-stage call it; K_kset_scan is its device twin).
+EosKsetMax eos_kset_scan(const int32_t* wind_x, const int32_t* wind_y,
+                         const int32_t* n_total,
+                         const bool* solid, const bool* is_vacuum,
+                         const bool* is_ambient, const int32_t* div_source,
+                         int h, int w, int32_t inv_2dx_q, uint8_t* kset_out) {
+    EosKsetMax km;
+    const int n = h * w;
+    const auto boundary = [&](int j) -> bool {
+        return is_vacuum[j] || (is_ambient != nullptr && is_ambient[j]);
+    };
+    for (int y = 0; y < h; ++y) {
+        const int row = y * w;
+        for (int x = 0; x < w; ++x) {
+            const int i = row + x;
+            uint8_t mem = 0;
+            if (!solid[i] && !boundary(i) && n_total[i] >= EOS_N_K_MIN_RAW) {
+                mem = 1;
+                for (int dy = -EOS_R_K; dy <= EOS_R_K && mem; ++dy) {
+                    const int yy = y + dy;
+                    if (yy < 0 || yy >= h) continue;
+                    const int rx = EOS_R_K - (dy < 0 ? -dy : dy);
+                    for (int dxx = -rx; dxx <= rx; ++dxx) {
+                        const int xx = x + dxx;
+                        if (xx < 0 || xx >= w) continue;
+                        if (boundary(yy * w + xx)) { mem = 0; break; }
+                    }
+                }
+            }
+            if (kset_out) kset_out[i] = mem;
+            if (!mem) continue;
+            const int64_t rad = mul_wide(wind_x[i], wind_x[i]) + mul_wide(wind_y[i], wind_y[i]);
+            if (rad > km.max_rad) km.max_rad = rad;
+            // the entry wind's face-form divergence: the solve's own stencil
+            const int64_t fw = face2_u(wind_x, i, y, x - 1, h, w, solid);
+            const int64_t fe = face2_u(wind_x, i, y, x + 1, h, w, solid);
+            const int64_t fn = face2_u(wind_y, i, y - 1, x, h, w, solid);
+            const int64_t fs = face2_u(wind_y, i, y + 1, x, h, w, solid);
+            const int64_t dv = (int64_t)mul_q16((q16)(fe - fw), inv_2dx_q)
+                             + (int64_t)mul_q16((q16)(fs - fn), inv_2dx_q);
+            const int64_t adv = dv < 0 ? -dv : dv;
+            if (adv > km.max_div) km.max_div = adv;
+        }
+    }
+    if (div_source) {
+        for (int i = 0; i < n; ++i) {
+            if (solid[i] || is_vacuum[i] || (is_ambient != nullptr && is_ambient[i])) continue;
+            const int64_t sv = (int64_t)div_source[i];
+            const int64_t as = sv < 0 ? -sv : sv;
+            if (as > km.max_src) km.max_src = as;
+        }
+    }
+    return km;
+}
+
+// #217 §8.6 — the sub-tick helpers (eos_solver.h has the contract).
+float eos_subtick_dt(float dt, int k) {
+    return dt / (float)(k > 0 ? k : 1);   // exact: k is a power of two
+}
+
+int eos_subtick_n_floor(int k, int k_max, float cfl_adv, bool ceiling) {
+    if (k <= 1 || !ceiling) return 1;
+    const double f = (double)k_max / ((double)k * (double)cfl_adv);
+    int fl = (int)f;
+    if ((double)fl < f) ++fl;            // ceil, exact on the shipped 16/k
+    return fl < 1 ? 1 : fl;
+}
+
+void eos_check_k_max(int k_max) {
+    if (k_max != 1 && k_max != 2 && k_max != 4 && k_max != 8)
+        throw std::runtime_error(
+            "EOSSolver.K_MAX must be 1, 2, 4 or 8 (the sub-tick fold table's rows); "
+            "see docs/eos_checkerboard_design_2026-11-20.md section 8.6.2");
+}
+
+int64_t eos_budget_cap2_q32(float dt, float dx, int k_max) {
+    eos_check_k_max(k_max);
+    const double dx_d = std::max((double)dx, 1e-6);   // == step()'s dx_d
+    const double dt_d = std::max((double)dt, 1e-9);
+    const q16 ubud_q = quantize((double)k_max * dx_d / dt_d);   // C_P = 1
+    return (int64_t)ubud_q * (int64_t)ubud_q;
+}
+
 int32_t eos_transport_step_q(float dt, int n_sub, float dx) {
     const double dx_d   = std::max((double)dx, 1e-6);
     const double dt_s_d = (double)dt / (double)std::max(1, n_sub);
@@ -2302,7 +2497,7 @@ void eos_kick_compression_reference(
         uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
         int64_t* counters_out /* [9] */,
         const bool* is_ambient, const bool* thermal_solid,
-        const int32_t* sponge_udamp) {
+        const int32_t* sponge_udamp, bool cap_heat, int64_t* counters_ext) {
     const int n = h * w;
     const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
     // THERMAL-MASS AXIS, P-EOS: step()'s `ts` fold, verbatim. arc #54 §2.3
@@ -2312,6 +2507,7 @@ void eos_kick_compression_reference(
     // EXPORTED to the ts counter instead of stored (F5).
     const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
     for (int c = 0; c < 9; ++c) counters_out[c] = 0;
+    if (counters_ext) for (int c = 0; c < 3; ++c) counters_ext[c] = 0;
     *digest_velocity_out = 0;
     *digest_compression_out = 0;
     if (n <= 0 || dt <= 0.0f) return;
@@ -2360,6 +2556,8 @@ void eos_kick_compression_reference(
         return mul128_shr(n_bulk, t, 0);
     };
     int64_t ke_drag_removed = 0, e_drag_heat_sum = 0;
+    // #217 §8.6.5: the cap-heat bracket's books (counters_ext, when given).
+    int64_t e_cap_heat_sum = 0, e_clamp_destroyed_sum = 0, e_kick_ke_sum = 0;
 
     // ---- step 2's Dalton sum (verbatim — the kick's N̂ input) --------------
     // P-T0 (design §2.6): n_total ≡ n_bulk; trace planes skipped outright.
@@ -2398,6 +2596,7 @@ void eos_kick_compression_reference(
             const int64_t n_bulk_ke = (int64_t)n_total[i];
             const bool ke_stores = !ts[i];
             int64_t u2_prev = ux * ux + uy * uy;
+            const int64_t u2_kick0 = u2_prev;      // #217 §8.6.5: KE0
             if (gx != 0 || gy != 0) {
                 q16 nhat = n_total[i];
                 if (nhat < n_floor_q) nhat = n_floor_q;
@@ -2416,8 +2615,10 @@ void eos_kick_compression_reference(
                 const int64_t u2 = ux * ux + uy * uy;
                 const int64_t dE = ke_energy(n_bulk_ke, u2 - u2_prev);
                 if (ke_stores && gas_energy) gas_energy[i] -= dE;
+                if (ke_stores) e_kick_ke_sum += dE;
                 u2_prev = u2;
             }
+            const int64_t u2_kick1 = u2_prev;      // #217 §8.6.5: KE1
 
             const q16 a = mul_q16(quantize((double)dyn_wave_absorb[i]), absorb_dt_q);
             if (a > 0) {
@@ -2464,8 +2665,28 @@ void eos_kick_compression_reference(
                 ux = (ux * (int64_t)u_cap_q) / (int64_t)umag;   // D6 exact rescale
                 uy = (uy * (int64_t)u_cap_q) / (int64_t)umag;
             }
-            // BRACKET 4 — the velocity cap: DESTROYED and counted (D6).
-            u2_prev = ux * ux + uy * uy;
+            // BRACKET 4 — the velocity cap. #217 §8.6.5 (ruling 3), step()'s
+            // block verbatim: the kick's own share returns as heat, the rest
+            // is destroyed and counted.
+            {
+                const int64_t u2 = ux * ux + uy * uy;
+                if (ke_stores) {
+                    const int64_t removed = -ke_energy(n_bulk_ke, u2 - u2_prev);
+                    int64_t heat = 0;
+                    if (cap_heat && removed > 0) {
+                        const int64_t base = u2_kick0 > u2 ? u2_kick0 : u2;
+                        const int64_t sup = u2_kick1 - base;
+                        if (sup > 0) {
+                            heat = ke_energy(n_bulk_ke, sup);
+                            if (heat > removed) heat = removed;
+                        }
+                    }
+                    if (gas_energy) gas_energy[i] += heat;
+                    e_cap_heat_sum += heat;
+                    e_clamp_destroyed_sum += removed - heat;
+                }
+                u2_prev = u2;
+            }
 
             // P-E3 — interior drag + heat counterparty (design §2.8), VERBATIM
             // from step()'s kick loop: PER TICK, after the |u| cap, before the
@@ -2526,6 +2747,11 @@ void eos_kick_compression_reference(
     counters_out[6] = e_drag_heat_sum;    // ex e_drag_deposit (D10 slot 6)
     counters_out[7] = 0;                  // e_drag_drop_sum — retired
     counters_out[8] = 0;                  // e_drag_rail_clipped — retired
+    if (counters_ext) {
+        counters_ext[0] = e_cap_heat_sum;         // #217 §8.6.5
+        counters_ext[1] = e_clamp_destroyed_sum;
+        counters_ext[2] = e_kick_ke_sum;
+    }
 }
 
 

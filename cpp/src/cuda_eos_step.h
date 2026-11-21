@@ -93,6 +93,13 @@ struct EOSHostPrestage {
     // the substep displacement per m/s, in TILES (dt_s/dx), never seconds.
     int32_t dtdx_s_q  = 0;
     int32_t t_min_q   = 0;   // quantize(T_MIN) — P-E1's recovery clamp (§2.1.5)
+    // #217 §8.6: the sub-tick count k (1 = HEAD), dt_k = eos_subtick_dt(dt, k)
+    // and the per-config folds of the k-rule and the budget ceiling.
+    int     k         = 1;
+    float   dt_k      = 0.0f;
+    int32_t gdt_q     = 0;   // quantize(gamma * dt)   — k_div
+    int32_t cp_dx_q   = 0;   // quantize(C_P * dx)     — k_u
+    int64_t ubud2_q32 = 0;   // U_bud^2 (Q32.32); 0 = the ceiling off
     // Per-tick host planes (H2D'd once by the caller).
     std::vector<int32_t> coeffE, coeffS;   // donor-cell face-coeff cache
     // VELOCITY-CLAMP (P-V1, D2v2): the per-cell velocity-cap² plane (Q32.32
@@ -152,7 +159,10 @@ EOSHostPrestage eos_host_prestage(
     // path scans the DEVICE gas (eos_step_resident) and calls
     // eos_prestage_finish with its max. `gas` and `dyn_permeability` are then
     // not read (they may be stale on the mirror).
-    bool host_scans = true);
+    bool host_scans = true,
+    // #217 §8.6.2: the ambient ring mask the k-set excludes (nullptr: space,
+    // or ambient_mode false). Read only by the host k-set scan (host_scans).
+    const bool* is_ambient = nullptr);
 
 // #29 P4a: the n_sub fold, from the scan's max K·|∇P|·dt/N̂ (Q16 raw, >= 0):
 // u_est = max|u| + max_du + 1, clipped at max(c_LOCAL, U_MAX); n_sub =

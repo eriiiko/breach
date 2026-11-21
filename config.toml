@@ -809,6 +809,13 @@ mg_nu2 = 2                            # post-smoothing sweeps per level
 mg_coarsest_sweeps = 32               # RB-GS sweeps at the coarsest level
 N_SUB_MAX = 8                         # advection substep cap (accuracy, not stability; re-pinned 16->8, Erik 2026-07-10, decisions #14)
 CFL_ADV = 0.5                         # advection CFL number
+K_MAX = 8                             # #217 §8 (Erik, 2026-11-21, ruling 1): the EOS sub-tick budget,
+                                      # a PHYSICS dial, NOT a perf dial: steps 0-7 run k in {1,2,4,8}
+                                      # times a tick (k from the wind, divergence and blast source, so
+                                      # air moves <= 1 tile per pressure update), and past K_MAX the
+                                      # cap stage's budget ceiling K_MAX*dx/dt holds (64 m/s at 0.333 m,
+                                      # 24 tps; 192 at 1.0 m), blasts and breaches alike (ruling 2).
+                                      # Training and play share it; one of 1, 2, 4, 8.
 N_FLOOR_SOLVER = 0.001                # solver-internal N floor (gameplay N unfloored)
 adiabatic_index = 1.4                 # ideal-gas adiabatic index (compression work); TUNING DIAL
 absorb_strength = 8.0                 # dyn_wave_absorb scale in the velocity-correction damping

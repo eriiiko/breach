@@ -223,7 +223,7 @@ struct ArenaLayout {
         ttail = tcnt  + n * EOS_TCNT_SLOTS;
         pre   = ttail + n * EOS_BOOK_GAS_MAX * TRACE_TAIL_CNT_SLOTS;
         nsub  = pre   + n * EOS_PRE_SLOTS;
-        fire_cnt  = nsub + 1;
+        fire_cnt  = nsub + 2;                 // #217 §8: max n_sub, max k
         fire_gate = fire_cnt + (n + 1) / 2;   // (N,) int
         edq       = fire_gate + (n + 1) / 2;  // (N,) int32
         swm       = edq + n * EDQ_SLOTS;      // #29 P4c: the edit queue's books
@@ -1309,6 +1309,10 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail_fold(
                     "adiabatic_index / T_AMB_K (design §2.4 range guard)");
             }
             sv.dbg_last_n_sub = (int)pre[EOS_PRE_N_SUB];
+            // #217 §8.9: the env's sub-tick count; the masked loop ran its
+            // solve exactly k times
+            sv.dbg_last_k = (int)pre[EOS_PRE_K];
+            sv.dbg_solves_last_step = (int)pre[EOS_PRE_K];
             sv.dbg_last_c_local_q = (int32_t)(int64_t)pre[EOS_PRE_C_LOCAL];
             // The CPU twin's reset block (EOSSolver::step, the shared host
             // pre-stage's), then the stage-3b/3c trace books ASSIGNED into the
@@ -1343,6 +1347,7 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail_fold(
             sv.e_clamp_destroyed_sum = kc(12);
             sv.rad_clip_hits         = kc(13);
             sv.e_ts_ke_sum           = kc(14);
+            sv.e_cap_heat_sum        = kc(15);   // #217 §8.6.5
             // arc #54 §2.4/§2.6: the flux step + recovery counters, PER-TICK.
             auto fc = [&](int slot) { return b(S.L.flux, FLUX_CNT_SLOTS, slot); };
             sv.p_face_floor_hits     = fc(0);

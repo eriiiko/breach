@@ -56,10 +56,27 @@ __device__ __forceinline__ T* bptr(T* p, size_t stride) {
     return p ? p + (size_t)blockIdx.y * stride : p;
 }
 
+// #217 §8.6.7: a substep index inside the EOS sub-tick loop carries its
+// sub-tick t in the high bits, `sub_tick(t, s) = (t << EOS_SUB_BITS) | s`, so
+// every substep kernel's one `sub_off` predicate masks both loops (t = 0 is
+// the plain substep index: every caller outside the loop is unchanged).
+constexpr int EOS_SUB_BITS = 8;                 // N_SUB_MAX < 256
+inline int sub_tick(int t, int s) { return (t << EOS_SUB_BITS) | s; }
+
 // True iff this env sits out substep `s` (its own n_sub is smaller than the
-// batch's maximum). es == nullptr: an unbatched / unmasked launch.
+// batch's maximum) or the sub-tick encoded in s's high bits (its own k is
+// smaller than the batch's maximum). es == nullptr: an unbatched / unmasked
+// launch.
 __device__ __forceinline__ bool sub_off(const EnvSub* es, int s) {
-    return es != nullptr && s >= es[blockIdx.y].n_sub;
+    if (es == nullptr) return false;
+    const EnvSub& r = es[blockIdx.y];
+    return (s & ((1 << EOS_SUB_BITS) - 1)) >= r.n_sub || (s >> EOS_SUB_BITS) >= r.k;
+}
+
+// #217 §8.6.7: true iff this env sits out EOS sub-tick `t` (t >= its own k).
+// es == nullptr: an unbatched / unmasked launch (the per-call path).
+__device__ __forceinline__ bool tick_off(const EnvSub* es, int t) {
+    return es != nullptr && t >= es[blockIdx.y].k;
 }
 
 // True iff this env is switched off by a per-env byte mask (nullptr: all on).

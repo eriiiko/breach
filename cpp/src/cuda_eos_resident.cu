@@ -117,7 +117,9 @@ __global__ void K_div_u(int32_t* __restrict__ div_u,
                         const bool* __restrict__ solid,
                         const bool* __restrict__ is_vacuum,
                         const bool* __restrict__ is_ambient,
-                        int32_t inv_2dx_q, int h, int w) {
+                        int32_t inv_2dx_q, int h, int w,
+                        const EnvSub* __restrict__ es, int t) {
+    if (tick_off(es, t)) return;   // #217 §8.6.7: an env past its own k sits out
     const int n = h * w;
     div_u = bptr(div_u, n); wind_x = bptr(wind_x, n); wind_y = bptr(wind_y, n);
     solid = bptr(solid, n); is_vacuum = bptr(is_vacuum, n); is_ambient = bptr(is_ambient, n);
@@ -141,11 +143,19 @@ __global__ void K_div_u(int32_t* __restrict__ div_u,
 
 // #31: the blast's divergence source comes off div(u*), EOSSolver::step's own
 // lines. Launched only on a tick with a source; K_div_u above stays as it was.
+// #217 §8.6.7: launched (N, h, w) like every core (it was one flat launch
+// over N*n), so the sub-tick mask can name the env; the subtraction is per
+// sub-tick at the source's rate (k sub-ticks of S at dt_k == S at dt).
 __global__ void K_div_source(int32_t* __restrict__ div_u,
                              const int32_t* __restrict__ div_source,
                              const bool* __restrict__ solid,
                              const bool* __restrict__ is_vacuum,
-                             const bool* __restrict__ is_ambient, int n) {
+                             const bool* __restrict__ is_ambient, int n,
+                             const EnvSub* __restrict__ es, int t) {
+    if (tick_off(es, t)) return;   // #217 §8.6.7: an env past its own k sits out
+    const size_t sn = (size_t)n;
+    div_u = bptr(div_u, sn); div_source = bptr(div_source, sn);
+    solid = bptr(solid, sn); is_vacuum = bptr(is_vacuum, sn); is_ambient = bptr(is_ambient, sn);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (solid[i] || is_vacuum[i] || (is_ambient && is_ambient[i])) continue;
@@ -161,7 +171,9 @@ __global__ void K_div_source(int32_t* __restrict__ div_u,
 __global__ void K_ntot(int32_t* __restrict__ ntot,
                        const int32_t* __restrict__ gas_base,
                        const bool* __restrict__ cons_flag,
-                       int n_gases, int n) {
+                       int n_gases, int n,
+                       const EnvSub* __restrict__ es, int t) {
+    if (tick_off(es, t)) return;   // #217 §8.6.7: an env past its own k sits out
     ntot = bptr(ntot, (size_t)n); gas_base = bptr(gas_base, (size_t)n_gases * n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
@@ -266,7 +278,9 @@ __global__ void K_pstar(int32_t* __restrict__ pstar,
                         const bool* __restrict__ solid,
                         const bool* __restrict__ is_vacuum,
                         int32_t t_amb_q, int32_t s_eos_q, int32_t c_q,
-                        bool debug_from_prev, int n) {
+                        bool debug_from_prev, int n,
+                        const EnvSub* __restrict__ es, int t) {
+    if (tick_off(es, t)) return;   // #217 §8.6.7: an env past its own k sits out
     pstar = bptr(pstar, (size_t)n); ntot = bptr(ntot, (size_t)n);
     temperature = bptr(temperature, (size_t)n); p_prev = bptr(p_prev, (size_t)n);
     solid = bptr(solid, (size_t)n); is_vacuum = bptr(is_vacuum, (size_t)n);
@@ -296,7 +310,9 @@ __global__ void K_pstar(int32_t* __restrict__ pstar,
 __global__ void K_store_atm(int32_t* __restrict__ atmosphere,
                             const int32_t* __restrict__ p_new,
                             const bool* __restrict__ solid,
-                            int64_t p_amb, bool ambient_mode, int n) {
+                            int64_t p_amb, bool ambient_mode, int n,
+                            const EnvSub* __restrict__ es, int t) {
+    if (tick_off(es, t)) return;   // #217 §8.6.7: an env past its own k sits out
     atmosphere = bptr(atmosphere, (size_t)n); p_new = bptr(p_new, (size_t)n);
     solid = bptr(solid, (size_t)n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
@@ -327,7 +343,9 @@ __global__ void K_L0_excl(uint8_t* __restrict__ excl,
                           const bool* __restrict__ solid,
                           const bool* __restrict__ is_vacuum,
                           const bool* __restrict__ is_ambient,
-                          bool ambient_mode, int n) {
+                          bool ambient_mode, int n,
+                          const EnvSub* __restrict__ es, int t) {
+    if (tick_off(es, t)) return;   // #217 §8.6.7: an env past its own k sits out
     excl = bptr(excl, (size_t)n); solid = bptr(solid, (size_t)n);
     is_vacuum = bptr(is_vacuum, (size_t)n); is_ambient = bptr(is_ambient, (size_t)n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
@@ -353,7 +371,11 @@ __global__ void K_L0_mbP(int64_t* __restrict__ m,
                          const int32_t* __restrict__ div_u,
                          const int32_t* __restrict__ p_prev,
                          int32_t gamma_q, int32_t dt_q, int64_t Kdt2dx2_raw,
-                         int64_t p_amb, bool ambient_mode, int n) {
+                         int64_t p_amb, bool ambient_mode, int n,
+                         const EnvSub* __restrict__ es, int t) {
+    if (tick_off(es, t)) return;   // #217 §8.6.7: an env past its own k sits out
+    // #217 §8.6.7: the env's dt_k folds (its (k, n_sub) row)
+    if (es) { dt_q = es[benv()].dt_q; Kdt2dx2_raw = es[benv()].Kdt2dx2_raw; }
     const size_t sn = (size_t)n;
     m = bptr(m, sn); b = bptr(b, sn); P = bptr(P, sn); excl = bptr(excl, sn);
     pstar = bptr(pstar, sn); div_u = bptr(div_u, sn); p_prev = bptr(p_prev, sn);
@@ -394,7 +416,9 @@ __global__ void K_L0_faces(int64_t* __restrict__ gE,
                            const uint8_t* __restrict__ excl,
                            const int32_t* __restrict__ ntot,
                            const float* __restrict__ perm,
-                           int32_t n_floor_q, int h, int w) {
+                           int32_t n_floor_q, int h, int w,
+                           const EnvSub* __restrict__ es, int t) {
+    if (tick_off(es, t)) return;   // #217 §8.6.7: an env past its own k sits out
     const int n = h * w;
     gE = bptr(gE, n); gS = bptr(gS, n); excl = bptr(excl, n);
     ntot = bptr(ntot, n); perm = bptr(perm, n);
@@ -439,14 +463,18 @@ __global__ void K_L0_faces(int64_t* __restrict__ gE,
 // recip (both fold σ) — the CPU's exact placement.
 __global__ void K_L0_sigma(int64_t* __restrict__ m,
                            const uint8_t* __restrict__ excl,
-                           const int32_t* __restrict__ sigma, int n) {
+                           const int32_t* __restrict__ sigma, int n,
+                           const EnvSub* __restrict__ es, int t) {
+    if (tick_off(es, t)) return;   // #217 §8.6.7: an env past its own k sits out
+    // #217 §8.6.1: sigma * k^2 at a sub-tick of dt/k (shift 0 at k = 1)
+    const int sh = es ? es[benv()].sigma_shift : 0;
     m = bptr(m, (size_t)n); excl = bptr(excl, (size_t)n); sigma = bptr(sigma, (size_t)n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (excl[i] != 0) continue;
         const int32_t s = sigma[i];
         if (s <= 0) continue;
-        int64_t ms = m[i] + (int64_t)s;
+        int64_t ms = m[i] + ((int64_t)s << sh);
         if (ms > MG_M_CAP) ms = MG_M_CAP;
         m[i] = ms;
     }
@@ -469,7 +497,9 @@ __global__ void K_C_excl_m(uint8_t* __restrict__ c_excl,
                            const int64_t* __restrict__ f_m,
                            const int64_t* __restrict__ f_gE,
                            const int64_t* __restrict__ f_gS,
-                           int fh, int fw, int ch, int cw) {
+                           int fh, int fw, int ch, int cw,
+                           const EnvSub* __restrict__ es, int t) {
+    if (tick_off(es, t)) return;   // #217 §8.6.7: an env past its own k sits out
     const int cn = ch * cw;
     const size_t fn = (size_t)fh * fw;
     c_excl = bptr(c_excl, cn); c_m = bptr(c_m, cn); c_b = bptr(c_b, cn); c_P = bptr(c_P, cn);
@@ -529,7 +559,9 @@ __global__ void K_C_faces(int64_t* __restrict__ c_gE,
                           const uint8_t* __restrict__ f_excl,
                           const int64_t* __restrict__ f_gE,
                           const int64_t* __restrict__ f_gS,
-                          int fh, int fw, int ch, int cw) {
+                          int fh, int fw, int ch, int cw,
+                          const EnvSub* __restrict__ es, int t) {
+    if (tick_off(es, t)) return;   // #217 §8.6.7: an env past its own k sits out
     const int cn = ch * cw;
     const size_t fn = (size_t)fh * fw;
     c_gE = bptr(c_gE, cn); c_gS = bptr(c_gS, cn);
@@ -572,7 +604,9 @@ __global__ void K_recip(int64_t* __restrict__ recip,
                         const int64_t* __restrict__ m,
                         const int64_t* __restrict__ gE,
                         const int64_t* __restrict__ gS,
-                        int lh, int lw) {
+                        int lh, int lw,
+                        const EnvSub* __restrict__ es, int t) {
+    if (tick_off(es, t)) return;   // #217 §8.6.7: an env past its own k sits out
     const int n = lh * lw;
     recip = bptr(recip, n); excl = bptr(excl, n); m = bptr(m, n);
     gE = bptr(gE, n); gS = bptr(gS, n);
@@ -631,7 +665,8 @@ void mg_build_device(const DevLevel* lv, int n_levels,
                      const float* d_perm,
                      const bool* d_is_ambient, const int32_t* d_sigma,
                      const EOSSolver::MGScalarFolds& fold,
-                     int32_t p_amb, bool ambient_mode, int n_env = 1) {
+                     int32_t p_amb, bool ambient_mode, int n_env = 1,
+                     const EnvSub* es = nullptr, int t = 0) {   // #217 §8.6.7
     // #29 P5: every level is (N, lh, lw); every launch covers the N envs.
     const int n0 = lv[0].h * lv[0].w;
     const int block = 256;
@@ -639,20 +674,20 @@ void mg_build_device(const DevLevel* lv, int n_levels,
     auto grid_for = [&](int n) { return bgrid(n, n_env, block); };
 
     K_L0_excl<<<grid_for(n0), block, 0, st>>>(lv[0].excl, d_solid, d_is_vacuum,
-                                       d_is_ambient, ambient_mode, n0);
+                                       d_is_ambient, ambient_mode, n0, es, t);
     cuda_check(cudaGetLastError(), "K_L0_excl");
     K_L0_mbP<<<grid_for(n0), block, 0, st>>>(lv[0].m, lv[0].b, lv[0].P, lv[0].excl,
                                       d_pstar, d_div_u, d_p_prev,
                                       fold.gamma_q, fold.dt_q,
                                       fold.Kdt2dx2_raw,
-                                      (int64_t)p_amb, ambient_mode, n0);
+                                      (int64_t)p_amb, ambient_mode, n0, es, t);
     cuda_check(cudaGetLastError(), "K_L0_mbP");
     K_L0_faces<<<grid_for(n0), block, 0, st>>>(lv[0].gE, lv[0].gS, lv[0].excl,
                                         d_ntot, d_perm, fold.n_floor_q,
-                                        lv[0].h, lv[0].w);
+                                        lv[0].h, lv[0].w, es, t);
     cuda_check(cudaGetLastError(), "K_L0_faces");
     if (ambient_mode && d_sigma) {
-        K_L0_sigma<<<grid_for(n0), block, 0, st>>>(lv[0].m, lv[0].excl, d_sigma, n0);
+        K_L0_sigma<<<grid_for(n0), block, 0, st>>>(lv[0].m, lv[0].excl, d_sigma, n0, es, t);
         cuda_check(cudaGetLastError(), "K_L0_sigma");
     }
     for (int l = 1; l < n_levels; ++l) {
@@ -661,16 +696,16 @@ void mg_build_device(const DevLevel* lv, int n_levels,
         const int cn = C.h * C.w;
         K_C_excl_m<<<grid_for(cn), block, 0, st>>>(C.excl, C.m, C.b, C.P,
                                             F.excl, F.m, F.gE, F.gS,
-                                            F.h, F.w, C.h, C.w);
+                                            F.h, F.w, C.h, C.w, es, t);
         cuda_check(cudaGetLastError(), "K_C_excl_m");
         K_C_faces<<<grid_for(cn), block, 0, st>>>(C.gE, C.gS, F.excl, F.gE, F.gS,
-                                           F.h, F.w, C.h, C.w);
+                                           F.h, F.w, C.h, C.w, es, t);
         cuda_check(cudaGetLastError(), "K_C_faces");
     }
     for (int l = 0; l < n_levels; ++l) {
         const int ln = lv[l].h * lv[l].w;
         K_recip<<<grid_for(ln), block, 0, st>>>(lv[l].recip, lv[l].excl, lv[l].m,
-                                         lv[l].gE, lv[l].gS, lv[l].h, lv[l].w);
+                                         lv[l].gE, lv[l].gS, lv[l].h, lv[l].w, es, t);
         cuda_check(cudaGetLastError(), "K_recip");
     }
 }
@@ -703,7 +738,7 @@ __global__ void K_pre_scan(int64_t* __restrict__ cap2, int32_t* __restrict__ abs
                            const bool* __restrict__ ts,
                            int32_t s_eos_q, int32_t t_amb_q,
                            int64_t c_amb2_q32, int64_t u_max2_q32, int64_t ratio_umax,
-                           int32_t absorb_dt_q, int n) {
+                           int64_t ubud2_q32, int n) {
     const size_t sn = (size_t)n;
     cap2 = bptr(cap2, sn); absorb_q = bptr(absorb_q, sn);
     pre = bptr(pre, (size_t)EOS_PRE_SLOTS);
@@ -712,7 +747,7 @@ __global__ void K_pre_scan(int64_t* __restrict__ cap2, int32_t* __restrict__ abs
     is_vacuum = bptr(is_vacuum, sn); ts = bptr(ts, sn);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
-        absorb_q[i] = mul_q16(quantize((double)wave_absorb[i]), absorb_dt_q);
+        (void)absorb_q; (void)wave_absorb;   // #217 §8.6.7: K_absorb, after the fold
         const int64_t rad = mul_wide(wind_x[i], wind_x[i]) + mul_wide(wind_y[i], wind_y[i]);
         if (rad > 0) atomicMax(&pre[EOS_PRE_MAX_RAD], (unsigned long long)rad);
         if (solid[i] || is_vacuum[i]) { cap2[i] = u_max2_q32; continue; }
@@ -727,6 +762,88 @@ __global__ void K_pre_scan(int64_t* __restrict__ cap2, int32_t* __restrict__ abs
         const int64_t ratio = (t_abs_cap << 16) / (int64_t)t_amb_q;   // int64, NO narrow
         cap2[i] = (ratio >= ratio_umax) ? u_max2_q32
                                         : mul128_shr_signed(c_amb2_q32, ratio, 16);
+        // #217 §8.6.4: the budget ceiling (step()'s scan, verbatim; 0 = off)
+        if (ubud2_q32 > 0 && cap2[i] > ubud2_q32) cap2[i] = ubud2_q32;
+    }
+}
+
+// #217 §8.6.7: the absorb plane at each env's dt_k (its row's absorb_dt_q),
+// built once per tick after the fold picked the row (step()'s per-cell
+// `mul_q16(quantize(absorb), absorb_dt_q)`, verbatim). Every cell written.
+__global__ void K_absorb(int32_t* __restrict__ absorb_q,
+                         const float* __restrict__ wave_absorb,
+                         const EnvSub* __restrict__ es, int n) {
+    const int32_t adt = es[benv()].absorb_dt_q;
+    absorb_q = bptr(absorb_q, (size_t)n); wave_absorb = bptr(wave_absorb, (size_t)n);
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x)
+        absorb_q[i] = mul_q16(quantize((double)wave_absorb[i]), adt);
+}
+
+// #217 §8.6.2: THE K-SET SCAN's device twin (eos_kset_scan, verbatim): over
+// the k-set of the ENTRY state (gas cells -- not solid, vacuum or ring --
+// with Dalton N >= N_K_MIN and no vacuum / ring cell within R_K tiles,
+// 4-neighbour distance) the max |u|^2 and the max |div u| (the face-form
+// stencil). Integer maxima: atomicMax from 0 is order-free.
+__global__ void K_kset_scan(unsigned long long* __restrict__ pre,
+                            const int32_t* __restrict__ wind_x,
+                            const int32_t* __restrict__ wind_y,
+                            const int32_t* __restrict__ ntot,
+                            const bool* __restrict__ solid,
+                            const bool* __restrict__ is_vacuum,
+                            const bool* __restrict__ is_ambient,
+                            int32_t inv_2dx_q, int h, int w) {
+    const int n = h * w;
+    pre = bptr(pre, (size_t)EOS_PRE_SLOTS);
+    wind_x = bptr(wind_x, n); wind_y = bptr(wind_y, n); ntot = bptr(ntot, n);
+    solid = bptr(solid, n); is_vacuum = bptr(is_vacuum, n); is_ambient = bptr(is_ambient, n);
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        if (solid[i] || is_vacuum[i] || (is_ambient && is_ambient[i])) continue;
+        if (ntot[i] < EOS_N_K_MIN_RAW) continue;
+        const int y = i / w, x = i - (i / w) * w;
+        bool mem = true;
+        for (int dy = -EOS_R_K; dy <= EOS_R_K && mem; ++dy) {
+            const int yy = y + dy;
+            if (yy < 0 || yy >= h) continue;
+            const int rx = EOS_R_K - (dy < 0 ? -dy : dy);
+            for (int dxx = -rx; dxx <= rx; ++dxx) {
+                const int xx = x + dxx;
+                if (xx < 0 || xx >= w) continue;
+                const int j = yy * w + xx;
+                if (is_vacuum[j] || (is_ambient && is_ambient[j])) { mem = false; break; }
+            }
+        }
+        if (!mem) continue;
+        const int64_t rad = mul_wide(wind_x[i], wind_x[i]) + mul_wide(wind_y[i], wind_y[i]);
+        if (rad > 0) atomicMax(&pre[EOS_PRE_KSET_RAD], (unsigned long long)rad);
+        const int64_t fw = face2_u_dev_r(wind_x, i, y, x - 1, h, w, solid);
+        const int64_t fe = face2_u_dev_r(wind_x, i, y, x + 1, h, w, solid);
+        const int64_t fn = face2_u_dev_r(wind_y, i, y - 1, x, h, w, solid);
+        const int64_t fs = face2_u_dev_r(wind_y, i, y + 1, x, h, w, solid);
+        const int64_t dv = (int64_t)mul_q16((q16)(fe - fw), inv_2dx_q)
+                         + (int64_t)mul_q16((q16)(fs - fn), inv_2dx_q);
+        const int64_t adv = dv < 0 ? -dv : dv;
+        if (adv > 0) atomicMax(&pre[EOS_PRE_KSET_DIV], (unsigned long long)adv);
+    }
+}
+
+// #217 §8.6.2: max |S| of the env's blast source over the cells it applies to
+// (eos_kset_scan's tail, verbatim). Launched only on a tick with a source.
+__global__ void K_src_max(unsigned long long* __restrict__ pre,
+                          const int32_t* __restrict__ src,
+                          const bool* __restrict__ solid,
+                          const bool* __restrict__ is_vacuum,
+                          const bool* __restrict__ is_ambient, int n) {
+    pre = bptr(pre, (size_t)EOS_PRE_SLOTS);
+    src = bptr(src, (size_t)n); solid = bptr(solid, (size_t)n);
+    is_vacuum = bptr(is_vacuum, (size_t)n); is_ambient = bptr(is_ambient, (size_t)n);
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        if (solid[i] || is_vacuum[i] || (is_ambient && is_ambient[i])) continue;
+        const int64_t sv = (int64_t)src[i];
+        const int64_t as = sv < 0 ? -sv : sv;
+        if (as > 0) atomicMax(&pre[EOS_PRE_SRC_MAX], (unsigned long long)as);
     }
 }
 
@@ -738,7 +855,12 @@ __global__ void K_pre_fold(EnvSub* __restrict__ es, unsigned long long* __restri
                            unsigned long long* __restrict__ nsub_max,
                            const EnvSub* __restrict__ table, int n_sub_cap,
                            int32_t t_amb_q, int32_t c_amb_q, int32_t u_max_q,
-                           int32_t dt_q, int32_t cfl_dx_q, int n_env) {
+                           int32_t dt_q, int32_t cfl_dx_q,
+                           // #217 §8.6.2/§8.6.3: the k-rule's folds, the switch
+                           // and the substep floors F_k for k = 1, 2, 4, 8
+                           int32_t gdt_q, int32_t cp_dx_q, int k_max, bool loop_on,
+                           int f1, int f2, int f4, int f8,
+                           int n_env) {
     const int env = blockIdx.x * blockDim.x + threadIdx.x;
     if (env >= n_env) return;
     unsigned long long* P = pre + (size_t)env * EOS_PRE_SLOTS;
@@ -757,16 +879,27 @@ __global__ void K_pre_fold(EnvSub* __restrict__ es, unsigned long long* __restri
     if (u_est_raw > u_est_cap) u_est_raw = u_est_cap;
     const int64_t numer_wide = mul128_shr_signed((int64_t)dt_q, u_est_raw, 16);
     const int64_t numer_c = numer_wide < (int64_t)INT32_MAX ? numer_wide : (int64_t)INT32_MAX;
-    int n_sub = ceil_div((q16)numer_c, cfl_dx_q);
-    if (n_sub < 1) n_sub = 1;
-    if (n_sub > n_sub_cap) n_sub = n_sub_cap;
-    EnvSub r = table[n_sub];
+    // #217 §8.6.3: n_adv UNCAPPED (the cap moves after the division by k)
+    int n_adv = ceil_div((q16)numer_c, cfl_dx_q);
+    if (n_adv < 1) n_adv = 1;
+    // #217 §8.6.2: THE k-RULE (eos_subtick_k, the one FP_HD transcription)
+    const int k = loop_on
+        ? eos_subtick_k((int64_t)sqrt_q16_dev((int64_t)P[EOS_PRE_KSET_RAD]),
+                        (int64_t)P[EOS_PRE_KSET_DIV], (int64_t)P[EOS_PRE_SRC_MAX],
+                        dt_q, gdt_q, cp_dx_q, k_max)
+        : 1;
+    const int kidx = (k >= 8) ? 3 : (k >= 4) ? 2 : (k >= 2) ? 1 : 0;
+    const int floor_k = (kidx == 3) ? f8 : (kidx == 2) ? f4 : (kidx == 1) ? f2 : f1;
+    const int n_sub = eos_subtick_n_sub(n_adv, k, n_sub_cap, floor_k);
+    EnvSub r = table[(size_t)kidx * (size_t)(n_sub_cap + 1) + (size_t)n_sub];
     r.c_local_q = c_local_q;
     es[env] = r;
     P[EOS_PRE_N_SUB] = (unsigned long long)n_sub;
+    P[EOS_PRE_K] = (unsigned long long)k;
     P[EOS_PRE_C_LOCAL] = (unsigned long long)(int64_t)c_local_q;
     if (r.k_flux_q == 0) P[EOS_PRE_FAIL] = 1ULL;
     atomicMax(nsub_max, (unsigned long long)n_sub);
+    atomicMax(nsub_max + 1, (unsigned long long)k);   // #217 §8: the batch's max k
 }
 
 // ============================================================================
@@ -876,7 +1009,7 @@ struct EOSResidentScratch {
         a32(&spre, n, "res malloc spre");
         cuda_check(cudaMalloc(&es, (size_t)N * sizeof(EnvSub)), "res malloc es");
         if (!nsub_h)
-            cuda_check(cudaMallocHost((void**)&nsub_h, 8), "res malloc pinned nsub");
+            cuda_check(cudaMallocHost((void**)&nsub_h, 16), "res malloc pinned nsub");   // #217 §8: + max k
         int lh = H, lw = W;
         for (int l = 0; l < NL; ++l) {
             DevLevel& L = lv[l];
@@ -907,33 +1040,65 @@ EOSResidentScratch g_eos_res;
 // k_flux_q = 0, and an env that selects it raises EOS_PRE_FAIL — the host
 // throws the fold's own message at the books fold (the sweep's pattern).
 void ensure_fold_table(const EOSSolver& solver, float dt, EOSResidentScratch& S) {
-    const int rows = solver.N_SUB_MAX + 1;
+    // #217 §8.6.7: 4 x (N_SUB_MAX + 1) rows, k in {1, 2, 4, 8} x n_sub in
+    // [1, N_SUB_MAX] (n_sub 0 unused): row (kidx, n_sub) at index
+    // kidx * (N_SUB_MAX + 1) + n_sub. Every fold is the ONE function of its
+    // value at dt_k = eos_subtick_dt(dt, k). The key holds every input,
+    // K_MAX and the three switches included.
+    const int per_k = solver.N_SUB_MAX + 1;
+    const int rows = 4 * per_k;
     const std::vector<double> key = {
         (double)dt, (double)solver.dx, (double)solver.adiabatic_index,
         (double)solver.T_AMB_K, (double)solver.C, (double)solver.T_MIN,
-        (double)solver.T_MAX_PHYS, (double)solver.N_SUB_MAX};
+        (double)solver.T_MAX_PHYS, (double)solver.N_SUB_MAX,
+        (double)solver.c_max, (double)solver.absorb_strength,
+        (double)solver.N_FLOOR_SOLVER, (double)solver.U_MAX,
+        (double)solver.k_drag, (double)solver.k_drag2,
+        (double)solver.K_MAX, (double)solver.subtick_loop,
+        (double)solver.subtick_ceiling, (double)solver.cap_heat};
     if (S.table && S.table_rows == rows && S.table_key == key) return;
     if (solver.N_SUB_MAX < 1)
         throw std::runtime_error("eos_step_resident: N_SUB_MAX < 1");
+    eos_check_k_max(solver.K_MAX);
     std::vector<EnvSub> t((size_t)rows);
     std::memset(t.data(), 0, t.size() * sizeof(EnvSub));
-    for (int k = 1; k < rows; ++k) {
-        EnvSub& r = t[(size_t)k];
-        r.n_sub = k;
-        try {
-            // #217 patch U: THE TRANSPORT STEP (step()'s one function),
-            // inside the poisoning try: a refused fold fails the env.
-            r.dtdx_s_q = eos_transport_step_q(dt, k, solver.dx);
-            const EnergyFluxScalarFolds ef = energy_flux_scalar_folds(
-                dt, solver.dx, solver.adiabatic_index, solver.T_AMB_K, solver.C,
-                solver.T_MIN, solver.T_MAX_PHYS, k);
-            r.k_flux_q = ef.k_flux_q;
-            r.flux_pu_cap = ef.flux_pu_cap;
-            S.ef_base = ef;          // t_amb_q / t_min_q / t_max_phys_q / c_q: n_sub-free
-        } catch (const std::runtime_error&) {
-            r.dtdx_s_q = 0;
-            r.k_flux_q = 0;          // refused at build: selecting it fails the env
-            r.flux_pu_cap = 0;
+    for (int kidx = 0; kidx < 4; ++kidx) {
+        const int kt = 1 << kidx;
+        const float dt_k = eos_subtick_dt(dt, kt);
+        const KickScalarFolds kf = kick_scalar_folds(
+            dt_k, solver.c_max, solver.dx, solver.adiabatic_index,
+            solver.absorb_strength, solver.N_FLOOR_SOLVER, solver.U_MAX,
+            solver.k_drag, solver.k_drag2, solver.T_AMB_K);
+        const EOSSolver::MGScalarFolds mf = solver.mg_scalar_folds(dt_k);
+        int sigma_shift = 0;
+        for (int kk = kt; kk > 1; kk >>= 1) sigma_shift += 2;
+        for (int k = 1; k < per_k; ++k) {
+            EnvSub& r = t[(size_t)kidx * (size_t)per_k + (size_t)k];
+            r.n_sub = k;
+            r.k = kt;
+            r.dt_q = mf.dt_q;
+            r.Kdt_raw = kf.Kdt_raw;
+            r.Kdt2dx2_raw = mf.Kdt2dx2_raw;
+            r.absorb_dt_q = kf.absorb_dt_q;
+            r.kd_q = kf.kd_q;
+            r.kd2_q = kf.kd2_q;
+            r.rad_dead_q32 = kf.rad_dead_q32;
+            r.sigma_shift = sigma_shift;
+            try {
+                // #217 patch U: THE TRANSPORT STEP (step()'s one function),
+                // at dt_k, inside the poisoning try: a refused fold fails the env.
+                r.dtdx_s_q = eos_transport_step_q(dt_k, k, solver.dx);
+                const EnergyFluxScalarFolds ef = energy_flux_scalar_folds(
+                    dt_k, solver.dx, solver.adiabatic_index, solver.T_AMB_K, solver.C,
+                    solver.T_MIN, solver.T_MAX_PHYS, k);
+                r.k_flux_q = ef.k_flux_q;
+                r.flux_pu_cap = ef.flux_pu_cap;
+                S.ef_base = ef;      // t_amb_q / t_min_q / t_max_phys_q / c_q: n_sub-free
+            } catch (const std::runtime_error&) {
+                r.dtdx_s_q = 0;
+                r.k_flux_q = 0;      // refused at build: selecting it fails the env
+                r.flux_pu_cap = 0;
+            }
         }
     }
     if (S.table) cudaFree(S.table);
@@ -958,7 +1123,11 @@ void device_prestage(const EOSSolver& solver, const EOSHostPrestage& pre,
                      const int32_t* d_temperature, const int32_t* d_gas_base,
                      const bool* d_solid, const bool* d_is_vacuum, const bool* d_ts,
                      const float* d_dyn_permeability, const float* d_dyn_wave_absorb,
-                     unsigned long long* d_pre, unsigned long long* d_nsub_max) {
+                     unsigned long long* d_pre, unsigned long long* d_nsub_max,
+                     // #217 §8.6.2: the ring mask the k-set excludes (nullable)
+                     // and the staged blast source (nullptr: no source)
+                     const bool* d_is_ambient = nullptr,
+                     const int32_t* d_div_source = nullptr) {
     const int n = h * w;
     const int blk = 256;
     const dim3 g = bgrid(n, N, blk);
@@ -970,18 +1139,36 @@ void device_prestage(const EOSSolver& solver, const EOSHostPrestage& pre,
                                    d_wind_x, d_wind_y, d_dyn_wave_absorb,
                                    d_solid, d_is_vacuum, d_ts,
                                    pre.s_eos_q, pre.t_amb_q, pre.c_amb2_q32,
-                                   pre.u_max2_q32, pre.ratio_umax, kf.absorb_dt_q, n);
+                                   pre.u_max2_q32, pre.ratio_umax, pre.ubud2_q32, n);
     cuda_check(cudaGetLastError(), "K_pre_scan");
-    K_ntot<<<g, blk, 0, stv>>>(S.ntot, d_gas_base, S.cons_flag, n_gases, n);
+    (void)kf;
+    K_ntot<<<g, blk, 0, stv>>>(S.ntot, d_gas_base, S.cons_flag, n_gases, n, nullptr, 0);
     cuda_check(cudaGetLastError(), "K_ntot (pre-stage)");
+    // #217 §8.6.2: the k-set reductions over the ENTRY state, and |S|
+    K_kset_scan<<<g, blk, 0, stv>>>(d_pre, d_wind_x, d_wind_y, S.ntot, d_solid,
+                                    d_is_vacuum, d_is_ambient, pre.inv_2dx_q, h, w);
+    cuda_check(cudaGetLastError(), "K_kset_scan");
+    if (d_div_source) {
+        K_src_max<<<g, blk, 0, stv>>>(d_pre, d_div_source, d_solid, d_is_vacuum,
+                                      d_is_ambient, n);
+        cuda_check(cudaGetLastError(), "K_src_max");
+    }
     K_max_du<<<g, blk, 0, stv>>>(d_pre + EOS_PRE_MAX_DU, d_wave_p, S.ntot, d_solid,
                                  pre.inv_2dx_q, pre.kdt_raw, pre.n_floor_q, h, w,
                                  (size_t)EOS_PRE_SLOTS);
     cuda_check(cudaGetLastError(), "K_max_du");
+    const auto fl = [&](int k) {
+        return eos_subtick_n_floor(k, solver.K_MAX, solver.CFL_ADV, solver.subtick_ceiling);
+    };
     K_pre_fold<<<(N + 63) / 64, 64, 0, stv>>>(S.es, d_pre, d_nsub_max, S.table,
                                               solver.N_SUB_MAX, pre.t_amb_q, pre.c_amb_q,
-                                              pre.u_max_q, pre.dt_q, pre.cfl_dx_q, N);
+                                              pre.u_max_q, pre.dt_q, pre.cfl_dx_q,
+                                              pre.gdt_q, pre.cp_dx_q, solver.K_MAX,
+                                              solver.subtick_loop,
+                                              fl(1), fl(2), fl(4), fl(8), N);
     cuda_check(cudaGetLastError(), "K_pre_fold");
+    K_absorb<<<g, blk, 0, stv>>>(S.absorb_q, d_dyn_wave_absorb, S.es, n);
+    cuda_check(cudaGetLastError(), "K_absorb");
     K_coeffs<<<g, blk, 0, stv>>>(S.coeffE, S.coeffS, d_solid, d_dyn_permeability,
                                  0, h, w, S.es);
     cuda_check(cudaGetLastError(), "K_coeffs");
@@ -1002,11 +1189,11 @@ void upload_cons_flags(EOSResidentScratch& S, const bool* gas_conservative, int 
 void div_source_launch_resident(
         int32_t* d_div_u, const int32_t* d_div_source,
         const bool* d_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
-        int N, int h, int w) {
-    const int n = N * h * w;
+        int N, int h, int w, const EnvSub* es, int t) {
+    const int n = h * w;
     const int block = 256;
-    K_div_source<<<(n + block - 1) / block, block, 0, tstream()>>>(
-        d_div_u, d_div_source, d_solid, d_is_vacuum, d_is_ambient, n);
+    K_div_source<<<bgrid(n, N, block), block, 0, tstream()>>>(
+        d_div_u, d_div_source, d_solid, d_is_vacuum, d_is_ambient, n, es, t);
     cuda_check(cudaGetLastError(), "K_div_source");
 }
 
@@ -1091,18 +1278,45 @@ int eos_step_resident(
     }
     const int n_trace = (int)trace_planes.size();
 
-    // ---- THE DEVICE PRE-STAGE + the ONE host read (max n_sub) ------------
+    // ---- #31: the blast source, STAGED before the pre-stage (#217 §8.6.2:
+    //      its max |S| is a k term). Every env's plane (zeros where none: the
+    //      subtraction of 0 is the identity); applied in each sub-tick below.
+    bool any_source = false;
+    for (int e = 0; e < N; ++e) any_source = any_source || div_source_host[e] != nullptr;
+    const bool has_source = (d_div_source != nullptr) || any_source;
+    if (d_div_source != nullptr) {
+        // #29 P7c.2: the source produced on the card (the SOURCES stage)
+        cuda_check(cudaMemcpyAsync(S.div_source, d_div_source, (size_t)N * n * 4,
+                                   cudaMemcpyDeviceToDevice, stv), "D2D div_source");
+    } else if (any_source) {
+        for (int e = 0; e < N; ++e) {
+            int32_t* dst = S.div_source_h + (size_t)e * n;
+            if (div_source_host[e]) std::memcpy(dst, div_source_host[e], (size_t)n * 4);
+            else std::memset(dst, 0, (size_t)n * 4);
+        }
+        cuda_check(cudaMemcpyAsync(S.div_source, S.div_source_h, (size_t)N * n * 4,
+                                   cudaMemcpyHostToDevice, stv), "H2D div_source");
+    }
+
+    // ---- THE DEVICE PRE-STAGE + the ONE host read (max n_sub, max k) ------
     device_prestage(solver, pre, kf, S, N, h, w, n_gases, d_atmosphere, d_wave_p,
                     d_wind_x, d_wind_y, d_temperature, d_gas_base,
                     d_solid, d_is_vacuum, d_ts, d_dyn_permeability, d_dyn_wave_absorb,
-                    books.pre, books.nsub_max);
-    cuda_check(cudaMemcpyAsync(S.nsub_h, books.nsub_max, 8, cudaMemcpyDeviceToHost, stv),
-               "D2H max n_sub");
+                    books.pre, books.nsub_max,
+                    ambient_mode ? d_is_ambient : nullptr,
+                    has_source ? S.div_source : nullptr);
+    // #217 §8.6.7: ONE 16-byte D2H, the batch's max n_sub and max k, at the
+    // one named sync (the capture check's two syncs stay two).
+    cuda_check(cudaMemcpyAsync(S.nsub_h, books.nsub_max, 16, cudaMemcpyDeviceToHost, stv),
+               "D2H max n_sub + max k");
     tick_sync_point("max_n_sub");   // the counted per-tick read (P9: a WHILE node)
-    const int nsub_max = (int)*S.nsub_h;
+    const int nsub_max = (int)S.nsub_h[0];
+    const int k_max_b = (int)S.nsub_h[1];
     ++g_eos_nsub_reads;
     if (nsub_max < 1 || nsub_max > solver.N_SUB_MAX)
         throw std::logic_error("eos_step_resident: max(n_sub) outside [1, N_SUB_MAX]");
+    if (k_max_b < 1 || k_max_b > solver.K_MAX)
+        throw std::logic_error("eos_step_resident: max(k) outside [1, K_MAX]");
 
     // ---- K0: cmask ONCE per tick (the proven P6.2 device build). ---------
     sl_cmask_build_device(d_solid, d_is_vacuum, d_dyn_permeability, S.cmask,
@@ -1121,136 +1335,125 @@ int eos_step_resident(
     // recovery clamps against.
     const q16 t_max_phys_q_local = quantize((double)solver.T_MAX_PHYS);
     const size_t nb = (size_t)N * n * 4;
-
-    // ---- DEVICE SUBSTEP LOOP (the P6.5 chain), to the batch's max n_sub; an
-    //      env past its own n_sub sits out (every kernel masks it). --------
-    for (int s = 0; s < nsub_max; ++s) {
-        cuda_check(cudaMemcpyAsync(S.svx, d_wind_x, nb, cudaMemcpyDeviceToDevice, stv),
-                   "D2D src_vx");
-        cuda_check(cudaMemcpyAsync(S.svy, d_wind_y, nb, cudaMemcpyDeviceToDevice, stv),
-                   "D2D src_vy");
-        cuda_check(cudaMemcpyAsync(S.st, d_temperature, nb, cudaMemcpyDeviceToDevice, stv),
-                   "D2D src_t");
-        sl_advect3_device(d_wind_x, d_wind_y,
-                          S.svx, S.svy, S.st,
-                          d_solid, S.cmask, 0, h, w, N, S.es, s);
-        BulkBatch bb;
-        bb.n_env = N;
-        bb.gs = (size_t)n_gases * n;
-        bb.cstride = (size_t)EOS_ECNT_SLOTS;
-        bb.rstride = (size_t)EOS_BOOK_GAS_MAX;
-        bb.tstride = (size_t)EOS_TCNT_SLOTS;
-        bb.es = S.es;
-        bb.sub = s;
-        // P-E1: the mass flux with the thermal energy riding it (design §2.1).
-        bulk_flux_energy_transport_device(
-            gas_planes.data(), n_cons, d_temperature,
-            d_gas_energy, pre.t_amb_q, t_max_phys_q_local,   // arc #54 §2.2/§2.7
-            d_wind_x, d_wind_y,
-            d_solid, d_is_vacuum, d_ts, S.coeffE, S.coeffS, pre.t_min_q, h, w,
-            S.e, S.nbulk, S.dqsum_e, S.dqsum_s,
-            S.dq_e, S.dq_s, S.scale, books.ecnt,
-            d_is_ambient, n_amb_cons.data(),
-            use_rail ? rail_ptrs.data() : nullptr,
-            // smoke transport v2 (#12) stages 3b/3c on the resident planes:
-            // vent -> boundary_flux_'s trace slots, wipe -> trace_wipe_sum_.
-            n_trace ? trace_planes.data() : nullptr, n_trace, S.spre,
-            n_trace ? books.tcnt : nullptr,
-            n_trace ? books.tcnt + EOS_BOOK_GAS_MAX : nullptr,
-            n_trace ? books.tcnt + 2 * EOS_BOOK_GAS_MAX : nullptr,    // #88 P2 clip
-            n_trace ? books.tcnt + 3 * EOS_BOOK_GAS_MAX : nullptr,    // #88 P2 neg hits
-            bb);
-    }
-
-    // ---- DEVICE MID-STAGE: div(u*), Dalton N, p* (per-cell, verbatim). ---
     const int block = 256;
     const dim3 grid = bgrid(n, N, block);
-    K_div_u<<<grid, block, 0, stv>>>(S.div_u, d_wind_x, d_wind_y, d_solid,
-                                     d_is_vacuum, d_is_ambient, pre.inv_2dx_q, h, w);
-    cuda_check(cudaGetLastError(), "K_div_u");
-    // #31: an env's blast source, staged per env (zeros where an env has
-    // none: the subtraction of 0 is the identity); launched only when one env
-    // has a source.
-    bool any_source = false;
-    for (int e = 0; e < N; ++e) any_source = any_source || div_source_host[e] != nullptr;
-    if (d_div_source != nullptr) {
-        // #29 P7c.2: the source produced on the card (the SOURCES stage), every
-        // env's plane (zeros where none: the subtraction of 0 is the identity)
-        cuda_check(cudaMemcpyAsync(S.div_source, d_div_source, (size_t)N * n * 4,
-                                   cudaMemcpyDeviceToDevice, stv), "D2D div_source");
-        div_source_launch_resident(S.div_u, S.div_source, d_solid, d_is_vacuum,
-                                   d_is_ambient, N, h, w);
-    } else if (any_source) {
-        for (int e = 0; e < N; ++e) {
-            int32_t* dst = S.div_source_h + (size_t)e * n;
-            if (div_source_host[e]) std::memcpy(dst, div_source_host[e], (size_t)n * 4);
-            else std::memset(dst, 0, (size_t)n * 4);
+    KickScalarFolds kfs = kf;                 // the dt-free fields; the dt folds
+    kfs.cap_heat = solver.cap_heat;           // come from each env's row (es)
+
+    // ======================================================================
+    // #217 §8.6.1/§8.6.7 — THE SUB-TICK LOOP, to the batch's max k: steps
+    // 1-7 per sub-tick t, every kernel masked by tick_off(es, t) (the substep
+    // kernels through sub_off on sub_tick(t, s)), each env's dt folds from its
+    // own (k, n_sub) row. The warm start of sub-tick t >= 1 is the previous
+    // sub-tick's stored P (`d_atmosphere`; step 5 is its only writer here), so
+    // `d_wave_p` (p_prev) is never touched after the pre-stage. The books
+    // accumulate per env over the sub-ticks in the one arena.
+    // ======================================================================
+    for (int t = 0; t < k_max_b; ++t) {
+        const int32_t* d_warm = (t == 0) ? d_wave_p : d_atmosphere;
+
+        // ---- the substep loop (the P6.5 chain), to the batch's max n_sub;
+        //      an env past its own n_sub or k sits out. --------------------
+        for (int s = 0; s < nsub_max; ++s) {
+            cuda_check(cudaMemcpyAsync(S.svx, d_wind_x, nb, cudaMemcpyDeviceToDevice, stv),
+                       "D2D src_vx");
+            cuda_check(cudaMemcpyAsync(S.svy, d_wind_y, nb, cudaMemcpyDeviceToDevice, stv),
+                       "D2D src_vy");
+            cuda_check(cudaMemcpyAsync(S.st, d_temperature, nb, cudaMemcpyDeviceToDevice, stv),
+                       "D2D src_t");
+            sl_advect3_device(d_wind_x, d_wind_y,
+                              S.svx, S.svy, S.st,
+                              d_solid, S.cmask, 0, h, w, N, S.es, sub_tick(t, s));
+            BulkBatch bb;
+            bb.n_env = N;
+            bb.gs = (size_t)n_gases * n;
+            bb.cstride = (size_t)EOS_ECNT_SLOTS;
+            bb.rstride = (size_t)EOS_BOOK_GAS_MAX;
+            bb.tstride = (size_t)EOS_TCNT_SLOTS;
+            bb.es = S.es;
+            bb.sub = sub_tick(t, s);
+            // P-E1: the mass flux with the thermal energy riding it (design §2.1).
+            bulk_flux_energy_transport_device(
+                gas_planes.data(), n_cons, d_temperature,
+                d_gas_energy, pre.t_amb_q, t_max_phys_q_local,   // arc #54 §2.2/§2.7
+                d_wind_x, d_wind_y,
+                d_solid, d_is_vacuum, d_ts, S.coeffE, S.coeffS, pre.t_min_q, h, w,
+                S.e, S.nbulk, S.dqsum_e, S.dqsum_s,
+                S.dq_e, S.dq_s, S.scale, books.ecnt,
+                d_is_ambient, n_amb_cons.data(),
+                use_rail ? rail_ptrs.data() : nullptr,
+                // smoke transport v2 (#12) stages 3b/3c on the resident planes:
+                // vent -> boundary_flux_'s trace slots, wipe -> trace_wipe_sum_.
+                n_trace ? trace_planes.data() : nullptr, n_trace, S.spre,
+                n_trace ? books.tcnt : nullptr,
+                n_trace ? books.tcnt + EOS_BOOK_GAS_MAX : nullptr,
+                n_trace ? books.tcnt + 2 * EOS_BOOK_GAS_MAX : nullptr,    // #88 P2 clip
+                n_trace ? books.tcnt + 3 * EOS_BOOK_GAS_MAX : nullptr,    // #88 P2 neg hits
+                bb);
         }
-        cuda_check(cudaMemcpyAsync(S.div_source, S.div_source_h, (size_t)N * n * 4,
-                                   cudaMemcpyHostToDevice, stv), "H2D div_source");
-        div_source_launch_resident(S.div_u, S.div_source, d_solid, d_is_vacuum,
-                                   d_is_ambient, N, h, w);
-    }
-    {
-        // trace_mass_scale arg RETIRED (P-T0, design §2.6).
-        K_ntot<<<grid, block, 0, stv>>>(S.ntot, d_gas_base, S.cons_flag, n_gases, n);
+
+        // ---- DEVICE MID-STAGE: div(u*), the source, Dalton N, p*. --------
+        K_div_u<<<grid, block, 0, stv>>>(S.div_u, d_wind_x, d_wind_y, d_solid,
+                                         d_is_vacuum, d_is_ambient, pre.inv_2dx_q, h, w,
+                                         S.es, t);
+        cuda_check(cudaGetLastError(), "K_div_u");
+        if (has_source)
+            div_source_launch_resident(S.div_u, S.div_source, d_solid, d_is_vacuum,
+                                       d_is_ambient, N, h, w, S.es, t);
+        K_ntot<<<grid, block, 0, stv>>>(S.ntot, d_gas_base, S.cons_flag, n_gases, n, S.es, t);
         cuda_check(cudaGetLastError(), "K_ntot");
-    }
-    K_pstar<<<grid, block, 0, stv>>>(S.pstar, S.ntot, d_temperature, d_wave_p,
-                                     d_solid, d_is_vacuum, pre.t_amb_q, pre.s_eos_q, pre.c_q,
-                                     solver.debug_pstar_from_prev, n);
-    cuda_check(cudaGetLastError(), "K_pstar");
+        K_pstar<<<grid, block, 0, stv>>>(S.pstar, S.ntot, d_temperature, d_warm,
+                                         d_solid, d_is_vacuum, pre.t_amb_q, pre.s_eos_q, pre.c_q,
+                                         solver.debug_pstar_from_prev, n, S.es, t);
+        cuda_check(cudaGetLastError(), "K_pstar");
 
-    // ---- DEVICE MG BUILD (design §4) + the SHARED solve schedule, per env
-    //      on the (N, h, w) layout (#29 P5). --------------------------------
-    mg_build_device(S.lv, n_levels, S.pstar, S.div_u, S.ntot, d_wave_p,
-                    d_solid, d_is_vacuum, d_dyn_permeability,
-                    d_is_ambient, ambient_mode ? d_sponge_sigma : nullptr,
-                    mf, p_amb, ambient_mode, N);
-    {
-        MGLevelDevPtrs views[MG_MAX_LEVELS_RES];
-        for (int l = 0; l < n_levels; ++l) {
-            const DevLevel& L = S.lv[l];
-            views[l].h = L.h; views[l].w = L.w;
-            views[l].excl = L.excl; views[l].m = L.m;
-            views[l].gE = L.gE; views[l].gS = L.gS; views[l].recip = L.recip;
-            views[l].b = L.b; views[l].P = L.P; views[l].res = L.res;
+        // ---- DEVICE MG BUILD (design §4) + the SHARED solve schedule, per
+        //      env on the (N, h, w) layout, masked by the sub-tick. ---------
+        mg_build_device(S.lv, n_levels, S.pstar, S.div_u, S.ntot, d_warm,
+                        d_solid, d_is_vacuum, d_dyn_permeability,
+                        d_is_ambient, ambient_mode ? d_sponge_sigma : nullptr,
+                        mf, p_amb, ambient_mode, N, S.es, t);
+        {
+            MGLevelDevPtrs views[MG_MAX_LEVELS_RES];
+            for (int l = 0; l < n_levels; ++l) {
+                const DevLevel& L = S.lv[l];
+                views[l].h = L.h; views[l].w = L.w;
+                views[l].excl = L.excl; views[l].m = L.m;
+                views[l].gE = L.gE; views[l].gS = L.gS; views[l].recip = L.recip;
+                views[l].b = L.b; views[l].P = L.P; views[l].res = L.res;
+            }
+            eos_mg_vcycle_resident(views, n_levels, solver.use_multigrid,
+                                   solver.mg_cycles, solver.mg_nu1, solver.mg_nu2,
+                                   solver.mg_coarsest_sweeps, solver.S, N, S.es, t);
         }
-        eos_mg_vcycle_resident(views, n_levels, solver.use_multigrid,
-                               solver.mg_cycles, solver.mg_nu1, solver.mg_nu2,
-                               solver.mg_coarsest_sweeps, solver.S, N);
+
+        // ---- KICK (the SHARED launch core) on the zeroed L0.P with the
+        //      device post-substep Dalton; per env its row's dt_k folds, the
+        //      cap heat (ruling 3), the sponge band on its last sub-tick. ----
+        kick_compression_launch_resident(
+            d_wind_x, d_wind_y, d_gas_energy, S.lv[0].P, S.ntot, S.absorb_q,
+            d_solid, d_is_vacuum, kfs, S.cap2,   // D2v2 + #217 §8.6.4's ceiling
+            books.kick, h, w,
+            d_is_ambient, d_sponge_udamp,
+            d_ts,   // arc #54 §2.3 F5: the KE brackets export on thermal_solid
+            N, (size_t)KICK_CNT_SLOTS, S.es, t);
+
+        // ---- step 5: P := P_new (+P_amb masked, ambient). ----------------
+        K_store_atm<<<grid, block, 0, stv>>>(d_atmosphere, S.lv[0].P, d_solid,
+                                             (int64_t)p_amb, ambient_mode, n, S.es, t);
+        cuda_check(cudaGetLastError(), "K_store_atm");
+
+        // ---- K3 + the RECOVERY (arc #54 design §2.4/§2.5/§2.6), per
+        //      sub-tick — after K_store_atm: it consumes the ABSOLUTE
+        //      d_atmosphere. Each env's k_flux_q / flux_pu_cap from its row.
+        EnergyFluxScalarFolds ef = S.ef_base;   // the n_sub-free scalars (any valid row's)
+        ef.n_sub = nsub_max;
+        energy_flux_launch_resident(
+            d_gas_energy, d_temperature, d_atmosphere, d_wind_x, d_wind_y,
+            S.ntot, d_solid, d_is_vacuum, d_ts, d_is_ambient,
+            ef, S.e0, S.pcur, S.s_plane, books.flux, h, w,
+            N, (size_t)FLUX_CNT_SLOTS, S.es, nsub_max, t);
     }
-
-    // ---- KICK (the SHARED launch core, K1 only — arc #54 P-G2: K2 deleted)
-    //      on the zeroed L0.P (== the per-call p_new bytes, PRE un-shift)
-    //      with the device post-substep Dalton. The KE brackets (design
-    //      §2.3) land straight in the persistent `d_gas_energy`.
-    kick_compression_launch_resident(
-        d_wind_x, d_wind_y, d_gas_energy, S.lv[0].P, S.ntot, S.absorb_q,
-        d_solid, d_is_vacuum, kf, S.cap2,   // D2v2: the per-cell cap² plane
-        books.kick, h, w,
-        d_is_ambient, d_sponge_udamp,
-        d_ts,   // arc #54 §2.3 F5: the KE brackets export on thermal_solid
-        N, (size_t)KICK_CNT_SLOTS);
-
-    // ---- step 5: P := P_new (+P_amb masked, ambient). --------------------
-    K_store_atm<<<grid, block, 0, stv>>>(d_atmosphere, S.lv[0].P, d_solid,
-                                         (int64_t)p_amb, ambient_mode, n);
-    cuda_check(cudaGetLastError(), "K_store_atm");
-
-    // ---- K3 + the once-per-tick RECOVERY (arc #54 design §2.4/§2.5/§2.6) —
-    //      MUST run after K_store_atm: it consumes the ABSOLUTE d_atmosphere
-    //      (the step-5 un-shift), never the shifted L0.P (design §2.4 pin).
-    //      #29 P5: the sub-cycles to max(n_sub), each env's k_flux_q /
-    //      flux_pu_cap from its fold-table row; the n_sub-free scalars of the
-    //      folds from the table build (ensure_fold_table's ef_base).
-    EnergyFluxScalarFolds ef = S.ef_base;   // the n_sub-free scalars (any valid row's)
-    ef.n_sub = nsub_max;
-    energy_flux_launch_resident(
-        d_gas_energy, d_temperature, d_atmosphere, d_wind_x, d_wind_y,
-        S.ntot, d_solid, d_is_vacuum, d_ts, d_is_ambient,
-        ef, S.e0, S.pcur, S.s_plane, books.flux, h, w,
-        N, (size_t)FLUX_CNT_SLOTS, S.es, nsub_max);
     return nsub_max;
 }
 
@@ -1420,9 +1623,14 @@ long long eos_prestage_parity(
         dt, solver.c_max, solver.dx, solver.adiabatic_index,
         solver.absorb_strength, solver.N_FLOOR_SOLVER, solver.U_MAX,
         solver.k_drag, solver.k_drag2, solver.T_AMB_K);
+    // #217 §8.6.7: the absorb plane at the tick's dt_k (the kick's)
+    const KickScalarFolds kfk = kick_scalar_folds(
+        hp.dt_k, solver.c_max, solver.dx, solver.adiabatic_index,
+        solver.absorb_strength, solver.N_FLOOR_SOLVER, solver.U_MAX,
+        solver.k_drag, solver.k_drag2, solver.T_AMB_K);
     std::vector<int32_t> absorb_h((size_t)n);
     for (int i = 0; i < n; ++i)
-        absorb_h[(size_t)i] = mul_q16(quantize((double)dyn_wave_absorb[i]), kf.absorb_dt_q);
+        absorb_h[(size_t)i] = mul_q16(quantize((double)dyn_wave_absorb[i]), kfk.absorb_dt_q);
 
     // ---- the DEVICE pre-stage on uploaded copies ---------------------------
     EOSResidentScratch S;
@@ -1453,17 +1661,21 @@ long long eos_prestage_parity(
         bool* d_ts  = (bool*)up(thermal_solid ? thermal_solid : solid, (size_t)n);
         float* d_perm = (float*)up(dyn_permeability, nb);
         float* d_wabs = (float*)up(dyn_wave_absorb, nb);
-        unsigned long long* d_pre = (unsigned long long*)up(nullptr, (size_t)EOS_PRE_SLOTS * 8 + 8);
-        cuda_check(cudaMemset(d_pre, 0, (size_t)EOS_PRE_SLOTS * 8 + 8), "parity memset");
+        unsigned long long* d_pre = (unsigned long long*)up(nullptr, (size_t)EOS_PRE_SLOTS * 8 + 16);
+        cuda_check(cudaMemset(d_pre, 0, (size_t)EOS_PRE_SLOTS * 8 + 16), "parity memset");
+        // #217 §8.6.2: the solver's blast source, as the host scan read it
+        const int32_t* d_src = ((int)solver.div_source.size() == n)
+            ? (const int32_t*)up(solver.div_source.data(), nb) : nullptr;
         // poison the planes the pre-stage must write in full
         cuda_check(cudaMemset(S.cap2, 0xAB, (size_t)n * 8), "poison");
         cuda_check(cudaMemset(S.absorb_q, 0xAB, nb), "poison");
         cuda_check(cudaMemset(S.coeffE, 0xAB, nb), "poison");
         cuda_check(cudaMemset(S.coeffS, 0xAB, nb), "poison");
         device_prestage(solver, pre, kf, S, 1, h, w, n_gases, d_atm, d_wp, d_wx, d_wy, d_t,
-                        d_gas, d_sol, d_vac, d_ts, d_perm, d_wabs, d_pre, d_pre + EOS_PRE_SLOTS);
+                        d_gas, d_sol, d_vac, d_ts, d_perm, d_wabs, d_pre, d_pre + EOS_PRE_SLOTS,
+                        nullptr, d_src);
         cuda_check(cudaDeviceSynchronize(), "parity sync");
-        unsigned long long hpre[EOS_PRE_SLOTS + 1];
+        unsigned long long hpre[EOS_PRE_SLOTS + 2];
         cuda_check(cudaMemcpy(hpre, d_pre, sizeof(hpre), cudaMemcpyDeviceToHost), "parity D2H");
         EnvSub es;
         cuda_check(cudaMemcpy(&es, S.es, sizeof(EnvSub), cudaMemcpyDeviceToHost), "parity D2H es");
@@ -1476,6 +1688,10 @@ long long eos_prestage_parity(
         scalar("n_sub", (long long)hpre[EOS_PRE_N_SUB], hp.n_sub);
         scalar("n_sub (row)", es.n_sub, hp.n_sub);
         scalar("max n_sub", (long long)hpre[EOS_PRE_SLOTS], hp.n_sub);
+        // #217 §8.6.7: the row is (k, n_sub)
+        scalar("k", (long long)hpre[EOS_PRE_K], hp.k);
+        scalar("k (row)", es.k, hp.k);
+        scalar("max k", (long long)hpre[EOS_PRE_SLOTS + 1], hp.k);
         scalar("c_local_q", (long long)(int64_t)hpre[EOS_PRE_C_LOCAL], hp.c_local_q);
         scalar("dtdx_s_q", es.dtdx_s_q, hp.dtdx_s_q);
         auto plane = [&](const char* name, const void* dev, const void* host, size_t elems,
@@ -1499,7 +1715,7 @@ long long eos_prestage_parity(
         plane("p_prev", d_wp, p_prev.data(), (size_t)n, 4);
         if (report) {
             std::ostringstream hdr;
-            hdr << "n_sub " << hp.n_sub << " c_local_q " << hp.c_local_q
+            hdr << "k " << hp.k << " n_sub " << hp.n_sub << " c_local_q " << hp.c_local_q
                 << " dtdx_s_q " << hp.dtdx_s_q << "\n";
             *report = hdr.str() + rep.str();
         }

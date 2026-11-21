@@ -59,7 +59,12 @@ constexpr int EOS_PRE_MAX_RAD   = 2;   // max |u|² (Q32.32)
 constexpr int EOS_PRE_N_SUB     = 3;   // the env's substep count
 constexpr int EOS_PRE_C_LOCAL   = 4;   // the env's c_LOCAL (Q16)
 constexpr int EOS_PRE_FAIL      = 5;   // 1: the env selected a refused fold-table row
-constexpr int EOS_PRE_SLOTS     = 8;
+// #217 §8.6.2/§8.6.7: the k-set reductions and the env's sub-tick count
+constexpr int EOS_PRE_KSET_RAD  = 6;   // max |u|^2 over the k-set (Q32.32)
+constexpr int EOS_PRE_KSET_DIV  = 7;   // max |div u| over the k-set (Q16)
+constexpr int EOS_PRE_SRC_MAX   = 8;   // max |S| of the blast source (Q16 1/s)
+constexpr int EOS_PRE_K         = 9;   // the env's sub-tick count k
+constexpr int EOS_PRE_SLOTS     = 12;
 struct EosBooksDev {
     unsigned long long* kick = nullptr;      // (N, KICK_CNT_SLOTS)
     unsigned long long* flux = nullptr;      // (N, FLUX_CNT_SLOTS)
@@ -67,7 +72,7 @@ struct EosBooksDev {
     unsigned long long* rail = nullptr;      // (N, EOS_BOOK_GAS_MAX), by cons index
     unsigned long long* tcnt = nullptr;      // (N, EOS_TCNT_SLOTS), by trace position
     unsigned long long* pre = nullptr;       // (N, EOS_PRE_SLOTS)
-    unsigned long long* nsub_max = nullptr;  // (1,) the batch's max n_sub
+    unsigned long long* nsub_max = nullptr;  // (2,) the batch's max n_sub, then max k (#217 §8)
     void* zero_begin = nullptr;              // the contiguous span the tick zeroes
     size_t zero_bytes = 0;
 };

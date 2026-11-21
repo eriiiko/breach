@@ -49,6 +49,8 @@
 
 namespace breach_cuda {
 
+struct EnvSub;   // #217 §8.6.7 (cuda_resident_tick.h)
+
 // A pointer view of one host-built MG level (EOSSolver::MGLevel's arrays).
 // All buffers are h*w; P is the level's initial value (level 0: the P_prev
 // warm start; coarse levels: anything — the restriction kernel writes every
@@ -117,7 +119,10 @@ void eos_mg_vcycle_resident(
     int mg_coarsest_sweeps, int flat_S,
     // #29 P5: the batch's env count — every level array is (N, lh, lw), every
     // fine-level launch covers the N envs, the fused tail is one block per env.
-    int n_env = 1);
+    int n_env = 1,
+    // #217 §8.6.7: the EOS sub-tick t and the envs' fold-table rows: an env
+    // with t >= its k sits out every kernel (nullptr: unmasked).
+    const EnvSub* es = nullptr, int t = 0);
 
 // Backend selection (the P6.1/P6.2 surviving-backend idiom). NOTE: no engine
 // dispatch site consumes this yet — EOS orchestration dispatch is P6.5 ("the

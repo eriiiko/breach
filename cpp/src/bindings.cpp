@@ -4969,6 +4969,12 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("c_v",               &EOSSolver::c_v)
         .def_readwrite("T_MAX_PHYS",        &EOSSolver::T_MAX_PHYS)     // v2.4 rail
         .def_readwrite("U_MAX",             &EOSSolver::U_MAX)          // v2.4 rail
+        // #217 §8.6: the sub-tick budget (a physics dial, [physics.eos] K_MAX)
+        // and the three test seams (never off in play).
+        .def_readwrite("K_MAX",             &EOSSolver::K_MAX)
+        .def_readwrite("subtick_loop",      &EOSSolver::subtick_loop)
+        .def_readwrite("subtick_ceiling",   &EOSSolver::subtick_ceiling)
+        .def_readwrite("cap_heat",          &EOSSolver::cap_heat)
         // trace_mass_scale binding RETIRED (P-T0, design §2.6 — the member
         // itself is gone from EOSSolver; see eos_solver.h).
         .def_readonly("energy_floor_hits",  &EOSSolver::energy_floor_hits)
@@ -5011,6 +5017,7 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("e_absorb_export_sum",   &EOSSolver::e_absorb_export_sum)
         .def_readonly("e_sponge_export_sum",   &EOSSolver::e_sponge_export_sum)
         .def_readonly("e_clamp_destroyed_sum", &EOSSolver::e_clamp_destroyed_sum)
+        .def_readonly("e_cap_heat_sum",        &EOSSolver::e_cap_heat_sum)   // #217 §8.6.5
         .def_readonly("e_drag_heat_sum",       &EOSSolver::e_drag_heat_sum)
         .def_readonly("e_ts_ke_sum",           &EOSSolver::e_ts_ke_sum)
         .def_readonly("e_work_export_sum",     &EOSSolver::e_work_export_sum)
@@ -5105,6 +5112,12 @@ PYBIND11_MODULE(breach_physics, m) {
         // lets the per-kernel digest gates replay the isolated advection on
         // the exact schedule the solver derived).
         .def_readonly("dbg_last_n_sub",          &EOSSolver::dbg_last_n_sub)
+        // #217 §8.9 test seams
+        .def_readonly("dbg_last_k",              &EOSSolver::dbg_last_k)
+        .def_readonly("dbg_solves_last_step",    &EOSSolver::dbg_solves_last_step)
+        .def_readwrite("dbg_record_subtick_umax", &EOSSolver::dbg_record_subtick_umax)
+        .def_property_readonly("dbg_subtick_umax", [](const EOSSolver& s) {
+            return std::vector<int32_t>(s.dbg_subtick_umax.begin(), s.dbg_subtick_umax.end()); })
         // EOS P6.4: the c_LOCAL scalar the last step() derived (q16 raw).
         // VELOCITY-CLAMP (P-V1, D2v2): the kick no longer reads this — the
         // kick's per-cell cap is folded fresh from tick-entry T (formula A;
@@ -5291,7 +5304,8 @@ PYBIND11_MODULE(breach_physics, m) {
              // nullptr at the call below, so no caller could reach the
              // reference's ambient branch at all; `sponge_udamp` is the B3c
              // band restored in eos_solver.cpp. Both default None -> pre-A6.
-             py::object is_ambient, py::object sponge_udamp) -> py::tuple {
+             py::object is_ambient, py::object sponge_udamp,
+             bool cap_heat) -> py::tuple {
               auto [wx, h, w]    = get_2d(wind_x);
               auto [wy, h2, w2]  = get_2d(wind_y);
               auto [t, h3, w3]   = get_2d(temperature);
@@ -5337,16 +5351,21 @@ PYBIND11_MODULE(breach_physics, m) {
               }
               uint64_t dig_vel = 0, dig_comp = 0;
               int64_t cnts[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+              int64_t ext[3] = {0, 0, 0};   // #217 §8.6.5
               eos_kick_compression_reference(
                   wx, wy, t, gen, pn, gas_ptr, gcons, n_gases, sol, vac, ab,
                   h, w, dt, cap2,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_max_phys, u_max,
                   k_drag, k_drag2, c_v, t_amb_k,
-                  &dig_vel, &dig_comp, cnts, amb, tsol, sud);   // trace_mass_scale arg RETIRED
+                  &dig_vel, &dig_comp, cnts, amb, tsol, sud,   // trace_mass_scale arg RETIRED
+                  cap_heat, ext);
+              // #217 §8.6.5: three slots APPENDED (the first eleven unchanged):
+              // e_cap_heat_sum, e_clamp_destroyed_sum, e_kick_ke_sum.
               return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
                                     cnts[2], cnts[3], cnts[4], cnts[5],
-                                    cnts[6], cnts[7], cnts[8]);
+                                    cnts[6], cnts[7], cnts[8],
+                                    ext[0], ext[1], ext[2]);
           },
           py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
           py::arg("p_new"), py::arg("gas"), py::arg("gas_conservative"),
@@ -5364,6 +5383,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("thermal_solid") = py::none(),
           py::arg("is_ambient") = py::none(),
           py::arg("sponge_udamp") = py::none(),
+          py::arg("cap_heat") = true,
           "P6.4 CPU reference: replay EOSSolver::step's kick tail in place on "
           "wind_x/wind_y (+ gas_energy, if given: the arc #54 KE brackets); "
           "cap2_plane is the per-cell (h,w) int64 velocity-cap-squared plane "

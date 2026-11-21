@@ -135,7 +135,8 @@ EOSHostPrestage eos_host_prestage(
         int h, int w, float dt,
         bool ambient_mode,
         const bool* thermal_solid,
-        bool host_scans) {
+        bool host_scans,
+        const bool* is_ambient) {
     EOSHostPrestage pre;
     const int n = h * w;
     // THERMAL-MASS AXIS: the same nullptr -> `solid` fallback step()'s `ts`
@@ -198,6 +199,8 @@ EOSHostPrestage eos_host_prestage(
         pre.cap2[i] = (ratio >= ratio_umax)
             ? u_max2_q32
             : mul128_shr_host(c_amb2_q32, ratio, 16);
+        // #217 §8.6.4: the budget ceiling (step()'s scan, verbatim).
+        if (pre.ubud2_q32 > 0 && pre.cap2[i] > pre.ubud2_q32) pre.cap2[i] = pre.ubud2_q32;
     }
     const int32_t ratio_q = (int32_t)((t_max_abs_raw << 16) / (int64_t)t_amb_q);
     const q16 sqrt_ratio = sqrt_q16((int64_t)ratio_q << 16);   // Q.32 radicand
@@ -256,6 +259,20 @@ EOSHostPrestage eos_host_prestage(
             const int64_t du = mul128_shr_host(t1, (int64_t)inv_n, 16);
             if (du > max_du_raw) max_du_raw = du;
         }
+    }
+    // #217 §8.6.2: k from the ONE host k-set scan (step()'s) over the entry
+    // state and the solver's blast source; subtick_loop off: k = 1.
+    {
+        const int n_ = h * w;
+        const EosKsetMax km = eos_kset_scan(
+            wind_x, wind_y, n_total.data(), solid, is_vacuum,
+            ambient_mode ? is_ambient : nullptr,
+            (int)solver.div_source.size() == n_ ? solver.div_source.data() : nullptr,
+            h, w, inv_2dx_q, nullptr);
+        pre.k = solver.subtick_loop
+            ? eos_subtick_k((int64_t)sqrt_q16(km.max_rad), km.max_div, km.max_src,
+                            pre.dt_q, pre.gdt_q, pre.cp_dx_q, solver.K_MAX)
+            : 1;
     }
     // #29 P4a: the fold moved VERBATIM into eos_prestage_finish (below).
     eos_prestage_finish(solver, pre, max_du_raw);
@@ -336,6 +353,12 @@ EOSHostPrestage eos_prestage_scalars(const EOSSolver& solver, float dt,
     pre.cfl_dx_q  = quantize((double)solver.CFL_ADV * dx_d);
     pre.dt_q      = dt_q;
     pre.dt_d      = dt_d;
+    // #217 §8.6: the k-rule's folds and the budget ceiling (step()'s own).
+    pre.gdt_q     = quantize(gamma_d * dt_d);
+    pre.cp_dx_q   = quantize(dx_d);
+    eos_check_k_max(solver.K_MAX);
+    pre.ubud2_q32 = solver.subtick_ceiling
+        ? eos_budget_cap2_q32(dt, solver.dx, solver.K_MAX) : (int64_t)0;
     for (int gi = 0; gi < n_gases; ++gi)
         if (gas_conservative[gi]) pre.cons.push_back(gi);
     pre.t_amb_q   = t_amb_q;
@@ -357,15 +380,20 @@ void eos_prestage_finish(const EOSSolver& solver, EOSHostPrestage& pre,
         ? (int64_t)pre.c_local_q : (int64_t)pre.u_max_q;
     if (u_est_raw > u_est_cap) u_est_raw = u_est_cap;
     const int64_t numer_wide = mul128_shr_host((int64_t)pre.dt_q, u_est_raw, 16);
-    int n_sub = std::max(1, ceil_div(
+    // #217 §8.6.3: n_adv uncapped, then step()'s per-sub-tick rule.
+    const int n_adv = std::max(1, ceil_div(
         (q16)std::min<int64_t>(numer_wide, (int64_t)INT32_MAX), pre.cfl_dx_q));
-    if (n_sub > solver.N_SUB_MAX) n_sub = solver.N_SUB_MAX;
+    const int n_floor = eos_subtick_n_floor(pre.k, solver.K_MAX, solver.CFL_ADV,
+                                            solver.subtick_ceiling);
+    const int n_sub = eos_subtick_n_sub(n_adv, pre.k, solver.N_SUB_MAX, n_floor);
     solver.dbg_last_n_sub = n_sub;
-    // #217 patch U: THE TRANSPORT STEP, step()'s one function (the CPU folds
-    // it once per tick too). pre.dt_d is (double) of the float dt, so the
+    solver.dbg_last_k = pre.k;
+    // #217 patch U: THE TRANSPORT STEP, step()'s one function, at the
+    // sub-tick's dt_k (#217 §8). pre.dt_d is (double) of the float dt, so the
     // float round trip is exact.
     pre.n_sub    = n_sub;
-    pre.dtdx_s_q = eos_transport_step_q((float)pre.dt_d, n_sub, solver.dx);
+    pre.dt_k     = eos_subtick_dt((float)pre.dt_d, pre.k);
+    pre.dtdx_s_q = eos_transport_step_q(pre.dt_k, n_sub, solver.dx);
 }
 
 long long eos_step_cuda_calls() { return g_eos_step_cuda_calls; }
@@ -409,7 +437,8 @@ void eos_step_cuda(
     const EOSHostPrestage pre = eos_host_prestage(
         solver, atmosphere, p_prev, wind_x, wind_y, temperature,
         gas, gas_conservative, n_gases, solid, is_vacuum,
-        dyn_permeability, h, w, dt, ambient_mode, thermal_solid);
+        dyn_permeability, h, w, dt, ambient_mode, thermal_solid,
+        /*host_scans=*/true, ambient_mode ? is_ambient : nullptr);
     const q16 t_amb_q   = pre.t_amb_q;
     const q16 s_eos_q   = pre.s_eos_q;
     const q16 c_q       = pre.c_q;
@@ -425,6 +454,35 @@ void eos_step_cuda(
     // Mid-stage Dalton scratch (re-zeroed + refilled below, exactly like the
     // CPU's member-cache reuse — a fresh vector holds the same bytes).
     std::vector<int32_t> n_total(n, 0);
+
+    // ======================================================================
+    // #217 §8.6.1 — THE SUB-TICK LOOP on the per-call path: everything below
+    // runs k times at dt_k (pre.k, pre.dt_k from the host pre-stage, which ran
+    // ONCE: the resets, step 0, the scan, k, n_sub, coeffE/S). The per-tick
+    // counters are zeroed ONCE here and ACCUMULATE over the sub-ticks (the
+    // CPU's reset-at-entry idiom); the warm start for sub-tick >= 2 is the
+    // previous sub-tick's stored P (`atmosphere`).
+    // ======================================================================
+    const int k_ticks = pre.k;
+    const float dt_k = pre.dt_k;
+    int sigma_shift = 0;
+    for (int kk = k_ticks; kk > 1; kk >>= 1) sigma_shift += 2;
+    solver.e_ts_residual = 0;       solver.e_wipe_sum = 0;
+    solver.e_floor_sum = 0;         solver.n_active_flux = 0;
+    solver.n_bulk_active_sum = 0;   solver.e_transport_net_sum = 0;
+    solver.ke_drag_removed = 0;     solver.e_drag_heat_sum = 0;
+    solver.e_kick_ke_sum = 0;       solver.e_absorb_export_sum = 0;
+    solver.e_sponge_export_sum = 0; solver.e_clamp_destroyed_sum = 0;
+    solver.e_cap_heat_sum = 0;      solver.rad_clip_hits = 0;
+    solver.e_ts_ke_sum = 0;
+    solver.p_face_floor_hits = 0;   solver.p_face_ceil_hits = 0;
+    solver.flux_sat_hits = 0;       solver.e_energy_floor_sum = 0;
+    solver.e_work_export_sum = 0;   solver.e_ts_work_sum = 0;
+    solver.e_wall_work_probe_sum = 0; solver.e_rail_sum = 0;
+    solver.dbg_solves_last_step = 0;
+    for (int tk = 0; tk < k_ticks; ++tk) {
+    const bool last_subtick = (tk == k_ticks - 1);
+    const int32_t* p_warm = (tk == 0) ? p_prev : atmosphere;
 
     // ======================================================================
     // DEVICE SUBSTEP LOOP — u/T/bulk-gas device-resident across all n_sub
@@ -628,8 +686,9 @@ void eos_step_cuda(
                                   tc.size() * sizeof(unsigned long long),
                                   cudaMemcpyDeviceToHost), "D2H trace counters");
             for (int k = 0; k < n_trace; ++k) {
-                solver.boundary_flux_[trace_gi[k]]  = (int64_t)tc[k];
-                solver.trace_wipe_sum_[trace_gi[k]] = (int64_t)tc[n_trace + k];
+                // #217 §8: ACCUMULATED over the sub-ticks (zeroed at entry)
+                solver.boundary_flux_[trace_gi[k]]  += (int64_t)tc[k];
+                solver.trace_wipe_sum_[trace_gi[k]] += (int64_t)tc[n_trace + k];
                 solver.trace_clip_sum_[trace_gi[k]] += (int64_t)tc[2 * n_trace + k];
                 solver.trace_neg_hits_[trace_gi[k]] += (int64_t)tc[3 * n_trace + k];
             }
@@ -644,12 +703,13 @@ void eos_step_cuda(
             unsigned long long ec[6] = {0, 0, 0, 0, 0, 0};
             cuda_check(cudaMemcpy(ec, d_ecnt, sizeof(ec),
                                   cudaMemcpyDeviceToHost), "D2H e-counters");
-            solver.e_ts_residual     = (int64_t)ec[0];
-            solver.e_wipe_sum        = (int64_t)ec[1];   // bulk transport's share
-            solver.e_floor_sum       = (int64_t)ec[2];
-            solver.n_active_flux     = (int64_t)ec[3];
-            solver.n_bulk_active_sum = (int64_t)ec[4];
-            solver.e_transport_net_sum = (int64_t)ec[5];
+            // #217 §8: ACCUMULATED over the sub-ticks (zeroed at entry)
+            solver.e_ts_residual     += (int64_t)ec[0];
+            solver.e_wipe_sum        += (int64_t)ec[1];   // bulk transport's share
+            solver.e_floor_sum       += (int64_t)ec[2];
+            solver.n_active_flux     += (int64_t)ec[3];
+            solver.n_bulk_active_sum += (int64_t)ec[4];
+            solver.e_transport_net_sum += (int64_t)ec[5];
         }
         if (ambient_mode && d_rail) {
             std::vector<unsigned long long> rail_host(cons.size(), 0);
@@ -657,7 +717,7 @@ void eos_step_cuda(
                                   cons.size() * sizeof(unsigned long long),
                                   cudaMemcpyDeviceToHost), "D2H rail");
             for (size_t k = 0; k < cons.size(); ++k)
-                solver.boundary_flux_[cons[k]] = (int64_t)rail_host[k];
+                solver.boundary_flux_[cons[k]] += (int64_t)rail_host[k];   // #217 §8
         }
         free_all();
     } catch (...) {
@@ -728,7 +788,7 @@ void eos_step_cuda(
     for (int i = 0; i < n; ++i) {
         if (solid[i] || is_vacuum[i]) { pstar[i] = 0; continue; }
         if (solver.debug_pstar_from_prev) {
-            pstar[i] = p_prev[i];   // MEASUREMENT-ONLY diagnostic (parity)
+            pstar[i] = p_warm[i];   // MEASUREMENT-ONLY diagnostic (parity); #217 §8
         } else {
             const int64_t t_abs_wide = (((int64_t)s_eos_q * (int64_t)temperature[i]) >> 16) + (int64_t)t_amb_q;
             const q16 t_abs = (q16)t_abs_wide;
@@ -747,10 +807,11 @@ void eos_step_cuda(
     // and the σ-diagonal all live in the SHARED host-side mg_build_levels —
     // forwarding the ambient args here makes the device solve inherit them.
     const int n_levels = solver.mg_build_levels(
-        pstar.data(), div_u.data(), n_total.data(), p_prev,
-        solid, is_vacuum, dyn_permeability, h, w, dt,
+        pstar.data(), div_u.data(), n_total.data(), p_warm,
+        solid, is_vacuum, dyn_permeability, h, w, dt_k,
         ambient_mode ? is_ambient : nullptr, p_amb,
-        ambient_mode ? sponge_sigma : nullptr);
+        ambient_mode ? sponge_sigma : nullptr, sigma_shift);   // #217 §8.6.1
+    ++solver.dbg_solves_last_step;
     std::vector<int32_t> p_new(n, 0);
     {
         const auto& L = solver.mg_levels();
@@ -787,7 +848,7 @@ void eos_step_cuda(
         eos_kick_compression(
             wind_x, wind_y, gas_energy, p_new.data(),
             gas, gas_conservative, n_gases, solid, is_vacuum,
-            dyn_wave_absorb, h, w, dt, pre.cap2.data(),   // D2v2
+            dyn_wave_absorb, h, w, dt_k, pre.cap2.data(),   // D2v2; #217 §8: dt_k
             solver.c_max, solver.dx, solver.adiabatic_index,
             solver.absorb_strength, solver.N_FLOOR_SOLVER, solver.U_MAX,
             // P-E3 (design §2.8): interior drag + heat counterparty.
@@ -798,24 +859,28 @@ void eos_step_cuda(
             &dig_vel, cnts,
             // BC: ring velocity zero + the u-damping band.
             ambient_mode ? is_ambient : nullptr,
-            ambient_mode ? sponge_udamp : nullptr,
+            // #217 §8.6.1: the per-tick band on the LAST sub-tick only
+            (ambient_mode && last_subtick) ? sponge_udamp : nullptr,
             // arc #54 design §2.3 F5: the KE brackets export on thermal_solid.
-            thermal_solid);
+            thermal_solid,
+            solver.cap_heat);   // #217 §8.6.5
         solver.digest_velocity    = dig_vel;
         solver.u_clamp_hits      += cnts[0];
         solver.u_max_hits        += cnts[1];
         // slots 2-4 retired (work_clamp_hits / the T rails — moved to §2.6).
         // P-E3: PER-TICK semantics (assigned, not accumulated — the P-E1
         // reset-at-step()-entry idiom; this dispatch runs once per tick).
-        solver.ke_drag_removed      = cnts[5];
-        solver.e_drag_heat_sum      = cnts[6];
+        // #217 §8: PER-TICK, ACCUMULATED over the sub-ticks (zeroed at entry)
+        solver.ke_drag_removed      += cnts[5];
+        solver.e_drag_heat_sum      += cnts[6];
         // arc #54 §2.3: the new per-stage KE-bracket counters, PER-TICK.
-        solver.e_kick_ke_sum         = cnts[9];
-        solver.e_absorb_export_sum   = cnts[10];
-        solver.e_sponge_export_sum   = cnts[11];
-        solver.e_clamp_destroyed_sum = cnts[12];
-        solver.rad_clip_hits         = cnts[13];
-        solver.e_ts_ke_sum           = cnts[14];
+        solver.e_kick_ke_sum         += cnts[9];
+        solver.e_absorb_export_sum   += cnts[10];
+        solver.e_sponge_export_sum   += cnts[11];
+        solver.e_clamp_destroyed_sum += cnts[12];
+        solver.rad_clip_hits         += cnts[13];
+        solver.e_ts_ke_sum           += cnts[14];
+        solver.e_cap_heat_sum        += cnts[15];   // #217 §8.6.5
     }
 
     // ======================================================================
@@ -846,24 +911,26 @@ void eos_step_cuda(
         eos_energy_flux(
             gas_energy, temperature, atmosphere, wind_x, wind_y,
             n_total.data(), solid, is_vacuum,
-            h, w, dt, n_sub,
+            h, w, dt_k, n_sub,                              // #217 §8: dt_k
             solver.dx, solver.adiabatic_index, solver.T_AMB_K, solver.C,
             solver.T_MIN, solver.T_MAX_PHYS,
             cnts,
             ambient_mode ? is_ambient : nullptr,
             thermal_solid);
-        solver.p_face_floor_hits     = cnts[0];
-        solver.p_face_ceil_hits      = cnts[1];
-        solver.flux_sat_hits         = cnts[2];
-        solver.e_energy_floor_sum    = cnts[3];
-        solver.e_work_export_sum     = cnts[4];
-        solver.e_ts_work_sum         = cnts[5];
-        solver.e_wall_work_probe_sum = cnts[6];
+        // #217 §8: ACCUMULATED over the sub-ticks (zeroed at entry)
+        solver.p_face_floor_hits     += cnts[0];
+        solver.p_face_ceil_hits      += cnts[1];
+        solver.flux_sat_hits         += cnts[2];
+        solver.e_energy_floor_sum    += cnts[3];
+        solver.e_work_export_sum     += cnts[4];
+        solver.e_ts_work_sum         += cnts[5];
+        solver.e_wall_work_probe_sum += cnts[6];
         solver.energy_floor_hits    += cnts[7];
         solver.t_max_phys_hits      += cnts[8];
-        solver.e_rail_sum            = cnts[9];
+        solver.e_rail_sum            += cnts[9];
         solver.e_wipe_sum           += cnts[10];
     }
+    }   // #217 §8.6.1: end of the per-call sub-tick loop
     solver.digest_compression = digest_of_host(temperature, n, 0);
 
     // DEBUG probe parity: T after the flux step + recovery (moved with the

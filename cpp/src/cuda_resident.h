@@ -151,6 +151,9 @@ struct KickScalarFolds {
     // make_recip(1/k_ke) (a Q.32 wide reciprocal — see eos_solver.cpp's fold
     // comment for why the plain Q16.16 constant would lose ~6 bits).
     int64_t k_ke_recip_q32 = 0;
+    // #217 §8.6.5 (ruling 3): the cap returns the kick's own share of its
+    // removal as heat (EOSSolver::cap_heat; the caller sets it).
+    bool cap_heat = true;
 };
 KickScalarFolds kick_scalar_folds(
     float dt, float c_max, float dx, float adiabatic_index,
@@ -166,7 +169,10 @@ KickScalarFolds kick_scalar_folds(
 void div_source_launch_resident(
     int32_t* d_div_u, const int32_t* d_div_source,
     const bool* d_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
-    int N, int h, int w);
+    int N, int h, int w,
+    // #217 §8.6.7: launched (N, h, w), masked by the EOS sub-tick t
+    // (es == nullptr: unmasked)
+    const EnvSub* es = nullptr, int t = 0);
 
 // The step-4 kick, LAUNCH ONLY, on DEVICE pointers (the CPU pass boundary),
 // no malloc, no transfer, no memset, no sync, no digest. d_ntot is the
@@ -178,7 +184,7 @@ void div_source_launch_resident(
 // (space / no band). The per-call eos_kick_compression wraps this same core
 // with its existing H2D/memset/D2H/digest flow — one kernel transcription,
 // both paths.
-constexpr int KICK_CNT_SLOTS = 15;
+constexpr int KICK_CNT_SLOTS = 16;   // #217 §8.6.5: slot 15 = e_cap_heat_sum
 void kick_compression_launch_resident(
     int32_t* d_wind_x, int32_t* d_wind_y,
     int64_t* d_gas_energy,         // arc #54 §2.2/§2.3, in/out
@@ -194,8 +200,13 @@ void kick_compression_launch_resident(
     // d_solid`, so the legacy path allocates and copies nothing.
     const bool* d_ts = nullptr,
     // #29 P5: the batch -- every plane (N, h, w), the counters (N, cstride)
-    // (0 = KICK_CNT_SLOTS). The kick runs once per tick on every env.
-    int n_env = 1, size_t cstride = 0);
+    // (0 = KICK_CNT_SLOTS).
+    int n_env = 1, size_t cstride = 0,
+    // #217 §8.6.7: the EOS sub-tick t and the env's fold-table rows: an env
+    // with t >= its k sits out; Kdt / kd / kd2 / rad_dead come from its row
+    // (dt_k) and the per-tick sponge band applies on its LAST sub-tick only.
+    // es == nullptr: the folds' own scalars, the band as passed (per-call).
+    const EnvSub* es = nullptr, int t = 0);
 
 // ---- the face-flux energy step (cuda_kick_compression.cu K3) — P-G2 -------
 // Replaces the retired step-4c compression work (design §2.4/§2.5, Kwatra
@@ -240,7 +251,10 @@ void energy_flux_launch_resident(
     // the folds' own scalars and n_sub) and `n_cycles` the batch's max n_sub --
     // an env sits out every sub-cycle past its own n_sub.
     int n_env = 1, size_t cstride = 0, const EnvSub* es = nullptr,
-    int n_cycles = 0);
+    int n_cycles = 0,
+    // #217 §8.6.7: the EOS sub-tick (an env with t >= its k sits out every
+    // pass and the recovery).
+    int t = 0);
 
 // ---- the radiation sweep (cuda_radiation_sweep.cu) — ray-engine-v2 P4 -------
 // The sweep's LAUNCH CORE, born (N, h, w) with N = 1 today (RL-batch habits,

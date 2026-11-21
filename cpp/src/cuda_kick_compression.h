@@ -83,7 +83,10 @@ void eos_kick_compression(
     // THERMAL-MASS AXIS, P-EOS: the medium mask the KE brackets export to
     // (design §2.3 F5 — ts cells carry no gas_energy). nullptr -> `solid` on
     // the device (the P2 fallback idiom).
-    const bool* thermal_solid = nullptr);
+    const bool* thermal_solid = nullptr,
+    // #217 §8.6.5 (ruling 3): the cap returns the kick's own share of its
+    // removal as heat (counters_out[15] = e_cap_heat_sum); false = destroy all.
+    bool cap_heat = true);
 
 // FLUX_CNT_SLOTS-slot layout (cuda_resident.h), THIS call's counters:
 //   0 p_face_floor_hits    1 p_face_ceil_hits    2 flux_sat_hits

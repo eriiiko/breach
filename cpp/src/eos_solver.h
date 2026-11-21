@@ -117,6 +117,97 @@
 #include <vector>
 #include <algorithm>
 
+#include "fixed_point.h"   // #217 §8: the FP_HD k-rule below (integer folds)
+
+// ---------------------------------------------------------------------------
+// #217 §8 (docs/eos_checkerboard_design_2026-11-20.md §8.6): WHOLE-STEP
+// SUB-TICKS. The EOS updates pressure at least once per C_P = 1 tile of air
+// motion: steps 0-7 run k times a tick at dt_k = dt/k, k in {1, 2, 4, 8},
+// chosen ONCE at entry from three integer reductions over the K-SET (gas
+// cells -- not solid, vacuum or ambient ring -- holding Dalton N >= N_K_MIN
+// with no vacuum or ring cell within R_K tiles, 4-neighbour distance):
+//   k_u   = ceil(max|u| * dt / (C_P * dx))            (the wind)
+//   k_div = ceil(gamma * dt * max|div u| / eps*)       (eps* = 1: the solve's
+//           rhs p*(1 - gamma dt_k div u) stays positive in every sub-tick)
+//   k_src = ceil(max|S| * dt / (4 * C_P))              (a blast's div source)
+//   k     = min(K_MAX, pow2ceil(max(1, k_u, k_div, k_src)))
+// The kick increment du is NOT a term (refuted on measurement, §8.6.2).
+// N_K_MIN = quantize(0.05): 5 % of the 1-atm ambient density, an integer
+// constant valid on space maps (no n_amb there, L1-5).
+constexpr int32_t EOS_N_K_MIN_RAW = 3277;
+constexpr int     EOS_R_K = 2;
+
+// ceil(a / b) for a >= 0, b > 0 (0 for a <= 0) -- int64, both backends.
+FP_HD inline int64_t eos_ceil_div_i64(int64_t a, int64_t b) {
+    return a <= 0 ? 0 : (a + b - 1) / b;
+}
+
+// THE k-RULE, one FP_HD transcription: EOSSolver::step, the per-call CUDA
+// pre-stage and the resident K_pre_fold all call it. Inputs are the k-set's
+// reductions (max|u| and max|div u| in Q16, max|S| in Q16 1/s) and three
+// per-config folds: dt_q = quantize(dt), gdt_q = quantize(gamma * dt),
+// cp_dx_q = quantize(C_P * dx). k_max is a power of two in [1, 8].
+FP_HD inline int eos_subtick_k(int64_t max_u_q, int64_t max_div_q, int64_t max_src_q,
+                               int32_t dt_q, int32_t gdt_q, int32_t cp_dx_q,
+                               int k_max) {
+    const int64_t one = (int64_t)fixedpoint::FP_ONE;
+    const int64_t k_u = eos_ceil_div_i64(
+        fixedpoint::mul128_shr((int64_t)dt_q, max_u_q, 16),
+        (int64_t)(cp_dx_q > 0 ? cp_dx_q : 1));
+    const int64_t k_div = eos_ceil_div_i64(
+        fixedpoint::mul128_shr((int64_t)gdt_q, max_div_q, 16), one);
+    const int64_t k_src = eos_ceil_div_i64(
+        fixedpoint::mul128_shr((int64_t)dt_q, max_src_q, 16), 4 * one);
+    int64_t kr = 1;
+    if (k_u > kr) kr = k_u;
+    if (k_div > kr) kr = k_div;
+    if (k_src > kr) kr = k_src;
+    if (kr >= (int64_t)k_max) return k_max;
+    int k = 1;
+    while ((int64_t)k < kr) k <<= 1;
+    return k;
+}
+
+// THE n_sub RULE per sub-tick (§8.6.3), one FP_HD transcription:
+// n_sub = min(N_SUB_MAX, max(ceil(n_adv / k), F_k)), n_adv HEAD's estimate
+// UNCAPPED, F_k the substep floor (eos_subtick_n_floor). At k = 1 (F = 1) it is
+// min(N_SUB_MAX, n_adv): HEAD's n_sub exactly.
+FP_HD inline int eos_subtick_n_sub(int n_adv, int k, int n_sub_max, int floor_k) {
+    int n = (int)eos_ceil_div_i64((int64_t)(n_adv > 1 ? n_adv : 1), (int64_t)k);
+    if (n < floor_k) n = floor_k;
+    if (n > n_sub_max) n = n_sub_max;
+    if (n < 1) n = 1;
+    return n;
+}
+
+// THE K-SET SCAN (§8.6.2), the ONE host transcription: EOSSolver::step and
+// the per-call CUDA pre-stage call it (the resident K_kset_scan is its device
+// twin). Over the k-set of the ENTRY state: max |u|^2 (Q32.32), max |div u|
+// (Q16, the face-form stencil of the solve) and, when div_source is given,
+// max |S| over the cells the source applies to (not solid, vacuum or ring).
+// is_ambient nullable (space); kset_out (nullable) receives the membership.
+struct EosKsetMax { int64_t max_rad = 0, max_div = 0, max_src = 0; };
+EosKsetMax eos_kset_scan(const int32_t* wind_x, const int32_t* wind_y,
+                         const int32_t* n_total,
+                         const bool* solid, const bool* is_vacuum,
+                         const bool* is_ambient, const int32_t* div_source,
+                         int h, int w, int32_t inv_2dx_q, uint8_t* kset_out);
+
+// dt_k = dt / k: ONE helper (exact in float for k a power of two). The CPU,
+// the per-call host stage and the resident fold table all call it.
+float eos_subtick_dt(float dt, int k);
+// The substep floor F_k = ceil(K_MAX / (k * CFL_ADV)) when k > 1 and the
+// ceiling is on, else 1: with every |u| <= U_bud after a kick (the ceiling),
+// a substep then moves at most CFL_ADV tiles (§8.6.3, L1-3).
+int eos_subtick_n_floor(int k, int k_max, float cfl_adv, bool ceiling);
+// The budget ceiling's square (§8.6.4): U_bud = K_MAX * C_P * dx / dt, folded
+// in double and quantized ONCE, returned as U_bud_q^2 (Q32.32, the cap2
+// currency).
+int64_t eos_budget_cap2_q32(float dt, float dx, int k_max);
+// K_MAX in {1, 2, 4, 8} (the fold table's rows) or throw; every entry checks
+// it once per tick.
+void eos_check_k_max(int k_max);
+
 // THERMAL-MASS AXIS: does the thermal medium actually DIVERGE from the gas
 // medium anywhere on this map — i.e. is some tile thermally solid AND a LIVE
 // gas cell to the EOS cmask? The predicate is exactly `thermal_solid[i] &&
@@ -275,6 +366,22 @@ public:
     // no future T-side change can push stored velocities back into the
     // int64/narrow overflow regime (see step 4's overflow guard).
     float U_MAX = 1000.0f;
+    // #217 §8.6 (Erik, 2026-11-21: "5 decisions: yes to all"): K_MAX, the
+    // sub-tick budget, a PHYSICS dial (not a perf dial): past K_MAX the cap
+    // stage's budget ceiling U_bud = K_MAX * dx / dt holds (64 m/s at 0.333 m,
+    // 24 tps), so K_MAX moves blast and breach physics. Training and play share
+    // it; bound from [physics.eos] K_MAX in PhysicsRunner only. {1, 2, 4, 8}.
+    int K_MAX = 8;
+    // The three §8.6.6 TEST SEAMS, default ON and never off in play (not in
+    // config.toml; set by tests through the solver, the debug_pstar_from_prev
+    // idiom; keys of the device fold table). All three off == HEAD bit for bit.
+    //   subtick_loop    k from the entry estimate (off: k == 1, HEAD's n_sub)
+    //   subtick_ceiling the budget ceiling U_bud (off: the cap is cap2 alone)
+    //   cap_heat        the cap returns the kick's own KE as heat (off: the
+    //                   cap destroys it all, rule D6 as before ruling 3)
+    bool subtick_loop = true;
+    bool subtick_ceiling = true;
+    bool cap_heat = true;
     // trace_mass_scale RETIRED (energy-books arc, P-T0, design §2.6 — the
     // 0% ruling): traces left the Dalton sum entirely rather than keep the
     // half-citizenship (2% pressure weight, zero thermal weight) that fed
@@ -382,6 +489,10 @@ public:
     mutable int64_t e_absorb_export_sum = 0;   // dyn_wave_absorb (exported)
     mutable int64_t e_sponge_export_sum = 0;   // B3c band (exported)
     mutable int64_t e_clamp_destroyed_sum = 0; // velocity cap (destroyed)
+    // #217 §8.6.5 (ruling 3): the part of the cap's removal the SAME sub-tick's
+    // kick supplied, returned to gas_energy as heat -- the EOS group, beside
+    // e_drag_heat_sum. The rest stays e_clamp_destroyed_sum (a tripwire).
+    mutable int64_t e_cap_heat_sum = 0;
     mutable int64_t e_drag_heat_sum = 0;       // drag L+Q (deposited; ex
                                                // e_drag_deposit, slot 6)
     mutable int64_t e_ts_ke_sum = 0;           // thermal_solid cells' brackets
@@ -445,6 +556,16 @@ public:
     // replay the isolated kernel on the SAME schedule. Pure telemetry — no
     // arithmetic reads it.
     mutable int dbg_last_n_sub = 0;
+    // --- #217 §8.9 test seams (pure telemetry, nothing reads them) ----------
+    //   dbg_last_k            the sub-tick count k of the last step()
+    //   dbg_solves_last_step  the MG solves the last step() ran (== k)
+    //   dbg_subtick_umax      the k-set's max|u| (Q16 m/s) at each sub-tick's
+    //                         transport entry; recorded only while
+    //                         dbg_record_subtick_umax is set
+    mutable int dbg_last_k = 0;
+    mutable int dbg_solves_last_step = 0;
+    bool dbg_record_subtick_umax = false;
+    mutable std::vector<int32_t> dbg_subtick_umax;
 
     // --- P6.4 telemetry: the c_LOCAL velocity cap the last step() derived ---
     // (q16 raw). c_LOCAL = c_amb·sqrt(T_max_abs/T_AMB) is computed from the
@@ -663,7 +784,12 @@ public:
         int h, int w, float dt,
         const bool* is_ambient = nullptr,
         int32_t p_amb = 0,
-        const int32_t* sponge_sigma = nullptr) const;
+        const int32_t* sponge_sigma = nullptr,
+        // #217 §8.6.1: the sigma-sponge mass is added as sigma << sigma_shift,
+        // sigma_shift = 2 log2(k) at a sub-tick of dt/k: m ~ 1/aK ~ k^2, so
+        // sigma k^2 keeps sigma's weight against m the per-tick one (an exact
+        // shift, k a power of two). 0 = the per-tick sigma (k = 1).
+        int sigma_shift = 0) const;
 
     // mg_run_solve_cpu: the fixed-schedule V-cycles (or the flat RB-GS
     // reference path), the vacuum-Dirichlet/solid zero on level 0, and the
@@ -727,6 +853,8 @@ private:
     mutable std::vector<int64_t> e0_;
     mutable std::vector<int32_t> pcur_;
     mutable std::vector<int32_t> s_plane_;
+    // #217 §8.6.2: the tick's k-set (1 = member), built once at entry.
+    mutable std::vector<uint8_t> kset_;
 };
 
 // ---------------------------------------------------------------------------
@@ -927,7 +1055,14 @@ void eos_kick_compression_reference(
     // coefficient plane step() applies immediately after the absorb chain.
     // Only read when is_ambient != nullptr (dormancy by branch, as in step()).
     // Default nullptr reproduces the pre-A6 reference exactly.
-    const int32_t* sponge_udamp = nullptr);
+    const int32_t* sponge_udamp = nullptr,
+    // #217 §8.6.5 (ruling 3): the cap returns the kick's own share of its
+    // removal as heat (step()'s cap_heat, default ON like the solver's); false
+    // reproduces the pre-§8 destroy-all bracket.
+    bool cap_heat = true,
+    // #217 §8.6.5: { e_cap_heat_sum, e_clamp_destroyed_sum, e_kick_ke_sum }
+    // for this call, when given (the 9-slot layout above is unchanged).
+    int64_t* counters_ext = nullptr);
 
 // ---------------------------------------------------------------------------
 // EOS P6.3 — standalone CPU reference for the multigrid pressure solve

@@ -105,10 +105,22 @@ __global__ void kick_kernel(int32_t* __restrict__ wind_x,
                             int h, int w,
                             const bool* __restrict__ is_ambient,
                             const int32_t* __restrict__ sponge_udamp,
-                            size_t cstride) {
+                            size_t cstride,
+                            bool cap_heat,                           // #217 §8.6.5
+                            const EnvSub* __restrict__ es, int t) {  // #217 §8.6.7
     const int n = h * w;
-    // #29 P5: (N, h, w) — this block's env (the kick runs once per tick on
-    // every env: no mask).
+    // #217 §8.6.7: an env past its own sub-tick count sits out; its dt-folded
+    // rates come from its (k, n_sub) row; the per-tick sponge band is applied
+    // on its last sub-tick only (es == nullptr: the per-call path, as passed).
+    if (tick_off(es, t)) return;
+    bool udamp_on = true;
+    if (es) {
+        const EnvSub& r = es[benv()];
+        Kdt_raw = r.Kdt_raw; kd_q = r.kd_q; kd2_q = r.kd2_q;
+        rad_dead_q32 = r.rad_dead_q32;
+        udamp_on = (t == r.k - 1);
+    }
+    // #29 P5: (N, h, w) — this block's env.
     wind_x = bptr(wind_x, n); wind_y = bptr(wind_y, n);
     gas_energy = bptr(gas_energy, n); p_new = bptr(p_new, n);
     n_total = bptr(n_total, n); absorb_q = bptr(absorb_q, n);
@@ -143,6 +155,7 @@ __global__ void kick_kernel(int32_t* __restrict__ wind_x,
         const bool is_ts = (ts && ts[i]);
         const bool ke_stores = !is_ts;
         int64_t u2_prev = ux * ux + uy * uy;
+        const int64_t u2_kick0 = u2_prev;   // #217 §8.6.5: KE0 (kick entry)
         if (gx != 0 || gy != 0) {   // micro-opt kept: du == 0 exactly at zero
                                     // gradient — skip the reciprocal chain
                                     // (bit-identical, the CPU's own branch)
@@ -172,6 +185,7 @@ __global__ void kick_kernel(int32_t* __restrict__ wind_x,
             }
             u2_prev = u2;
         }
+        const int64_t u2_kick1 = u2_prev;   // #217 §8.6.5: KE1 (after the kick)
 
         // absorption damping u *= (1 − absorb·dt), magnitude-first.
         const q16 a = absorb_q[i];
@@ -192,7 +206,7 @@ __global__ void kick_kernel(int32_t* __restrict__ wind_x,
         }
 
         // BC (spec §3 rung 2, B3c): the u-DAMPING BAND, magnitude-first.
-        if (is_ambient && sponge_udamp) {
+        if (is_ambient && sponge_udamp && udamp_on) {
             const int32_t kd = sponge_udamp[i];
             if (kd > 0) {
                 const q16 kk2 = (kd < FP_ONE) ? (q16)(FP_ONE - kd) : 0;
@@ -224,12 +238,32 @@ __global__ void kick_kernel(int32_t* __restrict__ wind_x,
             ux = (ux * (int64_t)u_cap_q) / (int64_t)umag;
             uy = (uy * (int64_t)u_cap_q) / (int64_t)umag;
         }
-        // BRACKET 4 — the velocity cap: DESTROYED and counted (D6).
+        // BRACKET 4 — the velocity cap. #217 §8.6.5 (ruling 3), step()'s block
+        // verbatim: heat = min(removed, max(0, KE1 - max(KE0, KEc))) returns
+        // to gas_energy (slot 15, e_cap_heat_sum); the rest is destroyed and
+        // counted (slot 12, a tripwire).
         {
             const int64_t u2 = ux * ux + uy * uy;
             const int64_t dE = ke_energy_dev(k_ke_recip_q32, n_bulk_ke, u2 - u2_prev);
-            if (ke_stores) atomicAdd(&cnt[12], (unsigned long long)(-dE));  // e_clamp_destroyed_sum
-            else           atomicAdd(&cnt[14], (unsigned long long)(-dE));  // e_ts_ke_sum
+            if (ke_stores) {
+                const int64_t removed = -dE;
+                int64_t heat = 0;
+                if (cap_heat && removed > 0) {
+                    const int64_t base = u2_kick0 > u2 ? u2_kick0 : u2;
+                    const int64_t sup = u2_kick1 - base;
+                    if (sup > 0) {
+                        heat = ke_energy_dev(k_ke_recip_q32, n_bulk_ke, sup);
+                        if (heat > removed) heat = removed;
+                    }
+                }
+                if (heat != 0) {
+                    gas_energy[i] += heat;
+                    atomicAdd(&cnt[15], (unsigned long long)heat);           // e_cap_heat_sum
+                }
+                atomicAdd(&cnt[12], (unsigned long long)(removed - heat));   // e_clamp_destroyed_sum
+            } else {
+                atomicAdd(&cnt[14], (unsigned long long)(-dE));  // e_ts_ke_sum
+            }
             u2_prev = u2;
         }
 
@@ -539,7 +573,9 @@ __global__ void energy_recovery_kernel(
         const bool* __restrict__ solid, const bool* __restrict__ ts,
         const bool* __restrict__ is_vacuum, const bool* __restrict__ is_ambient,
         int32_t t_min_q, int32_t t_max_phys_q, int32_t t_amb_q,
-        unsigned long long* __restrict__ cnt, int n, size_t cstride) {
+        unsigned long long* __restrict__ cnt, int n, size_t cstride,
+        const EnvSub* __restrict__ es, int t) {
+    if (tick_off(es, t)) return;   // #217 §8.6.7: per sub-tick, masked
     gas_energy = bptr(gas_energy, (size_t)n); temperature = bptr(temperature, (size_t)n);
     n_total = bptr(n_total, (size_t)n); solid = bptr(solid, (size_t)n);
     ts = bptr(ts, (size_t)n); is_vacuum = bptr(is_vacuum, (size_t)n);
@@ -621,7 +657,8 @@ void kick_compression_launch_resident(
         const int64_t* d_cap2_plane,
         unsigned long long* d_cnt, int h, int w,
         const bool* d_is_ambient, const int32_t* d_sponge_udamp,
-        const bool* d_ts, int n_env, size_t cstride) {
+        const bool* d_ts, int n_env, size_t cstride,
+        const EnvSub* es, int t) {
     const int n = h * w;
     if (n <= 0) return;
     const int block = 256;
@@ -634,7 +671,8 @@ void kick_compression_launch_resident(
                                  folds.k_ke_recip_q32,
                                  d_cnt, h, w,
                                  d_is_ambient, d_sponge_udamp,
-                                 cstride ? cstride : (size_t)KICK_CNT_SLOTS);
+                                 cstride ? cstride : (size_t)KICK_CNT_SLOTS,
+                                 folds.cap_heat, es, t);
     cuda_check(cudaGetLastError(), "kick launch");
 }
 
@@ -679,7 +717,7 @@ void energy_flux_launch_resident(
         const EnergyFluxScalarFolds& folds,
         int64_t* d_e0, int32_t* d_pcur, int32_t* d_s_plane,
         unsigned long long* d_cnt, int h, int w,
-        int n_env, size_t cstride, const EnvSub* es, int n_cycles) {
+        int n_env, size_t cstride, const EnvSub* es, int n_cycles, int t) {
     const int n = h * w;
     if (n <= 0) return;
     const int N = n_env > 0 ? n_env : 1;
@@ -697,28 +735,28 @@ void energy_flux_launch_resident(
         energy_pressure_refresh_kernel<<<grid, block, 0, st>>>(
             d_pcur, d_gas_energy, d_e0, d_atmosphere, d_n_total,
             d_solid, d_ts, d_is_vacuum, d_is_ambient,
-            folds.c_q, folds.t_max_phys_q, folds.t_amb_q, d_cnt, n, cst, es, k);
+            folds.c_q, folds.t_max_phys_q, folds.t_amb_q, d_cnt, n, cst, es, sub_tick(t, k));
         cuda_check(cudaGetLastError(), "energy pressure refresh");
 
         energy_flux_pass_a_kernel<<<grid, block, 0, st>>>(
             d_pcur, d_wind_x, d_wind_y, d_n_total, d_gas_energy,
             d_solid, d_ts, d_is_vacuum, d_is_ambient,
             folds.k_flux_q, folds.flux_pu_cap, t_min_abs_raw,
-            d_s_plane, h, w, es, k);
+            d_s_plane, h, w, es, sub_tick(t, k));
         cuda_check(cudaGetLastError(), "energy flux pass A");
 
         energy_flux_pass_b_kernel<<<grid, block, 0, st>>>(
             d_pcur, d_wind_x, d_wind_y, d_n_total, d_gas_energy,
             d_solid, d_ts, d_is_vacuum, d_is_ambient,
             folds.k_flux_q, folds.flux_pu_cap,
-            d_s_plane, d_cnt, h, w, cst, es, k);
+            d_s_plane, d_cnt, h, w, cst, es, sub_tick(t, k));
         cuda_check(cudaGetLastError(), "energy flux pass B");
     }
 
     energy_recovery_kernel<<<grid, block, 0, st>>>(
         d_gas_energy, d_temperature, d_n_total,
         d_solid, d_ts, d_is_vacuum, d_is_ambient,
-        folds.t_min_q, folds.t_max_phys_q, folds.t_amb_q, d_cnt, n, cst);
+        folds.t_min_q, folds.t_max_phys_q, folds.t_amb_q, d_cnt, n, cst, es, t);
     cuda_check(cudaGetLastError(), "energy recovery");
 }
 
@@ -737,15 +775,16 @@ void eos_kick_compression(
     uint64_t* digest_velocity_out,
     int64_t* counters_out /* [KICK_CNT_SLOTS] */,
     const bool* is_ambient, const int32_t* sponge_udamp,
-    const bool* thermal_solid) {
+    const bool* thermal_solid, bool cap_heat) {
     const int n = h * w;
     for (int c = 0; c < KICK_CNT_SLOTS; ++c) counters_out[c] = 0;
     *digest_velocity_out = 0;
     if (n <= 0 || dt <= 0.0f) return;
 
-    const KickScalarFolds folds = kick_scalar_folds(
+    KickScalarFolds folds = kick_scalar_folds(
         dt, c_max, dx, adiabatic_index, absorb_strength, n_floor_solver,
         u_max, k_drag, k_drag2, t_amb_k);
+    folds.cap_heat = cap_heat;   // #217 §8.6.5
     const q16 absorb_dt_q = folds.absorb_dt_q;
 
     std::vector<int32_t> n_total(n, 0);

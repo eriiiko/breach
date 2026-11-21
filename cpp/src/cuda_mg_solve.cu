@@ -109,6 +109,10 @@ struct MGLevelDev {
     int64_t* b;
     int32_t* P;
     int64_t* res;
+    // #217 §8.6.7: the EOS sub-tick mask (es == nullptr: unmasked, the
+    // per-call path). An env with t >= its k sits out every V-cycle kernel.
+    const EnvSub* es;
+    int t;
 };
 
 // The fused tail's by-value kernel parameter (levels ts..n_levels-1 are the
@@ -236,6 +240,7 @@ __device__ __forceinline__ void mg_prolong_cell(const MGLevelDev& F,
 // ============================================================================
 
 __global__ void mg_smooth_color(MGLevelDev L0, int color) {
+    if (tick_off(L0.es, L0.t)) return;   // #217 §8.6.7
     const MGLevelDev L = env_lvl(L0);
     const int n = L.h * L.w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
@@ -248,6 +253,7 @@ __global__ void mg_smooth_color(MGLevelDev L0, int color) {
 }
 
 __global__ void mg_residual(MGLevelDev L0) {
+    if (tick_off(L0.es, L0.t)) return;   // #217 §8.6.7
     const MGLevelDev L = env_lvl(L0);
     const int n = L.h * L.w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
@@ -259,6 +265,7 @@ __global__ void mg_residual(MGLevelDev L0) {
 }
 
 __global__ void mg_restrict(MGLevelDev F0, MGLevelDev C0) {
+    if (tick_off(F0.es, F0.t)) return;   // #217 §8.6.7
     const MGLevelDev F = env_lvl(F0), Cl = env_lvl(C0);
     const int cn = Cl.h * Cl.w;
     for (int A = blockIdx.x * blockDim.x + threadIdx.x; A < cn;
@@ -270,6 +277,7 @@ __global__ void mg_restrict(MGLevelDev F0, MGLevelDev C0) {
 }
 
 __global__ void mg_prolong(MGLevelDev F0, MGLevelDev C0) {
+    if (tick_off(F0.es, F0.t)) return;   // #217 §8.6.7
     const MGLevelDev F = env_lvl(F0), Cl = env_lvl(C0);
     const int fn = F.h * F.w;
     for (int fi = blockIdx.x * blockDim.x + threadIdx.x; fi < fn;
@@ -281,6 +289,7 @@ __global__ void mg_prolong(MGLevelDev F0, MGLevelDev C0) {
 }
 
 __global__ void mg_zero_excl(MGLevelDev L0) {
+    if (tick_off(L0.es, L0.t)) return;   // #217 §8.6.7
     const MGLevelDev L = env_lvl(L0);
     const int n = L.h * L.w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
@@ -317,6 +326,9 @@ __device__ __forceinline__ void tail_smooth(const MGLevelDev& L, int sweeps) {
 }
 
 __global__ void mg_fused_tail(MGTailArgs a) {
+    // #217 §8.6.7: block-uniform (one block per env), so the early return
+    // precedes every barrier for the whole block.
+    if (tick_off(a.L[0].es, a.L[0].t)) return;
     // down-leg: smooth(nu1) -> residual -> restrict, levels ts..n_levels-2
     for (int lv = a.ts; lv < a.n_levels - 1; ++lv) {
         const MGLevelDev L = env_lvl(a.L[lv]);
@@ -467,7 +479,8 @@ void run_schedule(const MGLevelDev* dev, int n_levels,
 void eos_mg_vcycle_resident(
         const MGLevelDevPtrs* levels, int n_levels,
         bool use_multigrid, int mg_cycles, int mg_nu1, int mg_nu2,
-        int mg_coarsest_sweeps, int flat_S, int n_env) {
+        int mg_coarsest_sweeps, int flat_S, int n_env,
+        const EnvSub* es, int t) {
     if (n_levels <= 0 || n_levels > MG_MAX_LEVELS) {
         throw std::runtime_error("eos_mg_vcycle_resident: bad n_levels");
     }
@@ -480,6 +493,7 @@ void eos_mg_vcycle_resident(
         D.h = S.h; D.w = S.w;
         D.excl = S.excl; D.m = S.m; D.gE = S.gE; D.gS = S.gS;
         D.recip = S.recip; D.b = S.b; D.P = S.P; D.res = S.res;
+        D.es = es; D.t = t;   // #217 §8.6.7
     }
     run_schedule(dev, n_levels, use_multigrid, mg_cycles, mg_nu1, mg_nu2,
                  mg_coarsest_sweeps, flat_S, nullptr, nullptr, n_env);

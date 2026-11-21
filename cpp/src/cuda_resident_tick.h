@@ -76,13 +76,27 @@ void resident_capture_abort();
 // [1, N_SUB_MAX], range-checked at build — a row out of range is marked
 // k_flux_q == 0 and an env that selects it raises its failure flag); the
 // device pre-stage picks each env's row from that env's own reductions.
+// #217 §8.6.7: the table is keyed (k, n_sub) -- k in {1, 2, 4, 8} sub-ticks
+// of dt_k = eos_subtick_dt(dt, k) -- and every fold below is the ONE function
+// of its value at dt_k (eos_transport_step_q, energy_flux_scalar_folds,
+// kick_scalar_folds, EOSSolver::mg_scalar_folds).
 struct EnvSub {
     int32_t n_sub;        // the env's substep count, 1..N_SUB_MAX
-    int32_t dtdx_s_q;     // eos_transport_step_q(dt, n_sub, dx): the substep
+    int32_t dtdx_s_q;     // eos_transport_step_q(dt_k, n_sub, dx): the substep
                           // displacement per m/s, in tiles (#217 patch U)
-    int32_t k_flux_q;     // energy_flux_scalar_folds(..., n_sub).k_flux_q (0: refused row)
+    int32_t k_flux_q;     // energy_flux_scalar_folds(dt_k, ..., n_sub).k_flux_q (0: refused row)
     int32_t c_local_q;    // the env's c_LOCAL (telemetry: dbg_last_c_local_q)
     int64_t flux_pu_cap;  // FLUX_MAG_CAP / k_flux_q
+    // #217 §8.6.7: the sub-tick count and the dt-folded rates at dt_k
+    int32_t k;            // the env's sub-tick count, 1, 2, 4 or 8
+    int32_t dt_q;         // quantize(dt_k) (the MG level-0 rhs)
+    int64_t Kdt_raw;      // kick_scalar_folds(dt_k).Kdt_raw
+    int64_t Kdt2dx2_raw;  // mg_scalar_folds(dt_k).Kdt2dx2_raw
+    int32_t absorb_dt_q;  // kick_scalar_folds(dt_k).absorb_dt_q
+    int32_t kd_q;         // kick_scalar_folds(dt_k).kd_q
+    int32_t kd2_q;        // kick_scalar_folds(dt_k).kd2_q
+    int32_t sigma_shift;  // 2 log2 k: the sigma-sponge mass at sigma * k^2
+    int64_t rad_dead_q32; // kick_scalar_folds(dt_k).rad_dead_q32
 };
 
 // #29 P5: THE BATCH. Every driver below runs over an (N, h, w) batch of

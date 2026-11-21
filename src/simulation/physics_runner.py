@@ -567,6 +567,11 @@ class PhysicsRunner:
         # solver's own [physics.eos] dial.
         self.eos.T_MAX_PHYS      = self._t_max_phys
         self.eos.U_MAX           = _ep("U_MAX", self.eos.U_MAX)
+        # #217 §8.6 (Erik, 2026-11-21: "5 decisions: yes to all", ruling 1):
+        # K_MAX, the sub-tick budget, a PHYSICS dial bound HERE only. The
+        # ceiling K_MAX*dx/dt moves blast and breach physics, so training and
+        # play share it (a run records it through its config hash).
+        self.eos.K_MAX           = int(getattr(eos_cfg, "K_MAX", self.eos.K_MAX))
         # n_work_ref RETIRED (gas-energy conservation arc #54, D11, P-G1a):
         # the compression-work trust gate it faded is gone with step 4c. The
         # config row is deleted too; the stale-key guard below names it so a
