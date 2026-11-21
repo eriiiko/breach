@@ -72,6 +72,16 @@ noise. Training speed matters to him as much as looks.
    *Incident: #217. The patch-U session inferred "donor-cell transport above
    Courant 1"; it was REFUTED (N_SUB_MAX 48 kept Courant ≤ 0.25 and the
    second charge still went wild).*
+8. **A coverage guard staged on one seed of a chance event moves with any
+   physics change.** Before calling it a regression, measure the event's
+   rate on both builds over many seeds. Re-stage on a seed with margin and
+   say so in the note: the rate, the margin, and "staging, not a pin". Never
+   weaken the assertion.
+   *Incident: #217 §8, 2026-11-21. Two unit-store guards needed a corpse
+   conversion in ship_demo's bots match at seed 2. Under §8 seed 2 stopped
+   converting. The rates were equal on both builds (main 1/30, HEAD 3/90),
+   and the new seeds 55 and 57 each lost their conversion when one §8 seam
+   was turned off.*
 
 ## 3. Diagnostic toolkit
 
@@ -169,3 +179,11 @@ noise. Training speed matters to him as much as looks.
   the proof. (e) Never leave an uncommitted binding-side edit in a worktree
   whose GPU gates are running: the gates import the working tree and the old
   module, and one parked line voided a 21-minute run.
+- 2026-11-21: #217 §8, the two red CPU coverage guards (design §8.17, "The
+  zombie diagnosis"). Diagnosed as plain match dynamics (verdict (b)), then
+  re-staged on seed 57; principle 8 added. Skipped nothing. Learned: a
+  physics change can move a coverage guard's scene without any bug; the
+  per-seed instrument (`docs/eos_checkerboard_zombie_diag_2026-11-21/diag.py`)
+  answered it in about 30 runs per build. One real effect went to Erik's blast
+  session: the frag's hot gas reaches farther, so zombies die about 30 ticks
+  sooner.

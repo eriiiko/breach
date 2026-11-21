@@ -1811,7 +1811,7 @@ Run on this branch after main's P8.0-P8.3 merge (`cc3dd393`), targeted
 | `test_grenade_kinds` four-cycle e2e (self-knockdown) | **green** | — |
 | `test_fire_feedback` plume outward | still red (outward early, not on every sampled tick from 35) | other cause, left |
 | `test_wave_push` blast push | red: the near marine moves 0.66 m TOWARD the frag (needs > 0.1 away) | §8.10 / L1-8: the push calibration moves with the ceiling, the blast session's (§8.8); a direction property, so not re-pinned |
-| `test_unit_schema[bots]`, `test_unit_store` identity | still red: the bots match has no corpse conversion (it now runs to its 7200-tick limit) | match dynamics, left |
+| `test_unit_schema[bots]`, `test_unit_store` identity | still red: the bots match has no corpse conversion (it now runs to its 7200-tick limit) | match dynamics, left (diagnosed and re-staged on seed 57 in §8.17, "The zombie diagnosis") |
 | `test_cuda_conductor` pinned bots (U's vent ledger at tick 806) | measured by `cuda_green` | U's |
 | `test_fire_tuning_level`, `test_larva_studio` | red (this PC's PNG bytes) | other cause |
 
@@ -2103,3 +2103,71 @@ Reading:
   `unit_kernels.py` and `bench_conductor.py` merged clean. The stubs were
   regenerated from the CUDA build (`6405e471`: the decoder's and the full
   view's bindings, the obs layout fingerprint).
+
+#### The zombie diagnosis (fourth session, 2026-11-21): verdict (b), plain match dynamics, no bug
+
+The two CPU coverage guards `test_unit_schema::test_derived_constants_and_
+round_trips_hold_at_every_tick[bots]` and `test_unit_store::test_identity_
+ship_demo_every_tick` were red since §8 (§8.16's table): their ship_demo bots
+match at seed 2 no longer converts a marine within 700 ticks. Measured on
+`main` and on this branch's HEAD, CPU builds, ship_demo bots:
+
+- **Conversions are rare on BOTH builds, at equal rates.** main: 1 of 30
+  seeds; HEAD: 3 of 90 within 700 ticks (Fisher p = 1.0). Seed 2's
+  conversion on main was chance.
+- **Why they are rare.** A conversion needs three 34-damage bites on one
+  marine, with a 53-tick bite cooldown. The zombies wake at about tick 400,
+  reach the marines at about 420, and are dead by about tick 490-560, mostly
+  of heat from the marines' frags.
+- **The horde arrives and bites MORE on HEAD**: 63 bites against 28 over
+  seeds 1-30. Corpse destruction does not explain the rarity, and the
+  zombies are neither stuck nor pushed.
+- **On HEAD, seeds 55 (conversion at tick 473), 57 (tick 465) and 73
+  (tick 609)** convert within 700 ticks under the tests' predicate
+  (`u.is_zombie and u.loadout_name is not None`). No match-config knob helps.
+- **A staging on one seed of a chance event moves with any physics change,
+  PROVED:** seeds 55 and 57 convert at HEAD's defaults and NEITHER converts
+  with `kset_skip_partial` off or with `subtick_loop` off on the same build
+  (no other change).
+
+**The one real effect (a physics observation for Erik's blast session, not a
+bug).** On HEAD the zombies die about 30 ticks sooner, of heat: per-match
+median life 61 against 89 ticks (p = 1e-4). The frag's hot gas reaches
+farther, 1437 against 1068 °C at 2-4 tiles from the burst. INFERENCE: this
+comes from patch U (transport at the true wind speed) plus the whole-step
+sub-ticks (the heat spreads with the air instead of being parked by a
+once-per-tick solve). It belongs with the source list of §8.8 / principle 5
+of the numerics skill (the frag row was calibrated under the old transport).
+
+**The re-stage.** Both guards now play seed 57 (unit 4 turns at tick 465,
+235 ticks before the 700-tick window ends; seed 55's 473 is the narrower
+margin). The match is still running at tick 1000 (no terminal state), so
+`test_unit_store`'s `run.ticks >= 650` reads the full 700; the match would
+have to end more than 350 ticks sooner than it does to fall under it. Within the
+700 ticks seed 57 also covers every other counter the store guard asks for
+(shots, hits, throws, kills, exposure, statuses, dead units, held intents,
+bound magazines: the guard passes). Each change carries a dated "#217 §8" note;
+neither assertion changed, and the count of converted units (≥ 1) and the
+coverage counters stay the guards' preconditions, so a seed that stops
+converting fails them.
+
+**Data:** `docs/eos_checkerboard_zombie_diag_2026-11-21/`: `diag.py` (the
+per-seed instrument; `ROOT TAG SEED [--off seams] [--max N]`, one JSON per
+run into `out/` beside it), `table.py` (the per-seed table and the totals),
+`table_30.txt` (seeds 1-30, both builds) and `per_seed.csv` (the 114 runs
+kept: main seeds 1-30, HEAD seeds 1-30 and 37-90; the records of HEAD seeds
+31-36 of the 90 were not kept).
+
+#### The gates (fourth session, 2026-11-21)
+
+- CPU, targeted on the build at `c9678a9b` (this session changed tests and
+  docs only): `test_unit_schema::test_derived_constants_and_round_trips_hold_
+  at_every_tick` (bots_v1, bots, box) and `tests/test_unit_store.py` (all six):
+  **9 passed**.
+- `tools/twin_debt.py --mark-level` is the last commit; `cpp/build_cuda.bat`,
+  `tools/cuda_green.py` and `tools/match_pin_check.py --backend cuda` /
+  `--backend resident` then run at it. Their counts are recorded in the hand-
+  over and in the joint staging run's merge commit, not here: a commit after
+  the stamp would void it.
+- The full CPU suite is the joint run with #29 through `tools/staging_gate.py`
+  (Erik, 2026-11-21).

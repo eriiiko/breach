@@ -1,0 +1,115 @@
+build,seed,ticks,first_reach,bites,conversions,zombie_deaths
+main,1,1349,421,2,,bullet/marine:1 heat/env:3
+main,2,1066,425,3,0@502,bullet/marine:1 explosion/marine:1 heat/env:2 heat/marine:1
+main,3,1478,428,1,,bullet/marine:2 explosion/marine:1 heat/env:1
+main,4,1061,432,1,,explosion/marine:1 heat/env:2
+main,5,1019,,0,,bullet/marine:1 explosion/marine:1 heat/env:2
+main,6,1506,436,1,,bullet/marine:1 explosion/marine:1 heat/env:2
+main,7,935,421,1,,bullet/marine:1 heat/env:3
+main,8,1964,426,1,,bullet/marine:1 heat/env:3
+main,9,1019,421,1,,bullet/marine:1 heat/env:3
+main,10,893,432,1,,bullet/marine:1 explosion/marine:1 heat/env:2
+main,11,1664,,0,,bullet/marine:1 explosion/marine:1 heat/env:2
+main,12,1198,,0,,bullet/marine:2 heat/env:2
+main,13,970,424,2,,bullet/marine:2 heat/env:2
+main,14,882,433,3,,bullet/marine:1 heat/env:2
+main,15,1902,,0,,bullet/marine:2 heat/env:2
+main,16,2570,424,1,,bullet/marine:2 heat/env:2
+main,17,1657,,0,,bullet/marine:1 explosion/marine:2 heat/env:1
+main,18,1634,434,1,,bullet/marine:1 heat/env:3
+main,19,1086,,0,,explosion/marine:1 heat/env:3
+main,20,1820,421,1,,bullet/marine:2 heat/env:2
+main,21,7200,426,1,,bullet/marine:2 explosion/marine:1 heat/env:1
+main,22,1438,,0,,bullet/marine:1 heat/env:3
+main,23,888,422,2,,bullet/marine:3 heat/env:1
+main,24,1071,431,1,,bullet/marine:1 heat/env:3
+main,25,1063,,0,,bullet/marine:2 heat/env:2
+main,26,1289,427,0,,explosion/marine:3 heat/env:1
+main,27,1078,430,1,,bullet/marine:1 explosion/marine:1 heat/env:2
+main,28,1826,426,1,,bullet/marine:1 explosion/marine:1 heat/env:2
+main,29,1365,430,1,,bullet/marine:3 explosion/marine:1
+main,30,1430,432,1,,bullet/marine:2 heat/env:2
+head,1,741,416,2,,bullet/marine:2 explosion/marine:1 heat/env:1
+head,2,897,411,3,,bullet/marine:1 heat/env:3
+head,3,776,424,1,,bullet/marine:1 heat/env:3
+head,4,1093,420,3,,bullet/marine:1 explosion/marine:1 heat/env:2
+head,5,1448,,0,,explosion/marine:1 heat/env:3
+head,6,1163,436,1,,bullet/marine:1 heat/env:3
+head,7,841,411,3,,explosion/marine:1 heat/env:3
+head,8,1517,417,1,,bullet/marine:1 heat/env:3
+head,9,1117,411,3,,bullet/marine:1 explosion/marine:1 heat/env:2
+head,10,1286,420,4,,bullet/marine:2 heat/env:2
+head,11,854,420,1,,bullet/marine:1 heat/env:3
+head,12,853,411,3,,bullet/marine:1 explosion/marine:1 heat/env:2
+head,13,1030,418,2,,bullet/marine:1 heat/env:3
+head,14,887,419,4,,bullet/marine:2 heat/env:2
+head,15,765,419,2,,heat/env:4
+head,16,1499,424,2,,bullet/marine:2 heat/env:2
+head,17,876,427,1,,bullet/marine:1 heat/env:3
+head,18,823,431,2,,bullet/marine:1 heat/env:3
+head,19,1307,,0,,bullet/marine:1 explosion/marine:1 heat/env:2
+head,20,1079,411,3,,bullet/marine:1 heat/env:3
+head,21,862,426,2,,heat/env:4
+head,22,1163,421,1,,heat/env:4
+head,23,929,411,3,,bullet/marine:1 heat/env:3
+head,24,811,431,1,,bullet/marine:1 heat/env:3
+head,25,3453,411,4,,bullet/marine:1 heat/env:3
+head,26,729,422,2,,bullet/marine:2 heat/env:2
+head,27,1275,419,4,,bullet/marine:1 heat/env:3
+head,28,1054,419,2,,bullet/marine:2 heat/env:2
+head,29,815,426,1,,bullet/marine:1 heat/env:3
+head,30,748,426,2,,heat/env:4
+head,37,700,417,2,,bullet/marine:1 heat/env:3
+head,38,700,418,2,,heat/env:4
+head,39,700,424,1,,bullet/marine:2 explosion/marine:1 heat/env:1
+head,40,700,420,3,,bullet/marine:1 heat/env:3
+head,41,700,426,1,,bullet/marine:2 heat/env:2
+head,42,700,420,2,,bullet/marine:2 explosion/marine:1 heat/env:1
+head,43,700,420,1,,bullet/marine:1 heat/env:2
+head,44,700,429,1,,bullet/marine:1 explosion/marine:1 heat/env:2
+head,45,700,428,1,,bullet/marine:1 heat/env:3
+head,46,700,419,3,,bullet/marine:2 heat/env:2
+head,47,700,,0,,bullet/marine:2 heat/env:2
+head,48,700,425,1,,bullet/marine:3 heat/env:1
+head,49,700,419,4,,bullet/marine:1 heat/env:3
+head,50,700,,0,,bullet/marine:1 heat/env:3
+head,51,700,425,2,,bullet/marine:1 explosion/marine:1 heat/env:2
+head,52,700,420,4,,bullet/marine:1 heat/env:2 heat/marine:1
+head,53,700,410,3,,heat/env:4
+head,54,700,422,1,,bullet/marine:2 heat/env:2
+head,55,700,419,4,4@473,explosion/marine:2 heat/env:3
+head,56,700,419,4,,bullet/marine:1 heat/env:3
+head,57,700,411,4,4@465,bullet/marine:1 heat/env:2 heat/marine:2
+head,58,700,411,3,,bullet/marine:1 heat/env:3
+head,59,700,420,3,,bullet/marine:1 heat/env:3
+head,60,700,420,1,,bullet/marine:1 heat/env:3
+head,61,700,419,3,,bullet/marine:1 heat/env:3
+head,62,700,,0,,bullet/marine:1 heat/env:3
+head,63,700,411,4,,bullet/marine:2 heat/env:2
+head,64,700,421,1,,bullet/marine:2 heat/env:2
+head,65,700,,0,,explosion/marine:1 heat/env:3
+head,66,700,419,4,,bullet/marine:2 heat/env:2
+head,67,700,419,2,,bullet/marine:1 heat/env:3
+head,68,700,420,2,,bullet/marine:1 explosion/marine:1 heat/env:2
+head,69,700,411,3,,bullet/marine:1 heat/env:3
+head,70,700,423,2,,bullet/marine:1 heat/env:3
+head,71,700,423,1,,explosion/marine:1 heat/env:3
+head,72,700,423,2,,bullet/marine:1 heat/env:3
+head,73,700,421,3,0@609,bullet/marine:3 explosion/marine:1
+head,74,700,419,4,,bullet/marine:1 heat/env:3
+head,75,700,421,1,,bullet/marine:1 explosion/marine:2 heat/env:1
+head,76,700,411,3,,bullet/marine:2 heat/env:2
+head,77,700,,0,,bullet/marine:1 explosion/marine:2 heat/env:1
+head,78,700,424,1,,bullet/marine:2 heat/env:2
+head,79,700,429,0,,bullet/marine:2 heat/env:2
+head,80,700,419,3,,bullet/marine:1 heat/env:2 heat/marine:1
+head,81,700,419,3,,bullet/marine:2 heat/env:2
+head,82,700,421,1,,bullet/marine:1 heat/env:3
+head,83,700,410,3,,heat/env:4
+head,84,700,420,4,,bullet/marine:2 heat/env:2
+head,85,700,420,3,,bullet/marine:2 heat/env:2
+head,86,700,411,2,,bullet/marine:1 heat/env:3
+head,87,700,419,2,,bullet/marine:2 heat/env:2
+head,88,700,426,1,,heat/env:4
+head,89,700,420,1,,bullet/marine:1 heat/env:3
+head,90,700,416,2,,heat/env:4
