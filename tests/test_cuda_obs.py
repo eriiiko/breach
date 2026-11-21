@@ -230,3 +230,13 @@ def test_the_device_decoder_refuses_by_name_and_adds_no_sync():
     its operation order where it moves a quantized value (OBS_BREAK=dec_div:
     dx / mag; it moves none on the square, so this break cannot turn red)."""
     _run(["decoder"])
+
+
+def test_a_door_beside_blast_heated_gas_plays_on_equal():
+    """PROPERTY (#29 TOPOLOGY RANGE): the corpus (c) runs that open or close
+    a door beside gas a blast heated past |T_abs| < 2^28 (crowd 100,
+    ship_demo 100) play through the device conductor with every decision and
+    digest equal to the reference. BREAKS IF the topology seam's seal /
+    unseal refuse inside the physics' range again (the pre-patch seam raised
+    ApplierFault at '9e(d) doors' on both)."""
+    _run(["range_scenes"])

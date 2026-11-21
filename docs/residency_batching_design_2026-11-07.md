@@ -3911,8 +3911,14 @@ with the largest remainder at the plane's top and bottom and at max bulk:
 equal; not a mirror: small bulk equal, bulk 2^30 refused); destroy_wall +
 on_tile_changed beside cells at the extremes equal. Red at the pre-patch
 build (the old admission test: dozens of refusals the host does not make,
-and the re-read donor's write). Corpus (c) keeps crowd 100 and ship_demo 100
-(digests equal every tick). No golden re-baselined; no host value moved;
+and the re-read donor's write). `tests/cuda_obs_check.py` part RANGE_SCENES
+(its own pytest test) plays crowd 100 and ship_demo 100 through the gate
+(decisions and digests equal every tick). They are NOT in `DEC_RUNS`:
+appending runs there moved part DECODER's sync count at N = 1 (64 syncs on
+one steady tick, allocation sites; red with the two runs, green without, the
+seam's build unchanged): that measurement depends on what the process played
+before it, a fragility of the check, reported, not fixed here. No golden
+re-baselined; no host value moved;
 `.claude/rules/device-units.md` never stated the bound (unchanged).
 
 ### 4.6 Reset and the bank
