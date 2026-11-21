@@ -702,9 +702,9 @@ ORDER_FAULT_BITS = {"RANGE": 1}
 #: the openings as they stood at the env's PREVIOUS build), ``ord_tie`` (the
 #: compass's tie between equal lower neighbours taken last in the cell's
 #: parity order instead of first), ``ord_place`` (the place centre read from
-#: the place table's NEXT row). ``ord_expiry`` (an expired order still shown:
-#: the conductor's expiry skipped) is host side (``DeviceObservation.expiry_brk``: the conductor's ``10'``
-#: expiry line skipped).
+#: the place table's NEXT row). ``ord_expiry`` (an expired order still shown)
+#: is host side: ``DeviceObservation.expiry_brk``, the conductor's ``10'``
+#: expiry line skipped.
 ORDER_BREAK_CODES = {"ord_prev": 1, "ord_tie": 2, "ord_place": 3}
 
 
