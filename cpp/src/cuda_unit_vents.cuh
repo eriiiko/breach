@@ -34,15 +34,18 @@
 //      topo::inject_gas_n_vec at t_dep with the rails; e -= sum dN * t_dep;
 //      the rail hits counted.
 //
-// THE PROVED RANGE (design 4.4c "As built (P6b.2)"). With the tile planes
-// >= 0 and int32 (a tile's bulk < 2^32, a trace slice < 2^31) and the
-// extraction's own pre-check |T_abs| < 2^28 (so a tile's relative T < 2^29),
+// THE PROVED RANGE (design 4.4c "As built (P6b.2)"; the T bound widened by
+// #217 §8, 2026-11-21). With the tile planes >= 0 and int32 (a tile's bulk
+// < 2^32, a trace slice < 2^31) and the tile's relative T an int32 plane
+// (|T| <= 2^31: the STORE's bound, so every T the extraction accepts --
+// its pre-check |T_abs| < 2^30, cuda_topology.cuh's one-term primitive,
+// i.e. every legal gas temperature up to T_MAX_PHYS -- is inside it),
 // ONE return vent of quantum q can add at most min(q, 2^32) to the bulk pair,
-// < 2^31 to a trace slot and to its sink, and min(q, 2^32) * 2^29 in
+// < 2^31 to a trace slot and to its sink, and min(q, 2^32) * 2^31 in
 // magnitude to e_plenum; a supply only drains (the deposit never takes more
 // than the plenum holds: the floor split and floor subadditivity), keeps
 // |e| <= max(|e|, N_bulk), and adds 1 to a rail count. So, with B_N = sum over
-// the duct's returns of min(q_r, 2^32), B_E = B_N * 2^29, R / S the return /
+// the duct's returns of min(q_r, 2^32), B_E = B_N * 2^31, R / S the return /
 // supply counts, a duct whose ledgers satisfy AT THE HEAD OF ITS SWEEP
 //   0 <= o2_raw, n2_raw            <= 2^61 - B_N
 //   0 <= trace_raw[i]              <= 2^54 - R * 2^31
@@ -91,7 +94,7 @@ constexpr int64_t L_WIPE = (int64_t)1 << 62;
 constexpr int64_t L_COUNT = (int64_t)1 << 62;
 constexpr int64_t TILE_BULK = (int64_t)1 << 32;     // a tile's bulk bound (two int32 planes)
 constexpr int64_t TILE_TRACE = (int64_t)1 << 31;    // a trace slice's bound
-constexpr int TILE_T_SHIFT = 29;                    // |relative T| < 2^29
+constexpr int TILE_T_SHIFT = 31;                    // |relative T| <= 2^31 (int32 plane)
 constexpr int64_t TPS_MAX = (int64_t)1 << 16;
 constexpr int64_t RATE_MAX = (int64_t)1 << 39;
 constexpr int VENT_MAX = OBJ_VENT_CAP;              // one duct's supply scratch
@@ -215,7 +218,7 @@ __device__ inline void sweep(const topo::TopoEnv& E, const int64_t* tab, int64_t
             continue;
         }
         Ledger L = read_ledger(d);
-        // B_E = B_N * 2^29, refused (as out of range) when it alone passes L_E
+        // B_E = B_N * 2^31, refused (as out of range) when it alone passes L_E
         const bool be_ok = b_n <= (L_E >> TILE_T_SHIFT);
         const int64_t b_e = be_ok ? (b_n << TILE_T_SHIFT) : 0;
         if (!be_ok || !guard_ok || !in_range(L, b_n, b_e, r_cnt, s_cnt)) {

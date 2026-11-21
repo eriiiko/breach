@@ -1922,7 +1922,7 @@ VENT_LEDGERS = ("o2_raw", "n2_raw", "trace_raw", "sink", "e_plenum", "e_wipe",
 #: The proved range's bounds (cpp/src/cuda_unit_vents.cuh's L_*, TILE_*).
 VENT_L_BULK, VENT_L_TRACE, VENT_L_SINK = 1 << 61, 1 << 54, 1 << 62
 VENT_L_E, VENT_L_WIPE, VENT_L_COUNT = 1 << 61, 1 << 62, 1 << 62
-VENT_TILE_BULK, VENT_TILE_TRACE, VENT_TILE_T_SHIFT = 1 << 32, 1 << 31, 29
+VENT_TILE_BULK, VENT_TILE_TRACE, VENT_TILE_T_SHIFT = 1 << 32, 1 << 31, 31  # #217 §8: T is the int32 plane's bound
 
 
 def vent_ledger_range(duct_rec, vent_recs) -> list:

@@ -414,6 +414,16 @@ __device__ inline int chew_wall(const TopoEnv& E, const int64_t* tab, int64_t y,
 // < 2^28, T_AMB < 2^28, a solid book within int64; then every product and sum
 // below fits int64 (a bulk count < 2^32 times a T_abs < 2^28 is < 2^60, and a
 // cell takes at most four such terms).
+// THE ONE-TERM PRIMITIVE (#217 §8, 2026-11-21): extract_gas_n_vec moves ONE
+// energy term out of ONE cell (want < 2^32, the cell's bulk), so its donor's
+// |T_abs| is proved to T_BOUND_ONE = 2^30: |want * T_abs| < 2^62 and
+// |E - de| < 2^61 + 2^62 < 2^63. 2^30 raw is 16384 game degrees absolute,
+// above every legal gas temperature (T_MAX_PHYS + T_AMB = 16293 on the
+// shipped config; tests/cuda_unit_vents_check.py PART PROBE asserts the
+// config stays under it). With whole-step sub-ticks hot air legally reaches
+// a return vent's aperture past the old 2^28 (4907 game degrees measured on
+// the hazard scene). Seal / unseal / transfer keep T_BOUND (2^28): their
+// proofs and gates were not re-done here.
 //
 // FLOATS: the ripple pair is written as the bit pattern of 0.0f (0u); the
 // seal's `permeability > 0.0` compare is the seal_mat_ok table row (made once
@@ -429,6 +439,7 @@ __device__ inline int chew_wall(const TopoEnv& E, const int64_t* tab, int64_t y,
 constexpr int SPAN_MAX = object_tables::OBJ_DOOR_TILE_CAP;
 constexpr int64_t E_BOUND = (int64_t)1 << 61;
 constexpr int64_t T_BOUND = (int64_t)1 << 28;
+constexpr int64_t T_BOUND_ONE = (int64_t)1 << 30;  // the one-term primitive's donor (above)
 constexpr int64_t I32_LIMIT = (int64_t)1 << 31;   // int32 stores
 
 static_assert(APPLIER_BOOK_TRACE_CLIP_1 == APPLIER_BOOK_TRACE_CLIP_0 + 1,
@@ -610,6 +621,9 @@ __device__ __forceinline__ bool e_ok(const TopoEnv& E, int i) {
     return E.gas_energy[i] > -E_BOUND && E.gas_energy[i] < E_BOUND;
 }
 __device__ __forceinline__ bool t_ok(int64_t t_abs) { return t_abs > -T_BOUND && t_abs < T_BOUND; }
+__device__ __forceinline__ bool t_ok_one(int64_t t_abs) {
+    return t_abs > -T_BOUND_ONE && t_abs < T_BOUND_ONE;
+}
 __device__ inline bool gas_nonneg(const TopoEnv& E, int i) {
     for (int g = 0; g < E.n_gases; ++g)
         if (E.g(g, i) < 0) return false;
@@ -917,7 +931,7 @@ __device__ inline int64_t extract_gas_n_vec(const TopoEnv& E, const int64_t* tab
     const int i = (int)fy * E.w + (int)fx;
     const int64_t t_amb = tab[UNIT_TAB_TOPO_T_AMB_Q];
     if (dn >= ((int64_t)1 << 40) || !t_ok(t_amb) || !e_ok(E, i) ||
-        !t_ok(t_abs_at(E, tab, i)))
+        !t_ok_one(t_abs_at(E, tab, i)))
         return APPLIER_SEAM_FAULT;
     const int64_t want = air_withdrawal(E, tab, i, dn, remove);
     if (want == 0) return 0;
