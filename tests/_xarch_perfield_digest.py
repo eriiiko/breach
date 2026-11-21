@@ -684,7 +684,29 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # branch merged): against the base file only __unit_state__'s 30 lines move;
 # every gmap field line and every other unit sub-hash byte-identical.
 # (was cf3c7693a6ae4fafdf1590b45fe7c27d1f4984898dd1856de49c53fb48b7f3de)
-GOLDEN_AGGREGATE = "d5d03433c4894d79922664e14b6a24801d36406ed7c321ad14904c649d2f487b"
+#
+# 2026-11-21 -- #217 §8 BLAST-REGIME STABILITY (docs/eos_checkerboard_design_
+# 2026-11-20.md §8; Erik, 2026-11-21: "5 decisions: yes to all"): THE ONE
+# re-baseline of the arc's stability patch. Three changes, all in the EOS:
+# (1) whole-step sub-ticks -- steps 1-7 run k in {1, 2, 4, 8} times a tick
+# at dt/k, k from the k-set's wind / divergence / blast source (this breached
+# room runs k = 1 on tick 0, then 4 / 2 alternating to tick 14, then 2);
+# (2) the budget ceiling K_MAX*dx/dt = 192 m/s at this 1.0 m map caps the
+# breach mouth below its sonic 300 m/s (ruling 2); (3) the cap returns the
+# kick's own share of its removal as heat (ruling 3). MOVED: wind_x, wind_y,
+# temperature, gas_energy from tick 0 (the ceiling and the cap heat at the
+# mouth: 6 clamps on tick 0), atmosphere, gas and __unit_state__ from tick 1,
+# wave_p from tick 2, __unit_pos__ from tick 8 (the breach's winds on the
+# marine). UNCHANGED over all 30 ticks: every other gmap field (fire, heat,
+# water, wave_source / wave_v, wall_hp, material, ...) and __unit_hp__,
+# __unit_facing__, __unit_life_events__, __unit_status__. No field digest
+# version bump (no plane, dtype or currency changed). SOLE CAUSE, committed
+# as tests/test_eos_substep_whole_tick.py::test_the_legacy_switches_
+# reproduce_the_pre_s8_golden: with the three legacy switches (subtick_loop,
+# subtick_ceiling, cap_heat off) the scenario on this build hashes to the
+# previous value d5d03433...487b.
+# (was d5d03433c4894d79922664e14b6a24801d36406ed7c321ad14904c649d2f487b)
+GOLDEN_AGGREGATE = "133d9ba96020b251718ccb06fd47b9413dfb0abe6be6ba6f8f1cafecc928b6d0"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

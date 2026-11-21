@@ -146,8 +146,16 @@ from simulation.entities.registry import registry_content_hash  # noqa: E402
 # equal per-tick records and identical field digests on main edc0d2b1 and
 # on this tree. Only the hash's definition moved.
 # (was 10671f68656389ba23b0609b20154d1907a5cac45562870e80225b9dcf3c5967)
+# #217 §8 RE-BASELINE (2026-11-21, blast-regime stability; Erik: "5
+# decisions: yes to all"): this loop runs LIVE physics, and the door venting
+# the chamber to vacuum (ticks 14-18) runs k = 2 / 4 / 4 / 2 / 2 sub-ticks,
+# the budget ceiling and the cap heat -- one rationale, beside
+# GOLDEN_AGGREGATE in tests/_xarch_perfield_digest.py, same commit. SOLE
+# CAUSE: with the three legacy switches off on the same build this test
+# reproduces the previous value exactly. Captured twice: identical.
+# (was dcf7189f978aca94e90f17e2b9f77fbfae8ed2d765d62d554b77535c0ffb6a55)
 LOOP_GOLDEN_TRAJ_DIGEST = \
-    "dcf7189f978aca94e90f17e2b9f77fbfae8ed2d765d62d554b77535c0ffb6a55"
+    "d0bd176889afab95845010117afe79498b676f8dd84c7e44c93f5b0e74d7c3af"
 LOOP_GOLDEN_STEPS = 30
 LOOP_GOLDEN_SEED = 1
 
