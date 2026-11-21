@@ -13,6 +13,8 @@ paths:
   - "cpp/src/cuda_obs.*"
   - "cpp/src/cuda_obs_float.cuh"
   - "cpp/src/cuda_obs_sight.*"
+  - "cpp/src/cuda_obs_picture.*"
+  - "src/simulation/device_picture.py"
   - "cpp/src/obs_layout.h"
   - "tools/gen_obs_layout.py"
   - "tests/cuda_obs_check.py"
@@ -60,6 +62,10 @@ and who must use it; this file holds the constraints the code cannot say. The
 - An owned column the corpus cannot move gets a case in the check's hand match (corpus (d): a hand state at tick 0 given to the reference and the twin alike, hand intents through the tap), never a weakened census.
 - DEVICE VISION (`DeviceObservation.vision`: `sees` (N, U, U) per observer / target row, `visible` (N, T + 1, U) per team slot, the zombie team the last) is THE device form of `vision.state_for`: computed EVERY tick at the walk's `11'` line BEFORE the blocks (`stage`), where the reference's slot 11 first asks (after the advance and the conversion); every device block that asks what a team or a unit sees reads these tables, never its own pair loop. The sight rule and its dials are obs-table rows (`device_obs.sight_values`), never a kernel argument; a team value without a slot is refused at the build.
 - THE COVER TABLE (`device_obs.cover_values`) is staged ONCE at the build: on the continuous path nothing changes a cover's `alive` (`CoverRuntime.chew` is reached only through a round marched with `cover`, which only OnePhaseWEGO passes). A path that starts chewing cover on the continuous ruleset moves the table onto the card in the same patch. Every line of fire (`line_of_fire.solid_in_way`) on the card is `obs_sight::solid_in_way` over it.
+- THE DEVICE TEAM PICTURE (`DeviceObservation.picture`, `src/simulation/device_picture.py`, `cpp/src/cuda_obs_picture.{cuh,cu}`) is updated at the `11'` line between device vision and the blocks, ONCE per tick (a skipped or doubled update is a fault), in `TeamPicture.update`'s order: the per-unit trackers and last hit, then per team the damage window against the records BEFORE the update, the seen deaths, the memory, the sightings, the object tracker. A change to that order or to any tracker lands in the device picture in the same patch, gated every tick by the check's picture comparison. Every later block (the list, the masks' aims, the reward's bars) reads the picture through `cuda_obs_picture.cuh`'s layout and readers, never its own offsets; the damage window's sum is `damage_sum`, in its deque's order.
+- Its capacities are refusals, never clamps: records are one per (team, store row), the tracker holds live objects only (both bounded by the law), the damage window is a FIFO of `DMG_CAP` per team; every fault rides the conductor's ONE books read (`picture_faults`), raised by name with the env.
+- THE OBJECT SERIAL is a side array of the picture's block that the grenade / charge tables' stable compaction carries (`ObjectTableBuffer.set_side`); never a table column (a column reaches the digest) and never the row index. Its host notion is test-side only: an object's position in `projectiles + planted_charges` (`device_picture.host_form`).
+- A per-env reset restages env e's picture through `DevicePicture.restage` (from a host picture or its normal form), never a second conversion.
 - An env is built on ITS decision ticks (its episode start and the run's decimation, read on the card) and skipped while its ended latch is set.
 - The hand-over's ordering rests on the BLOCKING tick stream and CuPy / torch on the legacy default stream: a change to either is a change to the hand-over, held by the check's handover part.
 

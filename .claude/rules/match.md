@@ -70,7 +70,7 @@ and who must use it; this file holds the constraints the code cannot say.
 - A record is NEVER refreshed from the live unit. It is kept `[team_picture] memory_s` unless the team SAW the death (a kill out of sight, a frag's included, is not seen), so a record outlives an unseen death or conversion.
 - The fire lanes come from state, never a controller's memory: `fire_lanes` through `draw_lanes`, THE fire-lane rasteriser.
 - The TRACKERS (motion, last hit, the damage window, bars, death tick, the object tracker) are members of the picture on the same slot-11 driver, never memory on demand. `bars` is THE bar of the reward's health: never a second tracker. The observation reads them only through `obs_spec_v1.TeamKnowledge`.
-- The bots, the observation and the aim mask read it: never a second picture.
+- The bots, the observation and the aim mask read it: never a second picture. Its device twin (`src/simulation/device_picture.py`, the Device team picture) mirrors `update` line for line: a change to the update's order or to a tracker lands there in the same patch.
 
 ## Order
 - Set ONLY through `Simulation.order_intent`, the commander's verb: refused by name at the door BEFORE the tap, out of every policy row, recorded, LATCHED (the last call per unit per tick wins) and written at slot 1b'. It names a PLACE on the room graph (through `room_graph.place_at`), never a tile.

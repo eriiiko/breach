@@ -69,7 +69,24 @@ P8.2 (no served column: the sight every later block reads) --
 - PART SIGHT: the bulk forms against ``rays_clear`` / ``window_clear``;
 - PART WALL: the wall's first device gate (critique finding 22).
 
-THE BREAKS (``OBS_BREAK``), each must turn a part red: ``cone`` / ``early``
+P8.3 (the device team picture, ``simulation.device_picture``) --
+- inside every GATE / BATCH run: the picture's WHOLE state
+  (``device_picture.device_form`` of the card's block) equal to the
+  reference picture's (``host_form``, objects named by their position in
+  ``projectiles + planted_charges``) at EVERY tick, field by field, and the
+  damage window's sums (``damage_last_s``) raw-bit equal; the coverage of
+  every case (:data:`PICTURE_CASES`, each > 0 else FAIL) counted off the
+  reference; the door hand match (:func:`corpus_door`) for the grenade lost
+  and re-seen; the 13 vector columns P8.3 owns in the census;
+- PART RESTAGE: the seam a per-env reset uses.
+
+THE BREAKS (``OBS_BREAK``), each must turn a part red: ``early_picture``,
+``lifetime``, ``dmg_order``, ``serial_row`` (P8.3, part GATE: the picture
+before the conversion, a record kept one tick longer, the tick's hits fed
+to the damage window in reverse, the object serial replaced by the row
+index), ``dmg_sum`` (P8.3: the window's sums in reverse order -- every
+entry is on the Q16 grid, so the float64 sums are exact and this break
+CANNOT turn red; it is run to show it); ``cone`` / ``early``
 / ``cover`` (P8.2, part GATE: the cone a degree wider, who sees whom before
 the conversion, every cover box one tile off), ``forms`` (P8.2, part SIGHT:
 the two has_los forms swapped); ``anchor`` (the
@@ -113,7 +130,7 @@ FAILS: list = []
 BREAK = os.environ.get("OBS_BREAK", "")
 #: The patch this script's gates are at: every column owned by it or an
 #: earlier patch of the version-2 table is compared.
-PATCH = "P8.2"
+PATCH = "P8.3"
 #: The decision cadence of the corpus (design 13.1's decimation, a run file's
 #: ``[run] decimation``; the device observation takes it as its argument).
 DECIMATION = 4
@@ -203,6 +220,12 @@ class Played:
         self.rule = "cone"
         self.uids = []
         self.cover_alive = None               # (at tick 0, at the end)
+        # P8.3: the reference team picture's normal form every tick, its
+        # damage window's sums per (team, unit) every tick, the coverage
+        self.picture = {}                     # tick -> device_picture.host_form
+        self.dsum = {}                        # tick -> (T, U) float64
+        self.coverage = {}                    # case -> count
+        self.dmg_peak = 0                     # the largest damage window of a team
 
 
 _PLAYED: dict = {}
@@ -298,6 +321,9 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Pl
         from simulation import vision
         vs = vision.state_for(s.sim)          # the team picture's (slot 11) cached state
         p.vision[int(s.sim.tick)] = (dict(vs.seen_by), dict(vs.visible_by_team))
+        picture_snapshot(p, s.sim, cov)
+
+    cov = PictureCoverage()
 
     p.rule = str(getattr(s.sim, "sight", "cone"))
     p.uids = [int(u.id) for u in s.sim.units]
@@ -314,6 +340,8 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Pl
         if int(s.sim.tick) % DECIMATION == 0:
             observe()
     s.sim.attach_intent_log(None)
+    p.coverage = dict(cov.counts)
+    p.dmg_peak = cov.dmg_peak
     p.cover_alive = (alive0, [bool(c.alive) for c in (s.sim.cover or ())])
     p.end = int(s.sim.tick)
     _PLAYED[key] = p
@@ -405,7 +433,10 @@ def gate(label, played: list, census: Census | None = None) -> bool:
     c = cd.DeviceConductor([s.sim for s in sessions], bp=bp)
     T = max(p.T for p in played)
     S = max(p.S for p in played)
-    obs = dobs.DeviceObservation(c, [s.spec for s in sessions], S, DECIMATION, n_teams=T)
+    obs = dobs.DeviceObservation(c, [s.spec for s in sessions], S, DECIMATION, n_teams=T,
+                                 picture_from_host=[e for e, p in enumerate(played)
+                                                    if p.setup is not None])
+    _picture_breaks(obs)
     if BREAK == "anchor":                          # from the first decision after tick 0
         _anchor_break(obs)
     if BREAK == "stale":                           # nothing rebuilt after tick 0
@@ -418,6 +449,9 @@ def gate(label, played: list, census: Census | None = None) -> bool:
     t0 = time.perf_counter()
     for k in range(end + 1):
         tick = int(c.sims[0].tick)
+        # the picture first: its break (early_picture) moves vision with it
+        if not picture_equal(label, obs, played, tick):
+            return False
         if not vision_equal(label, obs, played, tick):
             return False
         if tick % DECIMATION == 0 and not lof_equal(label, obs, played, tick):
@@ -612,6 +646,188 @@ def judge_vision() -> None:
         fail("line of fire: no cover decided any pair over the corpus (vacuous)")
 
 
+# ---------------------------------------------------------------------------
+# P8.3: the device team picture, its WHOLE state every tick
+# ---------------------------------------------------------------------------
+#: The coverage cases the picture's corpus must reach (each > 0, else FAIL).
+PICTURE_CASES = (
+    "record_created", "record_refreshed_after_gap", "record_expired", "death_seen",
+    "death_unseen", "conversion_with_record", "grenade_tracked", "grenade_lost",
+    "grenade_reseen", "grenade_survives_compaction", "charge_tracked", "damage_added",
+    "damage_dropped")
+#: Per gate label: ticks whose whole picture compared equal, env-ticks.
+PICSTATS: dict = {}
+
+
+class PictureCoverage:
+    """The coverage of the picture's cases, read off the REFERENCE picture
+    tick by tick (the device equals it every tick, so its coverage is the
+    same): records created, refreshed after a gap, expired; deaths seen and
+    unseen; a conversion with a record of the marine; grenades tracked, lost,
+    re-seen, carried through a compaction; a charge tracked; the damage
+    window adding and dropping."""
+
+    def __init__(self):
+        self.counts = {k: 0 for k in PICTURE_CASES}
+        self.prev = None                    # the previous tick's host form
+        self.prev_seen = None               # team -> set of seen object ids
+        self.prev_tracked = None            # team -> {object id: list position}
+        self.dmg_peak = 0
+
+    def add(self, sim, form) -> None:
+        pic = sim.team_picture
+        t = form["tick"]
+        objs = list(sim.projectiles) + list(sim.planted_charges)
+        pos = {id(o): i for i, o in enumerate(objs)}
+        n_g = len(sim.projectiles)
+        seen = {tm: {id(o) for o, _ in pic.seen_now[tm]} for tm in pic.teams}
+        tracked = {tm: {id(o): pos[id(o)] for o in pic._objects[tm]} for tm in pic.teams}
+        for tm in pic.teams:
+            n_dmg = sum(len(q) for q in pic._damage[tm].values())
+            self.dmg_peak = max(self.dmg_peak, n_dmg)
+        c = self.counts
+        for tm in pic.teams:
+            for i in tracked[tm].values():
+                c["grenade_tracked" if i < n_g else "charge_tracked"] += 1
+        prev = self.prev
+        if prev is not None and t == prev["tick"] + 1:
+            for tm in pic.teams:
+                pr, cr = prev["records"][tm], form["records"][tm]
+                for uid, r in cr.items():
+                    if uid not in pr:
+                        c["record_created"] += 1
+                    elif r[11] == t and pr[uid][11] < t - 1:
+                        c["record_refreshed_after_gap"] += 1
+                for uid, r in pr.items():
+                    if uid in cr:
+                        continue
+                    if r[11] == t - 1:
+                        c["death_seen"] += 1
+                    elif t - r[11] > pic.memory_ticks:
+                        c["record_expired"] += 1
+                for oid, i in tracked[tm].items():
+                    if i >= n_g:
+                        continue
+                    if oid in self.prev_seen[tm] and oid not in seen[tm]:
+                        c["grenade_lost"] += 1
+                    if (oid in seen[tm] and oid not in self.prev_seen[tm]
+                            and oid in self.prev_tracked[tm]):
+                        c["grenade_reseen"] += 1
+                    j = self.prev_tracked[tm].get(oid)
+                    if j is not None and j != i:
+                        c["grenade_survives_compaction"] += 1
+                pd, cd_ = prev["damage"][tm], form["damage"][tm]
+                c["damage_added"] += sum(1 for q in cd_.values() for tk, _ in q if tk == t)
+                c["damage_dropped"] += sum(1 for q in pd.values() for tk, _ in q
+                                           if tk <= t - pic.window_ticks)
+            for uid, dt in form["death_tick"].items():
+                if dt != t or uid in prev["death_tick"]:
+                    continue
+                if uid in form["turned"] and uid not in prev["turned"]:
+                    continue                                 # a conversion, below
+                if any(uid in form["records"][tm] and form["records"][tm][uid][11] < t - 1
+                       for tm in pic.teams):
+                    c["death_unseen"] += 1
+            for uid in form["turned"]:
+                if uid in prev["turned"] or uid not in prev["motion"]:
+                    continue                                 # not a marine turning now
+                if any(uid in prev["records"][tm] and prev["records"][tm][uid][1] == 0
+                       for tm in pic.teams):
+                    c["conversion_with_record"] += 1
+        self.prev, self.prev_seen, self.prev_tracked = form, seen, tracked
+
+
+def picture_snapshot(p, sim, cov) -> None:
+    """The reference picture at this tick (slot 11 ran): its normal form,
+    its damage window's sums per (team, unit) (``damage_last_s``), the
+    coverage."""
+    from simulation import device_picture as dpic
+    pic = sim.team_picture
+    form = dpic.host_form(pic, sim)
+    p.picture[int(sim.tick)] = form
+    uids = [int(u.id) for u in sim.units]
+    sums = np.zeros((len(pic.teams), len(uids)), dtype=np.float64)
+    for t in pic.teams:
+        for r, uid in enumerate(uids):
+            sums[t, r] = pic.damage_last_s(t, uid)
+    p.dsum[int(sim.tick)] = sums
+    cov.add(sim, form)
+
+
+def _picture_breaks(obs) -> None:
+    """THE P8.3 BREAKS: ``early_picture`` (vision and the picture before the
+    conversion), ``lifetime`` (a record kept one tick longer), ``dmg_order``
+    (the damage window fed the tick's hits in reverse emission order),
+    ``serial_row`` (the object serial replaced by the row index), ``dmg_sum``
+    (the window's sums taken in reverse order)."""
+    from simulation import device_picture as dpic
+    if BREAK == "early_picture":
+        obs.early_picture = True
+    if BREAK in dpic.BREAK_CODES and BREAK:
+        obs.picture.brk = dpic.BREAK_CODES[BREAK]
+
+
+def picture_equal(label, obs, played, tick) -> bool:
+    """Every env's device picture equal to its reference's at ``tick``,
+    field by field (records, bars, turned, death ticks, motion, last hits,
+    the damage window, the object tracker by object position, the id
+    counters, seen_now), and the damage window's sums raw-bit equal."""
+    from simulation import device_picture as dpic
+    forms = obs.picture.forms()
+    sums = obs.picture.damage_sums().get()
+    if BREAK == "dmg_sum":                               # the order turned round
+        import cupy as cp
+        out = cp.zeros_like(cp.asarray(sums))
+        obs.bp.obs_picture_damage_sums(int(obs.N), int(obs.c.store.device_ptr), int(obs.c.U),
+                                       int(obs.c.store.shape[2]), int(obs.T),
+                                       int(obs.picture.state.data.ptr), int(obs.picture.W),
+                                       int(out.data.ptr), True)
+        sums = out.get()
+    for e, p in enumerate(played):
+        if tick > p.end:
+            continue
+        want = p.picture[tick]
+        got = forms[e]
+        d = dpic.first_difference(want, got)
+        if d is not None:
+            path, a, b = d
+            fail(f"{label}: tick {tick}, env {e} ({p.name}@{p.seed}): the team picture differs "
+                 f"at {'/'.join(str(x) for x in path)}: reference {a!r} device {b!r}")
+            return False
+        ws = p.dsum[tick]
+        gs = sums[e][:ws.shape[0], :ws.shape[1]]
+        if not np.array_equal(raw(ws), raw(gs)):
+            t_, r_ = (int(x) for x in np.argwhere(raw(ws) != raw(gs))[0])
+            fail(f"{label}: tick {tick}, env {e} ({p.name}@{p.seed}): damage_last_s(team {t_}, "
+                 f"unit {p.uids[r_]}) reference {ws[t_, r_]!r} device {gs[t_, r_]!r}")
+            return False
+        st = PICSTATS.setdefault(label, {"env_ticks": 0, "records": 0, "objects": 0})
+        st["env_ticks"] += 1
+        st["records"] += sum(len(r) for r in want["records"].values())
+        st["objects"] += sum(len(o) for o in want["objects"].values())
+    return True
+
+
+def judge_picture(played) -> None:
+    """The picture's census: per gate the env-ticks compared; per case its
+    count over the corpus, each > 0 (a case never reached FAILS)."""
+    for label, st in sorted(PICSTATS.items()):
+        print(f"    picture {label}: {st['env_ticks']} env-ticks equal (whole state), "
+              f"{st['records']} record-ticks, {st['objects']} tracked-object-ticks")
+    total = {k: 0 for k in PICTURE_CASES}
+    peak = 0
+    for p in played:
+        for k, n in p.coverage.items():
+            total[k] += n
+        peak = max(peak, p.dmg_peak)
+    print("    picture coverage: " + ", ".join(f"{k} {n}" for k, n in total.items())
+          + f"; damage window peak {peak} entries (capacity "
+          + f"{__import__('simulation.device_picture', fromlist=['DMG_CAP']).DMG_CAP})")
+    for k, n in total.items():
+        if n == 0:
+            fail(f"picture coverage: the case {k!r} is never reached over the corpus (vacuous)")
+
+
 def corpus_a():
     lv = ship_level()
     import _pinned_matches as pm
@@ -750,6 +966,51 @@ def corpus_round():
     return [play("ship_all_round", lv, spec, 61, max_ticks=ROUND_TICKS)]
 
 
+#: P8.3's door hand match: the training room with a door (``range_door``),
+#: both teams ``idle`` (only the hand intents move anything), the two units
+#: placed at tick 0 on either side of the open door; unit 0 lobs a short-fuse
+#: grenade, then a long-fuse one (the first detonates and the table's
+#: compaction moves the second down a row while both teams track it); unit 1,
+#: beside the door, shuts it (team 1 loses the grenade) and opens it again
+#: (team 1 re-sees it under the same id).
+DOOR_SEED = 71
+DOOR_TICKS = 150
+DOOR_THROWS = ((2, 20, 0), (14, 280, 1))   # (tick, fuse ticks, kind: a frag, then a smoke)
+DOOR_USES = (60, 95)
+
+
+def door_setup(session):
+    from simulation import unit_fixed
+    one = unit_fixed.FP_ONE
+    a, b = sorted(session.sim.units, key=lambda u: int(u.id))[:2]
+    a.set_pos_q(16 * one, 16 * one)
+    b.set_pos_q(23 * one, 17 * one)
+    # the hand state is tick 0's: the spawn's vision and picture are retaken
+    # from it (the reference and the twin alike), as a hand-built sim does
+    session.sim._vision_cache = None
+    session.sim.start_team_picture(range(len(session.spec.teams)))
+
+
+def door_script(sim):
+    from simulation import unit_fixed
+    one = unit_fixed.FP_ONE
+    a, b = sorted(sim.units, key=lambda u: int(u.id))[:2]
+    t = int(sim.tick)
+    for tk, fuse, kind in DOOR_THROWS:
+        if t == tk and a.alive:
+            sim.throw_grenade_intent(int(a.id), one, 0, fuse, reach_q=3 * one, kind=kind)
+    if t in DOOR_USES and b.alive:
+        sim.use_intent(int(b.id))
+
+
+def corpus_door():
+    from dataclasses import replace
+    lv = room_level()
+    spec = replace(lv.match, teams=tuple(replace(t, controller="idle") for t in lv.match.teams))
+    return [play("door_grenade", lv, spec, DOOR_SEED, setup=door_setup, script=door_script,
+                 max_ticks=DOOR_TICKS)]
+
+
 def part_gate():
     ca, cb, cdn = Census(), Census(), Census()
     for p in corpus_a():
@@ -762,6 +1023,8 @@ def part_gate():
         gate(f"(b/d cover) {p.name}", [p], cb)
     for p in corpus_round():
         gate(f"(d all_round) {p.name}", [p], cdn)
+    for p in corpus_door():
+        gate(f"(d door) {p.name}", [p], cdn)
     ca.judge("census (a)", strict=False)
     cb.judge("census (b)", strict=False)
     cdn.judge("census (d)", strict=False)
@@ -772,6 +1035,8 @@ def part_gate():
             both.values.setdefault(k, set()).update(src.values.get(k, set()))
     both.judge("census (a)+(b)+(d)")
     judge_vision()
+    judge_picture(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
+                  + corpus_door())
     for p in corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round():
         a0, a1 = p.cover_alive
         if a0 != a1:
@@ -1271,9 +1536,47 @@ def part_wall():
             fail(f"wall: no case under the {rule!r} rule (vacuous)")
 
 
+# ---------------------------------------------------------------------------
+# P8.3: PART RESTAGE -- the seam P8.9b resets through
+# ---------------------------------------------------------------------------
+RESTAGE_TICK = 60
+
+
+def part_restage():
+    """Env e's device picture set from a HOST picture's normal form mid-match
+    (``DevicePicture.restage``: the seam a per-env reset uses) and played on:
+    a batch of two hand matches, env 1's block scrambled at
+    :data:`RESTAGE_TICK` and restaged from its reference there, env 0
+    untouched; both envs' whole picture equal to their references at every
+    later tick."""
+    import cupy as cp
+    p = corpus_d()[0]
+    played = [p, p]
+    sessions = [twin(x) for x in played]
+    c = cd.DeviceConductor([x.sim for x in sessions], bp=bp)
+    obs = dobs.DeviceObservation(c, [x.spec for x in sessions], p.S, DECIMATION, n_teams=p.T,
+                                 picture_from_host=[0, 1])
+    n = 0
+    for k in range(p.end + 1):
+        tick = int(c.sims[0].tick)
+        if tick == RESTAGE_TICK:
+            obs.picture.state[1] = cp.asarray(np.arange(obs.picture.W, dtype=np.int64) * 7919)
+            obs.picture.restage(1, form=p.picture[tick])
+        if not picture_equal("restage", obs, played, tick):
+            return
+        n += 1
+        if k == p.end:
+            break
+        for e in range(2):
+            c.latch(p.intents[k] if k < len(p.intents) else (), env=e)
+        c.tick()
+    print(f"  restage: env 1 scrambled and restaged at tick {RESTAGE_TICK}; both envs' whole "
+          f"picture equal to the reference over {n} ticks")
+
+
 PARTS = {"gate": part_gate, "batch": part_batch, "handover": part_handover,
          "syncs": part_syncs, "ended": part_ended, "floatkit": part_floatkit,
-         "sight": part_sight, "wall": part_wall}
+         "sight": part_sight, "wall": part_wall, "restage": part_restage}
 
 
 def main(parts=None) -> int:

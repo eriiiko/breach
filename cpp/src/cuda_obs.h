@@ -12,10 +12,15 @@
 // never in the unit library (cuda_unit_lib.cuh).
 // ==========================================================================
 #include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace breach_cuda {
 
 class UnitRecordList;   // cuda_unit_events.h (the door and door-tile tables)
+class ObjectTable;      // cuda_object_table.h (the grenade and charge tables)
+class UnitEventRing;    // cuda_unit_events.h (the event ring)
 
 // P8.0's block, for every env whose decision tick it is (the tick row's tick
 // against the per-env parameter row: the episode's first tick, the
@@ -100,6 +105,42 @@ void obs_lof_pairs(int n_env, std::uintptr_t store, int n_units, int store_w,
                    std::uintptr_t solid, int h, int w, std::uintptr_t covers, int cover_cap,
                    int cover_w, std::uintptr_t cover_count, std::uintptr_t out,
                    std::uintptr_t faults);
+
+// ---------------------------------------------------------------------------
+// #29 P8.3: THE DEVICE TEAM PICTURE (cpp/src/cuda_obs_picture.cu over the
+// block layout of cuda_obs_picture.cuh; src/simulation/device_picture.py).
+// `state`: (N, state_w) int64, one block per env; `faults`: (N,) int64 bits
+// (obs_layout.h OBS_PIC_FAULT_*). Every launch on the tick stream, no sync.
+//
+// TeamPicture.update for every env: the serials of the grenade / charge
+// tables' new rows, the per-unit trackers and last_hit (the ring's hits),
+// then per marine team the damage window, the seen deaths, the memory, the
+// sightings (the device vision's visible table (N, n_teams + 1, U)) and the
+// object tracker. `first`: the start_team_picture update (no events). `brk`:
+// the check's breaks (OBS_PIC_BREAK_*), 0 in every real run. Returns true
+// when the fault bits were deferred into the conductor's books read; false
+// outside a conductor tick (the caller reads `faults`).
+bool obs_picture(int n_env, std::uintptr_t store, int n_units, int store_w, UnitEventRing& ring,
+                 ObjectTable& grenades, ObjectTable& charges, std::uintptr_t solid,
+                 std::uintptr_t screen, int h, int w, std::uintptr_t tick_row,
+                 std::uintptr_t visible, int n_teams, std::uintptr_t state, int state_w,
+                 std::uintptr_t faults, bool first, int brk);
+// The vector's P8.3 columns (hp, vel_x / vel_y, hit_*, the record counts),
+// every env on its decision tick with its ended latch clear, beside
+// obs_vector's block.
+void obs_picture_vector(int n_env, std::uintptr_t store, int n_units, int store_w,
+                        std::uintptr_t rowmap, int n_rows, int n_slots, int n_teams,
+                        std::uintptr_t obs_table, int table_w, std::uintptr_t teams,
+                        std::uintptr_t tick_row, std::uintptr_t params, std::uintptr_t ended,
+                        std::uintptr_t visible, std::uintptr_t state, int state_w,
+                        std::uintptr_t vector);
+// TeamPicture.damage_last_s for every (env, team, store row): out (N,
+// n_teams, U) float64 (the gate's; `reverse`: THE BREAK, the order turned).
+void obs_picture_damage_sums(int n_env, std::uintptr_t store, int n_units, int store_w,
+                             int n_teams, std::uintptr_t state, int state_w, std::uintptr_t out,
+                             bool reverse);
+// The compiled block layout's section offsets for (n_teams, n_units).
+std::vector<std::pair<std::string, int64_t>> obs_picture_layout(int n_teams, int n_units);
 
 // The compiled layout's fingerprint (obs_layout.h): what device_obs checks.
 const char* obs_layout_fingerprint();

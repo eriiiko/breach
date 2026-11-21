@@ -42,7 +42,18 @@ def test_the_device_observation_equals_the_host_one_on_the_corpus():
     moves (OBS_BREAK=constant), a column divides by a neighbouring table row
     (OBS_BREAK=divisor), the cone is a degree wider (OBS_BREAK=cone), who
     sees whom runs before the conversion (OBS_BREAK=early), or a cover box
-    sits one tile off (OBS_BREAK=cover)."""
+    sits one tile off (OBS_BREAK=cover). From P8.3 the device team picture's
+    WHOLE state (records, bars, turned, death ticks, motion, last hits, the
+    damage window and its sums, the object tracker by object position, the
+    id counters, seen_now) equals the reference picture's at EVERY tick, and
+    every coverage case (records created / refreshed / expired, deaths seen
+    and unseen, a conversion with a record, a grenade tracked / lost /
+    re-seen / carried through a compaction, a charge tracked, the damage
+    window adding and dropping) is reached; BREAKS IF the picture updates
+    before the conversion (OBS_BREAK=early_picture), a record lives one tick
+    longer (OBS_BREAK=lifetime), the damage window takes the tick's hits in
+    reverse order (OBS_BREAK=dmg_order) or the object serial is the row
+    index (OBS_BREAK=serial_row)."""
     _run(["gate"], timeout=7200)
 
 
@@ -113,3 +124,13 @@ def test_who_a_team_sees_depends_only_on_the_enemies_in_view():
     BREAKS IF the visible table is indexed by the wrong row or team, or a
     target's own facing / hp decides whether it is seen."""
     _run(["wall"])
+
+
+def test_a_restaged_picture_plays_on_equal_to_its_reference():
+    """PROPERTY (#29 P8.3, the seam a per-env reset uses): env 1 of a batch
+    of two, its device picture scrambled mid-match and restaged from its
+    reference's normal form (``DevicePicture.restage``), and env 0 left
+    alone, both equal their reference picture at every later tick. BREAKS
+    IF the restage drops a field, renumbers the object serials apart from
+    the tables' rows, or writes another env's block."""
+    _run(["restage"])

@@ -827,6 +827,34 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("out"), py::arg("faults"),
           "#29 P8.2: line_of_fire.solid_in_way over every (row, row) pair of the store, "
           "over the observation's cover table.");
+    // #29 P8.3: THE DEVICE TEAM PICTURE (cpp/src/cuda_obs_picture.cu), on the
+    // tick stream, no sync.
+    m.def("obs_picture", &breach_cuda::obs_picture, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("ring"), py::arg("grenades"),
+          py::arg("charges"), py::arg("solid"), py::arg("screen"), py::arg("h"), py::arg("w"),
+          py::arg("tick_row"), py::arg("visible"), py::arg("n_teams"), py::arg("state"),
+          py::arg("state_w"), py::arg("faults"), py::arg("first"), py::arg("brk"),
+          "#29 P8.3: TeamPicture.update for every env on the card; returns whether the "
+          "fault bits were deferred into the conductor's books read.");
+    m.def("obs_picture_vector", &breach_cuda::obs_picture_vector, py::arg("n_env"),
+          py::arg("store"), py::arg("n_units"), py::arg("store_w"), py::arg("rowmap"),
+          py::arg("n_rows"), py::arg("n_slots"), py::arg("n_teams"), py::arg("obs_table"),
+          py::arg("table_w"), py::arg("teams"), py::arg("tick_row"), py::arg("params"),
+          py::arg("ended"), py::arg("visible"), py::arg("state"), py::arg("state_w"),
+          py::arg("vector"),
+          "#29 P8.3: the vector columns of the team picture, every env on its decision tick.");
+    m.def("obs_picture_damage_sums", &breach_cuda::obs_picture_damage_sums, py::arg("n_env"),
+          py::arg("store"), py::arg("n_units"), py::arg("store_w"), py::arg("n_teams"),
+          py::arg("state"), py::arg("state_w"), py::arg("out"), py::arg("reverse"),
+          "#29 P8.3: TeamPicture.damage_last_s for every (env, team, store row).");
+    m.def("obs_picture_layout", [](int n_teams, int n_units) {
+              py::dict d;
+              for (const auto& kv : breach_cuda::obs_picture_layout(n_teams, n_units))
+                  d[py::str(kv.first)] = kv.second;
+              return d;
+          },
+          py::arg("n_teams"), py::arg("n_units"),
+          "#29 P8.3: the compiled picture block's section offsets (int64 words).");
     m.def("tick_stream_ptr", []() {
               return reinterpret_cast<std::uintptr_t>(breach_cuda::tick_stream_handle());
           },
@@ -1390,7 +1418,18 @@ PYBIND11_MODULE(breach_physics, m) {
                  }, py::arg("recs"), py::arg("n"),
                  "Append each env's first n[e] records in order (past cap: counted).")
             .def("compact", [](ObjectTable& t) { t.compact(); },
-                 "The stable compaction of every env (rows whose live column is 0 dropped).");
+                 "The stable compaction of every env (rows whose live column is 0 dropped).")
+            .def("set_side",
+                 [](ObjectTable& t, std::uintptr_t side, std::int64_t side_stride,
+                    std::uintptr_t known, std::int64_t known_stride) {
+                     t.set_side(reinterpret_cast<int64_t*>(side), side_stride,
+                                reinterpret_cast<int64_t*>(known), known_stride);
+                 },
+                 py::arg("side"), py::arg("side_stride"), py::arg("known"),
+                 py::arg("known_stride"),
+                 "#29 P8.3: a device side array (int64 words, env e's row i at side + "
+                 "8 * (e * side_stride + i)) the compaction carries with the rows, and its "
+                 "known count (the device team picture's object serials); 0, 0: none.");
     }
 
     // #29 P7b: THE GRENADES AND THE PLANTED CHARGES on their object tables
