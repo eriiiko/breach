@@ -1706,3 +1706,122 @@ destroyed 19.2 %, §8.1.)
   now a look and a cost question, Erik's drag session.
 - **No term is in the wrong units**; the honest-value question is the
   tuning target (above), not the law.
+
+#### The cost (ruling 5: measured before any training runs on it)
+
+`tools/bench_conductor.py --stagger 1` (env e runs the recorded match e ticks
+later; 10 warm-up + 120 timed + 20 profiled ticks), the same command on the
+merged base `3ac5cfe9` (before) and on this branch after main's P8.0-P8.3
+came in (after). The card was idle (nvidia-smi, no other python on it); the
+after-run was repeated twice, spread under 1 % on every row.
+
+| level | N | before ms/tick | after ms/tick (2 runs) | change | P(batch k > 1) | E[max k] | E[k] | syncs |
+|---|---|---|---|---|---|---|---|---|
+| range_hall | 1 | 6.91 | 7.35 / 7.31 | +6 % | 0.07 | 1.27 | 1.27 | 2.0 |
+| range_hall | 16 | 9.12 | 13.84 / 13.88 | +52 % | 0.34 | 3.04 | 1.28 | 2.0 |
+| range_hall | 64 | 16.86 | 32.13 / 31.96 | +90 % | 0.83 | 6.69 | 1.28 | 2.0 |
+| ship_demo | 1 | 9.53 | 14.20 / 14.23 | +49 % | 0.58 | 2.71 | 2.71 | 2.0 |
+| ship_demo | 16 | 20.14 | 35.11 / 34.90 | +74 % | 0.64 | 4.56 | 1.92 | 2.0 |
+| ship_demo | 64 | 55.95 | 87.49 / 87.49 | +56 % | 0.64 | 4.89 | 1.73 | 2.0 |
+
+Reading (PROVED unless marked):
+
+- **Syncs stay 2.0 per tick** at every N: k rides the one `max_n_sub` read
+  (P8.2's gate held).
+- **The floor per extra sub-tick is larger than §8.7 bounded it.** On
+  range_hall, (Δ ms) / (E[max k] − 1) = 1.6 ms at N = 1, 2.3 at N = 16,
+  2.7 at N = 64 (§8.7: 0.6-1.2 ms). A masked env still costs every launch of
+  the chain (the 8 V-cycles over every level dominate): masking removes the
+  bandwidth, not the launches.
+- **This bench's schedule is denser than an episode**: range_hall's recorded
+  match is 32 ticks long and re-latched modulo its length, so every env
+  throws every 32 ticks (E[max k] 6.7 at N = 64, against the 4.6-6.8 the
+  §8.7 Monte Carlo gave for whole 45 s episodes). INFERENCE: at the design's
+  episode statistics and the measured 2.7 ms floor, range_hall at N = 64
+  pays about +58 % (learner armed) to +84 % (both teams), not +14-43 %.
+- **Units drive k in matches.** ship_demo's match runs k > 1 on 80 % of
+  ticks at N = 1 (mean k 3.4 over 300 CPU ticks; idle ship_demo with no units
+  is k = 1 on every tick). The driver is k_div on 220 of 239 such ticks, and
+  the largest |div u| sits on a unit's own stamped cells (permeability 0.5),
+  20-45 /s at winds of 2-3 m/s. INFERENCE: a divergence of the collocated
+  coupling at a body's partial permeability (F5's class), not air crossing
+  tiles. It is the cost driver of the played game (+49 % at N = 1) and of
+  ship_demo batches.
+- **Levers** (none built here): exclude stamped body cells (perm < 1) from
+  the k-set or measure k_div on the solve's own face divergence; fewer
+  V-cycles on warm-started sub-ticks ≥ 2 (re-opens `mg_cycles = 8`); P9's
+  graph capture; kernel fusion. The first is a k-rule change and Erik's /
+  the next design's call; until then a training batch on ship_demo pays the
+  table above.
+
+#### The E2E reproduction, before and after
+
+| scene | before (merged base) | after (this build) |
+|---|---|---|
+| smoke_light_studio, the three legacy charges | Nmax 113.6 / 131.8, Nmin 0, P / p* down to 0.02 and staying, Tmw +103 → −3 K | Nmax ≤ 9.67, Nmin ≥ 0.042, P / p* back within 5 % in ≤ 4 ticks of each charge (T3), k 8 on the blast ticks, Tmw ends +1145 K (the rows' heat kept; the T_MAX_PHYS rail at 62 / 159 hits by design) |
+| fire_studio frag (24, 16, 24) | Nmax 1.76, Nmin 0.036; median wind 8.9 m/s (ticks 30-48), 5.6 (48-120) | Nmax 1.29, source ring ≥ 0.146 N0, median wind 0.2-0.4 m/s from 1 s after (criterion < 3) |
+| quiet arena, 30 s | max wind 11.7-62.6 m/s, drift −3.0 K | 6-24 m/s (median of the per-tick max 11.0; the max beside the ambient ring, finding 3), drift −0.39 K |
+| ship_demo idle, 10 s | n_sub 8 from tick 24 | k = 1 on all 240 ticks, n_sub 8 on 211 (the emptied vent aperture, an ACCEPTED GAP) |
+| range_hall C4 against the hull | (pre-§8 trajectory: wild) | k-set p* band 0.95-1.59 × mean from 0.25 s after; k 8 for ≈ 1.5 s |
+| wind_drift_probe, fire_studio frag | 0.965 (IQR 0.890-1.029) after U | **1.024** (IQR 0.923-1.144, 90 windows) |
+| wind_drift_probe, smoke_light_studio | 0.924 (IQR 0.699-1.241) after U | 1.716 over all 125 windows (IQR 1.06-3.80); **1.09** over the 16 windows whose plume-weighted mean wind exceeds 0.05 tiles/tick. After §8 the post-blast room is calm (median mean-wind vector 0.01 tiles/tick against a mean speed of 0.15): the ratio is ill-conditioned where the mean vector vanishes, ≈ 1 where it is resolvable |
+
+Energy closure: `_quiet_books_bench.py` 1440 ticks EXACT (gas + solid);
+`_sealedbox_bisect_bench.py` 432 ticks EXACT in every variant (its
+informational u_max < 3 m/s line fails: 6-64 m/s, finding 3);
+`test_eos_substep_whole_tick.py` T5 exact with k = 8.
+
+#### Gates (the full suite pending the joint run with #29)
+
+Run on this branch after main's P8.0-P8.3 merge (`cc3dd393`), targeted
+(Erik, 2026-11-21: ONE full suite at the end, covering both arcs):
+
+- `tests/test_eos_substep_whole_tick.py` 14 passed; every T2/T3 leg verified
+  RED with `subtick_loop` off and the ceiling kept (the studio band 0.0-50.7,
+  the breach band to 6.2, P / p* 0.30-0.42 staying).
+- T6(b), the A/B harness against the merged-base trajectories: the legacy
+  switches equal `3ac5cfe9` on every field, every tick (golden 120 ticks,
+  test_arena with vents 240 ticks: 0 mismatches).
+- `GOLDEN_AGGREGATE` and the B6 loop digest re-baselined once (sole cause
+  committed); their readers `test_b6_logic_golden`, `test_swarm_digest`,
+  `test_swarm_tick`, `test_field_ab_harness` green.
+- The eight ship_demo pins re-pinned (category A); every box pin unchanged
+  (18 passed).
+- The energy and transport gates green: `test_e1_hot_rail`,
+  `test_gas_energy_tile_flip`, `test_thermostat_books`,
+  `test_transport_in_metres`, `test_p_e3_drag`, the drag2 law tests,
+  `test_heat_source`, `test_bulk_gas_payload`, `test_trace_resolution`,
+  `test_sky_exchange`, `test_fire_vfx_ref`, `test_wind_studio`.
+- CUDA: `test_cuda_s8a_residency` (with PART 1h, k = 8 resident == CPU tol 0,
+  k equal every tick), `test_cuda_batch_invariance` (envs at different k),
+  the conductor batch PART BLAST, `test_cuda_prestage_parity`, and the
+  per-call chains of `test_cuda_eos_step` / `test_cuda_p64_kick_compression`
+  green; `cuda_green` at HEAD below.
+
+**Patch U's reds of §7.9, after §8:**
+
+| red | after §8 | category |
+|---|---|---|
+| `test_wind_doorway_e2e` ×4 | 3 green; `test_the_walker_gets_out_and_keeps_its_cadence_after_the_jet` red (the walker stops at x 41.1, needs < 37) | C, Erik-ruled, left red |
+| `test_gen_ship_vents_air` PRESSURE_BAND | red (bunk 2.21 % against 2 %) | C, left red |
+| `test_drag2_venting_gate` leg 2 strict xfail | k2 = 0.25, 0.5 AND 1.0 now XPASS | D, reported |
+| `test_drag2_venting_gate` leg 4 (restated by U to 1.27) | red: k_drag = 10 reads 1.2222, the same ratio as every leg-2 k2 | finding (below), not re-pinned |
+| `test_eos_checkerboard` | xfail | D, unchanged |
+| `test_air_boundary` ambient gate 2 | still red, now as "vacuous": the rush-in never reaches the T_MAX_PHYS rail (0 hits; 24668 before §8) | the runaway is cured; the guard demands ≥ 1 hit: a finding for Erik, not bent |
+| `test_grenade_kinds` four-cycle e2e (self-knockdown) | **green** | — |
+| `test_fire_feedback` plume outward | still red (outward early, not on every sampled tick from 35) | other cause, left |
+| `test_wave_push` blast push | red: the near marine moves 0.66 m TOWARD the frag (needs > 0.1 away) | §8.10 / L1-8: the push calibration moves with the ceiling, the blast session's (§8.8); a direction property, so not re-pinned |
+| `test_unit_schema[bots]`, `test_unit_store` identity | still red: the bots match has no corpse conversion (it now runs to its 7200-tick limit) | match dynamics, left |
+| `test_cuda_conductor` pinned bots (U's vent ledger at tick 806) | measured by `cuda_green` | U's |
+| `test_fire_tuning_level`, `test_larva_studio` | red (this PC's PNG bytes) | other cause |
+
+**New red of §8:** `test_explosion::test_wind_at_a_fixed_range_grows_with_
+strength` (22.8 against 1.3 × 20.2 m/s at 15 tiles): the budget ceiling holds
+the source tile's outflow at 64 m/s, so a stronger charge cannot deliver more
+volume in its tick (§8.8's predicted effect of ruling 2). The blast
+session's (source data); reported, not re-pinned.
+
+**Finding, drag2 venting:** the ratio the gate measures is 1.2222 for
+k2 = 0.25 / 0.5 / 1.0 and for the k_drag = 10 negative control alike: the
+breach outflow is now ceiling-bound and drag no longer moves it, so the
+gate's premise (drag can throttle venting) is gone. For the drag session.
