@@ -245,7 +245,15 @@ class DoorwayDriver:
         from control_source import quantize_stick_direction
         from simulation import Simulation
         from simulation.field_edit import EditMode, FieldEdit, Region
-        from simulation.materials import MAT_DOOR
+        # #217 §8 (2026-11-21): the closed-door ENTITY material, as the e2e
+        # scene reads it since #215 retired the painted MAT_DOOR. With MAT_DOOR
+        # this loop opened no door outside the room, so the room vented into its
+        # closed antechamber; that weaker jet still floored the squad before §8,
+        # but under whole-step sub-ticks and the 64 m/s ceiling it peaks at 4x
+        # the hold for too short a time and floors nobody (the part went
+        # vacuous). Opening the deck's doors, as the e2e does, floors the squad
+        # again (13x the hold, measured on the CPU build).
+        from simulation.materials import MAT_DOOR_CLOSED as MAT_DOOR
         from simulation.ruleset import ContinuousRealtime
         from simulation.unit import Unit
         level = level_loader.load("ship_demo", str(_ROOT / "levels"))
