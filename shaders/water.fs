@@ -40,15 +40,17 @@
 // docs/papers/wallace2011_webgl_water_renderer.js): a slope pass
 // (shaders/water_scatter_slope.glsl, appended to this file) and the scatter
 // (shaders/water_scatter.vs/.fs) rasterise the moved surface grid into a
-// light image E (incident light 1, the mean conserved), read here at the bent
-// floor point: the floor's source light x (1 + (E - 1) caustic_strength). It
+// light image E (incident light 1, the mean conserved), read here at the
+// pixel's own floor point (never through the bend: that would view the
+// pattern through the lens that made it): the floor's source light x
+// (1 + (E - 1) caustic_strength). It
 // replaced the gather form (1/|det J| from the surface's Hessian, capped).
 // The twin: water_surface.py ripple_slope / floor_offset / scatter_light /
 // caustic_gain; tests/gl_water_caustic_check.py holds the two equal.
 // THE LAMPS' OWN GLINTS (lamp_glint): each mounted lamp of THE light
 // assembly (water_surface.lamp_table) adds its GGX glint from its true
 // position lamp_height_m up, the lamp a sphere (Brian Karis, "Real Shading
-// in Unreal Engine 4", SIGGRAPH 2013 course notes: alpha' = alpha + r / 2d,
+// in Unreal Engine 4", SIGGRAPH 2013 course notes: alpha' = alpha + r / 3d,
 // renormalised), times the field's light here; the twin is
 // water_surface.lamp_glint.
 // The light this pass reads gets the smoke's cast shadow and the light curve
@@ -110,8 +112,8 @@
 //   u_debug_view           0 = the picture, 1 = (slope x, slope y,
 //                          sqrt(k_ripples^2 + k_swell^2), 1),
 //                          2 = (foam amount, foam cover, 0, 1),
-//                          3 = (floor bend x, y m, the light E at the bent
-//                          floor point, caustic gain) (W4)
+//                          3 = (floor bend x, y m, the caustic's light E
+//                          here, caustic gain) (W4)
 //   u_caustic              (caustic_strength, 0, 1 - 1/n, 0) (W4)
 //   u_caustic_img          the scatter's light image (unit 7; R = light,
 //                          incident 1; G = coverage)
@@ -613,12 +615,17 @@ void main() {
                 * smoke_sh;
     floorL *= lightCurveGain(floorL);
     // W4: THE CAUSTIC -- the scatter's light E (shaders/water_scatter.vs,
-    // the twin's scatter_light) at the floor point this pixel shows, its
-    // gain (E - 1) x caustic_strength (the twin's caustic_gain) riding the
-    // source light the floor takes (caustic_term = floorL x cGain): spread
-    // light darkens it, focused light brightens it, no light none; the
-    // ambient is not refracted light.
-    float cE = causticLight(world_uv + offW);
+    // the twin's scatter_light) at this pixel's OWN floor point, its gain
+    // (E - 1) x caustic_strength (the twin's caustic_gain) riding the source
+    // light the floor takes (caustic_term = floorL x cGain): spread light
+    // darkens it, focused light brightens it, no light none; the ambient is
+    // not refracted light. NOT read through the bend: the scatter's map is
+    // the LIGHT's path, taken vertical; read at the bent point the view would
+    // look through the very lens that made the pattern (a coaxial light, which
+    // no source at light_z is), and the picture's mean would be the gather's
+    // bias again (the twin: +5 % at 0.3 m still water, +97 % at 1.2 m) with
+    // the image's cells magnified into blobs (#97 W4 landed, finding 1).
+    float cE = causticLight(world_uv);
     float cGain = (cE - 1.0) * u_caustic.x;
     if (u_debug_view == 3) {
         finalColor = vec4(bend_m, cE, cGain);
@@ -661,7 +668,7 @@ void main() {
     float NdotL = max(dot(N, L), 0.0);
     vec3 glint = ggx * NdotL * lightRGB * u_glint_strength;
     // THE LAMPS' OWN GLINTS (water_surface.lamp_glint): each mounted lamp's
-    // TRUE direction, the lamp a sphere (Karis 2013: alpha' = alpha + r / 2d,
+    // TRUE direction, the lamp a sphere (Karis 2013: alpha' = alpha + r / 3d,
     // renormalised), weighted by its unoccluded share of the light here (a
     // beam's only inside its wedge), x the field's light here.
     if (u_lamp.x > 0.0 && u_lamp.w > 0.5) {
@@ -680,7 +687,7 @@ void main() {
             vec3 Li = dv / dist;
             float wi = lit ? lp.z * Li.z / (dist * dist) : 0.0;
             vec3 Hi = normalize(Li + V);
-            float ap = min(a + u_lamp.z / (2.0 * dist), 1.0);
+            float ap = min(a + u_lamp.z / (3.0 * dist), 1.0);
             float nh = max(dot(N, Hi), 0.0);
             float di = nh * nh * (ap * ap - 1.0) + 1.0;
             float Di = ap * ap / max(3.14159265 * di * di, 1e-6)

@@ -88,18 +88,39 @@ Design: `docs/water_look_design_2026-11-19.md` (sections 2, 9 and 10).
    **Archived here:** `wallace2011_webgl_water_renderer.js` (his
    `renderer.js`, 13 KB, fetched 2026-11-20 from the repository's master;
    the caustics shader is `causticsShader`, the MIT notice is in its header).
-   - What we use: the AREA METHOD. He refracts the light through every
-     vertex of a grid on the water surface, projects it onto the floor and
-     shades each floor triangle by `oldArea / newArea` (the area the light
-     covered before the surface bent it over the area it covers after,
-     from `dFdx` / `dFdy` of the two positions): smaller is brighter. Our
-     form is the analytic limit of that ratio: the Jacobian determinant of
-     the refraction map `x -> x + depth (1 - 1/n) grad h` (Snell to first
-     order in the slope; his `IOR_WATER = 1.333`), `det J = 1 + a tr H +
-     a^2 det H`, with the Hessian of W1's fine surface baked as exact
-     second derivatives, evaluated in GATHER form at the surface point the
-     floor is seen through (no grid is rasterised), signed `min(1/|det|,
-     max) - 1` on the floor's source light. In the code:
-     `renderer/water_surface.py::caustic_det` / `caustic_gain` /
-     `caustic_term`, `hex_surface`, `detail_surface`; `shaders/water.fs`
-     (`hexSurface`, `detailSurface`, `causticDet`, `causticGain`).
+   - What we use (since 2026-11-21, Erik's call: "scatter"): his SCATTER
+     form itself. A grid of samples of the water surface (24 per tile),
+     each moved by the refraction map `x -> x + depth (1 - 1/n) grad h`
+     (Snell to first order in the slope; his `IOR_WATER = 1.333`) onto the
+     floor, each grid triangle rasterised additively into a light image with
+     `oldArea / newArea` (his ratio, per triangle instead of from `dFdx` /
+     `dFdy`), so the light image's mean is the incident light; the floor's
+     source light x `1 + (E - 1) x caustic_strength`. In the code:
+     `renderer/water_surface.py::scatter_light` / `scatter_disp` /
+     `caustic_gain` / `caustic_term`; `shaders/water_scatter_slope.glsl`,
+     `shaders/water_scatter.vs/.fs`, `shaders/water.fs::causticLight`.
+     (W4 as first built, 2026-11-20 to 11-21, used the ratio's analytic
+     limit, `1/|det J|`, in gather form from the surface's Hessian; it was
+     biased bright and darkened past the first focus, and is deleted.)
+7. **Snell's law of refraction** in vector form, `t = eta d + (eta c1 -
+   c2) n` (any optics text, e.g. Hecht, E. (2017), *Optics*, 5th ed.,
+   Pearson, sec. 4.4). **Not archived:** a textbook.
+   - What we use: at small slopes a vertical ray through a surface of slope
+     `g` leaves at the horizontal rate `(1 - 1/n) g`, along the slope: the
+     caustic's map above, and THE FLOOR BEND (the floor is read where the
+     map sends the view ray; it replaced `refract_strength`). In the code:
+     `renderer/water_surface.py::floor_offset`, `shaders/water.fs` (`bend_m`).
+
+## The lamps' own glints (2026-11-21)
+
+8. **Karis, B. (2013).** "Real Shading in Unreal Engine 4." SIGGRAPH 2013
+   course *Physically Based Shading in Theory and Practice*, course notes.
+   cdn2.unrealengine.com/Resources/files/2013SiggraphPresentationsNotes-26915738.pdf.
+   **Archived here:** `karis2013_real_shading_unreal_engine4.pdf` (fetched
+   2026-11-21, 2.9 MB, 59 pages).
+   - What we use: the sphere light's widened GGX lobe, `alpha' =
+     saturate(alpha + sourceRadius / (3 distance))` (his Eq. 10) with the
+     lobe renormalised by `(alpha / alpha')^2` (Eq. 14), for each mounted
+     lamp's mirror glint seen from its true position. In the code:
+     `renderer/water_surface.py::lamp_glint`, `shaders/water.fs` (the lamps'
+     loop).

@@ -285,7 +285,7 @@ _WATER_DIALS = (
     # the lamps' own glints (#97, 2026-11-21): their gain, height and size
     ("lamp_glint", 1.0, "Lamp glint", 0.0, 4.0),
     ("lamp_height_m", 2.4, "Lamp hgt m", 0.5, 6.0),
-    ("lamp_radius_m", 0.15, "Lamp r m", 0.02, 0.6),
+    ("lamp_radius_m", 0.225, "Lamp r m", 0.02, 0.8),
     # Phase 2 (mood pass): chromatic aberration.
     ("ca_amount", 0.012, "Chrom ab", 0.0, 0.06),
     # W1 + W1b: the fine surface that flows -- procedural travelling sines,

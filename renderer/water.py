@@ -55,7 +55,8 @@ scene RT: a SLOPE pass (``shaders/water.fs`` with its main swapped for
 additively into a light image, its mean the incident light), both in ONE
 ``core.PingPong`` (the slope image, then the light image), allocated on the
 first frame that draws a caustic (never on a dry map); the draw reads the
-light image at the bent floor point (the twin's ``scatter_light`` /
+light image at the pixel's own floor point, never through the bend (the
+twin's ``scatter_light`` /
 ``caustic_term``). It replaced the gather form (``1/|det J|`` from the
 surface's Hessian, capped at ``caustic_max``) and ``refract_strength``.
 

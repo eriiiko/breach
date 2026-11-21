@@ -83,7 +83,9 @@ this fine surface). ONE map serves two terms:
     samples, each moved by the map onto the floor, each grid triangle
     rasterised additively with the ratio of its area before and after, into
     a light image ``E`` (incident light 1); the floor's source light is
-    multiplied by ``1 + (E - 1) x caustic_strength``. Every bit of light
+    multiplied by ``1 + (E - 1) x caustic_strength``, ``E`` read at the
+    pixel's own floor point (not through the bend: :func:`caustic_term`).
+    Every bit of light
     lands somewhere, so over a period the mean of ``E`` is the incident
     light; there is no per-cell cap (``SCATTER_RATIO_MAX`` only bounds one
     degenerate triangle). It replaced W4's gather form (``1/|det J|`` of ONE
@@ -123,8 +125,9 @@ Credits (repo rule -- cite what a file implements):
     bend and the caustic's map.
   - Brian Karis, "Real Shading in Unreal Engine 4", SIGGRAPH 2013 course
     "Physically Based Shading in Theory and Practice" -- the sphere light's
-    widened GGX lobe, ``alpha' = alpha + r / (2 d)`` renormalised by
-    ``(alpha / alpha')^2`` (reference: docs/papers/README_water_2026-11.md).
+    widened GGX lobe, ``alpha' = alpha + r / (3 d)`` (its Eq. 10) renormalised by
+    ``(alpha / alpha')^2`` (Eq. 14) (archived:
+    docs/papers/karis2013_real_shading_unreal_engine4.pdf).
 """
 from __future__ import annotations
 
@@ -263,7 +266,7 @@ _INT_KEYS = ("debug_view", "foam_cells_per_tile", "wave_count",
 _VEC_KEYS = {"water_color": 3, "foam_bubble_m": 2}
 # 0 = the picture; 1 = (slope x, slope y, RMS strength, 1); 2 = (foam
 # amount, foam cover, 0, 1); 3 = (floor bend x, y m, the scatter's light E
-# at the floor point, caustic gain) -- the refraction map's two terms
+# here, caustic gain) -- the refraction map's two terms
 DEBUG_VIEWS = (0, 1, 2, 3)
 FOAM_CELLS_MAX = 8          # foam cells per tile (per axis), the door's top
 FOAM_STEP_MAX_S = 0.1       # a foam step longer than this is refused
@@ -952,7 +955,8 @@ def floor_offset(slope, depth) -> np.ndarray:
     ``slope`` (the whole one, :func:`ripple_slope` + :func:`detail_surface`)
     lands ``depth x CAUSTIC_K x slope`` away, along the slope (Snell). The
     same map moves the caustic's light (:func:`scatter_disp`): the floor
-    seen through a point is where that point's light lands. Zero on a flat
+    seen through a point is where a vertical light through that point lands.
+    Zero on a flat
     surface or at no depth."""
     return (np.asarray(slope, np.float64)
             * (np.asarray(depth, np.float64) * CAUSTIC_K)[..., None])
@@ -1056,7 +1060,8 @@ def scatter_disp(slope, depth, cell_m: float) -> np.ndarray:
 
 def caustic_gain(light_img, s: WaterSettings) -> np.ndarray:
     """The caustic's SIGNED gain on the floor's source light: ``(E - 1) x
-    caustic_strength``, ``E`` the light image at the floor point (incident
+    caustic_strength``, ``E`` the light image at the pixel's own floor point
+    (never through the bend: :func:`caustic_term`) (incident
     light 1). Negative where the light spreads, positive where it focuses,
     never below ``-strength``; exactly 0 where ``E == 1`` (a flat
     surface). Its mean over the floor is ``strength x (<E> - 1)``: it moves
@@ -1070,7 +1075,16 @@ def caustic_term(light, light_img, s: WaterSettings) -> np.ndarray:
     SOURCE light (``light`` (..., 3): the field's light at the bent floor
     point, exposed, smoke-shadowed, curved) -- ``light x``
     :func:`caustic_gain`. No light, no caustic; the ambient is not
-    refracted light and is never modulated."""
+    refracted light and is never modulated.
+
+    ``light_img`` is read at the pixel's OWN floor point, never at the bent
+    one: the scatter's map is the light's path, taken vertical, and the view
+    through the bend would look through the very lens that made the pattern
+    (a light along the view, which no source at the field's elevation is) --
+    the picture's mean would be the gather's bias again (+5 % at 0.3 m still
+    water, +97 % at 1.2 m: ``tests/test_water_caustic.py``) and the image's
+    cells magnified into blobs. Read at the pixel, the picture keeps the
+    image's mean."""
     return (np.asarray(light, np.float64)
             * caustic_gain(light_img, s)[..., None])
 
@@ -1088,7 +1102,7 @@ def caustic_term(light, light_img, s: WaterSettings) -> np.ndarray:
 # sweep's cones are built from) of kind lamp, spot or beacon -- at
 # ``lamp_height_m`` above the water, and adds per pixel the GGX glint with
 # each lamp's TRUE direction, the lamp a sphere of ``lamp_radius_m`` (Karis
-# 2013: alpha' = alpha + r / (2 d), the lobe renormalised by
+# 2013, Eqs. 10 and 14: alpha' = alpha + r / (3 d), the lobe renormalised by
 # (alpha / alpha')^2), weighted by the lamp's unoccluded share of the light
 # here, times the light the field delivers here (so walls and smoke still
 # occlude it). A beam lamp (spot, beacon) lights only its wedge: the
@@ -1176,7 +1190,7 @@ def lamp_glint(p_m, normal, lamps, s: WaterSettings, roughness) -> np.ndarray:
         w = np.where(lit, inten * L[..., 2] / (dist * dist), 0.0)
         H = L + np.array([0.0, 0.0, 1.0])
         H /= np.linalg.norm(H, axis=-1)[..., None]
-        ap = np.minimum(a + s.lamp_radius_m / (2.0 * dist), 1.0)
+        ap = np.minimum(a + s.lamp_radius_m / (3.0 * dist), 1.0)
         nh = np.maximum((N * H).sum(-1), 0.0)
         dd = nh * nh * (ap * ap - 1.0) + 1.0
         D = ap * ap / np.maximum(np.pi * dd * dd, 1e-6) * (a / ap) ** 2

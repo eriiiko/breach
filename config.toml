@@ -1539,7 +1539,7 @@ splash_radius_m = 0.1          # the radius of that dab, metres
 # there. The flashlight and the flashes keep the field's own glint.
 lamp_glint = 1.0               # the lamps' glint gain (x glint_strength); 1 = physical share; 0 = off
 lamp_height_m = 2.4            # the lamps' height above the water, metres (the level has no lamp height)
-lamp_radius_m = 0.15           # a lamp's radius, metres (widens its mirror image)
+lamp_radius_m = 0.225          # a lamp's radius, metres (widens its mirror image; Karis's r / 3d)
 debug_view = 0                # 1 = draw (slope x, slope y, strength); 2 = (foam amount, foam cover, 0); 3 = (floor bend x, y m, caustic light E, caustic gain)
 # --- Heightmap attenuation (alpha-only; graphics/water_rendering.md §2 §8) ---
 # An OPTIONAL per-level floor heightmap ([art.bare] height) attenuates the water

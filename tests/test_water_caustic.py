@@ -118,6 +118,41 @@ def test_the_shipped_surface_conserves_light_in_the_deepest_shot_water(
         assert np.minimum(img, 3.0).mean() < 0.9        # the old cap's loss
 
 
+def _periodic_bilinear(img, u, v):
+    """Bilinear read of a periodic image at cell coordinates (centres at
+    k + 1/2)."""
+    n_y, n_x = img.shape
+    u = (u - 0.5) % n_x
+    v = (v - 0.5) % n_y
+    i0 = np.floor(u).astype(int)
+    j0 = np.floor(v).astype(int)
+    fu, fv = u - i0, v - j0
+    i1, j1 = (i0 + 1) % n_x, (j0 + 1) % n_y
+    return (img[j0, i0] * (1 - fu) * (1 - fv) + img[j0, i1] * fu * (1 - fv)
+            + img[j1, i0] * (1 - fu) * fv + img[j1, i1] * fu * fv)
+
+
+def test_the_picture_keeps_the_light_only_read_at_the_pixel(settings):
+    """Property: the caustic is read at the pixel's OWN floor point -- there
+    the picture's mean is the light image's (the incident light, within
+    2 %) -- and never through the floor bend: read where the bend sends the
+    view ray, the view looks through the very lens that made the pattern
+    (the scatter's map is the vertical light's path) and the picture's mean
+    is the gather's bias again (measured 1.97 at the tank's 1.2 m, still
+    water). Breaks (with the GL check's floor read) if the draw reads the
+    image through the bend, or the scatter stops conserving."""
+    sl, cell = _shipped_periodic_slope(settings, True)
+    disp = W.scatter_disp(sl, np.full(sl.shape[:-1], 1.2), cell)
+    img = W.scatter_light(disp, periodic=True)
+    n = img.shape[0]
+    jj, ii = np.mgrid[0:n, 0:n] + W.SCATTER_OFFSET
+    at_pixel = _periodic_bilinear(img, ii, jj)
+    through_bend = _periodic_bilinear(img, ii + disp[..., 0],
+                                      jj + disp[..., 1])
+    assert abs(at_pixel.mean() - 1.0) < 0.02, at_pixel.mean()
+    assert through_bend.mean() > 1.5, through_bend.mean()
+
+
 def test_the_scatter_conserves_light_over_a_period_below_and_past_a_fold():
     """Property: over one period of a synthetic surface the scattered light's
     mean is the incident light, below the first focus (within 2 %) and past

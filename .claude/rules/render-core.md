@@ -47,7 +47,7 @@ and who must use it; this file holds the constraints the code cannot say.
 - ACCEPTED GAP: smoke reads the plain light. (The water takes the curve and the smoke's cast shadow since #97 W1, spliced at `shaders/water.fs`'s `// <SMOKE_SHADOW>` marker.)
 
 ## Frame lights
-- Every light is enumerated ONCE as a `level_lights.LightSpec` (`frame_light_specs`), then `cone_rows`, the ONLY output row. A fire is never a row (its light is the sweep's thermal emission); a `[[light]]`'s `range` is parsed but ignored. Never a second assembly.
+- Every light is enumerated ONCE as a `level_lights.LightSpec` (`frame_light_specs`), then `cone_rows`, the ONLY output row. A fire is never a row (its light is the sweep's thermal emission); a `[[light]]`'s `range` is parsed but ignored. Never a second assembly: the water's lamp glints read the same spec lists (`WaterPass.set_lamp_specs`, #97), never a list of their own.
 - Transient lights (muzzle flashes, blast flashes) ride ONE queue under ONE cap, `TRANSIENT_MAX_TOTAL`, through `cap_transient_group` (the muzzle flashes dim first); gen_ship's lamp budget is derived from it. Never a sim field.
 - `EMITTER_INPUTS` names each light's input source (sim / render); `sky_for_level` is the sky's door; `emit_mult_rows` is the fire flicker's float → Q16 door.
 

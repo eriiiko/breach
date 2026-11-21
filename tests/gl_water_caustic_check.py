@@ -30,12 +30,13 @@ Each check names the PROPERTY it protects and the change that must break it:
       is the incident light. Breaks if a folded triangle is culled, the
       ratio inverted, the split or offset changed, or blending is off.
   floor_read_matches_twin -- debug view 3 writes the floor bend (m), the
-      light E read at the bent floor point and the caustic's gain per pixel;
-      the bend equals ``water_surface.floor_offset`` of the twin's slope,
-      E the light image read bilinear at the GPU's own bent point (held
-      inside its written rect), the gain ``caustic_gain(E)``. Breaks if the
-      bend takes another sign, factor or slope than the caustic's map, the
-      image is read at the unbent point or misplaced, or the gain capped.
+      light E read at the pixel's own floor point and the caustic's gain
+      per pixel; the bend equals ``water_surface.floor_offset`` of the twin's
+      slope, E the light image read bilinear at the pixel (held inside its
+      written rect), the gain ``caustic_gain(E)``. Breaks if the bend takes
+      another sign, factor or slope than the caustic's map, the image is
+      read through the bend (the lens twice) or misplaced, or the gain
+      capped.
   caustic_flat_is_nothing -- with a flat surface (both strengths 0, no tile
       ripple) the light image is exactly 1 at every cell (each centre
       covered once) and the picture with the caustic on is BIT-IDENTICAL to
@@ -272,12 +273,12 @@ def check_floor_read():
     b_p99 = float(np.percentile(b_err, 99.0))
     assert b_rms > 1e-3, f"vacuous: no bend ({b_rms})"
     assert b_p99 < 0.04 * b_rms, f"bend GL vs twin: p99 {b_p99:.2e}"
-    # E read at the GPU's own bent point: the image's placement and filter
+    # E read at the pixel's own floor point: the image's placement, filter
     R = SCATTER_CELLS_PER_TILE
     x0, y0, _x1, _y1 = wp.caustic_rect
     ch, cw = light.shape[:2]
-    u = (xt + gpu_bend[..., 0] / F.TILE_M - x0) * R
-    v = (yt + gpu_bend[..., 1] / F.TILE_M - y0) * R
+    u = (xt - x0) * R
+    v = (yt - y0) * R
     u = np.clip(u, 0.5, cw - 0.5)
     v = np.clip(v, 0.5, ch - 0.5)
     e_twin = _bilinear_img(light[..., 0], u, v)
