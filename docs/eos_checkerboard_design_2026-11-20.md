@@ -1879,34 +1879,57 @@ Erik's five rulings (§8.14) stand; nothing here reopens them.
   `topo::extract_gas_n_vec` pre-checked its donor at |T_abs| < 2^28 raw
   (4096 game degrees absolute) and faulted the duct (ApplierFault, slot 9e(d)).
   Main had not touched `cuda_unit_vents.cuh` or the seam since the merge base.
-- **The new proved range** (`cpp/src/cuda_topology.cuh`, the one-term
-  primitive): the extraction moves ONE energy term out of ONE cell
-  (want < 2^32, the cell's bulk), so its donor is proved to
-  |T_abs| < 2^30 (`T_BOUND_ONE`): |want·T_abs| < 2^62 and
-  |E − de| < 2^61 + 2^62 < 2^63 (int64 headroom 2^63 / (2^61 + 2^62) = 4/3).
-  It covers `[physics.thermal] T_MAX_PHYS` = 16000 game degrees above ambient
-  (`config.toml:256`, bound in `physics_runner.py`) with T_abs = temperature +
-  T_AMB (`GameMap.gas_t_abs_at`, no S_EOS factor), T_AMB = 293: the hottest
-  railed gas is 16293 · 65536 = 1,067,778,048 < 2^30 = 1,073,741,824 (91 game
-  degrees of margin). The proof is the PRE-CHECK, not the rail: a mirror a seam
-  wrote above the rail before the next recovery is still a refusal by name past
-  2^30, never an overflow. No 128-bit intermediate was needed.
+- **The new proved range: the moved energy** (`cpp/src/cuda_topology.cuh`,
+  `MOVE_TERM_BOUND`, `term_ok`; the energy form #29 gives seal / unseal on
+  `29-topology-range`). `extract_gas_n_vec` and `transfer_gas_n` move ONE
+  energy term out of ONE donor: de = want·T_abs with want ≤ the donor's bulk
+  n. They now refuse when n·(|T_abs| + 1) ≥ 2^60, which is exact in uint64
+  (n < 2^32; |T_abs| < 2^32, an int32 mirror plus T_AMB). Then |de| < 2^60,
+  and every cell it lands on keeps |E ± de| < 2^61 + 2^60 < 2^63 (int64
+  headroom 2^63 / (2^61 + 2^60) = 2.7). `inject_gas_n_vec`'s non-accountable
+  T-mix takes the same form on (n_old, T_old):
+  n_old·T_old + d_bulk·t_dep < 2^60 + 2^62 < 2^63.
+  - It covers `[physics.thermal] T_MAX_PHYS` = 16000 game degrees above
+    ambient (`config.toml:256`, bound in `physics_runner.py`), with
+    T_abs = temperature + T_AMB (`GameMap.gas_t_abs_at`, no S_EOS factor) and
+    T_AMB = 293. The hottest railed gas, 16293 · 65536 = 1,067,778,048
+    < 2^30, moves for any donor of bulk below 2^30 raw (16384 atmospheres'
+    worth of a 1-atm tile).
+  - The proof is the PRE-CHECK, not the rail. A mirror a seam left above the
+    rail before the next recovery is accepted while its product fits, and is
+    refused by name past it; it never overflows. No clamp, and no 128-bit
+    intermediate needed.
+- **Decided, unchanged:**
+  - The T_AMB guards (`t_ok(T_AMB)`, 2^28): T_AMB is a config constant at
+    2^24.2, not a gas temperature.
+  - `inject_gas_n_vec`'s t_dep, t_min and t_max at 2^30. The rails are config
+    (T_MAX_PHYS < 2^30), and t_dep is the plenum's mass-weighted mean of the
+    air it drew. A plenum whose mean passes 2^30 relative (a transient mirror
+    more than 384 game degrees past the rail, carried by the plenum's whole
+    mass) faults by name.
+  - seal / unseal are #29's (`29-topology-range`, its seal / unseal pre-pass);
+    the two hunks do not overlap, and the merge keeps both.
 - **The vent ledger** (`cpp/src/cuda_unit_vents.cuh`): its relative-T bound is
   now the int32 plane's own (|T| ≤ 2^31, `TILE_T_SHIFT` 29 → 31, host twin
-  `unit_kernels.VENT_TILE_T_SHIFT`), so B_E = B_N · 2^31, refused (as out of
-  range) when B_N > 2^30, and |e_plenum| ≤ 2^61 − B_E. The refusal stays a
-  refusal past the new range, never a clamp.
-- **ACCEPTED GAP** (rule line in `device-units.md`): `seal_tiles`,
-  `unseal_tiles` and `transfer_gas_n` keep 2^28; their multi-term proofs were
-  not redone (a door sealing or a transfer pump moving air above 4096 game
-  degrees absolute faults on the device). The #29 session is widening the seam
-  in parallel (branch `29-topology-range`, not yet on origin when this was
-  written): its merge meets `T_BOUND_ONE` in the same header.
-- **Gate:** `tests/cuda_unit_vents_check.py` passed, PART PROBE included, with
-  a new leg: a tile railed at T_MAX_PHYS and one at T_abs = 2^30 − 1 extract
-  equal to the host, T_abs = 2^30 faults on the device writing nothing, and the
-  config's T_MAX_PHYS + T_AMB is asserted under 2^30. The 9 refused runs: see
-  "The gates" below.
+  `unit_kernels.VENT_TILE_T_SHIFT`), with no reliance on the rail: B_E = B_N ·
+  2^31, refused (as out of range) when B_N > 2^30, and |e_plenum| ≤ 2^61 −
+  B_E. The refusal stays a refusal past the new range, never a clamp.
+- **The twin pairs:** `topo::extract_gas_n_vec` / `GameMap.extract_gas_n_vec`,
+  `topo::transfer_gas_n` / `GameMap.transfer_gas_n`, `topo::inject_gas_n_vec`
+  / `GameMap.inject_gas_n_vec`; the host functions are unchanged (Python's ints
+  carry on past the bound). Guarded by `tests/cuda_unit_vents_check.py` PART
+  PROBE (the hot legs) and `tests/cuda_unit_doors_check.py` PART PROBE (every
+  refusal code), per `fields-gas.md`'s GameMap section.
+- **Gate:** `tests/cuda_unit_vents_check.py` PART PROBE gains the hot legs,
+  for the extraction and the transfer each:
+  - a heavy donor (2^29) railed at T_MAX_PHYS: equal to the host;
+  - a light donor (2^28) past T_abs 2^30: equal to the host (beyond any
+    plain T bound);
+  - a donor past 2^30 at that T, past 2^60: a device fault writing nothing;
+  - and the config's hottest railed gas asserted inside the bound for a 2^30
+    donor.
+
+  The 9 refused runs: see "The gates" below.
 
 #### The two re-staged scenes
 

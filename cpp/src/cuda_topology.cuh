@@ -414,25 +414,41 @@ __device__ inline int chew_wall(const TopoEnv& E, const int64_t* tab, int64_t y,
 // < 2^28, T_AMB < 2^28, a solid book within int64; then every product and sum
 // below fits int64 (a bulk count < 2^32 times a T_abs < 2^28 is < 2^60, and a
 // cell takes at most four such terms).
-// THE ONE-TERM PRIMITIVE (#217 §8, 2026-11-21): extract_gas_n_vec moves ONE
-// energy term out of ONE cell (want < 2^32, the cell's bulk), so its donor's
-// |T_abs| is proved to T_BOUND_ONE = 2^30: |want * T_abs| < 2^62 and
-// |E - de| < 2^61 + 2^62 < 2^63. The proof is the PRE-CHECK, not the rail:
-// past 2^30 the call FAULTS (writes nothing), whatever wrote the mirror.
+// THE MOVED-ENERGY BOUND OF THE GAS-N PRIMITIVES (#217 §8.17, 2026-11-21;
+// the energy form #29 gives seal / unseal). extract_gas_n_vec and
+// transfer_gas_n move ONE energy term out of ONE donor cell: de = want *
+// T_abs with 0 <= want <= the donor's bulk n. Their pre-check refuses when
+// n * (|T_abs| + 1) >= MOVE_TERM_BOUND = 2^60 (term_ok: n < 2^32 and
+// |T_abs| < 2^32 -- an int32 mirror plus T_AMB < 2^28 -- so the product is
+// exact in uint64). Then |de| < 2^60 and every cell it lands on stays
+// |E +- de| < 2^61 + 2^60 < 2^63. inject_gas_n_vec's non-accountable T-mix
+// takes the same form on (n_old, T_old): n_old*T_old + d_bulk*t_dep <
+// 2^60 + 2^32*2^30 < 2^63. No clamp: past the bound the call FAULTS and
+// writes nothing, whatever wrote the mirror.
 // THE CONSTANT IT COVERS: [physics.thermal] T_MAX_PHYS = 16000 game degrees
 // above ambient (config.toml, bound in physics_runner.py; the EOS step-7
-// recovery rails gas T to it once per sub-tick), with T_abs = temperature +
+// recovery rails gas T to it once per sub-tick), T_abs = temperature +
 // T_AMB_Q (GameMap.gas_t_abs_at, no S_EOS factor), T_AMB = quantize(
-// [physics.temperature_scale] eos_t_amb_k = 293): the hottest railed gas is
-// (16000 + 293) * 65536 = 1,067,778,048 < 2^30 = 1,073,741,824 (91 game
-// degrees of margin; tests/cuda_unit_vents_check.py PART PROBE refuses a
-// config past it by name). CAVEAT: a seam write refreshes the mirror without
-// rails, so between a seam write and the next recovery a mirror may sit above
-// T_MAX_PHYS; past 2^30 that is a refusal by name, never an overflow. With
-// whole-step sub-ticks hot air legally reaches a return vent's aperture past
-// the old 2^28 (4907 game degrees measured on the hazard scene). Seal /
-// unseal / transfer keep T_BOUND (2^28): their multi-term proofs were not
-// redone here.
+// [physics.temperature_scale] eos_t_amb_k = 293): the hottest railed gas,
+// (16000 + 293) * 65536 = 1,067,778,048 < 2^30, moves for any donor of bulk
+// n < 2^30 raw (16384 atmospheres' worth of a 1-atm tile). CAVEAT: a seam
+// write refreshes the mirror without rails, so between a seam write and the
+// next recovery a mirror may sit above T_MAX_PHYS; the energy form accepts it
+// while the product fits and refuses it by name past that, never an overflow.
+// Before §8.17 the donor was pre-checked at |T_abs| < 2^28 (4096 game
+// degrees): with whole-step sub-ticks hot air legally reaches a return vent's
+// aperture past it (4907 measured on the hazard scene).
+// THE TWIN PAIRS: topo::extract_gas_n_vec / GameMap.extract_gas_n_vec,
+// topo::transfer_gas_n / GameMap.transfer_gas_n, topo::inject_gas_n_vec /
+// GameMap.inject_gas_n_vec (Python's ints carry on past the bound); guarded
+// by tests/cuda_unit_vents_check.py PART PROBE (the hot legs: equal at
+// T_MAX_PHYS and past 2^30 with a light donor, a device fault past 2^60) and
+// tests/cuda_unit_doors_check.py PART PROBE (every refusal code).
+// UNCHANGED, decided: the T_AMB guards (t_ok(T_AMB), 2^28: a config constant
+// at 2^24.2, not a gas temperature); inject_gas_n_vec's t_dep, t_min and
+// t_max at 2^30 (the rails are config, T_MAX_PHYS < 2^30, and t_dep is the
+// plenum's mass-weighted mean of the air it drew); seal / unseal are #29's
+// (29-topology-range).
 //
 // FLOATS: the ripple pair is written as the bit pattern of 0.0f (0u); the
 // seal's `permeability > 0.0` compare is the seal_mat_ok table row (made once
@@ -448,7 +464,7 @@ __device__ inline int chew_wall(const TopoEnv& E, const int64_t* tab, int64_t y,
 constexpr int SPAN_MAX = object_tables::OBJ_DOOR_TILE_CAP;
 constexpr int64_t E_BOUND = (int64_t)1 << 61;
 constexpr int64_t T_BOUND = (int64_t)1 << 28;
-constexpr int64_t T_BOUND_ONE = (int64_t)1 << 30;  // the one-term primitive's donor (above)
+constexpr uint64_t MOVE_TERM_BOUND = (uint64_t)1 << 60;  // the gas-N primitives' moved energy (above)
 constexpr int64_t I32_LIMIT = (int64_t)1 << 31;   // int32 stores
 
 static_assert(APPLIER_BOOK_TRACE_CLIP_1 == APPLIER_BOOK_TRACE_CLIP_0 + 1,
@@ -630,8 +646,18 @@ __device__ __forceinline__ bool e_ok(const TopoEnv& E, int i) {
     return E.gas_energy[i] > -E_BOUND && E.gas_energy[i] < E_BOUND;
 }
 __device__ __forceinline__ bool t_ok(int64_t t_abs) { return t_abs > -T_BOUND && t_abs < T_BOUND; }
-__device__ __forceinline__ bool t_ok_one(int64_t t_abs) {
-    return t_abs > -T_BOUND_ONE && t_abs < T_BOUND_ONE;
+// The moved-energy pre-check (above): n * (|t| + 1) < 2^60, exact in uint64
+// for 0 <= n < 2^32 and |t| < 2^32.
+__device__ __forceinline__ bool term_ok(int64_t n, int64_t t) {
+    if (n < 0 || n >= ((int64_t)1 << 32)) return false;
+    const int64_t a = t < 0 ? -t : t;
+    if (a >= ((int64_t)1 << 32)) return false;
+    return (uint64_t)n * (uint64_t)(a + 1) < MOVE_TERM_BOUND;
+}
+// A cell's bulk as the withdrawal prices it (negative slices read as 0).
+__device__ __forceinline__ int64_t bulk_pos(const TopoEnv& E, int i) {
+    const int64_t o = E.g(E.o2, i), m = E.g(E.n2, i);
+    return (o > 0 ? o : 0) + (m > 0 ? m : 0);
 }
 __device__ inline bool gas_nonneg(const TopoEnv& E, int i) {
     for (int g = 0; g < E.n_gases; ++g)
@@ -940,7 +966,7 @@ __device__ inline int64_t extract_gas_n_vec(const TopoEnv& E, const int64_t* tab
     const int i = (int)fy * E.w + (int)fx;
     const int64_t t_amb = tab[UNIT_TAB_TOPO_T_AMB_Q];
     if (dn >= ((int64_t)1 << 40) || !t_ok(t_amb) || !e_ok(E, i) ||
-        !t_ok_one(t_abs_at(E, tab, i)))
+        !term_ok(bulk_pos(E, i), t_abs_at(E, tab, i)))   // §8.17: the moved energy
         return APPLIER_SEAM_FAULT;
     const int64_t want = air_withdrawal(E, tab, i, dn, remove);
     if (want == 0) return 0;
@@ -973,7 +999,7 @@ __device__ inline int64_t transfer_gas_n(const TopoEnv& E, const int64_t* tab, i
     const int s = (int)sy * E.w + (int)sx, d = (int)dy * E.w + (int)dx;
     const int64_t t_amb = tab[UNIT_TAB_TOPO_T_AMB_Q];
     if (dn >= ((int64_t)1 << 40) || !t_ok(t_amb) || !e_ok(E, s) || !e_ok(E, d) ||
-        !t_ok(t_abs_at(E, tab, s)) || !gas_nonneg(E, d))
+        !term_ok(bulk_pos(E, s), t_abs_at(E, tab, s)) || !gas_nonneg(E, d))   // §8.17
         return APPLIER_SEAM_FAULT;
     int64_t remove[GAS_MAX];
     const int64_t want = air_withdrawal(E, tab, s, dn, remove);
@@ -1007,10 +1033,11 @@ __device__ inline int64_t transfer_gas_n(const TopoEnv& E, const int64_t* tab, i
 // slice in [0, 2^54) (a negative one is the Python contract's violation; the
 // bound keeps a stage's clip books inside int64), the cell's gas planes >= 0,
 // |gas_energy| < 2^61, T_AMB < 2^28, |t_dep| < 2^30, |t_min|, |t_max| < 2^30,
-// and on a non-accountable tile |T_old| < 2^30. Then (bulk slices < 2^31 each
+// and on a non-accountable tile N_old * (|T_old| + 1) < 2^60 (term_ok, #217
+// §8.17: the energy form; was |T_old| < 2^30). Then (bulk slices < 2^31 each
 // after the overflow refusal, so N_old, dN_bulk, N_new < 2^32): |dE| < 2^32 *
 // (2^30 + 2^28) < 2^62.4, |E + dE| < 2^63, a rail's N_new * (T + T_AMB) <
-// 2^62.4, and the T-mix's N_old * T_old + dN * t_dep < 2^63.
+// 2^62.4, and the T-mix's N_old * T_old + dN * t_dep < 2^60 + 2^62 < 2^63.
 // ============================================================================
 
 //: The book channels of one inject_gas_n_vec caller (its `channel` and
@@ -1051,7 +1078,7 @@ __device__ inline int64_t inject_gas_n_vec(const TopoEnv& E, const int64_t* tab,
         t_dep <= -INJECT_T_BOUND || t_dep >= INJECT_T_BOUND ||
         t_min <= -INJECT_T_BOUND || t_min >= INJECT_T_BOUND ||
         t_max <= -INJECT_T_BOUND || t_max >= INJECT_T_BOUND ||
-        (!acct && (t_old <= -INJECT_T_BOUND || t_old >= INJECT_T_BOUND)))
+        (!acct && !term_ok(E.bulk(i), t_old)))          // §8.17: the T-mix's energy
         return APPLIER_SEAM_FAULT;
     if (!inject_core_fits(E, tab, i, add)) return APPLIER_SEAM_OVERFLOW;
     const int64_t n_old = E.bulk(i);

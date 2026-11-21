@@ -29,10 +29,11 @@ synthetic states: random vectors and temperatures (both sides of every
 floor), each rail, accountable and non-accountable targets, a bulk-free
 result, a zero vector, the trace saturation, every refusal (bounds, overflow;
 device-only faults) with nothing written; planes, books and the energy / mass
-closure equal. And ``extract_gas_n_vec`` at the hottest legal air (#217 §8,
-2026-11-21): a tile railed at T_MAX_PHYS and one at T_abs = 2^30 - 1 equal to
-the host, T_abs = 2^30 a device fault with nothing written, and the config's
-T_MAX_PHYS + T_AMB under the proved 2^30.
+closure equal. And ``extract_gas_n_vec`` / ``transfer_gas_n`` at the hottest
+legal air (#217 §8.17, 2026-11-21: the moved-energy bound n * (|T_abs| + 1) <
+2^60): a heavy donor at T_MAX_PHYS and a light one past T_abs 2^30 equal to
+the host, a heavy one past 2^60 a device fault with nothing written, and the
+config's hottest railed gas inside the bound for a 2^30 donor.
 PART SCENE -- the SHADOW LOCKSTEP of slot 1b, 9e(d) vents and 9e(d) doors on
 the VENT SCENE (six ducts, sixteen vents, a door over a vent): every tick the
 tables, every plane, the books and the write set equal; the tables' IDENTITY
@@ -684,27 +685,33 @@ class Probe:
         self.seen[f"inject: {want} (device only: {tag})"] += 1
 
 
-    def extract(self, y, x, dn, tag=""):
-        """One extract_gas_n_vec (the return vents' withdrawal) by the device on
-        the map's planes, then by the host on the map: code, withdrawal,
-        planes and books equal. #217 §8."""
+    def gas_op(self, op, args, tag=""):
+        """One extract_gas_n_vec / transfer_gas_n (the return vents' and the
+        pumps' withdrawal, the transfer pumps' move) by the device on the map's
+        planes, then by the host on the map: code, value, withdrawal, planes
+        and books equal. #217 §8.17."""
         g = self.sim.gmap
         pre = _planes(g)
         bk0 = _books(g)
-        row = [unit_kernels.SEAM_OPS["extract"], y, x, dn]
+        row = [unit_kernels.SEAM_OPS[op]] + [int(v) for v in args]
         dev = _dev_planes([pre])
         res, books = unit_kernels.seam_probe(self.st, dev, [[row]], [np.zeros((0, 2))])
         r = res[0][0]
-        hrem = [int(v) for v in g.extract_gas_n_vec(y, x, dn)]
+        if op == "extract":
+            hrem = [int(v) for v in g.extract_gas_n_vec(*args)]
+            hval = hrem[O2] + hrem[INERT_N2]
+        else:
+            hrem, hval = None, int(g.transfer_gas_n(*args))
         post = _planes(g)
         bk1 = _books(g)
         self.n += 1
-        where = f"probe {self.name} #{self.n} extract({y}, {x}, {dn}) {tag}"
+        where = f"probe {self.name} #{self.n} {op}{tuple(args)} {tag}"
         if int(r[0]) != 0:
-            fail(f"{where}: the device refused (code {int(r[0])}) where the host extracted")
+            fail(f"{where}: the device refused (code {int(r[0])}) where the host moved gas")
             return False
-        if [int(v) for v in r[2:2 + N_GASES]] != hrem or                 int(r[1]) != hrem[O2] + hrem[INERT_N2]:
-            fail(f"{where}: device withdrawal {r[1:2 + N_GASES].tolist()} != host {hrem}")
+        if int(r[1]) != hval or (hrem is not None and
+                                 [int(v) for v in r[2:2 + N_GASES]] != hrem):
+            fail(f"{where}: device {r[1:2 + N_GASES].tolist()} != host {hval} {hrem}")
             return False
         got = {n: dev[n].get()[0] for n in applier.PLANE_NAMES}
         for n in applier.PLANE_NAMES:
@@ -712,30 +719,31 @@ class Probe:
             if fd is not None:
                 fail(f"{where}: plane {n} at {fd[1]}: host {fd[2]} device {fd[3]}")
                 return False
-        for b in applier.BOOKS:
-            if b.host is not None and int(books[b.name][0]) != bk1[b.name] - bk0[b.name]:
-                fail(f"{where}: book {b.name}: host {bk1[b.name] - bk0[b.name]} device "
-                     f"{int(books[b.name][0])}")
+        for bb in applier.BOOKS:
+            if bb.host is not None and int(books[bb.name][0]) != bk1[bb.name] - bk0[bb.name]:
+                fail(f"{where}: book {bb.name}: host {bk1[bb.name] - bk0[bb.name]} device "
+                     f"{int(books[bb.name][0])}")
                 return False
-        if sum(hrem) == 0:
-            fail(f"{where}: nothing was withdrawn (the leg is vacuous)")
+        if hval <= 0:
+            fail(f"{where}: nothing moved (the leg is vacuous)")
             return False
         return True
 
-    def extract_device_only(self, y, x, dn, tag):
-        """An extraction past the proved range: the device FAULTS and writes
-        nothing (the host's ints would carry on)."""
+    def gas_op_device_only(self, op, args, tag):
+        """A move past the proved range: the device FAULTS and writes nothing
+        (the host's ints would carry on)."""
         g = self.sim.gmap
         pre = _planes(g)
         dev = _dev_planes([pre])
-        row = [unit_kernels.SEAM_OPS["extract"], y, x, dn]
+        row = [unit_kernels.SEAM_OPS[op]] + [int(v) for v in args]
         res, books = unit_kernels.seam_probe(self.st, dev, [[row]], [np.zeros((0, 2))])
         if int(res[0][0][0]) != CODE["fault"]:
-            fail(f"probe {self.name}: device-only extract ({tag}) gave {int(res[0][0][0])}, "
+            fail(f"probe {self.name}: device-only {op} ({tag}) gave {int(res[0][0][0])}, "
                  f"want fault")
-        if any(not np.array_equal(dev[n].get()[0], pre[n]) for n in applier.PLANE_NAMES) or                 any(int(v[0]) for v in books.values()):
-            fail(f"probe {self.name}: a device-only extract refusal ({tag}) wrote something")
-        self.seen[f"extract: fault (device only: {tag})"] += 1
+        if any(not np.array_equal(dev[n].get()[0], pre[n]) for n in applier.PLANE_NAMES) or \
+                any(int(v[0]) for v in books.values()):
+            fail(f"probe {self.name}: a device-only {op} refusal ({tag}) wrote something")
+        self.seen[f"{op}: fault (device only: {tag})"] += 1
 
 
 def _vec(rng, bulk_hi=1 << 20, trace_p=0.5, trace_hi=1 << 24):
@@ -823,57 +831,76 @@ def _probe_map(name, sim, seen, rng, ticks=20):
 
 
 def _probe_hot_extract(name, sim, seen, rng):
-    """#217 §8 (2026-11-21): THE EXTRACTION ACCEPTS EVERY LEGAL GAS TEMPERATURE.
-    Whole-step sub-ticks carry hot air to a return vent's aperture at the
-    speed of the air (4907 game degrees absolute on the hazard scene, past the
-    old proved 2^28 raw = 4096), so the device's extract_gas_n_vec is proved
-    to |T_abs| < 2^30 (cuda_topology.cuh, the one-term primitive). PROPERTY:
-    (a) the config's T_MAX_PHYS + T_AMB lies under that bound; (b) a tile
-    railed at T_MAX_PHYS and a tile at T_abs = 2^30 - 1 extract on the device
-    equal to the host; (c) T_abs = 2^30 faults on the device with nothing
-    written (a refusal past the new range, never a clamp). BREAKS IF the
-    bound reverts to 2^28 ((b) faults), the refusal is dropped or turned into
-    a clamp ((c)), or T_MAX_PHYS is raised past the proved range ((a))."""
+    """#217 §8.17 (2026-11-21): THE GAS-N PRIMITIVES MOVE EVERY LEGAL GAS
+    TEMPERATURE. Whole-step sub-ticks carry hot air to a return vent's
+    aperture at the speed of the air (4907 game degrees absolute on the
+    hazard scene, past the old proved |T_abs| < 2^28 = 4096), so the device's
+    extract_gas_n_vec and transfer_gas_n refuse on the MOVED ENERGY,
+    n * (|T_abs| + 1) >= 2^60 (cuda_topology.cuh MOVE_TERM_BOUND; twins
+    GameMap.extract_gas_n_vec / transfer_gas_n). PROPERTY: (a) the config's
+    hottest railed gas moves for a donor of 2^30 raw; (b) each primitive at
+    T_MAX_PHYS (a heavy donor, 2^29) and past T_abs 2^30 (a light donor,
+    2^28) equals the host; (c) past 2^60 (T_abs past 2^30, a donor past 2^30)
+    the device faults writing nothing (a refusal, never a clamp). BREAKS IF
+    the bound reverts to |T_abs| < 2^28 or 2^30 ((b) faults), the refusal is
+    dropped or turned into a clamp ((c)), or T_MAX_PHYS is raised past the
+    proved range ((a))."""
     from simulation import vent_system
     g = sim.gmap
     lo, hi = vent_system._t_rails_q()
     t_amb = g.gas_t_amb_raw()
-    bound = 1 << 30
-    if not hi + t_amb < bound:
-        fail(f"probe {name}: T_MAX_PHYS + T_AMB = {hi + t_amb} raw is past the extraction's "
-             f"proved |T_abs| < 2^30 (cuda_topology.cuh T_BOUND_ONE): widen it")
-    P = Probe(name + " (hot extract)", sim, seen)
-    acct = [tuple(int(v) for v in t) for t in np.argwhere(~g.solid & ~g.thermal_solid
-                                                          & ~g.is_vacuum & ~g.is_ambient)]
+    two30, two60 = 1 << 30, 1 << 60
+    if not two30 * (hi + t_amb + 1) < two60:
+        fail(f"probe {name}: T_MAX_PHYS + T_AMB = {hi + t_amb} raw: a 2^30 donor's moved energy "
+             f"passes cuda_topology.cuh MOVE_TERM_BOUND (2^60): widen it")
+    P = Probe(name + " (hot gas-N)", sim, seen)
+    open_ = ~g.solid & ~g.thermal_solid & ~g.is_vacuum & ~g.is_ambient
+    acct = [tuple(int(v) for v in t) for t in np.argwhere(open_)]
     rng.shuffle(acct)
-    hot = [((1 << 28) if q in (O2, INERT_N2) else 0) for q in range(N_GASES)]
-    # each case: the rail the tile is set to (an inject that rails high puts the
-    # mirror exactly there), then the extraction
-    cases = (("T_MAX_PHYS", hi, True), ("T_abs 2^30 - 1", bound - 1 - t_amb, True),
-             ("T_abs 2^30", bound - t_amb, False))
-    used = 0
+    used = set()
+    hot_rel = two30 - t_amb // 2             # T_abs = 2^30 + T_AMB / 2
+    # (label, the rail the tile is set to, bulk added per slice, legal)
+    cases = (("T_MAX_PHYS", hi, 1 << 28, True),
+             ("T_abs past 2^30, a light donor", hot_rel, 1 << 27, True),
+             ("past 2^60", hot_rel, 1 << 29, False))
+    todo = [(op, c) for op in ("extract", "transfer") for c in cases]
     for (y, x) in acct:
-        if used == len(cases):
+        if not todo:
             break
-        if not g.gas_is_accountable(y, x):
+        if (y, x) in used or not g.gas_is_accountable(y, x):
             continue
-        if int(g.gas[O2][y, x]) + hot[O2] >= (1 << 31) or                 int(g.gas[INERT_N2][y, x]) + hot[INERT_N2] >= (1 << 31):
+        dest = None
+        for dy, dx in ((0, 1), (1, 0), (0, -1), (-1, 0)):
+            yy, xx = y + dy, x + dx
+            if 0 <= yy < g._h and 0 <= xx < g._w and open_[yy, xx] and (yy, xx) not in used:
+                dest = (yy, xx)
+                break
+        op, (label, t_rail, per_slice, legal) = todo[0]
+        if dest is None or any(int(g.gas[q][y, x]) + per_slice >= (1 << 31)
+                               for q in (O2, INERT_N2)):
             continue
-        label, t_rail, legal = cases[used]
-        used += 1
-        if P.inject(y, x, hot, bound - 1, t_max=t_rail, tag=f"set {label}") is None:
+        todo.pop(0)
+        used |= {(y, x), dest}
+        vec = [per_slice if q in (O2, INERT_N2) else 0 for q in range(N_GASES)]
+        if P.inject(y, x, vec, two30 - 1, t_max=t_rail, tag=f"set {label}") is None:
             continue
         if int(g.temperature[y, x]) != t_rail:
             fail(f"probe {name}: the tile did not rail at {label} "
                  f"({int(g.temperature[y, x])} != {t_rail})")
             continue
+        n = int(g.gas[O2][y, x]) + int(g.gas[INERT_N2][y, x])
+        energy = n * (abs(t_rail + t_amb) + 1)
+        if (energy < two60) != legal:
+            fail(f"probe {name}: case {label!r} is not on its side of 2^60 ({energy})")
+            continue
+        args = (y, x, 1 << 18) if op == "extract" else (y, x, dest[0], dest[1], 1 << 18)
         if legal:
-            if P.extract(y, x, 1 << 18, tag=label):
-                seen[f"extract: {label} (device == host)"] += 1
+            if P.gas_op(op, args, tag=label):
+                seen[f"{op}: {label} (device == host)"] += 1
         else:
-            P.extract_device_only(y, x, 1 << 18, label)
-    if used != len(cases):
-        fail(f"probe {name}: only {used} of {len(cases)} hot-extract cases found a tile")
+            P.gas_op_device_only(op, args, label)
+    if todo:
+        fail(f"probe {name}: {len(todo)} hot gas-N cases found no tile")
     return P.n
 
 
@@ -898,9 +925,13 @@ def part_probe():
             "inject: fault (device only: a negative slice)",
             "inject: fault (device only: t_dep past 2^30)",
             "inject: fault (device only: a slice past 2^54)",
-            # #217 §8: the extraction's widened range (_probe_hot_extract)
-            "extract: T_MAX_PHYS (device == host)", "extract: T_abs 2^30 - 1 (device == host)",
-            "extract: fault (device only: T_abs 2^30)")
+            # #217 §8.17: the gas-N primitives' moved-energy range (_probe_hot_extract)
+            "extract: T_MAX_PHYS (device == host)",
+            "extract: T_abs past 2^30, a light donor (device == host)",
+            "extract: fault (device only: past 2^60)",
+            "transfer: T_MAX_PHYS (device == host)",
+            "transfer: T_abs past 2^30, a light donor (device == host)",
+            "transfer: fault (device only: past 2^60)")
     for k in need:
         if not seen[k]:
             fail(f"probe: the case {k!r} was never taken")
