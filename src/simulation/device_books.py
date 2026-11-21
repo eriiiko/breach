@@ -341,13 +341,14 @@ class DeviceBooks:
         if not deferred:
             self.check_words(self.words.get())
 
-    def update(self) -> None:
+    def update(self, check: bool = True) -> None:
         """THE stage (the ``11'`` call line, after the picture and the
         blocks): every env's books brought to the tick. Inside a conductor
-        tick the words ride the books read; outside it they are read here."""
+        tick the words ride the books read; outside it they are read here
+        (``check``: False only for the bench, which times repeated launches)."""
         deferred = self._launch(False)
         self.updates += 1
-        if not deferred:
+        if not deferred and check:
             self.check_words(self.words.get())
 
     def check_words(self, w) -> None:

@@ -53,7 +53,11 @@ Per (level, N):
   ``windows_ms`` the GPU time of one decision's windows (``build_windows``)
   for all N envs, and the table's "whole observation" per decision: the
   blocks (``obs_build_ms``, the windows included) plus ``decimation`` ticks
-  of vision and the team picture. Every timed block runs
+  of vision and the team picture. #29 P8.7: ``books_ms`` the GPU time of one
+  books update for all N envs on a tick that serves no step, ``books_due_ms``
+  on a tick that serves one (every env on its decision tick: the served
+  arrays and the reward fold written; the state, the served arrays and the
+  ended latch put back after). Every timed block runs
   with each env DUE (the parameter row's decimation set to 1 for the timing
   and put back): the kernels skip an env off its decision tick, so a timing
   taken on such a tick measures early exits (``obs_due`` says whether the
@@ -153,6 +157,7 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         syncs.append(list(bp.host_sync_log_end()))
     used1 = _device_used()
     obs_ms = vision_ms = window_ms = window_shape = picture_ms = list_ms = windows_ms = None
+    books_ms = books_due_ms = None
     obs_due = None
     if dev_obs is not None:
         import cupy as cp
@@ -208,6 +213,30 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         picture_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
         pic.state[...] = saved
         pic.faults[...] = 0
+        # P8.7: the books (one update per tick, every env), off and on a
+        # decision tick, their state, served arrays and latch put back
+        bk = dev_obs.books
+        kept = (bk.state.copy(), {k: v.copy() for k, v in bk.served.items()},
+                dev_obs.ended.copy())
+        for due in (False, True):
+            if due:
+                dev_obs.params[:, PARAM_DECIMATION] = 1
+            else:
+                dev_obs.params[:, PARAM_DECIMATION] = 10 ** 9
+            a.record(st)
+            for _ in range(obs_builds):
+                bk.update(check=False)
+            b.record(st)
+            b.synchronize()
+            if due:
+                books_due_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
+            else:
+                books_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
+            bk.state[...] = kept[0]
+            dev_obs.ended[...] = kept[2]
+        for k, v in kept[1].items():
+            bk.served[k][...] = v
+        dev_obs.params[:, PARAM_DECIMATION] = saved_dec
         from simulation import unit_store
         from simulation.device_obs import window_clear_device
         lay = unit_store.layout()
@@ -268,6 +297,8 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         "picture_ms": None if picture_ms is None else round(float(picture_ms), 4),
         "list_ms": None if list_ms is None else round(float(list_ms), 4),
         "windows_ms": None if windows_ms is None else round(float(windows_ms), 4),
+        "books_ms": None if books_ms is None else round(float(books_ms), 4),
+        "books_due_ms": None if books_due_ms is None else round(float(books_due_ms), 4),
         "decimation": decimation,
         "obs_due": obs_due,
         "window_ms": None if window_ms is None else round(float(window_ms), 4),
@@ -323,7 +354,10 @@ def format_rows(rows) -> str:
                       else f", windows {r['windows_ms']:.3f} ms per decision; the whole "
                            f"observation {r['obs_build_ms'] + r['decimation'] * (r['vision_ms'] + r['picture_ms']):.3f}"
                            f" ms per decision (blocks + {r['decimation']} ticks of vision and "
-                           f"picture)"))
+                           f"picture)")
+                   + ("" if r.get("books_ms") is None
+                      else f", books {r['books_ms']:.3f} ms per tick, {r['books_due_ms']:.3f} ms "
+                           f"on a tick that serves a step"))
     return "\n".join(out)
 
 

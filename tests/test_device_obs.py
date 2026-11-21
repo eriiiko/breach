@@ -434,3 +434,102 @@ def test_the_felt_dials_the_card_reads_are_the_episodes():
     del fields["rad_flux_sweep"]
     with pytest.raises(device_obs.DeviceObsRefused, match="not resident"):
         device_obs.check_window_sources(c, [ctx])
+
+
+# ---------------------------------------------------------------------------
+# #29 P8.7: the device books' host side (simulation.device_books)
+# ---------------------------------------------------------------------------
+def test_the_book_rows_are_the_profiles_own_terms_and_group_matrix():
+    """Property: the obs table's BOOK_TERMS / BOOK_G rows are, bit for bit,
+    every named profile's own terms (``reward_v1.profile_terms``, in
+    ``device_books.TERM_NAMES`` order) and ``reward_v1.group_weights`` over
+    ``rl_env.COUNTER_NAMES`` (the matrix ``EnvRunner._reward`` multiplies by),
+    a run file's override included. Breaks when a weight reaches the kernel
+    from anywhere but the reference's own profile objects, or a counter's
+    row moves."""
+    import numpy as np
+    import rl_env
+    from simulation import device_books, reward_v1
+    for name in reward_v1.PROFILES:
+        for over in (None, {"clock": -1.25}):
+            terms = device_books.profile_terms(name, over)
+            tb, gb = device_books.table_rows(terms)
+            want_t = reward_v1.profile_terms(name, over)
+            assert tb.view(np.float64).tolist() == [want_t[n] for n in device_books.TERM_NAMES]
+            g = reward_v1.group_weights(want_t, rl_env.COUNTER_NAMES)
+            assert np.array_equal(gb, g.reshape(-1).view(np.int64))
+    ses, ctx, _T = _ship_session()
+    terms = device_books.profile_terms("range")
+    tab = device_obs.table_values(ses.sim, ctx, terms)
+    tb, gb = device_books.table_rows(terms)
+    assert np.array_equal(tab[_row("BOOK_TERMS"):_row("BOOK_TERMS") + len(tb)], tb)
+    assert np.array_equal(tab[_row("BOOK_G"):_row("BOOK_G") + len(gb)], gb)
+
+
+def test_the_counters_profile_is_refused_by_name_on_the_device():
+    """Property: the device books refuse the ``"counters"`` reward profile
+    by name (its float32 fold is numpy's pairwise sum, which a serial kernel
+    cannot equal; design "P8 RE-CUT, VERSION 2") and an unknown profile.
+    Breaks when the device would serve a fold it cannot hold equal."""
+    import pytest
+    from simulation import device_books
+    with pytest.raises(device_books.BooksRefused, match="counters"):
+        device_books.profile_terms("counters")
+    with pytest.raises(ValueError):
+        device_books.profile_terms("no_such_profile")
+
+
+def test_the_named_fold_is_numpys_sequential_sum():
+    """Property: ``EnvRunner._reward``'s named-profile fold,
+    ``(counters[:, :, None] * G[None]).sum(axis=1)``, is a sequential sum of
+    the K products from +0.0 (k = 0 first) -- the order the device books
+    add in -- on random operands over many magnitudes, and a sum of -0.0
+    products is +0.0. Breaks when numpy changes that reduction's order (the
+    device fold would then differ in the last bit)."""
+    import numpy as np
+    rng = np.random.default_rng(87)
+    for _ in range(200):
+        c = rng.standard_normal((12, 32)) * 10.0 ** rng.integers(-3, 4, (12, 32))
+        G = rng.standard_normal((32, 5)) * 10.0 ** rng.integers(-2, 3, (32, 5))
+        got = (c[:, :, None] * G[None]).sum(axis=1)
+        p = c[:, :, None] * G[None]
+        seq = np.zeros((12, 5))
+        for k in range(32):
+            seq = seq + p[:, k, :]
+        assert np.array_equal(got.view(np.uint64), seq.view(np.uint64))
+    z = (np.ones((1, 2))[:, :, None] * np.full((2, 1), -0.0)[None]).sum(axis=1)
+    assert np.signbit(z).tolist() == [[False]]
+
+
+def test_the_old_counters_add_in_float32_after_one_cast():
+    """Property: the old counters' ``counters[r, c] += dmg`` (a float32
+    array, a Python float) is numpy 2's NEP 50 rule -- the damage cast to
+    float32 once, then a float32 add -- the arithmetic the device books do.
+    Breaks when numpy returns to adding in float64 and casting back."""
+    import numpy as np
+    rng = np.random.default_rng(7)
+    a = np.zeros((1, 1), dtype=np.float32)
+    for _ in range(20000):
+        acc = np.float32(rng.random() * 1000)
+        x = float(rng.integers(1, 1 << 30)) / 65536.0 * 1.37
+        a[0, 0] = acc
+        a[0, 0] += x
+        assert a[0, 0] == np.float32(acc) + np.float32(x)
+
+
+def test_the_books_layout_holds_every_section_once():
+    """Property: ``device_books.layout`` lays its sections end to end (no
+    overlap, no gap) and its width grows with the teams, the store rows and
+    the roster rows. Breaks when a section is added without its offset
+    following the one before (the compiled layout check then refuses)."""
+    from simulation import device_books
+    lay = device_books.layout(2, 12, 12)
+    import numpy as np
+    off = 0
+    for _n, o, shape in lay:
+        assert o == off
+        off += int(np.prod(shape))
+    assert off == device_books.width(2, 12, 12)
+    assert device_books.width(3, 12, 12) > device_books.width(2, 12, 12)
+    assert device_books.width(2, 13, 12) > device_books.width(2, 12, 12)
+    assert device_books.width(2, 12, 13) > device_books.width(2, 12, 12)

@@ -17,6 +17,8 @@ paths:
   - "cpp/src/cuda_obs_list.cu"
   - "cpp/src/cuda_obs_rows.cuh"
   - "src/simulation/device_picture.py"
+  - "src/simulation/device_books.py"
+  - "cpp/src/cuda_obs_books.cu"
   - "cpp/src/obs_layout.h"
   - "tools/gen_obs_layout.py"
   - "tests/cuda_obs_check.py"
@@ -74,6 +76,13 @@ and who must use it; this file holds the constraints the code cannot say. The
 - A per-env reset restages env e's picture through `DevicePicture.restage` (from a host picture or its normal form), never a second conversion.
 - An env is built on ITS decision ticks (its episode start and the run's decimation, read on the card) and skipped while its ended latch is set.
 - The hand-over's ordering rests on the BLOCKING tick stream and CuPy / torch on the legacy default stream: a change to either is a change to the hand-over, held by the check's handover part.
+
+## Device books
+- THE DEVICE BOOKS (`DeviceObservation.books`, `src/simulation/device_books.py`, `cpp/src/cuda_obs_books.cu`) run ONCE per tick at the `11'` line after the device team picture (whose bars they read) and the tick's blocks, one thread per env walking the event ring in emission order: `EnvRunner.step`'s loop body (the old counters, `RewardBooks.end`, `MatchRules`' end, `finish`, `_reward`) line for line. A change to the host books, `count_events`, `_reward`, the end rule or `EnvRunner.step`'s order lands in the device books in the same patch, gated every tick by the check's books comparison; a new counter or term is a row of `rl_env.COUNTER_NAMES` / `_COUNTER_TERMS` and reaches the kernel only through the generated header and the obs table.
+- The weights reach the kernel only as obs-table rows read from the reference's own objects (`device_books.table_rows`: the profile's terms and `reward_v1.group_weights`), never a constant in a kernel. The `"counters"` profile is REFUSED by name (its float32 fold is numpy's pairwise sum); every fold the device does adds in numpy's own order for that expression (the named fold: sequential from +0.0 over the K counters; the old counters: NEP 50, the damage cast to float32 once), held by `tests/test_device_obs.py`.
+- `begin` is the identity on the card (nothing changes a unit between two conductor ticks); a path that writes a unit outside a tick (a reset, a hand state) restages the books with it.
+- THE ENDED LATCH: the books set `DeviceObservation.ended` and keep the ending tick at the tick an env's match ends (after that tick's blocks); a set latch freezes the env's books and skips every later block. The terminal observation (P8.8b) builds at the kept ending tick, never a second end rule.
+- Their faults (a `RewardBooksMismatch` count, the fault bits) and the per-env "ended now" flags ride the conductor's ONE books read (kind `reward_books`, `DeviceConductor.ended_now`): termination reaches the host with no third sync.
 
 ## Action spec
 - Masks come from the game's own gates, never a copy of them. Every number comes from its row through `action_tables`, quantized once: never a literal. A new grenade row APPENDS a hand entry; a new verb is a hand-table row with its gate in the same patch.
