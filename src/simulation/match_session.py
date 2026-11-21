@@ -41,10 +41,12 @@ class MatchSession:
     ``level`` must be the recorded one, else ``ReplayRefused``), driven by
     the ``replay`` controller, each checkpoint verified as the sim passes it.
     ``breach_physics`` is the compiled CPU module (imported from the path
-    when not given)."""
+    when not given). ``commander`` (``control_source.COMMANDERS``, #29
+    P8.10a) goes to the one controller builder: who writes the orders of a
+    team driven through the door."""
 
     def __init__(self, level, spec=None, *, seed: int | None = None,
-                 replay=None, breach_physics=None):
+                 replay=None, breach_physics=None, commander: str = "bots"):
         if replay is not None:
             match_replay.check_header(replay, match_replay.level_id(level),
                                       seed=seed, spec=spec)
@@ -70,7 +72,8 @@ class MatchSession:
         self.sim.set_paused(False)
         self.sim.spawn_match(spec)
         self.controllers = create_match_controllers(self.sim, spec,
-                                                    recording=replay)
+                                                    recording=replay,
+                                                    commander=commander)
         self._replay = replay
         self._recorder = None
         self._finished = False

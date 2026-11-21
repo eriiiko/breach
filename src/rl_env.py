@@ -25,6 +25,14 @@ missing key or a mistyped value (:func:`load_run`)::
                                   # (absolute, or relative to the run file;
                                   # refused INSIDE the checkout): the run
                                   # manifest goes there
+    commander = "bots"            # OPTIONAL (#29 P8.10a): who writes the
+                                  # orders of a team on "policy":
+                                  # "bots" (default: the bots' team layer,
+                                  # control_source.COMMANDERS) or "none"
+    checkpoint_every_ticks = 60   # OPTIONAL (#29 P8.10a): the checkpoint
+                                  # cadence of info["checkpoints"] (default
+                                  # [replay] checkpoint_every_ticks); 0 =
+                                  # no checkpoints at all
     [obs]
     spec = "crop"                 # OPTIONAL: the observation spec (#195 1g):
                                   # "crop" (default, the placeholder rows
@@ -263,6 +271,35 @@ def episode_draw(run_seed: int, env: int, k: int, n_levels: int) -> tuple:
     return w[0] | (w[1] << 32), philox32_below(w[2], n_levels)
 
 
+def episode_match(run, levels, env: int, k: int) -> tuple:
+    """``(match_seed, level_index, level, spec)`` of episode ``k`` of env
+    ``env``: :func:`episode_draw`, then the level's match.toml with the seed
+    replaced, every team's controller set by ``[run] policy`` and the run
+    file's sight rule. THE one episode build both backends use (the farm's
+    ``EnvRunner.reset``, the device backend's host build)."""
+    from dataclasses import replace
+    seed, li = episode_draw(run.seed, env, k, len(levels))
+    level = levels[li]
+    base = level.match
+    ctrls = run.team_controllers(len(base.teams), level.name)
+    spec = replace(base, seed=seed, teams=tuple(
+        replace(t, controller=c) for t, c in zip(base.teams, ctrls)))
+    if run.sight is not None:          # #195 1a: the run file's rule wins;
+        spec = replace(spec, sight=run.sight)   # the recorder keeps it
+    return seed, li, level, spec
+
+
+def checkpoint_every(run) -> int:
+    """The run's checkpoint cadence in ticks: ``[run]
+    checkpoint_every_ticks`` when given, else ``[replay]
+    checkpoint_every_ticks``; 0 = no checkpoints (#29 P8.10a)."""
+    if run.checkpoint_every is not None:
+        return int(run.checkpoint_every)
+    from config import CFG
+    import match_replay
+    return int(match_replay.replay_settings(CFG))
+
+
 # ---------------------------------------------------------------------------
 # The run file door
 # ---------------------------------------------------------------------------
@@ -292,6 +329,9 @@ class RunConfig:
     reward_terms: tuple = ()    # ((term, weight), ...): the profile's table
                                 # with the run file's overrides; () under
                                 # "counters"
+    commander: str = "bots"     # [run] commander (#29 P8.10a)
+    checkpoint_every: int | None = None   # [run] checkpoint_every_ticks;
+                                # None = config's [replay] cadence, 0 = none
 
     def terms(self) -> dict:
         """The term weights of the books (#195 1i): the profile's table with
@@ -319,7 +359,8 @@ class RunConfig:
 
 _RUN_KEYS = {"seed": True, "n_envs": True, "decimation": True,
              "levels": True, "policy": True, "levels_dir": False,
-             "out_dir": False, "sight": False}
+             "out_dir": False, "sight": False, "commander": False,
+             "checkpoint_every_ticks": False}
 #: The ``[obs]`` keys per spec (#195 1g): the three crop keys belong to the
 #: ``"crop"`` placeholder alone; ``"v1"`` takes none (its layout is the spec).
 _OBS_KEYS = {"crop": {"spec": False, "channels": True, "crop_radius": True,
@@ -439,6 +480,15 @@ def parse_run(raw: dict, where: str = "run file",
                              f"the checkout {str(ROOT)!r}: run outputs go "
                              f"outside it (a snapshot's tree stays clean)")
         out_dir = str(p)
+    from control_source import COMMANDERS, DEFAULT_COMMANDER
+    commander = run.get("commander", DEFAULT_COMMANDER)
+    if not isinstance(commander, str) or commander not in COMMANDERS:
+        raise ValueError(f"{where}: [run] commander must be one of "
+                         f"{sorted(COMMANDERS)}, got {commander!r}")
+    checkpoint_every = None
+    if "checkpoint_every_ticks" in run:
+        checkpoint_every = _int_key(run, "run", "checkpoint_every_ticks",
+                                    where, 0)
     sight = None
     if "sight" in run:
         from simulation.match import check_sight
@@ -511,7 +561,8 @@ def parse_run(raw: dict, where: str = "run file",
                      vector=vector, reward=reward, out_dir=out_dir,
                      sight=sight, spec=spec, full_view=full_view,
                      action_spec=action_spec, reward_profile=profile,
-                     reward_terms=reward_terms)
+                     reward_terms=reward_terms, commander=commander,
+                     checkpoint_every=checkpoint_every)
 
 
 def load_run(path) -> RunConfig:
@@ -726,18 +777,18 @@ class EnvRunner:
     def __init__(self, env: int, run: RunConfig, layout: Layout, levels,
                  *, breach_physics=None, checkpoint_every_ticks=None,
                  record: bool = False):
-        from config import CFG
-        import match_replay
         from simulation.events import UnitHitEvent, UnitKilledEvent
         self.env = int(env)
         self.run = run
         self.layout = layout
         self.levels = list(levels)
         self.bp = breach_physics
-        self.every = (match_replay.replay_settings(CFG)
-                      if checkpoint_every_ticks is None
+        self.every = (checkpoint_every(run) if checkpoint_every_ticks is None
                       else int(checkpoint_every_ticks))
         self.record = bool(record)
+        if self.record and self.every < 1:
+            raise ValueError(f"env {env}: recording needs a checkpoint "
+                             f"cadence >= 1, got {self.every}")
         self.last_recording = None
         self._hit, self._kill = UnitHitEvent, UnitKilledEvent
         self._vec = [VECTOR_FIELDS[v] for v in layout.vector]
@@ -761,23 +812,16 @@ class EnvRunner:
     def reset(self) -> list:
         """Start the env's next episode (k + 1): draw its level and seed,
         build the match. Returns its checkpoints so far (tick 0)."""
-        from dataclasses import replace
         from control_policy import AgentPolicy
         from simulation.match_session import MatchSession
         from simulation.sensor_accessor import EntityFieldAccessor
         self.k += 1
-        seed, li = episode_draw(self.run.seed, self.env, self.k,
-                                len(self.levels))
-        level = self.levels[li]
-        base = level.match
-        ctrls = self.run.team_controllers(len(base.teams), level.name)
-        spec = replace(base, seed=seed, teams=tuple(
-            replace(t, controller=c) for t, c in zip(base.teams, ctrls)))
-        if self.run.sight is not None:      # #195 1a: the run file's rule wins;
-            spec = replace(spec, sight=self.run.sight)   # the recorder keeps it
+        seed, li, level, spec = episode_match(self.run, self.levels,
+                                              self.env, self.k)
         self.seed, self.level_index = seed, li
         self.session = MatchSession(level, spec, seed=seed,
-                                    breach_physics=self.bp)
+                                    breach_physics=self.bp,
+                                    commander=self.run.commander)
         if self.record:
             self.session.record(self.every)
         sim = self.session.sim
@@ -806,7 +850,7 @@ class EnvRunner:
             self.act_tables = action_tables(sim, S)
             for pol in self.policies.values():
                 pol.configure("v1", self.act_tables)
-        return [(self.k, 0, *self.session.digests())]
+        return ([(self.k, 0, *self.session.digests())] if self.every else [])
 
     def step(self, actions) -> dict:
         """One decimation step on ``actions`` ``(U, A)``: each policy team's
@@ -852,7 +896,7 @@ class EnvRunner:
             count_events(sim.tick_events, team_before, id_row, ci, old,
                          frozen=ended if named and ended.any() else None)
             books.end(sim)
-            if sim.tick % self.every == 0:
+            if self.every and sim.tick % self.every == 0:
                 cps.append((self.k, int(sim.tick), *s.digests()))
             if s.is_terminal():
                 break
@@ -870,7 +914,7 @@ class EnvRunner:
                "team_outcome": books.outcome.copy(),
                "rows_ended": books.rows_ended.copy()}
         if terminal:
-            if not cps or cps[-1][1] != int(sim.tick):
+            if self.every and (not cps or cps[-1][1] != int(sim.tick)):
                 cps.append((self.k, int(sim.tick), *s.digests()))
             out["ended"] = True
             if named:                   # 6.5: the clock is an ending
