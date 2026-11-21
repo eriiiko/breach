@@ -183,6 +183,158 @@ touching a kernel; whether `paths:` globs that match nothing fail
 
 Pending.
 
-## Critic: physics and the books
+## Critic: physics and the books (Opus, 2026-11-21)
 
-Pending.
+**VERDICT: UNSOUND.** The push law can be fixed in place. The fire law
+cannot, as designed: it neither sustains itself nor closes the books.
+Scratch arithmetic: `C:/tmp/props226/critic_phys/check.py`.
+
+### Findings, most severe first
+
+1. **A burning prop gives off the wrong heat, and no existing constant both
+   keeps it lit and keeps the gas off its rail.** BLOCKER. The design pays
+   `dQ = H_fuel x dO2` (6.3 step 4). `H_fuel = 4.0` (config.toml:1018) is the
+   tile law's gas-side PLACEHOLDER: 125 kJ per unit of N_O2, 2.6% of Huggett's
+   4.83 MJ and about 9% of what a burning tile releases per unit of O2. Most
+   of a tile's heat is `H_bed` (1.21 MJ per unit, config.toml:1138-1152),
+   which the tile law lands in the burning SOLID's own tile
+   (combustion.cpp:725-735): the fuel bed that holds the flame plateau. For a
+   prop the fuel bed is the prop's own cell, which the design keeps outside
+   the books. Worked: each burning cell deposits about 0.018/24 units per tile
+   per tick; with `H_fuel` that is 2.2 kW per tile, which the felt read turns
+   into +11 C; the fire goes out at about 100 C: a prop fire goes out unless a
+   tile fire holds it up. With `H_bed` the excess is +104 C (marginal) and
+   1.2 MJ per unit would go into GAS cells; config.toml:983-996 records that
+   even 2x `H_fuel` tripped `test_e1_hot_rail`. UNVERIFIED: that the felt read
+   sees the prop's own deposit next tick; the exact rail outcome. Smallest
+   fix: adopt the alternative 6.4 rejected. Book the cell as an energy
+   reservoir: `H_bed` into the cell, booked like `e_comb_solid_heat_sum`; the
+   cell exchanges heat with its tiles through a booked seam term; the `H_fuel`
+   parcel goes to the gas as in the tile law. A steady-state plateau
+   calculation in the design before the build.
+2. **The O2 draw is not the tile law's.** FIX. The design draws `burn_rate`
+   per blocking tile "at full intensity", leaving out I, `o2f`, `hotf`, the
+   hop weights and `w_path` (config.toml:940-967, 1062-1083). At the tile
+   law's measured operating point a tile draws 2.3e-3 units/s; the prop's
+   0.018 units/s per tile is 7.7x that. Without `o2f` it burns at full rate
+   until the extinction gate: a cliff, not a throttle. It draws only from the
+   tiles under it and resupply crosses its own 0.5 permeability: a tile's 0.21
+   units of O2 empty in about 12 s, the single-tile starvation (T2) that
+   `draw_r = 2` exists to cure. Fix: the tile law's demand form (`hotf` from
+   the cell's temperature, `o2f` from the tile's O2 fraction, a stated
+   per-class I as a calibration for Erik), drawn over the blocking set plus
+   the ring with the existing hop weights.
+3. **The contact hand-off destroys momentum.** FIX. 4.6 zeroes the prop's
+   blocked component and books `m_p v - J` as `contact_lost`. A perfectly
+   inelastic collision loses KINETIC ENERGY, not momentum: a 100 kg fridge at
+   3 m/s into a 100 kg marine hands over 150 N s and the design deletes the
+   other 150. Fix: the prop's axis velocity becomes
+   `v' = m_p v / (m_p + m_u)`; it keeps its share, the next tick's contact
+   repeats, the push drains into the unit's feet (`resisted`). The same prop
+   to prop. Lost KE needs no energy term (body KE is in no group of the
+   closure identity, energy-books.md:43-45).
+4. **The wind constant depends on tile size.** FIX. As written
+   (`rho Cd H 1000 / (2 tile tps^2)` per tile of projected width) it is right
+   only at 1.0 m: 3x too large at 0.333 m if H is metres, 9x if H is the
+   stored `height_q` in tiles. Fix: build the impulse constant from an area in
+   m^2 through `_wind_k` (unit_impulse.py:242-256), area = Cd x H_m x w_m.
+   `Cd` is a new dial with no source: declare it, or a drag-area column per
+   class as units have `drag_area_m2`.
+5. **The wind read is wrong for a body that spans many tiles.** FIX.
+   `footprint_wind` returns the MAX over the tiles (gamemap.py:2444-2478) and
+   the design applies that one tile's q to the whole projected width: over 12
+   to 30 tiles the max picks noise peaks (the #217 checkerboard). With graded
+   permeability, barely covered edge tiles sit near the free stream while
+   fully covered tiles are shielded, so the force depends on where the prop
+   sits within a tile (an axis-aligned prop on tile lines reads only shielded
+   air). The centre of pressure is fixed at G: a blast on one end never spins
+   a balanced table. Fix: read the air on the windward ring just outside the
+   blocking set, a coverage-weighted mean q, torque as the sum of r_i x F_i.
+   A model choice for Erik; magnitude UNVERIFIED.
+6. **The parallel-axis sign is wrong in `inertia_g`.** FIX. Rotation is about
+   the centre of mass: `I_cm = I_G - m |o|^2`, not plus. A 20 kg table 1.6 x
+   0.8 m with the mass 0.4 m off centre: the design gives 8.53 kg m^2, correct
+   is 2.13; at 0.6 m the correct formula goes negative. Fix: minus, and refuse
+   an offset where it reaches zero, or a radius-of-gyration column per class.
+7. **The thermal node mixes currencies and borrows a human's calibration.**
+   FIX. `t_q` is declared in game degrees but `body_temp.step_q` works in
+   degrees C (game is about C minus 20): comparing to `ignition_temp` without
+   converting is 20 degrees off. The 159 W/K loss is a human shell's and
+   scales with tile volume (body_temp.py:85-90; 1434 W/K at 1.0 m): a cell's
+   time constant is 51 s at 0.333 m and 5.6 s at 1.0 m. The felt gain uses the
+   marine's absorption and reflectivity. A 20 kg table is 32.4 kJ/K, more than
+   the air of a 100-tile room (23.9 kJ/K): warming it 280 K creates about
+   9.1 MJ the room never loses. The world's books still close (the node only
+   reads), so the closure rule is not broken in letter, but the gap is far
+   larger than stated: Erik should rule on it with these numbers.
+8. **The shove ignores the target's mass.** FIX. The 100 N s unit shove
+   (config.toml:5371) launches a 10 kg chair at 10 m/s (sliding 12.7 m at mu
+   0.4), a 20 kg table at 5 m/s. Use `J = min(J_shove, m x v_hand)`, `v_hand`
+   a dial for Erik.
+9. **R1 is in tiles, so it depends on tile size.** FIX. At 1.0 m tiles the
+   floor is 1.5 m and a 0.8 m table is refused. State it, or set the floor in
+   metres and accept over-blocking on coarse tiles.
+10. **Ruling missing: tall props tip before they slide.** FIX. A box tips
+    first when (d/2)/(h/2) < mu: fridge 0.39 against mu 0.4, a bookcase 0.17.
+    The top-down model always slides. Section 14, default "slides".
+11. **Ruling missing: "no prop seals" is a physics and gameplay decision.**
+    FIX. It decides a barricade can never stop a decompression, and forces a
+    steel fridge to name a porous row. 3.5's "3.24% of the tile" is the
+    thin-board furniture row; a solid fridge fills about 72% of the air column
+    over its tiles (0.88 m^3 of 1.22 m^3). The mass books close trivially. Put
+    the sealing question in section 14 with the real displacement figure.
+12. **Ruling missing: the products differ from the tile law.** FIX. The tile
+    law takes the soot share (`soot_yield` 0.5) out of the bulk with its
+    energy, so total N is conserved (combustion.cpp:999-1046); the prop keeps
+    all of dO2 as N2 and also mints the soot: gas plus trace grows by 0.5 dO2,
+    about 3.5% pressure in a room that smothers. Listed as an ACCEPTED GAP but
+    not as a ruling.
+13. NOTE. Density from the box volume makes everything float (table 21,
+    fridge 113, steel cabinet 82 kg/m^3). #236 must choose between material
+    density and enclosed density; the design chose silently.
+14. NOTE. Smaller gaps: the `OMEGA_MAX` clamp on w is not stated as booked;
+    separate linear and angular friction overestimates dissipation by up to
+    about 2x (in section 12, missing from R4's text); the refusal pass deletes
+    the pair's net momentum (the common velocity would keep it).
+15. NOTE (inherited). Fuel per unit of O2 depends on tile size:
+    `KG_FUEL_PER_N_O2` is fixed at the 0.333 m tile (materials.py:349-354)
+    while a unit of N_O2 scales with tile volume: 9x off at 1.0 m.
+16. NOTE. Dials borrowed from other objects or tuned under the #217 bug, for
+    Erik: the frag row, `expansion_m3_per_strength`, `k_drag2` (tuned while
+    transport ran at 1/3); the wind sampled once per tick, not integrated over
+    a shock that passes in ms (UNVERIFIED size); `burn_rate` 0.018 ("re-tune
+    pending"); `H_fuel` 4.0 (placeholder); `H_bed` (a calibrated lumped
+    constant); `soot_yield` 0.5 (provisional); `heat_flux_to_temp`,
+    `unit_absorption`, `unit_reflectivity` (human skin); the 159 W/K body
+    loss; the 100 N s shove; `V_MAX_Q` (4 tiles a tick: 32 m/s at 0.333 m, 96
+    at 1.0 m); the new `Cd`.
+17. On the rulings list. Missing: the heat constant and where the bed heat
+    lands (1), the burn-rate law (2), how the wind is read and the centre of
+    pressure (5), the shove limit (8), tipping (10), sealing (11), the product
+    split (12), the meaning of density (13), the size of the room-cooling gap
+    (7). R5 asks whether a prop pushes a unit, not whether momentum is kept
+    (3). R9 is a scope and training rule, not physics.
+
+### Checked and found true
+
+- Coulomb friction through `_shrink` (unit_impulse.py:578-586, 664-676): a
+  force below mu m g never moves the prop, a sliding prop stops exactly at
+  zero, the same m/s at both tile sizes.
+- Step 4 of 4.2 is safe: each remainder is below one count of velocity times
+  m, so booking it as resisted when friction holds is exact.
+- The projected-width formula, derived independently.
+- The angular units: impulse and `inertia_g` both scale as 1/tile^2, so dw is
+  the same at both tile sizes.
+- Slide thresholds are plausible with a correct constant (Cd 1.1, mu 0.4):
+  table 59 Pa, chair 79 Pa, fridge 283 Pa, against the marine floored at 245.
+- `swap_o2_to_inert` keeps the energy exactly (gas energy is N x T_abs with
+  one heat capacity per bulk count).
+- Wall stops book `wall` as the unit move does; lost KE needs no term.
+- Graded permeability falls linearly with the covered fraction: the right
+  open-area scaling.
+- Ignition by temperature only agrees with "start a fire by delivering heat"
+  in letter (the heat comes from an unbooked node, finding 7).
+- The burn heat goes through the same `heat` FieldEdit and the same solver
+  groups as a heat source, by `payloads.deposit_over_tiles`: a second caller
+  of one seam, not a second deposit path.
+- The O2 swap has a home: a new seam primitive with a device twin.
