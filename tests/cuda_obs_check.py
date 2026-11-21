@@ -482,7 +482,7 @@ def _sight_breaks(obs):
     """THE P8.2 BREAKS: ``cone`` (the cone's half-angle one degree wider in
     the obs table), ``early`` (who sees whom computed one slot too early:
     before the ruleset's tick end, the conversion), ``cover`` (every cover
-    box shifted one tile in x)."""
+    box shifted one tile in y)."""
     import cupy as cp
     if BREAK == "cone":
         from config import CFG
@@ -497,7 +497,7 @@ def _sight_breaks(obs):
         obs.early_vision = True
     if BREAK == "cover":
         cov = obs.cover_host.copy()
-        for f in ("X0_BITS", "X1_BITS"):
+        for f in ("Y0_BITS", "Y1_BITS"):
             i = dobs.COVER_FIELDS.index(f)
             vals = np.ascontiguousarray(cov[..., i]).view(np.float64) + 1.0
             cov[..., i] = vals.view(np.int64)
@@ -709,8 +709,8 @@ COVER_ROOM = "range_hall"
 
 
 def hall_setup(session):
-    """The cover hand state at tick 0: crate 0 of ``sim.cover`` (a 3 x 3
-    tile box) centred on the segment between the two units' centre tiles."""
+    """The cover hand state at tick 0: crate 0 of ``sim.cover`` made a 3 x 1
+    tile box on the segment between the two units' centre tiles."""
     sim = session.sim
     a, b = sorted(sim.units, key=lambda u: int(u.id))[:2]
     ax, ay = a.center_tile_x(), a.center_tile_y()
@@ -718,7 +718,7 @@ def hall_setup(session):
     mx, my = (ax + bx) // 2, (ay + by) // 2
     c = sim.cover[0]
     c.x0, c.x1 = float(mx - 1), float(mx + 2)
-    c.y0, c.y1 = float(my - 1), float(my + 2)
+    c.y0, c.y1 = float(my), float(my + 1)       # one tile tall: a one-tile shift clears it
 
 
 def corpus_d():
