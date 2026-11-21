@@ -3954,10 +3954,13 @@ written before the ending, clock_hand / bots tick 4), `term_next` (built at the
 next decision tick instead: clock_hand tick 48, bots tick 1349, `final_valid`
 zeros against the reference), `term_other` (written for the next env too: batch
 ship_demo N = 2 tick 300, env 0's final_ set not zeros). Unchanged: every earlier
-part; 2.00 syncs per steady tick at N = 1 and 2 (part SYNCS alone; run after part
-BATCH in the same process the N = 1 count picks up allocation syncs at
-`cuda_applier.cu` / `cuda_unit_store.cu` / ... sites on one tick: pre-existing,
-order-dependent, not the observation's). Cost (`tools/bench_conductor.py --obs`,
+part; 2.00 syncs per steady tick at N = 1 and 2 (parts SYNCS and DECODER).
+Finding (the check's, fixed): the sync counts could pick up the DESTRUCTORS of
+earlier parts' dead conductors (`cuda_unit_store.cu` / `cuda_applier.cu` /
+... stream syncs) when Python's cycle collector happened to run inside a counted
+tick -- the observation's extra allocations moved that moment into one (part
+DECODER at N = 1, 3.77 per tick); both counting loops now collect first and
+hold the collector off while they count. Cost (`tools/bench_conductor.py --obs`,
 ship_demo, GPU time for all envs, every env due, the card shared with another
 agent): the full view 1.956 / 2.434 / 6.010 ms per decision at N = 1 / 64 / 256
 (inside the decision's blocks: 2.535 / 5.117 / 14.362 ms); a terminal build of

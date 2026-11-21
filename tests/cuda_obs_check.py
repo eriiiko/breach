@@ -2562,6 +2562,12 @@ def part_syncs():
         c = cd.DeviceConductor([x.sim for x in sessions], bp=bp)
         obs = dobs.DeviceObservation(c, [x.spec for x in sessions], p.S, DECIMATION,
                                      n_teams=p.T)
+        # the dead conductors of earlier parts are freed NOW, not by the cycle
+        # collector inside a counted tick (their destructors sync the stream:
+        # cuda_unit_store.cu / cuda_applier.cu ... -- not the tick's syncs)
+        import gc
+        gc.collect()
+        gc.disable()
         sc = cc.SyncCount()
         per = []
         b0 = obs.builds
@@ -2579,6 +2585,7 @@ def part_syncs():
                 per.append((k, log, had))
         finally:
             sc.close()
+            gc.enable()
         steady = [lg for k, lg, o in per[1:] if not o]
         names = sorted({x.partition(" | ")[2] for lg in steady for x in lg})
         counts[n] = [len(lg) for lg in steady]
@@ -3619,6 +3626,12 @@ def part_decoder():
         obs = dobs.DeviceObservation(c, [x.spec for x in sessions], q.S, DECIMATION,
                                      n_teams=q.T)
         dec = ddec.DeviceDecoder(obs, [x.spec for x in sessions])
+        # the dead conductors of earlier parts are freed NOW, not by the cycle
+        # collector inside a counted tick (their destructors sync the stream:
+        # cuda_unit_store.cu / cuda_applier.cu ... -- not the tick's syncs)
+        import gc
+        gc.collect()
+        gc.disable()
         sc = cc.SyncCount()
         per, ups = [], []
         real_asarray = cp.asarray
@@ -3649,6 +3662,7 @@ def part_decoder():
                 ups.append((k, len(up), bool(orders)))
         finally:
             sc.close()
+            gc.enable()
         steady = [lg for k, lg, o in per[1:] if not o]
         names = sorted({x.partition(" | ")[2] for lg in steady for x in lg})
         counts[n] = [len(lg) for lg in steady]
