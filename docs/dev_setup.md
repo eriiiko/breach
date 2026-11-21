@@ -30,6 +30,10 @@ specs and tool installs live in the ClaudeSync `environment.md`.
 | Work Desktop | `C:/Users/steen/anaconda3/envs/data/python.exe` — the `data` env, 3.12 | CPU: Step 6; CUDA `build_cuda.bat` |
 | Lenovo laptop (`ERIK_LENOVO`) | `C:/Users/steen/miniconda3/envs/data/python.exe` — the miniconda `data` env, 3.12 | CPU `build_cpu_data.bat`; CUDA `build_cuda_lenovo.bat` |
 
+Work Desktop: pytest-xdist 3.8.0 is installed in `data` (2026-11-21). Run the CPU tests in parallel
+with `<breach-py> -m pytest tests -q -n 4 --dist loadgroup`; every GPU and window test joins the
+one `device` group through `tests/_suite_kinds.py`, so no two of them run at once.
+
 Every machine runs breach on its `data` env. Scripts' usage lines that still name
 `anaconda3/python.exe` predate that: read `<breach-py>`.
 

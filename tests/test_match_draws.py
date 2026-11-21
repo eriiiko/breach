@@ -19,7 +19,12 @@ Properties, one per test (each names the change that must break it):
 * THE STAND-IN: any use of ``sim.rng`` in a match raises, naming the call;
   the legacy WEGO paths still play -- breaks if spawn_match stops installing
   it or a match-path site goes back to ``sim.rng``.
-* DETERMINISM: same seed twice = same digests; a different seed moves them.
+* DETERMINISM is held without a test of its own: SITE INVARIANCE plays seed
+  3 twice and asserts equal draws and digests (a nondeterministic match
+  fails it), LAYOUT keys every draw on the seed, and
+  ``test_bots::test_a_bots_match_is_identical_twice_and_replays_exactly``
+  plays another seed into another match (Erik, 2026-11-21: the duplicate
+  ``test_same_seed_same_match_other_seed_another`` deleted).
 """
 from __future__ import annotations
 
@@ -237,12 +242,3 @@ def test_site_invariance_in_a_played_match(monkeypatch):
     assert log_a == log_b
     assert dig_a == dig_b
 
-
-def test_same_seed_same_match_other_seed_another(monkeypatch):
-    """Determinism: seed 3 twice is equal; seed 4 differs in its draws."""
-    log_a, dig_a = _plain(3, monkeypatch)
-    log_c, dig_c = _play(3, 700, False, monkeypatch)
-    log_d, _ = _play(4, 700, False, monkeypatch)
-    assert log_a and log_d
-    assert (log_a, dig_a) == (log_c, dig_c)
-    assert [e[4] for e in log_a[:20]] != [e[4] for e in log_d[:20]]
