@@ -33,7 +33,11 @@ strategy. Every rule below serves that.
   with a misleading ModuleNotFoundError.
 - **pytest: always `pytest tests -q`**, never bare `pytest` from repo root.
   While working, `-m "not slow"` or `python tools/affected_tests.py --run`
-  is enough; the full suite stays the gate before a merge.
+  is enough. The gate before a merge is the full suite, run ONCE: every test
+  but the card tests (`pytest tests -q -k "not cuda"` + `pytest agents/tests -q`)
+  plus the card gate (`tools/cuda_green.py`). A plain `pytest tests -q` on a
+  checkout with a CUDA build runs the card tests a second time (Erik,
+  2026-11-21: nothing tested less, only not twice).
 - C++/CUDA: `cpp/` via CMake; per-machine scripts `cpp/build_*.bat`, on Linux
   `cpp/build_linux.sh` (both modules; `containers/breach.def` builds with it).
   CPU build → `cpp/build/Release`; CUDA build → `cpp/build_cuda/`.
