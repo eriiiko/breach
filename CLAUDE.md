@@ -319,6 +319,7 @@ amends the rule file, never this line's length.
 | Vision / engagements / cover | `src/simulation/vision.py`, `engagement.py`, `cover_system.py`, `line_of_fire.py` | One sight oracle (`has_los`, never `solid` alone); the match's sight rule decides who sees whom |
 | Sight for many tiles | `cpp/src/sight_lines.cpp` + `vision.rays_clear` / `window_clear` | THE sight test in bulk, held equal to `has_los`; nothing walks its own lines |
 | Room graph | `level_loader.RoomGraph` + `src/simulation/room_graph.py` | ONE map from tile to room and ONE list of openings; never a second |
+| Room graph (device) | `device_obs.room_graph_values` + `cpp/src/cuda_obs_orders.cu` | THE device form of the level's room graph and openings, staged per env; the observation's route reads it; never a second graph |
 | A* | `pathfinding.py::astar` | THE host pathfinder; never the horde's |
 | Planted charge | `Simulation.plant_charge_intent` + `src/simulation/charges.py` | A planted charge is a `PlantedCharge` and nothing else; one driver per path |
 | Verb gates | `src/simulation/verb_gates.py` | Whether a hand verb would act is ONE pure read, called by the verb and the masks; a new hand verb brings its gate |

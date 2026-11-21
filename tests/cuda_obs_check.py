@@ -2444,13 +2444,20 @@ def corpus_fire():
 #: never. At :data:`ORDER_USE_TICK` A opens D (the route field changes
 #: between two decisions with the orders held); from :data:`ORDER_WALK_TICK`
 #: A walks east through the doorway into ``rb`` (route 2, 1, 0 at its anchor,
-#: the compass pointing east), stopping at :data:`ORDER_STOP_TICK`.
+#: the compass pointing east), stopping at :data:`ORDER_STOP_TICK`. Soldier B
+#: stands at tick 0 beside ANOTHER door of ``ra`` (an ordinary one, D2) and
+#: opens it at :data:`ORDER_B_USES` [0], shuts it at [1]: shutting an ordinary
+#: door changes no route (it is openable either way), but the openings'
+#: states move (passable, then openable), so a route read over the states of
+#: the PREVIOUS decision differs at the first decision after the shutting
+#: (the break ``ord_prev``).
 ORDER_SEED = 81
 ORDER_TICKS = 160
 ORDER_USE_TICK = 30
 ORDER_WALK_TICK = 48
 ORDER_STOP_TICK = 84
 ORDER_C_TICKS = 70
+ORDER_B_USES = (10, 21)
 #: The coverage of the order's rows (counted off the reference, each > 0 over
 #: the corpora with orders: the order hand match, the list hand match and
 #: corpus (c)), per valid row at every decision tick.
@@ -2473,11 +2480,11 @@ def _order_scene(sim):
     """The order hand match's scene, a pure read of the level at tick 0 (the
     same for the reference and the twin): ``(door D, the wall tile above its
     span, A's anchor, ra, rb, D's opening id, the unreachable room, its
-    doors)``. D: a live closed door whose span is one column with a solid
-    tile above it, its west neighbour in team 0's room ``ra``, its east
-    neighbour in another room ``rb``, ``ra`` holding another opening; A's
-    anchor: the free block of ``ra`` west of the span, its top row the
-    span's, its ring touching the span."""
+    doors, B's anchor beside D2)``. D: a live closed door whose span is one
+    column with a solid tile above it, its west neighbour in team 0's room
+    ``ra``, its east neighbour in another room ``rb``, ``ra`` holding
+    another opening; A's anchor: the free block of ``ra`` west of the span,
+    its top row the span's, its ring touching the span."""
     from simulation import room_graph
     from simulation.entities.door import DOOR_CLOSED
     from simulation.unit_orders import graph_of
@@ -2515,6 +2522,26 @@ def _order_scene(sim):
         break
     assert found is not None, "order hand match: no door D (one column, wall above, team 0's room)"
     d = found[0]
+    # D2 and B's anchor: another closed door of ra whose span is one row with
+    # ra below it, B's block of ra right below the span, its west column the
+    # span's second tile (the ring touches the span), D2 the only door in reach;
+    # the room sealed below is one neither D nor D2 opens
+    b_spot = d_2 = None
+    for d2 in sim._doors:
+        if d2 is d or not d2.alive or d2.state != DOOR_CLOSED:
+            continue
+        span = sorted((int(ty), int(tx)) for ty, tx in d2.span)
+        if len({y for y, _ in span}) != 1:
+            continue
+        y, x0 = span[0]
+        spot = (y + 1, x0 + 1)
+        if (int(room_graph.place_at(g, y + 1, x0)) == found[3]
+                and _order_free_block(sim, *spot, fp)
+                and abs(spot[0] - found[2][0]) + abs(spot[1] - found[2][1]) > 2 * fp):
+            b_spot, d_2 = spot, d2
+            break
+    assert b_spot is not None, "order hand match: no second door D2 of ra for soldier B"
+    found = found + (b_spot,)
     occupied = {room_graph.place_at(g, u.center_tile_y(), u.center_tile_x()) for u in sim.units}
     door_of = {}
     for dd in sim._doors:
@@ -2526,8 +2553,8 @@ def _order_scene(sim):
         if r in (found[3], found[4]) or r in occupied:
             continue
         ops = [o for o in g.openings if int(o.a) == r or int(o.b) == r]
-        if not ops:
-            continue
+        if not ops or any(found[3] in (int(o.a), int(o.b)) for o in ops):
+            continue                     # never a neighbour of ra: A's long way round stays
         doors = set()
         ok = True
         for o in ops:
@@ -2536,8 +2563,8 @@ def _order_scene(sim):
                     doors.add(door_of[t])
                 elif gm.materials.mobility[gm.material[t]] > 0:
                     ok = False
-        if ok and doors and d not in doors:
-            return found + (r, sorted(doors, key=lambda x: int(x.ordinal)))
+        if ok and doors and d not in doors and d_2 not in doors:
+            return found[:6] + (r, sorted(doors, key=lambda x: int(x.ordinal)), found[6])
     raise AssertionError("order hand match: no sealable room found")
 
 
@@ -2549,12 +2576,13 @@ def order_setup(session):
     one = unit_fixed.FP_ONE
     scene = _order_scene(sim)
     _ORDER_SCENES[id(sim)] = scene
-    d, wall, a_spot, ra, rb, op_id, r_u, doors = scene
+    d, wall, a_spot, ra, rb, op_id, r_u, doors, b_spot = scene
     sim.gmap.is_vacuum[wall[0], wall[1]] = True
     assert horde.is_hull_door(sim.gmap, d.span)
     m = _marines(sim)
     t0 = [u for u in m if int(u.team) == 0]
     t0[0].set_pos_q(a_spot[1] * one, a_spot[0] * one)          # A
+    t0[1].set_pos_q(b_spot[1] * one, b_spot[0] * one)          # B, beside D2
     wires = tuple(NS(input="open", target_ordinal=int(x.ordinal)) for x in doors)
     sim.level = dc_replace(sim.level, wires=tuple(getattr(sim.level, "wires", ()) or ()) + wires)
     sim._vision_cache = None
@@ -2573,7 +2601,7 @@ def order_script(sim):
     A, Bu, C, E = t0[:4]
     F, G, H, I = t1[:4]
     if t == 0:
-        _d, _w, _a, ra, rb, op_id, r_u, _doors = _ORDER_SCENES[id(sim)]
+        _d, _w, _a, ra, rb, op_id, r_u, _doors, _b = _ORDER_SCENES[id(sim)]
         here = lambda u: int(room_graph.place_at(g, u.center_tile_y(), u.center_tile_x()))  # noqa: E731
         other_op = next(int(o.id) for o in g.openings if int(o.id) != op_id)
         _ORDER_PLAN[id(sim)] = dict(ra=ra, rb=rb, op=op_id, ru=r_u, other_op=other_op,
@@ -2591,6 +2619,8 @@ def order_script(sim):
     for u, what, where, ticks, target in plan.get(t, ()):
         if alive(u):
             sim.order_intent(int(u.id), what, where, ticks, target)
+    if t in ORDER_B_USES and alive(Bu):
+        sim.use_intent(int(Bu.id))
     if t == ORDER_USE_TICK and alive(A):
         sim.use_intent(int(A.id))
     if t == ORDER_WALK_TICK and alive(A):
@@ -2605,12 +2635,17 @@ _ORDER_PLAN: dict = {}
 _ORDER_SCENES: dict = {}
 
 
-def corpus_orders():
+def corpus_orders(seeds=(ORDER_SEED,)):
     from dataclasses import replace
     lv = ship_level()
     spec = replace(lv.match, teams=tuple(replace(t, controller="idle") for t in lv.match.teams))
-    return [play("order_hand", lv, spec, ORDER_SEED, setup=order_setup,
-                 script=order_script, max_ticks=ORDER_TICKS)]
+    return [play("order_hand", lv, spec, sd, setup=order_setup,
+                 script=order_script, max_ticks=ORDER_TICKS) for sd in seeds]
+
+
+#: P8.6b's batch: the order hand match at these seeds beside the list hand
+#: match (orders held in every env of the batch, ending at different ticks).
+ORDER_BATCH_SEEDS = (ORDER_SEED, 83, 85)
 
 
 def count_orders(p, session, host) -> None:
@@ -2781,7 +2816,9 @@ def part_batch(n_list=(2, 4)):
     ships = [play(w or "bots", lv, pm.spec_of(lv, w or "bots"), s) for w, s in BATCH_SHIP]
     rl = room_level()
     rooms = [play(ROOM, rl, None, s) for s in BATCH_ROOM]
-    for group, ps in (("ship_demo", ships), ("room", rooms)):
+    o = corpus_orders(ORDER_BATCH_SEEDS)          # P8.6b: orders in every env
+    orders = [o[0], corpus_list()[0]] + o[1:]
+    for group, ps in (("ship_demo", ships), ("room", rooms), ("orders", orders)):
         ends = [p.end for p in ps]
         print(f"  {group} ends per env: {ends}")
         if len(set(ends[:max(n_list)])) < 2:
@@ -3225,6 +3262,7 @@ def part_wall():
                                             "live_trigger")}
     aims_done = {}
     full_done = {}
+    order_done = {}
     col["valid"] = lay.valid
     dead = 1                                         # unit_schema._LIFE_CHOICES.index("dead")
     total = {}
@@ -3233,8 +3271,9 @@ def part_wall():
         c = cd.DeviceConductor(s.sim, bp=bp)
         obs = dobs.DeviceObservation(c, [s.spec], p.S, DECIMATION, n_teams=p.T)
         done = 0
+        orders = wall_orders(s.sim)               # P8.6b: every marine holds an order
         for k in range(len(p.intents)):
-            c.latch(p.intents[k], env=0)
+            c.latch(list(p.intents[k]) + (orders if k == 0 else []), env=0)
             c.tick()
             if int(c.sims[0].tick) % DECIMATION or done >= 6:
                 continue
@@ -3286,6 +3325,7 @@ def part_wall():
                 obs.build_masks(store_ptr=int(pert.data.ptr))
                 obs.build_windows(store_ptr=int(pert.data.ptr))
                 obs.build_full(store_ptr=int(pert.data.ptr))
+                obs.build_orders(store_ptr=int(pert.data.ptr))
                 moved = [k for k, v in team_aims(obs, t, p.S).items()
                          if not np.array_equal(v, base[k])]
                 full_moved = [k for k, v in team_full(obs, t, p.S).items()
@@ -3297,6 +3337,7 @@ def part_wall():
                 obs.build_masks()
                 obs.build_windows()
                 obs.build_full()
+                obs.build_orders()
                 if moved:
                     fail(f"wall {p.name}: tick {int(c.sims[0].tick)}, team {t}: perturbing "
                          f"unseen enemy {p.uids[u]}'s row moved the team's {moved}")
@@ -3307,6 +3348,8 @@ def part_wall():
                          f"unseen enemy {p.uids[u]}'s row did not move the team's full view")
                     return
                 full_done[p.rule] = full_done.get(p.rule, 0) + 1
+                if np.any(base["order_block"][..., 0] != 0):   # P8.6b: orders were held
+                    order_done[p.rule] = order_done.get(p.rule, 0) + 1
                 aims_done[p.rule] = aims_done.get(p.rule, 0) + 1
                 if not np.array_equal(run(perturb(sv)), vis[t]):
                     fail(f"wall {p.name}: tick {int(c.sims[0].tick)}, team {t}: perturbing seen "
@@ -3339,6 +3382,35 @@ def part_wall():
             fail(f"wall: no P8.8 case under the {rule!r} rule (vacuous)")
     print(f"  wall P8.8: {full_done} (team, tick) cases: the same perturbation MOVES the "
           f"team's full view (the other side of the wall) while no policy value moved")
+    for rule in ("cone", "all_round"):
+        if not order_done.get(rule):
+            fail(f"wall: no P8.6b case (orders held) under the {rule!r} rule (vacuous)")
+    print(f"  wall P8.6b: {order_done} (team, tick) cases with orders held: the order block, "
+          f"the list's order columns and the route / place planes unchanged")
+
+
+def wall_orders(sim) -> list:
+    """P8.6b's WALL orders: the intents (as the tap records them) giving
+    every marine at tick 0 a go-to order to the room the first marine of the
+    other team stands in, that marine its priority target: the order block,
+    the list's order columns and the route / place planes all non-default
+    while the wall is perturbed."""
+    from simulation import room_graph
+    from simulation.unit_orders import graph_of
+    g = graph_of(sim)
+    if g is None:
+        return []
+    m = _marines(sim)
+    out = []
+    for u in m:
+        other = next((v for v in m if int(v.team) != int(u.team)), None)
+        if other is None:
+            continue
+        where = int(room_graph.place_at(g, other.center_tile_y(), other.center_tile_x()))
+        if not 0 <= where < (1 << 16):
+            continue
+        out.append(("order_intent", (int(u.id), 1, where, 0, int(other.id))))
+    return out
 
 
 def team_full(obs, t, S) -> dict:
@@ -3369,7 +3441,10 @@ def team_aims(obs, t, S) -> dict:
             # P8.5a: every window plane of the team's rows, its air block and
             # felt temperature
             **{k: obs.buffers[k][0, rows].get() for k in ("near_f", "near_u", "far_f", "far_u")},
-            "air_felt": obs.buffers["vector"][0, rows][..., list(range(58, 66)) + [96]].get()}
+            "air_felt": obs.buffers["vector"][0, rows][..., list(range(58, 66)) + [96]].get(),
+            # P8.6b: the order block of the team's rows (the list's order
+            # columns, the route and place planes are in "list" / "far_*")
+            "order_block": obs.buffers["vector"][0, rows][..., list(range(84, 96))].get()}
 
 
 # ---------------------------------------------------------------------------
@@ -4231,8 +4306,13 @@ def reset_run(label, level, run_seed, N, episodes, cap, forced) -> dict:
     T, S, R = obs.T, obs.S, obs.n_rows
     pos, into = [0] * N, [0] * N
     stats = {"resets": 0, "endings": 0, "forced": 0, "decisions": 0, "ticks": 0,
-             "after_reset_decisions": 0, "others_held": 0}
+             "after_reset_decisions": 0, "others_held": 0,
+             # P8.6b: resets of an env whose last decision showed an order (the
+             # old order must be gone from the new episode's first decision), and
+             # order rows shown after a reset (the new episode's orders)
+             "resets_with_orders": 0, "order_rows_after_reset": 0}
     fresh = [False] * N
+    had_orders = [False] * N
 
     def fail_at(msg):
         fail(f"{label}: {msg}")
@@ -4276,6 +4356,10 @@ def reset_run(label, level, run_seed, N, episodes, cap, forced) -> dict:
                 acts[e, :st["acts"].shape[0]] = st["acts"]
                 stats["decisions"] += 1
                 stats["after_reset_decisions"] += int(fresh[e])
+                held = np.asarray(st["obs"]["vector"])[:, 84] != 0     # order_what
+                had_orders[e] = bool(held.any())
+                if fresh[e]:
+                    stats["order_rows_after_reset"] += int(held.sum())
         if due.any():
             dec.set_decisions(cp.asarray(acts), envs=due)
         for e in live:
@@ -4318,6 +4402,7 @@ def reset_run(label, level, run_seed, N, episodes, cap, forced) -> dict:
                 c.reset_env(e, b.session.sim, b.session.spec)
                 stats["resets"] += 1
                 stats["forced"] += int(st["forced"])
+                stats["resets_with_orders"] += int(had_orders[e])
                 after = obs.host()
                 for k in before:
                     other = [x for x in range(N) if x != e]
@@ -4335,7 +4420,8 @@ def reset_run(label, level, run_seed, N, episodes, cap, forced) -> dict:
           f"({stats['after_reset_decisions']} after a reset), {stats['ticks']} ticks, other envs "
           f"held at {stats['others_held']} env-resets; every observation key, mask, the full "
           f"view, the picture, the books, the slot states, the served arrays and the "
-          f"terminal observations equal")
+          f"terminal observations equal; P8.6b: {stats['resets_with_orders']} resets of an env "
+          f"showing orders, {stats['order_rows_after_reset']} order rows shown after a reset")
     return stats
 
 
@@ -4351,6 +4437,10 @@ def part_reset():
         tot += st["resets"]
         if eps and st["endings"] < eps * n and not FAILS:
             fail(f"{label}: {st['endings']} endings, fewer than {eps} per env (vacuous)")
+        if lv == "ship" and not FAILS and (not st["resets_with_orders"]
+                                           or not st["order_rows_after_reset"]):
+            fail(f"{label}: no reset of an env holding orders, or no order after a reset "
+                 f"(P8.6b's reset gate would be vacuous): {st}")
     print(f"  reset: {tot} resets over the runs")
 
 
