@@ -159,6 +159,10 @@ BUILT["vector"] = BUILT["vector"] + tuple(f"air[{k}]" for k in range(8)) + ("fel
 REWARD_KEYS = ("reward", "counters", "team_balance", "team_uncredited", "team_outcome",
                "rows_ended", "terminated", "truncated")
 BUILT.update({k: None for k in REWARD_KEYS})
+# P8.6a: THE DEVICE DECODER'S COLUMNS -- the vector's prev block, the list's
+# prev_aim / on_next_tick (``device_decoder``, ``DeviceObservation.build_decoder_obs``)
+BUILT["vector"] = BUILT["vector"] + tuple(f"prev[{h}]" for h in range(6))
+BUILT["list"] = BUILT["list"] + ("on_next_tick", "prev_aim")
 
 #: The served dtypes of the observation's float keys (P8.1, said once): the
 #: float16 keys go through the kit's hand conversion, the float32 ones through

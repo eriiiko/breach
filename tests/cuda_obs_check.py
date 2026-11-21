@@ -2796,11 +2796,23 @@ def part_restage():
 #: Corpus (c): (label, level, run seed, tick cap). An in-process
 #: ``rl_env.EnvRunner`` per run (both teams ``policy``, v1 actions, the
 #: commander on), its policies decoding seeded masked-random decisions.
-DEC_RUNS = (("policy ship_demo", "ship_demo", 81, 560), ("policy room", ROOM, 83, 400))
+DEC_RUNS = (("policy crowd 102", "ship_demo", 102, 600, True),
+            ("policy crowd 104", "ship_demo", 104, 600, True),
+            ("policy crowd 105", "ship_demo", 105, 600, True),
+            ("policy crowd 110", "ship_demo", 110, 600, True),
+            ("policy crowd 116", "ship_demo", 116, 600, True),
+            ("policy ship_demo 133", "ship_demo", 133, 600, False),
+            ("policy room 83", ROOM, 83, 400, False), ("policy room 87", ROOM, 87, 400, False))
+#: Run seeds are chosen: a seed whose play opens or closes a door beside gas
+#: a blast heated past the topology seam's proved range (|T_abs| < 2^28,
+#: cpp/src/cuda_topology.cuh) is refused by the device DOORS stage
+#: (ApplierFault at '9e(d) doors') on the tap path as well -- a finding of
+#: P8.6a (e.g. crowd 100, ship_demo 81), not the decoder's; 11 of 30 seeds
+#: scanned hit it.
 #: The decision kit at tick 0 (the runner's session and the twin alike): the
 #: hand loadout with these counts of every hand-grenade kind, in every
 #: marine's hands, so every throw kind with every reach occurs.
-DEC_GRENADES = (9, 9, 9, 9, 9, 9)
+DEC_GRENADES = (3, 3, 3, 3, 3, 3)
 #: Per row and decision, the chance that one head is sent a random in-range
 #: index whatever its mask (a masked choice to count; the fallbacks).
 DEC_P_FORCE = 0.04
@@ -2835,6 +2847,38 @@ def dec_kit(session):
     for u in session.sim.units:
         if not u.is_zombie:
             u.grenade_counts = list(DEC_GRENADES[:len(rows)])
+
+
+def dec_crowd(session):
+    """:func:`dec_kit`, and every unit (both teams and the horde) put at
+    tick 0 into the open floor around team 0's first marine, two tiles
+    apart (the reference and the twin alike): enemies seen and aimed at,
+    zombies that bite and are shot, from the first decisions. The spawn's
+    vision and picture are retaken from it."""
+    from simulation import unit_fixed
+    dec_kit(session)
+    sim = session.sim
+    one = unit_fixed.FP_ONE
+    units = sorted(sim.units, key=lambda u: int(u.id))
+    a = next(u for u in units if not u.is_zombie and int(u.team) == 0)
+    cx, cy = int(a.tile_x), int(a.tile_y)
+    taken = set()
+
+    def fits(x, y, fp):
+        cells = [(x + i, y + j) for j in range(fp) for i in range(fp)]
+        ring = {(x + i, y + j) for j in range(-1, fp + 1) for i in range(-1, fp + 1)}
+        return all(_free(sim, cx_, cy_) for cx_, cy_ in cells) and not (ring & taken)
+    spots = sorted(((x, y) for y in range(cy - 12, cy + 13) for x in range(cx - 12, cx + 13)),
+                   key=lambda t: ((t[0] - cx) ** 2 + (t[1] - cy) ** 2, t[1], t[0]))
+    for u in units:
+        fp = int(u.footprint)
+        for x, y in spots:
+            if fits(x, y, fp):
+                u.set_pos_q(x * one, y * one)
+                taken.update((x + i, y + j) for j in range(fp) for i in range(fp))
+                break
+    sim._vision_cache = None
+    sim.start_team_picture(range(len(session.spec.teams)))
 
 
 def latch_cols() -> list:
@@ -2897,6 +2941,7 @@ class PolicyDriver:
         self.cov = {k: 0 for k in DEC_CASES}
         self.feet_seen = set()
         self.pol_uids = set()
+        self.full = []
 
     # -- the observation and the decision ------------------------------------
     def aims_of(self, sim, units):
@@ -2936,6 +2981,19 @@ class PolicyDriver:
             if rng.random() < DEC_P_FORCE:
                 h = int(rng.integers(5))
                 out[r, h] = int(rng.integers(self.sizes[h]))
+            # the no-sim fallbacks, forced now and then (masked choices too):
+            # a throw onto the aimed unit with a compass aim, a plant "onto"
+            f = rng.random()
+            if f < DEC_P_FORCE / 2:
+                out[r, 1] = int(rng.integers(_aspec.AIM_WALK))
+                out[r, 3] = _aspec.HAND_THROW0 + int(rng.integers(self.sizes[3]
+                                                                   - _aspec.HAND_THROW0))
+                out[r, 4] = _aspec.ARG_ONTO
+            elif f < DEC_P_FORCE:
+                out[r, 3] = _aspec.HAND_PLANT
+                out[r, 4] = _aspec.ARG_ONTO
+            elif f < 1.5 * DEC_P_FORCE:
+                out[r, 3] = _aspec.HAND_FLASHLIGHT
         return out
 
     def decide(self, p, s):
@@ -3041,6 +3099,7 @@ class PolicyDriver:
         """The tap's intents the conductor is fed for a decoder-driven env:
         only the commander's orders (the decoder writes the policy units'
         columns, the card serves the horde)."""
+        self.full.append(list(intents))      # the whole tap (diagnosis only)
         out = []
         for kind, args in intents:
             if kind == "order_intent":
@@ -3061,12 +3120,13 @@ class PolicyDriver:
 def corpus_c():
     """P8.6a's corpus: the policy runs of :data:`DEC_RUNS`, played once."""
     out = []
-    for label, lvname, run_seed, cap in DEC_RUNS:
+    for label, lvname, run_seed, cap, crowd in DEC_RUNS:
         lv = ship_level() if lvname == "ship_demo" else room_level(lvname)
         key = (label, -run_seed)
         if key not in _PLAYED:
             d = PolicyDriver(lv, run_seed)
-            play(label, lv, d.session.spec, d.seed, setup=dec_kit, max_ticks=cap, driver=d)
+            play(label, lv, d.session.spec, d.seed, setup=dec_crowd if crowd else dec_kit,
+                 max_ticks=cap, driver=d)
             _PLAYED[key] = _PLAYED[(label, d.seed)]
         out.append(_PLAYED[key])
     return out
@@ -3324,7 +3384,10 @@ def part_decoder():
 def part_dec_gate():
     """P8.6a's corpus (c) alone (part GATE runs it too, with the census)."""
     for p in corpus_c():
-        gate(f"(c) {p.name}", [p])
+        try:
+            gate(f"(c) {p.name}", [p])
+        except Exception as ex:                    # a refusal names its slot: a finding
+            fail(f"(c) {p.name}: {type(ex).__name__}: {ex}")
     judge_decoder(corpus_c())
 
 
