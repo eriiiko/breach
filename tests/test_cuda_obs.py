@@ -73,7 +73,29 @@ def test_the_device_observation_equals_the_host_one_on_the_corpus():
     does not fix both set and clear over the corpus, the wind-up's KEEP-only
     aim, an aimable entry, a door in use reach and a default row reached;
     BREAKS IF two hand bits' gates are swapped (OBS_BREAK=mask_swap) or the
-    use mask's door reach is one tile wider (OBS_BREAK=mask_reach)."""
+    use mask's door reach is one tile wider (OBS_BREAK=mask_reach). From
+    P8.5a the windows (the eight physics planes of both windows, watched,
+    sees_target with the check's aims, the far unit planes, the vector's air
+    block and felt temperature) are raw-bit equal, every coverage case
+    reached (a watched tile, a tile seeing the aimed target, a near window
+    over each map edge, a far block straddling the edge, a far cell off the
+    grid, an aimed entry found and not found) and some float plane served
+    past the squash's knee; BREAKS IF a gas plane is divided by the
+    neighbouring density row (OBS_BREAK=win_divisor), the far block anchor
+    is one block off (OBS_BREAK=win_anchor), the float16 cast goes through
+    float32 (OBS_BREAK=win_half) or the far wind takes the last largest load
+    (OBS_BREAK=win_argmax). From P8.7 the device books' whole state
+    (snapshot, standing, living / eliminated teams, ended rows, counters,
+    raw, old counters, rest, balance, outcome) equals the reference books'
+    (``rl_env.EnvRunner.step``'s loop over ``reward_v1.RewardBooks``) at EVERY
+    tick as raw bits, the served reward, counters, team blocks, rows_ended,
+    terminated, truncated and the result are raw-bit equal at every step's
+    end, the ended latch is set exactly at the ending tick, every term's
+    counter moved and both ends (elimination, the clock: the clock hand
+    match) reached; BREAKS IF the tick's events are walked out of order
+    (OBS_BREAK=bk_order), a term's weight is read from the neighbouring table
+    row (OBS_BREAK=bk_weight) or termination is decided a tick late
+    (OBS_BREAK=bk_late)."""
     _run(["gate"], timeout=7200)
 
 
@@ -81,8 +103,11 @@ def test_each_env_of_a_batch_equals_its_own_reference():
     """PROPERTY: in batches of N = 2 and 4 (ship_demo and the training
     room, different seeds per env, envs ending apart) every env's owned
     observation equals its own host reference at each of its decision
-    ticks. BREAKS IF a block reads or writes another env's slice, or the
-    row map or cadence of one env leaks into another."""
+    ticks; from P8.7 every env's books equal its reference's every tick and an
+    env whose match ended keeps its final books, served arrays and latch
+    while the others run. BREAKS IF a block reads or writes another env's
+    slice, the row map or cadence of one env leaks into another, or the books
+    of an ended env move on (OBS_BREAK=bk_freeze)."""
     _run(["batch"], timeout=7200)
 
 
@@ -106,8 +131,9 @@ def test_the_observation_adds_no_host_sync_to_a_tick():
 
 def test_an_ended_env_keeps_its_observation():
     """PROPERTY: an env whose ended latch is set is skipped by the blocks
-    (its buffers unchanged) while its neighbour is rebuilt and equal to its
-    reference. BREAKS IF a block ignores the latch."""
+    (its buffers unchanged) and its books are frozen (P8.7) while its
+    neighbour is rebuilt and equal to its reference. BREAKS IF a block or
+    the books ignore the latch."""
     _run(["ended"])
 
 
@@ -144,7 +170,8 @@ def test_who_a_team_sees_depends_only_on_the_enemies_in_view():
     From P8.4a the same perturbation of the unseen enemy (its trigger flipped
     too) moves none of the team's fire lanes, lanes plane, aim_of answers,
     lines of fire or turns, from P8.4b no entry, mask or uid of its
-    list, and from P8.4c none of its four masks. BREAKS IF the visible table is indexed by the
+    list, from P8.4c none of its four masks, and from P8.5a none of its
+    window planes, air block or felt temperature. BREAKS IF the visible table is indexed by the
     wrong row or team, a target's own facing / hp decides whether it is
     seen, or an answer of the team reads a unit it does not see."""
     _run(["wall"])
@@ -158,3 +185,14 @@ def test_a_restaged_picture_plays_on_equal_to_its_reference():
     IF the restage drops a field, renumbers the object serials apart from
     the tables' rows, or writes another env's block."""
     _run(["restage"])
+
+
+def test_the_device_books_serve_every_named_profile_and_refuse_counters():
+    """PROPERTY (#29 P8.7): under the "range" profile (its zombie and
+    friendly-fire terms written 0) the device books equal the reference
+    books every tick and the served arrays at every step's end, on a pinned
+    ship_demo match, the training room and the clock hand match; the
+    "counters" profile (numpy's pairwise float32 fold) is refused by name.
+    BREAKS IF the books read a term from a constant instead of the obs
+    table's profile rows, or the "counters" profile is served."""
+    _run(["books"], timeout=7200)
