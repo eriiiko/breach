@@ -61,6 +61,13 @@ once: nothing changes a cover on the continuous path) and the line of fire
 over it (:meth:`DeviceObservation.lof_pairs`). The device functions are
 ``cpp/src/cuda_obs_sight.cuh``; a cover that blocks sight is refused.
 
+P8.3: THE DEVICE TEAM PICTURE (:attr:`DeviceObservation.picture`,
+``simulation.device_picture``): ``TeamPicture.update`` on the card every
+tick, at :meth:`DeviceObservation.stage` between who sees whom and the
+blocks; the vector's picture columns read it (``bp.obs_picture_vector``).
+``picture_from_host``: the envs whose first state is restaged from their
+host picture instead of the device's own first update.
+
 THE CADENCE: an env's block is built on its decision ticks -- its episode
 start (the tick it held when the observation was built) and every
 ``decimation`` ticks after (the run's ``[run] decimation``, the value the

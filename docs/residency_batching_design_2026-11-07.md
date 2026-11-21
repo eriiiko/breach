@@ -3300,6 +3300,106 @@ of 25 x 25 per env: every roster row's window from every unit's centre)
 0.039 / 0.491 / 1.919 ms; the P8.0 + P8.1 blocks 0.030 / 0.018 / 0.045 ms.
 No golden re-baseline; the played game unchanged (no host value moved).
 
+**P8.3 AS-BUILT (2026-11-21, branch `29-p83-obs-picture`).** THE DEVICE TEAM
+PICTURE is `simulation.device_picture.DevicePicture` (`DeviceObservation.picture`)
+over `cpp/src/cuda_obs_picture.{cuh,cu}`: `TeamPicture.update` line for line,
+every env in two launches on the tick stream at the walk's `11'` line BETWEEN
+device vision and the blocks (`DeviceObservation.stage`: vision, picture,
+blocks), i.e. the reference's slot 11 itself, after the advance, the order
+expiry and the conversion (and after `prune_grenades`). `k_picture_units`
+(one thread per env): the tick check (a skipped or doubled update is a
+fault), the object serials, then `_track_units` over the store rows (=
+`sim.units` order: bars at the first update a unit exists and again at the
+first that sees it a zombie, death tick, motion), then `last_hit` over the
+ring's hits with damage > 0 in emission order (the last wins).
+`k_picture_teams` (one thread per (env, marine team)): the damage window
+against the records BEFORE the update, the seen deaths (a kill whose
+victim's record is of tick - 1), the memory, the sightings from the device
+`visible` table and the live row, the object tracker (the dead forgotten, the
+sight gate over every (mate centre, object tile) line through
+`obs_sight::line_clear`, a first sighting drawing `OBJECT_UID_BASE + k`). The
+first update (start_team_picture's) reads no events. THE BLOCK: one int64 row
+of `PIC_W` words per env (`device_picture.layout(T, U)` and the kernels'
+`pic_layout`, compared at every build): `REC (T, U, 15)` (a team's record of
+store row r; the loadout as its table row), `UNIT (U, 15)` (bar as Q16 `hp_q`,
+turned, death tick, motion, last hit with the cause's index), `DMG (T, 1024, 3)`
++ `DMG_HD (T, 2)` (each team's damage window as ONE FIFO ring of (victim uid,
+tick, Q16 damage) in append order: every entry is appended at the current
+tick and dropped by age, so the FIFO's prefix is what every per-victim deque
+drops and victim v's deque is its subsequence in order), `OBJ` / `SEEN (T,
+96, 2)` + counts and `OBJ_NEXT`, `SERIAL_NEXT`, the side arrays `SIDE_G (64)` /
+`SIDE_C (32)` with their `KNOWN` counts, `PARAM` (memory_ticks, window_ticks,
+the env's team count, from the reference's own picture object), `TICK`; 7565
+words (60 KB) per env at T = 2, U = 12. CAPACITIES (refusals, never clamps):
+records one per (team, store row) and the tracker live objects only (96 =
+the two tables' capacities), both bounded by the law, so neither can
+overflow; the damage window 1024 per (env, team), no law bounds it (peak 75
+over the corpus); a fault word `(N,)` (unknown uid, damage / tracker overflow,
+skipped tick, sight range, serial, teams) rides the conductor's ONE books read
+(`books_defer("picture_faults")`, raised by name with the env:
+`ConductorOverflow` for an overflow, else `ConductorFault`), read directly
+only at the build. THE SERIAL: the host tracker is keyed by object identity
+and the tables compact, so every grenade / charge row carries a serial in a
+SIDE ARRAY of the picture's block that the tables' ONE stable compaction
+carries (`ObjectTable::set_side`; `k_table_compact` moves side[i] with row i
+and recounts KNOWN, the rows already numbered); rows only ever append at the
+end, so the update numbers rows `KNOWN .. count` from `SERIAL_NEXT`, grenades
+first. No table column changed (no digest moved). On the host the matching
+notion is test-side only: an object's POSITION in `projectiles +
+planted_charges` (`device_picture.host_form`); the gate compares trackers by
+position, identity-free. THE VECTOR: the 13 columns the table gives P8.3
+(`hp`, `vel_x` / `vel_y`, the five `hit_*`, the four record counts) by
+`bp.obs_picture_vector` beside P8.1's block (`hp` as `float(hp_q) / 65536`
+over the bar's same view; `_hit_from` with `__dsqrt_rn`). THE SEAM for P8.9b:
+`DevicePicture.restage(e, picture | form)` through ONE conversion
+(`block_from_form`, whose `device_form` is the form again: a CPU test holds
+the round trip every tick of a ship_demo match). ORDER DEPENDENCES, each
+reproduced: `sim.units` = store row order (per-unit trackers, independent
+anyway); `tick_events` = the ring's emission order (last hit, damage-window
+append order); `killed` a sorted set and the memory loop over `sorted(recs)`
+(deletions, order-free); `visible_by_team` (per uid, order-free);
+`live_objects` = projectiles then charges in list order = grenade rows then
+charge rows (the id draws and `seen_now`); `_objects` / `_damage` dict
+orders reach no value. No order the device cannot know. Choices where the
+design was silent: the build takes the device's own first update, except an
+env whose hand state comes after the reference's first update (the check's
+hand matches), which is restaged from its twin's host picture; the faults
+are a books-read entry, not a separate sync; the picture runs for an ended
+env too (cheap, defined). Findings: (1) the damage window's float sums are
+EXACT (every damage is on the Q16 grid and the sums stay below 2^37), so the
+order the reference adds them in cannot move a value: the `dmg_sum` break
+(the device sums reversed) stays green, and the order is held instead on the
+window's STATE (`dmg_order`, the tick's hits fed in reverse, goes red); (2)
+`team_picture`'s docstring says a dealt hit needs "a living non-zombie unit
+of the team", the code does not test `alive` (the device twins the code);
+(3) the corpus never re-saw a lost grenade, so the door hand match
+(`range_door`, both teams idle, the units placed at tick 0 either side of the
+open door: a frag then a long-fuse smoke, the frag's detonation compacting the
+smoke down a row while both teams track it, the door shut and opened by
+hand); a hand state at tick 0 must retake the spawn's vision cache and
+picture (`vision.state_for` caches per tick). Gates (`tests/cuda_obs_check.py`,
+`PATCH = "P8.3"`): the picture's WHOLE state equal to the reference's at
+EVERY tick, field by field, and `damage_last_s` raw-bit equal for every
+(team, unit), on bots (1350 ticks), bots_v1 (273), range_door (201), the
+hand match (321), range_hall (33), hall_cover (27), ship_all_round (481), the
+door match (151), the batches N = 2 / 4 of ship_demo (to tick 1664) and the
+room, and part RESTAGE (env 1 of 2 scrambled and restaged at tick 60, both
+equal over 321 ticks); coverage: records created 53, refreshed after a gap
+13, expired 4, deaths seen 27 / unseen 1, conversions with a record 2,
+grenade-ticks tracked 1554, lost 5, re-seen 1, carried through a compaction
+37, charge-ticks tracked 294, damage entries added 767 / dropped 617. The 13
+columns raw-bit equal at every decision tick and non-constant over
+(a)+(b)+(d). Breaks, each red: `early_picture` (bots_v1 tick 271, the turned
+unit's zombie record), `lifetime` (bots tick 663, a record kept a tick),
+`dmg_order` (bots tick 439, a victim's two hits of one tick), `serial_row`
+(at the first compaction under a tracked object: door match tick 30, bots
+439, hand 74), and P8.0 to P8.2's unchanged. 2.00 syncs per steady tick at
+N = 1 and 2. Cost (`tools/bench_conductor.py --obs`, ship_demo, GPU time of
+one update for all envs): 0.021 ms per tick at N = 1, 0.021 at N = 64, 0.023 at
+N = 256; the blocks with the picture's columns 0.026 / 0.036 / 0.046 ms per
+decision (P8.2's 0.030 / 0.018 / 0.045). No golden re-baseline; no host value moved;
+no table column added.
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:
