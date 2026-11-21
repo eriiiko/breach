@@ -4161,6 +4161,109 @@ again for the build: the bank file of §4.6 is not needed by this number;
 moving the restage's host packing into the pre-build halves it. No golden
 re-baselined; no host value moved; no table column added.
 
+**P8.6b (part 1) AS-BUILT (2026-11-21, branch `29-p86b-obs-orders`, stacked on
+P8.9b's `21a9c97d`).** THE ORDER, READ FROM THE CARD: with it every served key
+and column of the policy observation is built on the card (`device_obs.BUILT`
+covers the whole spec; `tests/test_device_obs.py` fails on a served key or
+column left unbuilt). Nothing of the order was host-only: the four order
+columns are store columns the conductor's ORDER table writes at `1b'` and its
+expiry clears at `10'`; the room graph is static per episode. THE ROOM GRAPH
+(device) (`device_obs.room_graph_values`: `obs_spec_v1.place_plane`, the room
+grid, the openings in the graph's order) is staged per env at the build and
+restaged by `reset_prepare` / `reset_env` (an opening count past the batch's
+capacity refused by name). `DeviceObservation.build_orders` (after the
+windows; `cpp/src/cuda_obs_orders.cu`, bound as `bp.obs_orders`) is three
+launches on the tick stream, no sync: `k_route` (one block per env: the tiles
+`horde.walkable_tiles` from the resident material plane OR the rectangle of
+every opening `room_graph.opening_states` calls openable NOW -- not walkable,
+every unwalkable tile in the span of a living CLOSED door that is not wired
+and not a hull door, from the door tables, the wired flags and
+`obs_rows::door_hull` (lifted out of the list); per distinct (place,
+footprint) of the env's ordered rows, in row order, `horde_dev::flood_block`
+seeded at every passable anchor whose block centre is in the place; the far
+block minima; per row the field at its anchor `(tile_y, tile_x)` and the
+compass step in `horde.candidates`' parity order), `k_order_vector` (columns
+84-95 in the kit's float64, `_place_centre` through the place table) and
+`k_order_planes` (far `route` / `place`). The list's order columns (47-51)
+are `order_tail` (moved above `k_list`, called after `mate_entry`; the full
+view's call unchanged). RECOMPUTED every decision, no cache: the host's route
+cache is keyed on the tile serial and the openings' openable flags, i.e. on
+everything the field reads, so a recompute IS the cached value; a BFS's
+distances do not depend on the frontier's visiting order, so the flood equals
+`horde.flood` whatever the device's order. What the host shows, learned and
+reproduced: a closed ORDINARY door counts as openable, so shutting or opening
+one never changes a route; only a wall destroyed, a hull or wired door, or a
+door no longer closed-and-eligible does (a hull door opened); the compass is
+read at the soldier's anchor tile, `inside` / the place direction at its
+centre tile; an unreachable place shows `route_len` -1, compass 0 0, the
+route plane -1 everywhere and the place plane still drawn. Gates
+(`tests/cuda_obs_check.py`, `PATCH = "P8.6b"`, landing after P8.9b in the
+owners table): THE ORDER HAND MATCH (ship_demo, both teams idle, 160 ticks:
+door D between team 0's room and its east neighbour made a hull door, a room
+off the start room sealed by wiring its doors; go to / hold with a target /
+clear an opening with a limit / fall back to with a limit that expires off the
+cadence / an unreachable room / a replaced and a cleared order / a soldier
+with none; A opens D at tick 30 and walks through it from 48 to 84, so its
+route runs 2, 1, 0 and its compass points east; B opens and shuts an ordinary
+door of the start room at 10 / 21), the list hand match, corpus (c) with the
+commander on, and a batch of three order hand matches (seeds 81 / 83 / 85)
+beside the list hand match. Part GATE: 2264 env-decisions equal over the
+whole corpus (41 of the order hand match, 7 of the list hand match, 330 of
+corpus (c)); the batch of orders 48 (N = 2) and 130 (N = 4) env-decisions,
+envs ending at 160 / 24 / 160 / 160. Order coverage (rows at decisions, over
+the order and list hand matches and corpus (c)): no order 256, go to 654,
+hold 70, clear 17, fall back to 748, a room 1451 and an opening 38 as the
+place, a limit 34 and none 1455, a target 778 and none 711, inside 307, route
+0 / 1 / more 301 / 4 / 1131, unreachable 53, a route changed with the order
+held 12, expired 3, replaced 7, a team with and without orders 74, a mate
+with the same place 992, a sideways compass 421. Every owned row raw-bit equal
+at every decision, every order row non-constant over the corpus; all equal on the
+first run of the device code (the work was the scene). THE WALL (part WALL,
+every marine latched a go-to order with a target at tick 0): perturbing an
+unseen enemy's row moves no order row, 7 (cone) and 6 (all_round) (team,
+tick) cases with orders held. Across resets (part
+RESET, the commander's orders through the tap): 19 resets every one of an env
+showing orders, 5498 order rows shown after a reset, every order row equal
+from the new episode's tick 0. Breaks, each red: `ord_prev` (the route over the openings of
+the env's previous build) at tick 24, the first decision after the ordinary
+door shut (`compass_dy`: a hull door opening moves no openable flag, so the
+shut ordinary door is what reaches this break); `ord_tie` at tick 4
+(`compass_dx`); `ord_place` at tick 4 (`place_dx`); `ord_expiry` (the
+conductor's `10'` expiry skipped) at tick 24 (the full view's order tail
+first). Bench (`tools/bench_conductor.py --obs --orders`, every marine an
+order to its own room: one flood per soldier, 8 per env; GPU ms per decision for all N envs): the
+order 8.85 / 10.0 / 22.9 ms at N = 1 / 64 / 256, the whole per decision
+(observation + full view + books + decoder) 12.0 / 16.2 / 38.6 ms; with no
+order held the order is 0.18 / 0.20 / 0.47 ms and the whole 3.7 / 6.4 / 16.1
+ms. The floods run one block per env, its keys one after another, so at small
+N the card idles (about 1.1 ms a flood at N = 1); a grid over (key, env)
+would take the worst case down where N is small, and the commander's one
+order per team means 2 floods per env, not 8. A tick that LATCHES an order
+intent costs a third host sync (the ORDER table's input staging wait,
+`cuda_unit_store.cu:135`, P8.6a's path): 2 syncs on a steady tick, 3 on every
+tick of the bench's every-tick re-latch. The commander measured
+on corpus (c) (host, the six ship_demo runs, 842 env-ticks, two commanders
+per env; the card shared with another agent's runs): 246 order intents (29.2 per env per 100 ticks), from 78 commander decisions
+that changed the team's order (9.3 per env per 100 ticks); the crowd runs
+(every unit packed together, 78 to 145 ticks) churn, the uncrowded ship_demo
+run gives 8 intents in 308 ticks (2.6 per env per 100). `BotCommander.
+handle_frame` costs 0.088 ms per call on the host (0.006 ms on a tick it does
+not decide; 0.49 ms mean, 0.28 ms median, 2.9 ms max on its deciding tick,
+every `team_period_ticks`), 0.18 ms per env per tick for the env's two
+commanders: at N = 256 that is about 45 ms of host time per tick, plus the
+host view of the sim it would need on the device path. Choices where
+the design was silent: recompute rather than a per-env cache (equal by
+construction, cost above); the flood's keys deduplicate (place, footprint)
+per env, so soldiers sharing a place share a flood; the opening's
+openable test walks the env's door rows per unwalkable tile (openings are
+few and small). PART 2 (who writes orders on the training path: the bots'
+team layer as a host bridge, a device commander, or nothing) is Erik's
+decision; what it needs from this part: orders reach the card only as the
+store's four order columns (written by the ORDER table from `order_intent`,
+the one intent the tap still carries beside the decoder); whatever writes
+them, these blocks read them at the next decision with no change. No golden
+re-baselined; no host value moved.
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:
