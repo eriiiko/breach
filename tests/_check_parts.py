@@ -32,6 +32,7 @@ run; by hand, ``main([...])`` of a check runs exactly as before.
 from __future__ import annotations
 
 import re
+import sys
 import time
 import traceback
 
@@ -57,7 +58,7 @@ def run_parts(parts, table, fails: list, reset=None) -> int:
         try:
             table[name]()
         except Exception as ex:            # a part's crash fails it, the rest run
-            traceback.print_exc()
+            traceback.print_exc(file=sys.stdout)   # into the part's own section
             fails.append(f"part {name} raised {type(ex).__name__}: {ex}")
             print("FAIL:", str(fails[-1]).encode("ascii", "replace").decode("ascii"))
         n = len(fails)
@@ -119,21 +120,49 @@ def shared_run(request, module_file: str, parts_of: dict, module: str, launch) -
     (parts, the timeout its parts had alone, s)), through ``launch(body,
     timeout)`` -- the wrapper's own ``cuda_harness.run_cuda_script`` (named in
     the wrapper, so ``_suite_kinds`` classifies its tests as device tests).
-    The timeout is the sum of the selected tests' own: each part keeps its
-    budget; it is a hang guard, never a speed gate."""
+    The timeout is the sum of the selected parts' own budgets (the timeout
+    each had alone): a hang guard, never a speed gate. A process that dies
+    inside a part fails that part, and the parts after it run again in a
+    fresh process."""
+    import os
     import subprocess
     parts = selected_parts(request.session, module_file,
                            {n: v[0] for n, v in parts_of.items()})
-    timeout = sum(v[1] for v in parts_of.values() if set(v[0]) & set(parts))
-    error = None
-    try:
-        proc = launch(f"import {module}, sys; sys.exit({module}.main({parts!r}))",
-                      timeout)
-        out = proc.stdout + "\n" + proc.stderr
-    except subprocess.TimeoutExpired as ex:
-        out = _text(ex.stdout) + "\n" + _text(ex.stderr)
-        error = f"(the shared run timed out after {timeout} s)"
-    return {"sections": split(out), "output": out, "error": error, "parts": parts}
+    budget = {p: max(v[1] for v in parts_of.values() if p in v[0]) for p in parts}
+    sections, outs, error = {}, [], None
+    todo = list(parts)
+    while todo:
+        timeout = sum(budget[p] for p in todo)
+        try:
+            proc = launch(f"import {module}, sys; sys.exit({module}.main({todo!r}))",
+                          timeout)
+            out = proc.stdout + "\n" + proc.stderr
+            died = False
+        except subprocess.TimeoutExpired as ex:
+            out = _text(ex.stdout) + "\n" + _text(ex.stderr)
+            error = f"(the shared run timed out after {timeout} s)"
+            died = True
+        outs.append(out)
+        got = split(out)
+        sections.update(got)
+        done = [p for p in todo if got.get(p, (None,))[0] is not None]
+        rest = [p for p in todo if p not in done]
+        if not rest or died:
+            break
+        # the process died inside a part (a native crash: no verdict, no later
+        # part started): that part fails on its own section, and the parts
+        # after it run in a fresh process, so its death hides no other verdict
+        dead = rest[0]
+        if dead not in sections:
+            sections[dead] = (None, out[-6000:])
+        todo = rest[1:]
+    out = "\n".join(outs)
+    log_dir = os.environ.get("BREACH_CHECK_LOG_DIR")
+    if log_dir:                            # the whole run's output, for a reader
+        from pathlib import Path
+        Path(log_dir).mkdir(parents=True, exist_ok=True)
+        (Path(log_dir) / f"{module}.log").write_text(out, encoding="utf-8")
+    return {"sections": sections, "output": out, "error": error, "parts": parts}
 
 
 def _text(x) -> str:
