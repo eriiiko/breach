@@ -290,6 +290,70 @@ class DeviceDecoder:
             c._zreqs[e] = set()              # host row is EMPTY, overwritten at slot 5
         self.horde_head()                    # the build's tick: the latch of tick 0
 
+    # -- #29 P8.9b: the per-env reset ------------------------------------------
+    def reset_prepare(self, e: int, sim, spec):
+        """Env ``e``'s next episode's decoder rows from the reference's own
+        objects, refused by name as the build refuses (a team not
+        ``policy``, a horde controller with no device form, other head
+        sizes): ``(drive row, horde mode, table row)``. Writes nothing."""
+        e = int(e)
+        drive = np.zeros((self.T,), dtype=np.uint8)
+        for t, team in enumerate(spec.teams):
+            if team.controller != "policy":
+                raise DecoderRefused(
+                    f"device decoder reset (env {e}): team {t} is driven by "
+                    f"{team.controller!r}: on the device path every marine team is the "
+                    f"decoder's")
+            drive[t] = 1
+        z = getattr(spec, "zombie_controller", "zombies")
+        if sim._zombie_requests is None:
+            mode = HORDE_CONDUCTOR
+        elif z == "zombies":
+            mode = HORDE_DEVICE
+        elif z == "idle":
+            mode = HORDE_IDLE
+        else:
+            raise DecoderRefused(f"device decoder reset (env {e}): the horde controller {z!r} "
+                                 f"has no device form (zombies or idle)")
+        tab = table_values(sim, self.S)
+        sizes = tuple(int(x) for x in tab[len(TAB_FIELDS) - 5:])
+        if sizes != self.sizes:
+            raise DecoderRefused(f"device decoder reset (env {e}): head sizes {sizes}, the "
+                                 f"batch's {self.sizes}")
+        return drive, int(mode), tab
+
+    def reset_env(self, e: int, prep) -> None:
+        """Env ``e``'s decoder for its next episode: no slot ever decoded
+        (the state record zero, ``aimed`` -1: a new ``AgentPolicy``), no
+        pending decision (its decisions, due flag, masked choices and fault
+        words zero), its drive row, horde mode and table row from ``prep``
+        (:meth:`reset_prepare`); the conductor's decoder-driven units and
+        horde latch for the env. Every other env untouched."""
+        cp, c = self.cp, self.c
+        e = int(e)
+        drive, mode, tab = prep
+        st = np.zeros(tuple(self.state.shape[1:]), dtype=np.int64)
+        st[:, STATE_FIELDS.index("AIMED")] = -1
+        self.state[e] = cp.asarray(st)
+        self.decisions[e] = 0
+        self.masked[e] = 0
+        self.faults[e] = 0
+        self.due[e] = 0
+        self.drive[e] = cp.asarray(drive)
+        self.horde_mode_host[e] = mode
+        self.horde_mode[e] = mode
+        self.horde_envs = [k for k in range(self.N) if self.horde_mode_host[k] != HORDE_CONDUCTOR]
+        self.horde_all = len(self.horde_envs) == self.N
+        self._horde_idx = cp.asarray(np.array(self.horde_envs, dtype=np.int64))
+        self.table_host[e] = tab
+        self.table[e] = cp.asarray(tab)
+        sim = c.sims[e]
+        c._dec_uids[e] = frozenset(int(u.id) for t in range(self.T) if drive[t]
+                                   for u in sim.roster(t) if u is not None)
+        if e in self.horde_envs:
+            c._zreqs[e] = set()              # the card serves this horde (as at the build)
+        self.horde_head()                    # the latch of the env's tick 0
+
     # -- the decision ----------------------------------------------------------
     def set_decisions(self, actions, envs=None, list_uid=None) -> None:
         """Hand over a decision: ``actions`` ``(N, rows, 5)`` int (CuPy, a

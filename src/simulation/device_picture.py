@@ -495,6 +495,15 @@ class DevicePicture:
                               where=f"restage of env {e}")
         self.state[e] = self.cp.asarray(blk)
 
+    def reset_env(self, e: int, block, params) -> None:
+        """#29 P8.9b: env ``e``'s next episode -- its PARAM row (the new
+        picture's memory / window ticks and team count) and its whole block
+        (``block_from_form`` of the new sim's tick-0 picture, made by the
+        observation's ``reset_prepare``); every other env untouched."""
+        e = int(e)
+        self.params_host[e] = np.asarray(params, dtype=np.int64)
+        self.state[e] = self.cp.asarray(np.asarray(block, dtype=np.int64))
+
     # -- readers -------------------------------------------------------------
     def damage_sums(self):
         """THE damage window's sums on the card (``damage_last_s`` for every

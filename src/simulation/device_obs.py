@@ -1213,6 +1213,10 @@ class DeviceObservation:
         self.terminals = 0                   # terminal builds (an ending tick of some env)
         self.term_brk = ""                   # THE BREAK hook (TERM_BREAKS, the check's)
         self._term_pending = np.zeros(N, dtype=bool)  # term_next's deferred envs
+        # -- P8.9b: the per-env reset (the live build's skip row) --------------
+        self.reset_skip = cp.ones((N,), dtype=cp.uint8)
+        self.resets = 0                      # per-env resets of the observation side
+        self.reset_brk = ""                  # THE BREAK hook (RESET_BREAKS, the check's)
         # -- P8.7: the device books (the reward, termination, the ended latch)
         self.books = device_books.DeviceBooks(self, self.reward_terms)
         c.attach_observation(self)
@@ -1242,6 +1246,163 @@ class DeviceObservation:
         # the ending tick's blocks are built as the reference builds its last
         # observation; the latch the books set skips every later tick
         self.books.update()
+
+    # -- P8.9b: the per-env reset of the observation side ----------------------
+    def reset_prepare(self, e: int, sim, spec):
+        """THE OBSERVATION SIDE OF A PER-ENV RESET, first half: every host
+        value env ``e``'s next episode (``sim`` at its tick 0, built through
+        ``MatchSession`` with ``spec``) restages, read from the reference's
+        own objects exactly as the build reads them, and every refusal by name
+        (:class:`DeviceObsRefused`, ``PictureRefused``, ``DecoderRefused``):
+        the episode must fit the batch's layout (T, S, U, the cover / wired /
+        place capacities, one lane cell, the head sizes). Called by
+        ``DeviceConductor.reset_env`` BEFORE it writes anything; nothing here
+        writes the card."""
+        from types import SimpleNamespace
+        from simulation.obs_spec_v1 import ObsContext
+        from simulation.device_picture import PictureRefused, block_from_form, host_form
+        from simulation.device_picture import PARAM_FIELDS as PIC_PARAMS
+        c = self.c
+        e = int(e)
+        who = f"device observation reset (env {e})"
+        if spec is None:
+            raise DeviceObsRefused(f"{who}: the new episode's MatchSpec is needed (reset_env("
+                                   "e, sim, spec))")
+        n_t = len(spec.teams)
+        if n_t > self.T:
+            raise DeviceObsRefused(f"{who}: {n_t} marine teams, the layout {self.T}")
+        check_teams(sim, self.T, f" ({who})")
+        uids = [int(u.id) for u in sim.units]
+        row_of = {uid: r for r, uid in enumerate(uids)}
+        rowmap = np.full((self.n_rows,), -1, dtype=np.int32)
+        for t in range(n_t):
+            roster = sim.roster(t)
+            if len(roster) > self.S:
+                raise DeviceObsRefused(f"{who}: team {t} holds {len(roster)} roster slots, "
+                                       f"the layout {self.S}")
+            for u in roster:
+                if u is not None:
+                    rowmap[t * self.S + int(u.slot)] = row_of[int(u.id)]
+        ctx = ObsContext.build(sim, spec, self.S, n_teams=self.T)
+        table = table_values(sim, ctx, self.reward_terms)
+        if int(table[_row_of("LANE_CELL")]) != int(self.table_host[0, _row_of("LANE_CELL")]):
+            raise DeviceObsRefused(f"{who}: the lane cell {int(table[_row_of('LANE_CELL')])} "
+                                   f"is not the batch's (the lane grid's shape)")
+        cover = cover_values(sim)
+        if len(cover) > self.cover_cap:
+            raise DeviceObsRefused(f"{who}: {len(cover)} covers, the batch's capacity "
+                                   f"{self.cover_cap}")
+        n_doors = len(getattr(sim, "_doors", ()) or ())
+        if n_doors > self.wired_cap:
+            raise DeviceObsRefused(f"{who}: {n_doors} doors, the wired table's capacity "
+                                   f"{self.wired_cap}")
+        places = place_values(sim)
+        if len(places) > self.place_cap:
+            raise DeviceObsRefused(f"{who}: {len(places)} places, the batch's capacity "
+                                   f"{self.place_cap}")
+        # the window sources' heat dials (check_window_sources' per-env half)
+        from simulation import exchange, unit_tables
+        vec = unit_tables.values(sim)
+        want = tuple(int(x) for x in exchange.heat_dials_q(ctx.heat_dials))
+        got = (unit_tables.read(vec, "heat_gain_q"), unit_tables.read(vec, "heat_ambient_q"))
+        if want != tuple(got):
+            raise DeviceObsRefused(f"{who}: the device tables' heat dials {got} are not the "
+                                   f"episode's {want}")
+        # the picture: the new sim's own after its tick-0 update (spawn_match's
+        # start_team_picture), as ONE block through the restage's conversion
+        pic = getattr(sim, "team_picture", None)
+        if pic is None or tuple(pic.teams) != tuple(range(n_t)):
+            raise PictureRefused(f"{who}: the sim's team picture "
+                                 f"{None if pic is None else tuple(pic.teams)} is not the "
+                                 f"match's teams {tuple(range(n_t))}")
+        pic_params = np.array((int(pic.memory_ticks), int(pic.window_ticks), n_t),
+                              dtype=np.int64)
+        assert len(PIC_PARAMS) == len(pic_params)
+        pic_block = block_from_form(host_form(pic, sim), uids, self.T, int(c.U), pic_params,
+                                    where=who)
+        dec = None
+        if c.decoder is not None:
+            dec = c.decoder.reset_prepare(e, sim, spec)
+        return SimpleNamespace(spec=spec, n_t=n_t, rowmap=rowmap, ctx=ctx, table=table,
+                               teams=team_values(spec, self.T), cover=cover, places=places,
+                               wired=wired_values(sim, self.wired_cap), pic_params=pic_params,
+                               pic_block=pic_block, dec=dec)
+
+    def reset_env(self, e: int, sim, prep) -> dict:
+        """THE OBSERVATION SIDE OF A PER-ENV RESET, second half (called by
+        ``DeviceConductor.reset_env`` after the sim side's restage, between
+        ticks): env ``e``'s row map, obs table and team rows, parameter row
+        (the episode starts at the sim's tick), ended latch CLEARED, cover /
+        wired / place tables, the stand-in aim cleared; who sees whom retaken
+        (every env: a pure function of state no write has moved since the
+        tick's own); the device team picture RESTAGED from the new sim's
+        picture (its tick-0 update); the books RE-BORN (their constructor for
+        env e alone); the decoder's slot state emptied and its pending
+        decision dropped; then the tick-0 observation and full view BUILT
+        into the LIVE buffers for env ``e`` alone (the reference's ``observe``
+        after the worker's reset). The ``final_`` buffers keep the ended
+        episode's terminal observation. Every other env's buffers, picture,
+        books and decoder state untouched. Returns the host work."""
+        import time as _time
+        cp = self.cp
+        e = int(e)
+        t0 = _time.perf_counter()
+        self.env_teams[e] = prep.n_t
+        self.ctx[e] = prep.ctx
+        self.rowmap[e] = cp.asarray(prep.rowmap)
+        self.table_host[e] = prep.table
+        self.teams_host[e] = prep.teams
+        self.table[e] = cp.asarray(prep.table)
+        self.teams[e] = cp.asarray(prep.teams)
+        self.episode_tick[e] = int(sim.tick)
+        self.params_host[e, PARAM_EPISODE_TICK] = int(sim.tick)
+        self.params_host[e, PARAM_DECIMATION] = self.decimation
+        self.params[e] = cp.asarray(self.params_host[e])
+        if self.reset_brk != "reset_ended":      # THE BREAK: the ended latch kept
+            self.ended[e] = 0
+        self.ended_host[e] = False
+        self._term_pending[e] = False
+        cov = np.zeros(self.cover_host.shape[1:], dtype=np.int64)
+        cov[:len(prep.cover)] = prep.cover
+        self.cover_host[e] = cov
+        self.cover_count_host[e] = len(prep.cover)
+        self.cover[e] = cp.asarray(cov)
+        self.cover_count[e] = len(prep.cover)
+        self.wired[e] = cp.asarray(prep.wired)
+        pl = np.zeros(tuple(self.places.shape[1:]), dtype=np.int64)
+        pl[:len(prep.places)] = prep.places
+        self.places[e] = cp.asarray(pl)
+        self.place_count[e] = len(prep.places)
+        self.aimed[e] = -1
+        uploads = 12
+        # who sees whom at the new episode's tick 0 (every env: idempotent)
+        self.vision()
+        # the picture: restaged from the host's tick-0 picture
+        if self.reset_brk != "reset_picture":    # THE BREAK: the old episode's picture kept
+            self.picture.reset_env(e, prep.pic_block, prep.pic_params)
+        # the books: their constructor for env e alone
+        if self.reset_brk != "reset_books":      # THE BREAK: the old episode's books kept
+            self.books.reset_env(e, prep.n_t)
+        # the decoder: its slot state and pending decision emptied
+        if self.c.decoder is not None and self.reset_brk != "reset_decoder":
+            self.c.decoder.reset_env(e, prep.dec)
+        uploads += 4
+        # the tick-0 observation of env e alone into the LIVE buffers: the
+        # decision blocks with a skip row clear for env e only (the build's
+        # own cadence: its episode tick is the sim's tick, so it is due)
+        skip = np.ones(self.N, dtype=np.uint8)
+        skip[e] = 0
+        if self.reset_brk == "reset_ended":
+            skip[e] = 1                          # the kept latch skips it, as a real run would
+        self.reset_skip.set(skip)
+        saved = (self.ended, self.builds)
+        self.ended = self.reset_skip
+        try:
+            self.build()
+        finally:
+            self.ended, self.builds = saved
+        self.resets += 1
+        return {"ms": 1000.0 * (_time.perf_counter() - t0), "uploads": uploads + 1}
 
     # -- P8.2: who sees whom ---------------------------------------------------
     def vision(self, store_ptr=None) -> None:

@@ -253,7 +253,7 @@ FAILS: list = []
 BREAK = os.environ.get("OBS_BREAK", "")
 #: The patch this script's gates are at: every column owned by it or an
 #: earlier patch of the version-2 table is compared.
-PATCH = "P8.8b"
+PATCH = "P8.9b"
 #: The decision cadence of the corpus (design 13.1's decimation, a run file's
 #: ``[run] decimation``; the device observation takes it as its argument).
 DECIMATION = 4
@@ -3743,11 +3743,384 @@ def part_range_scenes():
             fail(f"(range) {p.name}: {type(ex).__name__}: {ex}")
 
 
+# ---------------------------------------------------------------------------
+# #29 P8.9b: THE PER-ENV RESET OF THE OBSERVATION SIDE -- episode after episode
+# ---------------------------------------------------------------------------
+#: The breaks of part RESET (``OBS_BREAK``): ``DeviceObservation.reset_brk``.
+RESET_BREAKS = ("reset_picture", "reset_books", "reset_decoder", "reset_ended")
+#: Episodes per env the room run must complete (each env auto-reset at its own
+#: ending, its next episode drawn by ``episode_draw``).
+RESET_EPISODES = int(os.environ.get("OBS_RESET_EPISODES", "3"))
+#: (label, level, run seed, N, episodes per env, tick cap, forced resets
+#: {env: (step index, ...)}: a reset after that step though the match runs on).
+RESET_RUNS = (("room N=4", "room", 301, 4, RESET_EPISODES, None, {}),
+              ("ship_demo N=2", "ship", 302, 2, 0, 360, {1: (14,), 0: (40,)}))
+
+
+def _reset_layout(level, run_seed: int, n_envs: int):
+    import rl_env
+    raw = {"run": {"seed": int(run_seed), "n_envs": int(n_envs), "decimation": DECIMATION,
+                   "levels": [level.name], "policy": "policy",
+                   "levels_dir": tempfile.gettempdir()},
+           "obs": {"spec": "v1", "full_view": True},
+           "reward": {"profile": "fireteam"}, "action": {"spec": "v1"}}
+    run = rl_env.parse_run(raw, "reset run")
+    return run, rl_env.make_layout(run, [level])
+
+
+def _obs_dict(layout) -> dict:
+    sh = dict(layout.obs_shapes())
+    sh.update(layout.full_shapes())
+    return {k: np.zeros(s[1:], dtype=d) for k, (s, d) in sh.items()}
+
+
+class RefEnv:
+    """THE REFERENCE of one env of the reset run: a host ``rl_env.EnvRunner``
+    (the farm worker's own calls: ``reset``, ``observe``, ``step``, at an
+    ending ``observe`` into the final arrays then ``reset``), every team
+    ``policy`` decoding seeded masked-random decisions (part DEC_GATE's
+    drawer), recording per step what the device is compared with."""
+
+    def __init__(self, e, run, layout, level, seed):
+        import rl_env
+        self.e, self.layout = e, layout
+        self.r = rl_env.EnvRunner(e, run, layout, [level], breach_physics=bp)
+        self.rng = np.random.default_rng(int(seed) * 1000 + e)
+        self.sizes = layout.head_sizes
+        self.steps = []
+        self.endings = self.ticks = 0
+        self._begin()
+        self.live = self._observe()
+
+    def _begin(self):
+        self.r.reset()
+        s = self.r.session
+        self.tap = cc.Tap()
+        s.sim.attach_intent_log(self.tap)
+        self.per_tick = []
+        orig = s.tick
+        pol_uids = {int(u.id) for t in range(len(s.spec.teams)) for u in s.sim.roster(t)
+                    if u is not None}
+
+        def tick():
+            orig()
+            out = []
+            for kind, args in self.tap.take():
+                if kind == "drive_zombies":
+                    continue
+                if kind in cd.LATCH_COLUMNS and int(args[0]) in pol_uids:
+                    continue
+                out.append((kind, args))
+            self.per_tick.append(out)
+        s.tick = tick
+        self.old = np.zeros((self.layout.n_rows, N_OLD_REF), dtype=np.float32)
+
+    def _observe(self) -> dict:
+        d = _obs_dict(self.layout)
+        self.r.observe(d)
+        return d
+
+    def forms(self) -> dict:
+        """The picture, the books and the decoder slot states now (between
+        steps): what the device's are compared with at a decision."""
+        from simulation import device_books as dbk, device_decoder as ddec, device_picture as dpic
+        sim = self.r.session.sim
+        S = self.layout.n_slots
+        return {"picture": dpic.host_form(sim.team_picture, sim),
+                "books": dbk.host_form(self.r.books, self.old),
+                "slots": {t * S + k: ddec.host_state_form(pol, k)
+                          for t, pol in self.r.policies.items() for k in range(S)}}
+
+    def draw(self, host) -> np.ndarray:
+        rng = self.rng
+        n = host["list_uid"].shape[0]
+        out = np.zeros((n, 5), dtype=np.int32)
+        for r in range(n):
+            for h, k in enumerate(_aspec.MASK_KEYS):
+                out[r, h] = int(rng.choice(np.flatnonzero(host[k][r])))
+            am = _aspec.arg_mask(out[r, 3], out[r, 1])
+            out[r, 4] = int(rng.choice(np.flatnonzero(am)))
+        return out
+
+    def step(self, forced: bool) -> dict:
+        host = self.live
+        forms = self.forms()
+        a = self.draw(host)
+        self.per_tick = []
+        out = self.r.step(a)
+        st = {"obs": host, "forms": forms, "acts": a, "ticks": int(out["ticks"]),
+              "intents": list(self.per_tick), "ended": bool(out["ended"]), "final": None,
+              "forced": False, "episode": int(self.r.k),
+              "served": {"reward": np.asarray(out["reward"], dtype=np.float32),
+                         "counters": np.asarray(out["counters"], dtype=np.float32),
+                         "team_balance": np.asarray(out["team_balance"], dtype=np.float32),
+                         "team_uncredited": np.asarray(out["team_uncredited"],
+                                                       dtype=np.float32),
+                         "team_outcome": np.asarray(out["team_outcome"], dtype=np.float32),
+                         "rows_ended": np.asarray(out["rows_ended"], dtype=np.uint8),
+                         "terminated": np.uint8(out["terminated"]),
+                         "truncated": np.uint8(out["truncated"])}}
+        self.old = np.asarray(out["counters"][:, :N_OLD_REF], dtype=np.float32)
+        self.ticks += st["ticks"]
+        if st["ended"]:
+            st["final"] = self._observe()
+            self.endings += 1
+            self._begin()
+        elif forced:
+            st["forced"] = True
+            self._begin()
+        self.live = self._observe()
+        self.steps.append(st)
+        return st
+
+
+def _row_of_dev(arrs: dict, e: int) -> dict:
+    return {k: v[e] for k, v in arrs.items()}
+
+
+def obs_equal(label, dev: dict, host: dict) -> str | None:
+    """The first owned (key, column) whose raw bits differ, or None."""
+    own = owned_obs()
+    a, b = owned_parts(host, own, False), owned_parts(dev, own, False)
+    for k in a:
+        if not np.array_equal(raw(a[k]), raw(b[k])):
+            idx = np.argwhere(raw(a[k]) != raw(b[k]))
+            return f"{k}: {len(idx)} value(s) differ, first at {tuple(int(x) for x in idx[0])}"
+    return None
+
+
+N_OLD_REF = 0          # set at the part's start (rl_env.N_OLD_COUNTERS)
+
+
+def reset_run(label, level, run_seed, N, episodes, cap, forced) -> dict:
+    """ONE reset run: the references first (each env until it completed
+    ``episodes`` episodes, then on to the longest env's tick count, or to
+    ``cap`` ticks), then the device -- a conductor, a device observation and
+    a device decoder over N envs whose episodes are built by a second
+    ``EnvRunner`` per env (the same run, the same ``episode_draw``: the host
+    build of decision 4) -- fed the references' decisions and order intents,
+    each env reset by ``DeviceConductor.reset_env`` at its own ending (or a
+    forced step), and compared at every decision, every step end, every
+    ending and every reset."""
+    import cupy as cp
+    import rl_env
+    from simulation import device_books as dbk, device_decoder as ddec
+    global N_OLD_REF
+    N_OLD_REF = rl_env.N_OLD_COUNTERS
+    run, layout = _reset_layout(level, run_seed, N)
+    refs = [RefEnv(e, run, layout, level, run_seed) for e in range(N)]
+    t0 = time.perf_counter()
+    for r in refs:
+        while (r.endings < episodes or (cap is not None and r.ticks < cap)) and \
+                (cap is None or r.ticks < cap):
+            r.step(len(r.steps) in forced.get(r.e, ()))
+    horizon = max(r.ticks for r in refs) if cap is None else cap
+    for r in refs:
+        while r.ticks < horizon:
+            r.step(len(r.steps) in forced.get(r.e, ()))
+    print(f"  {label}: references played ({time.perf_counter() - t0:.1f} s): episodes "
+          f"ended per env {[r.endings for r in refs]}, steps {[len(r.steps) for r in refs]}, "
+          f"horizon {horizon} ticks")
+    # -- the device -----------------------------------------------------------
+    builders = [rl_env.EnvRunner(e, run, layout, [level], breach_physics=bp) for e in range(N)]
+    for b in builders:
+        b.reset()
+    c = cd.DeviceConductor([b.session.sim for b in builders], bp=bp)
+    obs = dobs.DeviceObservation(c, [b.session.spec for b in builders], layout.n_slots,
+                                 DECIMATION, n_teams=layout.n_teams)
+    dec = ddec.DeviceDecoder(obs, [b.session.spec for b in builders])
+    if BREAK in RESET_BREAKS:
+        obs.reset_brk = BREAK
+    T, S, R = obs.T, obs.S, obs.n_rows
+    pos, into = [0] * N, [0] * N
+    stats = {"resets": 0, "endings": 0, "forced": 0, "decisions": 0, "ticks": 0,
+             "after_reset_decisions": 0, "others_held": 0}
+    fresh = [False] * N
+
+    def fail_at(msg):
+        fail(f"{label}: {msg}")
+        return stats
+
+    def decision_checks(e, st, tick):
+        got = obs.host()
+        msg = obs_equal(label, _row_of_dev(got, e), st["obs"])
+        if msg:
+            return f"env {e}, step {pos[e]} (episode {st['episode']}, tick {tick}): {msg}"
+        pf = obs.picture.forms()[e]
+        if pf != st["forms"]["picture"]:
+            from simulation.device_picture import first_difference
+            return (f"env {e}, step {pos[e]} (tick {tick}): the picture differs: "
+                    f"{first_difference(st['forms']['picture'], pf)}")
+        bf = obs.books.forms()[e]
+        if bf != st["forms"]["books"]:
+            k = next(k for k in bf if bf[k] != st["forms"]["books"][k])
+            return f"env {e}, step {pos[e]} (tick {tick}): the books differ at {k!r}"
+        state = dec.host_state()
+        for row, hs in st["forms"]["slots"].items():
+            ds = ddec.state_form(state[e, row])
+            if hs != ds:
+                return (f"env {e}, step {pos[e]} (tick {tick}): row {row}'s slot state {ds} vs "
+                        f"the reference's {hs}")
+        return None
+
+    while True:
+        live = [e for e in range(N) if pos[e] < len(refs[e].steps)]
+        if not live or stats["ticks"] >= horizon:
+            break
+        due = np.zeros(N, dtype=bool)
+        acts = np.zeros((N, R, 5), dtype=np.int32)
+        for e in live:
+            if into[e] == 0:
+                st = refs[e].steps[pos[e]]
+                msg = decision_checks(e, st, int(c.sims[e].tick))
+                if msg:
+                    return fail_at(msg)
+                due[e] = True
+                acts[e, :st["acts"].shape[0]] = st["acts"]
+                stats["decisions"] += 1
+                stats["after_reset_decisions"] += int(fresh[e])
+        if due.any():
+            dec.set_decisions(cp.asarray(acts), envs=due)
+        for e in live:
+            st = refs[e].steps[pos[e]]
+            c.latch(st["intents"][into[e]] if into[e] < len(st["intents"]) else (), env=e)
+        c.tick()
+        stats["ticks"] += 1
+        for e in live:
+            st = refs[e].steps[pos[e]]
+            into[e] += 1
+            ended = bool(c.ended_now[e])
+            if into[e] < st["ticks"]:
+                if ended:
+                    return fail_at(f"env {e}: ended at tick {int(c.sims[e].tick)}, inside a step "
+                                   f"the reference did not end")
+                continue
+            # the step's end: the served arrays, the ending, the reset
+            sv = obs.books.host_served()
+            for k, want in st["served"].items():
+                got = sv[k][e]
+                got = got[:np.shape(want)[0]] if np.ndim(want) else got
+                if not np.array_equal(raw(np.asarray(got)), raw(np.asarray(want))):
+                    return fail_at(f"env {e}, step {pos[e]} end (tick {int(c.sims[e].tick)}): "
+                                   f"served {k!r} differs")
+            if ended != st["ended"]:
+                return fail_at(f"env {e}, step {pos[e]} end: ended {ended}, the reference "
+                               f"{st['ended']}")
+            if st["ended"] or st["forced"]:
+                if st["ended"]:
+                    fin = {k: v[e] for k, v in ((k, obs.final[k].get()) for k in obs.final)}
+                    msg = obs_equal(label, fin, st["final"])
+                    if msg:
+                        return fail_at(f"env {e}, episode {st['episode']}: the terminal "
+                                       f"observation differs: {msg}")
+                    stats["endings"] += 1
+                before = obs.host()
+                fin_before = {k: v.get() for k, v in obs.final.items()}
+                b = builders[e]
+                b.reset()
+                c.reset_env(e, b.session.sim, b.session.spec)
+                stats["resets"] += 1
+                stats["forced"] += int(st["forced"])
+                after = obs.host()
+                for k in before:
+                    other = [x for x in range(N) if x != e]
+                    if not np.array_equal(raw(before[k][other]), raw(after[k][other])):
+                        return fail_at(f"the reset of env {e} moved another env's {k!r}")
+                for k, v in fin_before.items():
+                    if not np.array_equal(raw(v), raw(obs.final[k].get())):
+                        return fail_at(f"the reset of env {e} moved the final_ {k!r}")
+                stats["others_held"] += N - 1
+                fresh[e] = True
+            pos[e] += 1
+            into[e] = 0
+    print(f"  {label}: {stats['resets']} resets ({stats['endings']} at an ending, "
+          f"{stats['forced']} forced), {stats['decisions']} env-decisions compared "
+          f"({stats['after_reset_decisions']} after a reset), {stats['ticks']} ticks, other envs "
+          f"held at {stats['others_held']} env-resets; every observation key, mask, the full "
+          f"view, the picture, the books, the slot states, the served arrays and the "
+          f"terminal observations equal")
+    return stats
+
+
+def part_reset():
+    """P8.9b's gate: :data:`RESET_RUNS` (a training room, N = 4, every env
+    auto-reset at its own ending for :data:`RESET_EPISODES` episodes at
+    least; ship_demo, N = 2, forced resets mid-match with zombies and live
+    records), the device equal to its references episode by episode."""
+    tot = 0
+    for label, lv, seed, n, eps, cap, forced in RESET_RUNS:
+        level = ship_level() if lv == "ship" else room_level()
+        st = reset_run(label, level, seed, n, eps, cap, forced)
+        tot += st["resets"]
+        if eps and st["endings"] < eps * n and not FAILS:
+            fail(f"{label}: {st['endings']} endings, fewer than {eps} per env (vacuous)")
+    print(f"  reset: {tot} resets over the runs")
+
+
+def part_reset_cost(n_list=(4, 64)):
+    """The cost of a per-env reset with the observation attached (ship_demo,
+    every team ``policy``): the host build of the next episode (an
+    ``EnvRunner.reset``: ``MatchSession`` + ``ObsContext`` + the books and
+    tables), the sim-side restage, the observation side (picture, books,
+    decoder, the tick-0 build), their host syncs and uploads, and the next
+    tick's syncs against a steady tick's."""
+    import gc
+    import rl_env
+    from simulation import device_decoder as ddec
+    level = ship_level()
+    for n in n_list:
+        run, layout = _reset_layout(level, 401, n)
+        builders = [rl_env.EnvRunner(e, run, layout, [level], breach_physics=bp)
+                    for e in range(n)]
+        for b in builders:
+            b.reset()
+        c = cd.DeviceConductor([b.session.sim for b in builders], bp=bp)
+        obs = dobs.DeviceObservation(c, [b.session.spec for b in builders], layout.n_slots,
+                                     DECIMATION, n_teams=layout.n_teams)
+        ddec.DeviceDecoder(obs, [b.session.spec for b in builders])
+        for _ in range(3):
+            c.tick()
+        gc.collect()
+        gc.disable()
+        sc = cc.SyncCount()
+        res = []
+        try:
+            for k in range(3):
+                e = (7 * k + 1) % n
+                t0 = time.perf_counter()
+                builders[e].reset()
+                build = 1000.0 * (time.perf_counter() - t0)
+                sc.py = []
+                bp.host_sync_log_begin()
+                t1 = time.perf_counter()
+                w = c.reset_env(e, builders[e].session.sim, builders[e].session.spec)
+                total = 1000.0 * (time.perf_counter() - t1)
+                rlog = list(bp.host_sync_log_end()) + sc.py
+                logs = []
+                for _ in range(2):
+                    sc.py = []
+                    bp.host_sync_log_begin()
+                    c.tick()
+                    logs.append(list(bp.host_sync_log_end()) + sc.py)
+                res.append((build, total, w, rlog, logs))
+        finally:
+            sc.close()
+            gc.enable()
+        for build, total, w, rlog, logs in res:
+            names = sorted({x.partition(" | ")[2] or x for x in rlog})
+            print(f"  reset cost N={n}: host build (EnvRunner.reset) {build:.1f} ms; reset_env "
+                  f"{total:.1f} ms (observation side {w['obs']['ms']:.1f} ms), uploads "
+                  f"{w['uploads']} + {w['obs']['uploads']}, host syncs {len(rlog)} {names}; "
+                  f"the tick after {len(logs[0])} syncs, the next {len(logs[1])}")
+        del c, obs
+        gc.collect()
+
+
 PARTS = {"gate": part_gate, "batch": part_batch, "handover": part_handover,
          "syncs": part_syncs, "ended": part_ended, "floatkit": part_floatkit,
          "sight": part_sight, "wall": part_wall, "restage": part_restage,
          "books": part_books, "decoder": part_decoder, "dec_gate": part_dec_gate,
-         "range_scenes": part_range_scenes}
+         "range_scenes": part_range_scenes, "reset": part_reset, "reset_cost": part_reset_cost}
 
 
 def main(parts=None) -> int:

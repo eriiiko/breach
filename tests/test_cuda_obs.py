@@ -256,3 +256,20 @@ def test_a_door_beside_blast_heated_gas_plays_on_equal():
     unseal refuse inside the physics' range again (the pre-patch seam raised
     ApplierFault at '9e(d) doors' on both)."""
     _run(["range_scenes"])
+
+
+def test_an_env_reset_mid_batch_observes_its_new_episode_as_the_farm_does():
+    """PROPERTY (#29 P8.9b): episode after episode -- a training room, N = 4,
+    every env auto-reset (``DeviceConductor.reset_env`` with the observation
+    attached) at its own ending for at least three episodes, decisions drawn
+    at random among the legal options and decoded on the card; ship_demo,
+    N = 2, resets forced mid-match -- every env equals a host ``EnvRunner``
+    with the same ``episode_draw`` at every decision: every observation key,
+    mask and the full view (raw bits), the team picture's whole state, the
+    books, the decoder's slot states, the served reward arrays at every step
+    end, the terminal observation in ``final_`` at every ending (still
+    there after the reset), and no other env's buffer moved by a reset.
+    BREAKS IF a reset leaves the old episode's picture (OBS_BREAK=
+    reset_picture), books (reset_books) or decoder slot state
+    (reset_decoder), or keeps the ended latch (reset_ended)."""
+    _run(["reset"], timeout=7200)

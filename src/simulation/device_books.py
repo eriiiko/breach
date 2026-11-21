@@ -291,13 +291,7 @@ class DeviceBooks:
             raise BooksRefused(f"device books: the compiled block layout {compiled} is not "
                                f"device_books.layout's {mine} (rebuild cpp/build_cuda)")
         self.K = len(counter_names())
-        block = np.zeros((self.N, self.W), dtype=np.int64)
-        o = self.layout["SC"][0]
-        S = {f: i for i, f in enumerate(SCALAR_FIELDS)}
-        block[:, o + S["ENDED_TICK"]] = -1
-        block[:, o + S["RES_TEAM"]] = -1
-        block[:, o + S["TICK"]] = -1
-        block[:, o + S["N_MATCH"]] = obs.env_teams
+        block = np.stack([self._initial_row(n) for n in obs.env_teams])
         self.state = cp.asarray(block)
         N, R, T = self.N, self.R, self.T
         from simulation.reward_v1 import REWARD_GROUPS
@@ -320,7 +314,32 @@ class DeviceBooks:
         n = int(np.prod(s))
         return self.state[:, o:o + n].reshape((self.N,) + tuple(s))
 
-    def _launch(self, first: bool) -> bool:
+    def _initial_row(self, n_match: int) -> np.ndarray:
+        """One env's block before its constructor: zeros, the ending tick,
+        the result's team and the tick at -1, the env's team count."""
+        row = np.zeros((self.W,), dtype=np.int64)
+        o = self.layout["SC"][0]
+        S = {f: i for i, f in enumerate(SCALAR_FIELDS)}
+        row[o + S["ENDED_TICK"]] = -1
+        row[o + S["RES_TEAM"]] = -1
+        row[o + S["TICK"]] = -1
+        row[o + S["N_MATCH"]] = int(n_match)
+        return row
+
+    def reset_env(self, e: int, n_match: int) -> None:
+        """#29 P8.9b: env ``e``'s books RE-BORN for its next episode (the
+        ``RewardBooks`` constructor on the restaged store and picture: the
+        snapshot, the standing, the living teams), env ``e`` ALONE (the
+        kernel's ``only_env``); every other env's block, served arrays and
+        words untouched. Its words are read here (one sync, a reset's)."""
+        e = int(e)
+        self.state[e] = self.cp.asarray(self._initial_row(n_match))
+        self.words[:, e] = 0
+        deferred = self._launch(True, only_env=e)
+        if not deferred:
+            self.check_words(self.words.get())
+
+    def _launch(self, first: bool, only_env: int = -1) -> bool:
         o, c, sv = self.obs, self.c, self.served
         pic = o.picture
         return self.bp.obs_books(
@@ -333,7 +352,7 @@ class DeviceBooks:
             int(sv["team_uncredited"].data.ptr), int(sv["team_outcome"].data.ptr),
             int(sv["rows_ended"].data.ptr), int(sv["terminated"].data.ptr),
             int(sv["truncated"].data.ptr), int(self.words.data.ptr), bool(first),
-            int(self.brk))
+            int(self.brk), int(only_env))
 
     def start(self) -> None:
         """Every env's first state (the books' constructor), at the build."""

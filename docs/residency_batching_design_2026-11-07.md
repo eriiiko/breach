@@ -4033,6 +4033,134 @@ before it, a fragility of the check, reported, not fixed here. No golden
 re-baselined; no host value moved;
 `.claude/rules/device-units.md` never stated the bound (unchanged).
 
+**P8.9a AS-BUILT (2026-11-21, branch `29-p89-obs-reset`, stacked on P8.8b's
+head `f14f1ce5`).** THE PER-ENV RESET OF THE SIM SIDE is ONE entry,
+`DeviceConductor.reset_env(e, sim, spec=None)`, called between ticks: `sim` is
+env e's next episode at its tick 0, built on the host through `MatchSession`
+(decision 4: equal to the reference by construction; brood levels included,
+the broods already spawned for the seed), and env e's slice of every structure
+the build stages is restaged from it, the others untouched and never paused.
+THE WORK LIST (each with how): the resident planes and the swarm store /
+planes -- `ResidentBatch.reset_env` (a new `check_reset` compares the new sim
+with the slot's occupant and every buffer's shape / dtype: at N = 1 the old
+check compared the sim with itself); the non-resident ripple pair -- CuPy
+slice writes; the store slice and its device tables -- `DeviceStore.upload_env`
+(new C++ `UnitStoreDevice::upload_env`, `UnitTablesDevice::upload_env`); the
+tick row (tick, the episode's draw key, the tile serial) --
+`TickRow.write_env`; every object and entity table (rounds, noise, blast log,
+grenades, charges, doors + tiles, ducts + vents, sources + tiles, timed
+charges, heat sources, the eight signal tables) -- ONE list,
+`DeviceConductor._table_records(sim)`, which the build now reads for every env
+and the reset for one, through the record list's new per-env upload
+(`UnitRecordList::upload_env` behind `DeviceTable.env_rows` (checked) /
+`stage_env_rows`): the ONE table mechanism, no second; the horde cache --
+`DeviceHordeCache.stage_env`; the edit door -- `reset_env(e, seq)` with the new
+episode's queue seq (C++ `EditDoor::reset_env` took a seq); the host latches
+(`_cols` of env e dropped, its order table, its zombie request set), the row
+maps, the `Z-` tracking, the 9e gates (recomputed over the envs: a class no env
+holds any more turns its face off, as a fresh batch would), the spray box bound
+(raised, never lowered: it is a scratch bound), the swarm death rows, the
+ended-now flag. The record lists that live one tick (ring, request list, the
+three effect lists, cell buffer, claims) need nothing: their next `begin`
+restarts them. THE REFUSALS, each by name before the first write: the build's
+(`_refuse`, `shooting_door`, `refuse_wego`), another grid / gas table / tilt /
+tick rate / buffer shape (`ConductorRefused` from `check_reset`), another stamp
+path, more units than U, a plane's shape, a device-tables range
+(`unit_tables.values`), a table's capacity (`ObjectTableOverflow`), the horde
+cache's capacity or map. NO SYNC: every per-env copy is enqueued on the tick
+stream (a pageable source is staged before `cudaMemcpyAsync` returns) or a CuPy
+write on the legacy stream. THE PRE-BUILT EPISODE: the host build is a plain
+call (`MatchSession(level, spec, seed)` / `EnvRunner.reset`) the device backend
+(P8.10a) makes for env e while its current episode runs, then hands the sim to
+`reset_env` at the ending; no thread here. Thread-safety, as read: a
+`Simulation` build rebuilds PROCESS-WIDE tables (`weapons.get_tables()`, the
+loadout tables, `combat.weapon_tables()`), so it is not safe beside another
+build or a host reference stepping in the same process; the conductor's walk
+reads only device state and each twin's own scalars, so a build beside a tick
+is safe as far as read (unmeasured under the GIL); `reset_env` itself is
+conductor-thread only, between ticks. Gates (`tests/cuda_conductor_batch_check.py`
+parts RESET and RESET_REFUSALS): env e reset mid-batch then run equal to a
+FRESH N = 1 conductor of the same (level, seed) at every tick, and every other
+env equal to the same batch run WITHOUT the resets at the reset tick and after
+(`(field_digest, tick_digest)`, the no-digest records, swarm deaths):
+ship_demo bots matches (zombies alive) N = 2 (resets env 0 at tick 50, env 1 at
+51, env 0 again at 120: 440 env-ticks) and N = 4 (env 1 at 40, env 3 at 41, env
+1 again at 130, env 0 at 170: 880), larva_studio (swarm units alive, seeds
+differing) N = 2 (3 resets, 400) and N = 4 (4 resets, 800); all equal on the
+first run. Refusals: a training room into a ship_demo batch and a sim with 76
+units into U = 12, both refused by name, the batch equal to itself without the
+attempts. Breaks, each red: `reset_table` (the door table left unstaged: ship
+N = 2 at the reset tick), `reset_key` (the tick row's key left at the old seed:
+red on larva_studio at the reset tick + 1; GREEN on the ship_demo runs, whose
+220 recorded ticks draw nothing a key moves), `reset_neighbour` (the store
+upload also writes row 0 of the next env: ship N = 4 env 0 at tick 41). Cost
+(part RESET_COST, ship_demo, the card shared): a `MatchSession` build 17.6 ms
+(range_door 12.3 ms), the sim-side restage 13 ms of host time at N = 4 and at
+N = 64 (94 uploads, 0 host syncs; its host packing -- `pack`, `values`, the
+record functions -- is most of it and can move into the pre-build), the tick
+after a reset 2 syncs like a steady tick. No golden re-baselined; no host
+value moved.
+
+**P8.9b AS-BUILT (2026-11-21, the same branch).** THE PER-ENV RESET OF THE
+OBSERVATION SIDE rides the same entry: with an observation attached
+`reset_env` takes the episode's `spec` and calls
+`DeviceObservation.reset_prepare(e, sim, spec)` among its refusals (the new
+`ObsContext`, obs table and team rows, the row map from the roster, the cover /
+wired / place rows, the picture's block -- `block_from_form(host_form(the new
+sim's tick-0 picture))`, P8.3's seam -- and the decoder's rows; refused by name:
+more teams than T, a roster past S, another lane cell, a cover / door / place
+count past the batch's capacity, other heat dials, other head sizes, a team
+not `policy`, a horde controller with no device form), then after the sim side
+`DeviceObservation.reset_env`: the per-env rows and parameter row (the episode
+starts at the sim's tick), THE ENDED LATCH CLEARED, the stand-in aim cleared,
+who sees whom retaken (every env: a pure function of state nothing moved since
+the tick's own), `DevicePicture.reset_env` (its PARAM row and the block),
+`DeviceBooks.reset_env` (the row set to the constructor's start, then the
+books kernel's constructor for env e alone: the kernel took `only_env`), the
+decoder's `reset_env` (the slot state zero with `aimed` -1, the pending
+decision, due flag, masked choices and faults zero, its drive row, horde mode,
+table row, the conductor's decoder-driven units and horde request set), then
+THE TICK-0 OBSERVATION AND FULL VIEW built into the LIVE buffers for env e
+alone: the decision blocks under a skip row clear for env e only (P8.8b's
+mechanism the other way round). What the trainer is handed matches the farm:
+at an ending step the terminal observation in `final_` (P8.8b, built at the
+ending tick, untouched by the reset), the new episode's tick 0 live. Choices
+where the design was silent: the reset entry is the conductor's (the sim and
+the observation in one call, refusals of both before any write); the books
+are re-born by their own kernel rather than a host form converted to a block
+(no second conversion to keep equal); vision is retaken for every env rather
+than per env (idempotent, one launch); the books' words are read at the reset
+(the reset's one sync). Gates (`tests/cuda_obs_check.py` part RESET, `PATCH =
+"P8.9b"`; P8.9a / P8.9b own no column, so the owners table's landing order
+puts them before P8.6b): the references are host `EnvRunner`s (the farm
+worker's calls; every team `policy`; masked-random decisions; the commander's
+orders fed through the tap), the device's episodes built by a second
+`EnvRunner` per env with the same `episode_draw`. Training room range_door N =
+4: every env auto-reset at its own ending, episodes ended per env 6 / 3 / 3 / 4
+(16 resets), 3246 env-decisions compared (2345 after a reset) over 3240 ticks;
+ship_demo N = 2 with resets forced mid-match (env 1 after its 15th step, env 0
+after its 41st) and one ending: 3 resets, 181 env-decisions (125 after a
+reset). At every decision every owned observation key, mask and the full view
+raw-bit equal, the picture's whole state, the books' whole state and every slot
+state equal; at every step end the served reward / counters / team blocks /
+rows_ended / terminated / truncated raw-bit equal; at every ending the
+terminal observation equal and unchanged by the reset; at every reset every
+other env's live buffers unchanged (51 env-resets held). All equal on the first
+run. Breaks, each red at the first decision after the first reset:
+`reset_picture` (the old picture kept: `full_list`), `reset_books` (the books
+differ at `units`), `reset_decoder` (the slot state kept: `vector` `prev[0]`),
+`reset_ended` (the latch kept: `list_mask` / `valid`, the env never rebuilt).
+Cost (part RESET_COST, ship_demo, every team `policy`, the card shared): the
+host build of the next episode (`EnvRunner.reset`: `MatchSession`,
+`ObsContext`, the books, the tables) 25 to 28 ms; `reset_env` with the
+observation 21 to 25 ms of host time at N = 4 and N = 64 alike (the
+observation side 2 to 7 ms, 17 uploads, ONE host sync: the books' words); the
+tick after a reset 2 syncs. At the inventory's 0.16 to 0.85 resets per tick at
+N = 256 that is 3 to 21 ms of host work per tick for the restage and as much
+again for the build: the bank file of §4.6 is not needed by this number;
+moving the restage's host packing into the pre-build halves it. No golden
+re-baselined; no host value moved; no table column added.
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:
