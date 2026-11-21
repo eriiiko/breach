@@ -248,6 +248,48 @@ keys in W2; foam PingPong allocated lazily, reset on a backward tick; every patc
 asserts a dry level renders bit-identically; W3's gate is properties plus a live
 check (no wake shot, units stand still).
 
+## 9b. Reassessment prototypes (branch `97-reassess`, 2026-11-21, NOT merged)
+
+Three dials for Erik's by-eye reassessment; each default renders the shipped
+look (still_pool_flashlight and still_pool_closeup bit-identical to main
+cdf8f413; flooding_corridor and wade_by_firelight within the harness's own
+run-to-run noise, the same pixels and size as two runs of main differ).
+
+- `caustic_form = "gather" | "scatter"`: SCATTER is Wallace's own form, W4's
+  finding 1 resolved: a slope pass (`shaders/water.fs` with its main swapped
+  for `shaders/water_scatter_slope.glsl`, so THE fine surface) samples the
+  surface 24 per tile over the view's water, `shaders/water_scatter.vs/.fs`
+  move each sample by the gather's own map and rasterise the grid's
+  triangles additively (no cull) into a light image, both in one
+  `core.PingPong`; the draw reads it in place of `1/|det J|`. Twin
+  `water_surface.scatter_light` (+ `scatter_disp`, `scatter_gain`); tests in
+  `tests/test_water_caustic_scatter.py`. Measured: the GL light image's mean
+  over the closeup's wet cells 1.0013 of the incident light; a flat surface
+  gives exactly 1 everywhere (GL read back). Twin, still water at 10 s, mean
+  floor-light factor gather / scatter: 1.011 / 1.004 (0.15 m), 1.046 / 1.000
+  (0.30 m), 1.508 / 0.842 (1.20 m: the cap at `caustic_max` 3 drops the
+  scatter's brightest folds; uncapped 1.02). Cost (`--water-perf`,
+  water_studio, whole map): draw 4.7-4.9 ms gather; scatter 3.5-3.6 ms draw
+  (no Hessian) + 2.4-2.5 ms for its two passes (2.3 M samples), +1.0-1.3 ms
+  in all; 0.84 ms at 12 per tile. Lacks: a GL-vs-twin per-pixel check, the
+  light carried from where it enters (the floor's source light is multiplied,
+  as the gather does), light leaving the view's rect at its edge.
+- `floor_bend = "legacy" | "snell"`: SNELL reads the floor where the
+  caustic's own map sends the view ray, `depth (1 - 1/n) grad h` in metres.
+  The legacy bend is `refract_strength` in MAP UV: on water_studio (84 x 47
+  tiles) 2.2x Snell in x, 1.25x in y, the opposite sign; on a larger map it
+  grows. Visible: the tile seams under still water wobble less; the tank
+  barely changes.
+- `lamp_glint` (0 = off) + `lamp_height_m`, `lamp_radius_m`: W1's finding 1
+  (no lamp in still water) is the light field's ONE elevation (`light_z`
+  0.5, 26.6 deg: a mirror glint needs slope 0.62, still water has 0.08
+  RMS; with `glint_strength` 0 the lamp shot changes by at most 3/255). The
+  prototype adds each omni lamp's GGX glint at its true position (the ONE
+  assembly's specs, handed to the water pass by main.py and lighting_demo),
+  sphere-widened (Karis 2013), times the field's light there: a broken
+  mirror image about 1 m across under each lamp. +0.25 ms with 7 lamps.
+
+
 ## 10. Sources
 
 As listed in `docs/presentation_graphics_plan_2026-11-15.md` (Vlachos 2010;

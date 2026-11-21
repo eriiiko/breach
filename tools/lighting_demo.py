@@ -1385,9 +1385,12 @@ def _run_water_perf(renderer, sim, lights_in, light_sky,
     def lit_step():
         total = monotonic_total_tick(sim.turn_number, ticks_per_round,
                                      sim.tick)
+        # renderer: the lamps reach the water pass (the reassessment's
+        # lamp_glint prototype; no blast flashes without gmap)
         sim.set_light(True, demo_light_rows(lights_in, total,
                                             sim_time_per_tick, grid_w,
-                                            grid_h), light_sky)
+                                            grid_h, renderer=renderer),
+                      light_sky)
         if sim.is_paused():
             sim.set_paused(False)
         sim.step()           # tick_events are this step's: consume them now
