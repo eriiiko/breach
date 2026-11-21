@@ -370,7 +370,7 @@ class door, in integers, and are Device tables rows on the device:
 
 **Blocking sets never overlap, at load and after every move.** The load door
 refuses a level whose props' blocking sets overlap each other, sit on a tile
-that is not prop-enterable (section 4.5 step 3) or leave the grid (determinism
+that is not prop-enterable (section 4.5 step 4) or leave the grid (determinism
 critic, finding 4); the move keeps them disjoint (section 4.5, property 16).
 So each blocking tile has exactly one writer and `prop_mob_cap` /
 `prop_owner` are plain writes on both backends. As a check, not a rule, the
@@ -1431,3 +1431,875 @@ What it says:
 The critique round for arc 2 should be a physics-and-books critic and a
 determinism critic, on this section and patches B0 to B2 of section 11.
 
+---
+
+# Part C. Common
+
+## 10. The movable prop in the interaction table (#237)
+
+In the merged table's language (`docs/interaction_table_2026-11-21.md` on
+main, sections 1 and 6). The table is not edited here; the patch that builds
+each arc updates it (its section 6 step 6).
+
+**The new kind (section 1 row):** `PROP` | Movable props | The movable prop
+store (`Simulation.props`, `src/simulation/movable_props.py`), its device form
+`unit_schema.PROP_TABLE`, its class rows `[movable_props.*]` | It has a pose,
+a mass, a stamp every tick and (arc 2) its own fuel: Air, Water, Blasts,
+Marines and Fire each need a rule that no static furnishing has. Static props
+stay in FURN.
+
+Marks as the table's: **R** a rule (where it lives); **0** none, on purpose
+(why); **?** not decided (issue, or "no issue"); **.** not applicable. "Arc 2"
+marks what arc 2 adds; the mark given is the one after both arcs.
+
+### 10.1 The row: what a movable prop does to each kind
+
+| PROP acts on | mark | the cell |
+|---|---|---|
+| AIR | R | Slows flow through its tiles: `dyn_permeability` graded by coverage, MIN after the units' write (3.3; the stamp, `GameMap.stamp_units` + `cuda_stamp.cu` K4; the material row's `permeability`). Displaces and seals nothing (3.5, R1). Arc 2: a burning cell draws O2 from its reach and turns it into the tile law's products (9.4, 9.5; PROP_BURN stage). |
+| GAS | R | Slows smoke as it slows air (the trace rides the bulk face flux, Trace transport). Arc 2: a burning cell makes smoke through the shared products function (9.5; `soot_yield`). |
+| HEAT | R | Shadows radiant heat: `dyn_heat_atten_q` graded, MAX (3.3). Arc 2: a burning cell gives heat to its tiles' gas through the seam and to the room through the sweep's emission channel, and a cooler cell takes heat from hotter air, booked (9.4, 9.7). |
+| FIRE | R | Through heat only (arc 2): the prop never writes `fire`; its heat can light a flammable tile through `combat.apply_temperature_ignition`. A cold prop acts on fire only through the air it slows (through AIR). |
+| WAT | ? | None in either arc. #236 (pushing water aside, a floating prop damming a flow). |
+| WALL | ? | None: a wall tile is never under a blocking set, and a prop sliding into a wall or glass does no damage. Breaking glass or a wall by impact: #229. |
+| FURN | 0 | None, on purpose: a static crate, kindling, grille or foliage tile is not prop-enterable, so a movable prop never enters or moves it (4.5; `prop_system._STAMP_OK_BASE_MATERIALS`). Arc 2: its heat can light a crate through HEAT (named there). |
+| DOOR | R | Holds a door open: the door does not close while `prop_owner` is non-zero over its span (`door_system._occupancy_clear` + the DOORS stage, `cuda_unit_doors.cuh`; R8). |
+| DEV | ? | None: the motion plate reads units only (`.claude/rules/device-units.md`, signal slots), so a prop on it is not seen; arc 2: the fire sensor (`sensor_system.sample_sensors`, `Channel.FIRE`) reads tile fire, so a burning prop does not trip it. No issue. |
+| HAZ | R | Through heat only (arc 2): a burning prop's heat reaches a heat-triggered timed charge's tile (HEAT acts on Hazards). Arc 1: none, on purpose (a hazard reads only temperature and blasts). |
+| MAR | R | Slows or stops its walk: `prop_mob_cap` read by `GameMap.is_passable_block` / `footprint_mobility` and the device movement kernel (3.3; the row's `mobility`; R6). Blocks its step. Hands it momentum in a contact (4.6, R3) through `unit_impulse.add`; what follows is the unit law's (sway, stagger, knockdown). A render-only `PropContactEvent`. Arc 2: heats it through heat. |
+| ZOM | R | As for marines. Arc 2: `horde.block_feared` (`[zombie] fear_fire`) reads tile fire, so a zombie that fears fire does not fear a burning prop's own tiles (whether it avoids the hot tiles around it depends on what `block_feared` reads, UNVERIFIED). Not decided: no issue. |
+| CORP | 0 | None, on purpose: corpses are not stamped and do not block (`door_system._occupancy_clear`: "corpses never block"; Corpse law gap), so a prop slides over a corpse. |
+| SWM | 0 | None, on purpose: swarm laws read fields and probe `solid` (Swarm shared kit), and a prop is not solid, so a larva crawls under and over furniture. A prop crushing larvae: #229. |
+| RND | ? | None: rounds pass through (7; ACCEPTED GAP). Cover from the row's `cover_exposure`: #227. |
+| SPR | ? | None: the spray cone passes through (7). #227. |
+| GRN | ? | None: a grenade flies through (7). Bouncing off a prop by the row's `blocks_thrown`: #227. |
+| BLST | R | Damps the wave behind it: `dyn_wave_absorb`, MAX (3.3). |
+| LIT | R | Casts shadows: `dyn_light_atten_q`, per channel MAX (3.3). Arc 2: a burning prop's room light is render-only and follows it (#235). |
+| NOI | ? | None: a hard contact makes no noise. A contact noise through `noise.emit` (loudness by mass and speed) is #229's natural partner; the contact event exists for it. #229. |
+| SEE | ? | None: a prop does not block sight (`GameMap.has_los` reads `solid` and `sight_screen`). By the row's `blocks_sight` and the class height: #227. |
+| PROP | R | Blocks another prop's move (the start-of-slot `prop_owner` plane); shares momentum in a contact by the common velocity (4.6); a pair that claims one tile in one tick is refused together at its common velocity, three or more stop as on a wall (4.5). Arc 2: its heat warms a neighbour through the air. |
+
+### 10.2 The column: what each kind does to a movable prop
+
+| X acts on PROP | mark | the cell |
+|---|---|---|
+| AIR | R | Pushes it: the windward-ring read of THE per-tile wind term, a coverage-weighted mean, the force on the projected area, the torque from the per-tile shares, all through `unit_impulse.add` at slot 9c2 (4.3; `[movable_props.<class>] cd`, `[materials.air]` density; R9). Arc 2: the air's O2 feeds and starves a burning cell (9.4). |
+| GAS | 0 | None, on purpose: smoke carries no momentum beyond the air that carries it, and only O2 matters to a burning cell. |
+| HEAT | R | Arc 2: the air's temperature warms or cools each cell through the seam, booked (9.4); radiation reaches the cell through the gas its tiles absorb into. Arc 1: none (a prop has no thermal state). |
+| FIRE | R | Through heat (arc 2): a tile fire beside or under it heats the air its cells exchange with, which may light them; the tile fire also drinks first from shared O2 (slot 7 before 9e). |
+| WAT | ? | None in either arc: #236 (pushed by the flow, floating by density, a soaked prop that will not light). |
+| WALL | R | Stops it on the blocked axis, booked `wall` (4.6); no bounce (ACCEPTED GAP). |
+| FURN | R | A static crate, kindling, grille or foliage tile is not prop-enterable: it stops a prop as a wall does (4.5). |
+| DOOR | R | A closed door is not enterable (static `door_closed`); an open doorway is air. A door closing does not push a prop: it refuses to close instead (DOOR row above). |
+| DEV | R | Through AIR only: a vent or a pump pushes a prop only through the wind it makes. |
+| HAZ | R | Through BLST (a timed charge's blast) and, arc 2, through HEAT (a heat source warms the air its cells exchange with). |
+| MAR | R | The shove verb pushes it, limited by hand speed (4.4; `[impulse] impulse_ns`, `[movable_props] v_hand`; R7). A marine's footprint blocks its move (4.5). Walking into it does not push it (R7). Carrying: #228. |
+| ZOM | R | A zombie's footprint blocks its move (4.5). Zombies do not shove (UNVERIFIED that the zombie controller never issues the verb). Throwing: #228. |
+| CORP | 0 | None, on purpose: a corpse does not block or push a prop. |
+| SWM | 0 | None, on purpose: a swarm unit has no push (the swarm meets the unit side only through planes). |
+| RND | ? | None: a round passes through. A round pushing a prop (as a hit pushes a unit, `ammo_push_q`): #227. Damage: #229. |
+| SPR | ? | None: the cone passes through; its heat reaches a prop only through HEAT (arc 2). #227. |
+| GRN | R | Through BLST: their blast pushes it. A charge planted on a prop, a grenade bouncing off one: #227 / #229. |
+| BLST | R | Pushes it through its own wind only (4.3; Generic explosion). Arc 2: its heat may light it through HEAT. Breaking it: #229. |
+| LIT | 0 | None, on purpose: light carries no momentum and no heat beyond the sweep's heat channel (under HEAT). |
+| NOI | 0 | None, on purpose: noise moves nothing. |
+| SEE | . | Not applicable: seeing a prop does nothing to it. |
+
+43 cells: 22 in the row (its own diagonal included), 21 in the column. Every
+cell has a mark.
+
+### 10.3 Neighbouring cells that change (the table's section 6, step 4)
+
+- **DOOR acts on MAR / ZOM** ("never close on a living unit"): the same
+  occupancy check gains props; the unit cells read the same, and DOOR acts on
+  PROP says so.
+- **MAR / ZOM act on AIR** (the units' stamp): unchanged in behaviour; the
+  cell should say that the unit write is now the last-row-wins write among
+  UNIT rows, with props combined after it (3.3, 3.4).
+- **WAT acts on FURN** stays "?" for static crates; its pointer "floating by
+  density is the movable-props work (#226, #236)" moves to WAT acts on PROP.
+- **AIR acts on MAR / ZOM**: a prop upwind slows the wind a unit reads, through
+  AIR (its permeability). No rule change; the cells could name it.
+- **FIRE acts on DEV and on ZOM** (the fire sensor, `fear_fire`): correct for
+  tile fire, incomplete once arc 2 lands (new hole 2 below).
+- **Section 4 hole 15** ("bodies pass through each other"): still true of
+  units; props never overlap each other or a unit's footprint.
+
+### 10.4 New holes (the table's section 4, step 5), most consequential first
+
+1. **A table is no cover** against rounds, sight, sprays or grenades until
+   #227: a marine crouched behind a table is hit as in the open.
+2. **Arc 2: a burning prop is invisible to every reader of tile fire**: the
+   fire sensor does not trip, a zombie that fears fire walks onto its tiles,
+   and nothing flames on screen until #235 reads the prop. No issue.
+3. **Water does nothing to props** (#236): in the aquarium scene the flood
+   flows through the furniture and moves none of it.
+4. **Planners do not see props**: bots and zombies path into furniture and
+   slide or wait at the step; a wall-like prop in a corridor jams them (R6).
+5. **Nothing leaves through a hull breach** (R2): furniture slides to the
+   breach and piles at its edge.
+6. **A unit flung into a prop gives it nothing** (until #228).
+7. **The trained agent cannot see props** (R15): no training level holds them.
+8. **Swarm units ignore props**: larvae crawl through a fridge's tiles.
+
+---
+
+## 11. The build (not now)
+
+Rules that hold at EVERY patch boundary:
+- **Presence gating.** Every patch is byte-identical to today on a level
+  without movable props: the field digest, the entity section and the unit
+  stream of the pinned matches and the golden aggregate are unchanged, held by
+  the existing gates.
+- **The entity-export rule.** `PROP_TABLE` and `prop_entity_rows` land in A2,
+  the patch where the state first exists; props first move in A3.
+- **The twin ledger** (`tests/twin_manifest.toml`, `tools/twin_debt.py`). A
+  patch that touches a Class-P twin's files is Class P: it merges only with
+  `.cuda_green` at HEAD and re-marks those twins level
+  (`tools/twin_debt.py --mark-level <twin>`) in its last commit. For every
+  Class-T twin whose files it touches, it runs that twin's shadow check (the
+  change-based tier `tools/affected_cuda.py` selects them) and re-marks it
+  level in the same patch; no patch leaves debt for a later one, so the
+  device training door (`rl_env.require_snapshot`) never closes across the
+  arc. Each patch regenerates the manifest's `files`
+  (`tools/twin_manifest_gen.py`). The corpus (ship_demo, 300 ticks) holds no
+  movable prop, so the prop laws are in no twin's TRACED files, as the
+  grenade laws are not: a change to a prop law lands in its device TU in the
+  same patch, and `tests/cuda_unit_props_check.py` is the guard (the grenade
+  precedent, `.claude/rules/device-units.md`, Grenade and charge slots).
+- **The conductor refusal.** From A2 the device conductor refuses a level
+  with movable props by name (`DeviceConductor._refuse`, "movable props");
+  A4 lifts it with the whole-tick gate. Each patch's own device twin is
+  proved by its own per-slot shadow lockstep on prop scenes, which does not
+  need the conductor.
+
+### 11.1 Arc 1
+
+**A0. The shared reads, no behaviour change.**
+- Content: the per-tile wind term lifted out of `GameMap.footprint_wind` into
+  one function the unit read and `wind_load_plane` call; `unit_impulse.add` /
+  `angular_q` take the optional `r_clamp_q` (None = the table's), and the
+  device `impulse_add` / `angular_q` in `cpp/src/cuda_unit_lib.cuh` the same;
+  `_shrink` / `_clamp_vmax` public.
+- Class: **P** (`gamemap.py` is in the files of the Class-P twins `eos`,
+  `div_source`, `stamp`): `.cuda_green` at HEAD, those three re-marked level.
+- Twins touched, and what it does: Class T through `gamemap.py`
+  (`wind_impulse`, `movement`, `stamp_rows`, `tick_end_clears`, `doors`,
+  `vents`, `horde`, `sources`, `conductor`, `observation`), through
+  `unit_impulse.py` (`integrate_turn`, `wind_impulse`, `movement`, `horde`)
+  and through `cuda_unit_lib.cuh` (every Class-T twin listing it): shadow
+  checks green, re-marked level. No new twin.
+- Refusal: none (no prop exists).
+- Oracle: the unit footprint read equals its old form on every footprint of
+  random maps (property); the pinned matches' unit streams; the device
+  library probe (`cpp/src/cuda_unit_lib_probe.cu`) holds `impulse_add` with
+  `r_clamp_q = None` equal to today's over the range.
+- Collisions: #29 (`cuda_unit_lib.cuh` is in every device unit twin, and #29's
+  P8 work is in those files). May fold into A3 if #29 is busy.
+- Rule-file paths: none new.
+
+**A1. The stamp rule as an executable reference.**
+- Content: `src/simulation/prop_stamp.py` (Python) and `cpp/src/prop_stamp.h`
+  (FP_HD, on `SIM_HEADERS` in `tests/test_no_float_in_sim_tu.py`), the integer
+  reference of section 3.2 that any later change lands in FIRST; a test
+  binding for C++ == Python.
+- Class: **P** by build (`cpp/src/bindings.cpp` is on the manifest's
+  `[class_p] build` list): `.cuda_green` at HEAD. No twin's files.
+- Refusal: none.
+- Oracle: properties 1 to 8 (section 12), including the aligned fixtures and
+  the exact headings.
+- Collisions: #217 also edits `bindings.cpp` (a merge conflict, not a design
+  one).
+- Rule-file paths: CREATES `.claude/rules/props.md` with `paths:`
+  `src/simulation/prop_stamp.py`, `cpp/src/prop_stamp.h`,
+  `tests/test_prop_stamp.py`, and its section `## Prop stamp rule`; adds the
+  region-table row and the index row (section 14.3).
+
+**A2. The class, the entity, the store, PROP_TABLE, the stamp on both
+backends, walking and doors.**
+- Content: `[movable_props.*]` rows and their refusing class door (sizes,
+  mass, offset, `mu`, `cd`, permeability floor); the load door's overlap and
+  enterability refusals; the `movable_prop` entity; `Simulation.props` with
+  its row views in `sim.entities`; the entity record tail; `PROP_TABLE` with
+  `props_of`, `props_to_host`, `prop_entity_rows` and the generated layout;
+  slot 6 stamps props on the Python and C++ CPU paths AND the device stamp
+  kernel (K1 to K4, section 3.4), `take_stamp_rows` packing prop rows and
+  `unit_kernels.stamp` building them from the table; the sleeper layer, keyed
+  on pose; `prop_mob_cap` and `prop_owner` in `_RESIDENT_UNIT_PLANES`,
+  rebuilt at reset and every landing; walking reads the cap on the host
+  (`is_passable_block`, `footprint_mobility`) and the device
+  (`cuda_unit_movement.cu`, through a resident plane); doors read the owner
+  on the host (`_occupancy_clear`) and the device (the DOORS stage,
+  `cuda_unit_doors.cuh`); the conductor refusal "movable props"; the
+  per-class stamp tables as Device tables rows.
+- Class: **P** (`cuda_stamp.cu` and `gamemap.py`: `stamp`, `eos`,
+  `div_source`): `.cuda_green` at HEAD; `stamp` changes its device side in
+  this patch and is re-marked level with it.
+- Twins touched, and what it does: Class T with device changes in this patch
+  (`stamp_rows`, `movement`, `doors`): their shadow locksteps gain prop scenes
+  (a prop-bearing env beside prop-free ones), rows at tol 0, the two planes
+  declared field outputs; re-marked level. Class T touched only by file
+  (`gamemap.py`, `simulation.py`, `unit_schema.py`, `object_tables.py`,
+  `unit_kernels.py`, `unit_tables.py`, the regenerated layouts: in practice
+  every Class-T twin): shadow checks green prop-free, re-marked level.
+  `PROP_TABLE` joins the object tables' identity gate
+  (`tests/cuda_object_table_check.py` pattern).
+- Refusal: the conductor refuses a level with movable props.
+- Oracle: prop-free byte-identical (the pinned matches, the golden aggregate,
+  `tests/test_stamp_units_cpp_ab.py`); Python stamp == C++ stamp byte for byte
+  on prop scenes; `tests/cuda_stamp_check.py` on prop scenes with a unit and a
+  prop on one tile and two props' partial tiles overlapping; every
+  `cuda_s8a_check` leg (N = 1 == CPU, tol 0); `cuda_batch_invariance_check`
+  with props in some envs only; the entity section from the device tables ==
+  from the host; properties 9 to 16.
+- Collisions: #29 (`conductor.py`, `unit_kernels.py`, `unit_schema.py`,
+  `cuda_unit_movement.cu`, `cuda_unit_doors.cuh`, the generated layouts);
+  #217 (the stamp's resident wiring in `cuda_resident.h`,
+  `cuda_resident_tick.cu/.h`, which #217 edits).
+- Rule-file paths: `props.md` gains `src/simulation/movable_props.py`,
+  `src/simulation/entities/movable_prop.py`, `tests/test_movable_props.py`
+  and its section `## Movable prop store`; `device-units.md` gains its
+  section `## Prop table` (its `paths:` already match `unit_kernels.py`,
+  `object_tables.py` and `cpp/src/cuda_unit_*`).
+
+**A3. Motion: integration, move, contacts, wind, sleep.**
+- Content: `src/simulation/prop_motion.py`: slot 1a integration, slot 3p
+  move (double buffer, substeps, refusal pass with the pair rule), the
+  contact rule (common velocity, PUSH requests), slot 9c2 windward-ring read,
+  the sleep fast path, `PropContactEvent`; the device kernels in a new TU
+  `cpp/src/cuda_unit_props.cu` (CMakeLists' CUDA list and `/fp:strict` list)
+  for 1a, 3p, its claim pass and 9c2; the PUSH request kind
+  (`unit_requests.py`) and the PROP_PUSH stage of the applier
+  (`applier.py`, stages renumbered by name); the call lines in
+  `Simulation.step()` and `DeviceConductor`.
+- Class: **P** if the ring read's helper lives in `gamemap.py` (it does: THE
+  per-tile term), so `.cuda_green` at HEAD and `eos`, `div_source`, `stamp`
+  re-marked; the prop kernels themselves are Class T.
+- Twins touched, and what it does: a NEW Class-T row `[twins.props]` (slots
+  1a, 3p, 9c2 of props; device `cuda_unit_props.cu`), born level; Class T by
+  file: `simulation.py` (`integrate_turn`, `movement`, `verbs`,
+  `burn_through`, `burst_walls`, `tick_end_clears`, `table_appends`,
+  `grenades_and_charges`, `rounds`, `doors`, `horde`, `payload`),
+  `unit_impulse.py`, `applier.py` (`burn_through`, `tick_end_clears`,
+  `melee`, `resolve`, `grenades_and_charges`, `sprays`, `shooting`, `doors`,
+  `vents`, `horde`, `payload`, `sources`), `unit_requests.py` (`verbs`):
+  shadow checks green, re-marked level.
+- Refusal: the conductor still refuses movable props (the whole-tick gate is
+  A4's).
+- Oracle: the per-slot shadow lockstep of 1a, 3p (with the PUSH requests and
+  the PROP_PUSH stage compared as a record list) and 9c2 on prop scenes, rows
+  at tol 0, env i of N == alone, the write-set gate; their chained form;
+  properties 17 to 27; the momentum books every tick in a scene suite (a blast
+  in a furnished room, a slide into a wall, into a unit, into a prop, a pair
+  racing for one tile, a three-way pile-up, a breeze over sleepers).
+- Collisions: #29 heavily (`applier.py` stages, `unit_requests.py`,
+  `conductor.py`, `cuda_unit_lib.cuh`); #217's wind (the scenes' thresholds
+  are measured on main's wind and re-measured after #217).
+- Rule-file paths: `props.md` gains `src/simulation/prop_motion.py`,
+  `tests/test_prop_motion.py`, `cpp/src/cuda_unit_props.cu`,
+  `tests/cuda_unit_props_check.py`.
+
+**A4. The shove on props, and the device conductor serves props.**
+- Content: `unit_impulse.shove_target` / `shove` consider props, the impulse
+  `min(J_shove, m v_hand)`; the device target choice in
+  `cpp/src/cuda_unit_verbs.cu` and its PUSH request; `v_hand` as a Device
+  tables row; `src/control_bots.py` `try_shove` filters to units; the
+  conductor refusal removed.
+- Class: **T** (no Class-P file).
+- Twins touched, and what it does: `verbs` (device change, shadow lockstep
+  with prop targets), `conductor` (refusal removed; whole-tick gate),
+  `integrate_turn`, `wind_impulse`, `movement`, `horde` (through
+  `unit_impulse.py`): shadow checks green, re-marked level.
+- Refusal: none left for arc 1.
+- Oracle: `tests/cuda_conductor_check.py` (hand scenes with props, N = 1,
+  equal to a host re-simulation every tick) and
+  `tests/cuda_conductor_batch_check.py` (env i of N == alone, props in some
+  envs, the order swapped); property 25.
+- Collisions: #29 (`conductor.py`, `cuda_unit_verbs.cu`); the bots
+  (`.claude/rules/bots.md`).
+
+**A5. Drawing them (render-only).** Can start after A2.
+- Content: the renderer draws a movable prop's model at its pose every frame
+  through the static prop path (`renderer/static_props.py`; UNVERIFIED that
+  it takes a per-frame transform today; if not, this patch adds one there,
+  never a second prop renderer); the look fields on the class row; a
+  studio level, `tools/gen_props_studio.py` writing `levels/props_studio`
+  through `level_lib` (a furnished room, a blast, a breach, a shove), with
+  its rows in `tools/look_shots.toml`, never used by a test that pins play.
+- Class: none (render and tools). No twins.
+- Rule-file paths: none in `props.md` (render rules live in
+  `.claude/rules/render-units.md`, Static props, amended).
+
+**A6 (outside #226). Levels.** Levelgen places movable props (#171 job 1); the
+first golden level that holds them, its goldens moved once with written
+rationale; the bot tournament for balance. Waits for #217 to land (its idle
+wind would push props on idle ships) and for R15 (no training level holds
+props before an observation spec shows them).
+
+Order rationale: A0 and A1 change nothing and de-risk the rest; A2 lands the
+stamp on both backends at once, so the played `--cuda --resident` tick never
+builds slot 6 without props on a prop level (scope critic 3); A3 before A4
+because the shove needs the PUSH path; the conductor's whole-tick gate lands
+with the last arc-1 law. #227 can start after A3; #228 after A4.
+
+### 11.2 Arc 2 (after its own critique; after arc 1 and #217 have landed)
+
+**B0. The tile law's products as one shared function.**
+- Content: the per-claim product step of `cpp/src/combustion.cpp` (O2 to
+  inert N2, the soot share out of the bulk with its energy) lifted into one
+  function the tile law calls bit-identically, its device form beside
+  `cuda_combustion.cu`, and a device-unit form the applier can call.
+- Class: **P** (`combustion`): `.cuda_green` at HEAD, re-marked level.
+- Oracle: the tile law byte-identical (the pinned matches, the energy benches,
+  the combustion twin's checks).
+- Collisions: #217 (`cuda_topology.cuh`, the gas primitives its finding 2
+  proposes to change).
+
+**B1. The cells' reservoirs, the seam and ignition.**
+- Content: the four cells' synced columns (record tail, `PROP_TABLE`
+  columns, layout); the seam at 9c (convection through
+  `GameMap.gas_energy_deposit`, signed; the emission channel into the sweep,
+  landed FIRST in the sweep's integer reference); ignition at 9d with the
+  tile-list O2 test through `o2_pressure_factor.h`; the prop ledger identity;
+  host and device.
+- Class: **P** (`radiation_sweep`: the emission channel; `gamemap.py`).
+- Twins touched: `radiation_sweep` (P, device change), `ignition` (T: the
+  9d face reads prop cells too), the `[twins.props]` row (device change),
+  the by-file Class-T set as in A2: shadow checks, re-marked level.
+- Refusal: the conductor refuses a level holding a FLAMMABLE movable prop
+  ("burning props") until B2.
+- Oracle: properties 29 and 30 (the prop ledger exact every tick); the sweep's
+  integer reference == the CPU sweep == the device sweep with prop emitters.
+- Rule-file paths: `props.md` gains `src/simulation/prop_fire.py` (the burn
+  cells' laws) and `tests/test_prop_fire.py`.
+
+**B2. The burn.**
+- Content: the PROP_BURN applier stage after HEAT_SOURCES (9e(d''')),
+  serial; the demand, the draw, the bed heat, the gas parcel, the products
+  through B0's function, the fuel; going out; the refusal lifted.
+- Class: **P** (`gamemap.py`, the seam's host side) with the Class-T stage.
+- Twins touched: `[twins.props]`, `burn_through` and the other applier twins
+  (stage renumbering), `doors` / `vents` / `horde` / `payload` (through
+  `gas_energy.h` and `cuda_topology.cuh` if the products' device form lands
+  there): shadow checks, re-marked level.
+- Oracle: properties 31 to 37; the energy closure benches with a burning prop
+  (`tests/test_e1_hot_rail.py`, `tests/_quiet_books_bench.py`, a table scene
+  added); `tests/cuda_conductor_check.py` with a burning table.
+- Collisions: #217 (gas primitives, topology seam).
+
+---
+
+## 12. The verification plan
+
+Properties, never snapshots (CLAUDE.md, Test conventions). Each names what it
+protects and the change that must break it. Numbers are referenced from
+section 11.
+
+The stamp rule (A1):
+1. **Pure and order-free:** a tile's coverage is the same in row-major,
+   shuffled or bounding-box order. Breaks if the rule gains running state.
+2. **Bounding box complete with pad 0:** with the `+2` pad removed, a scan
+   three tiles wider still finds no tile with `k > 0`, because the half-sample
+   offset (8192 counts) exceeds the kit's `c^2 + s^2` slack (about 11 counts at
+   8 tiles). Breaks if the sample offsets move toward the tile edge or the
+   bound drops a term. (v1 named the pad, which is not what keeps it
+   complete: determinism critic 11.)
+3. **Translation covariance:** an integer-tile shift shifts the map exactly.
+4. **Half-turn symmetry and the y-mirror:** `(c, s) -> (-c, -s)` gives the
+   identical stamp; mirroring y about a tile line with `th -> -th` (exact in
+   the kit) gives the mirrored stamp. The x-mirror (`th -> pi - th`) is NOT a
+   property: the kit's values differ there on 39,152 of 82,355 headings
+   (determinism critic 12). Breaks if a bound becomes half-open on the whole
+   prop.
+5. **Burn cells partition the coverage** exactly per tile. Breaks if a
+   quadrant bound becomes closed on both sides.
+6. **Area bound:** `|sum k / 16 - 4AB| <= 0.07 x perimeter` over random poses
+   (measured 0.0602). Breaks if the lattice or the inside test drifts.
+7. **The size floor:** at or above `max(0.5 m, 1.5 tiles)` the blocking set is
+   non-empty and 4-connected over random poses; the class door refuses below.
+8. **CPU == device == Python, bit for bit,** on random poses AND on
+   axis-aligned fixtures with edges on tile and sample lines AND at the exact
+   headings 0, +-102944 and 205887. Breaks if the inside test becomes open
+   (the aligned fixture's `k` goes from 35 to 15; random poses cannot see it:
+   determinism critic 10).
+
+The stamp on the map (A2):
+9. **No prop, no change:** every plane and every movement answer equals
+   today's on every level of the suite.
+10. **Order-free combine:** permuting the props' rows leaves every plane
+    unchanged.
+11. **Cached == fresh, keyed on pose:** a sleeping prop's rows and the sleeper
+    layer equal a fresh computation every tick of a scene, INCLUDING after a
+    new pose is written with zero velocity and zero impulse (as
+    `props_to_host` or the gate's download does). Breaks if the cache is
+    invalidated by waking instead of by pose (determinism critic 6).
+12. **Never seals:** no prop-stamped permeability is below `P_PROP_MIN`.
+13. **The units' write survives:** a unit and a prop on one tile give the
+    unit's permeability write, then the prop's MIN, on the CPU and the device
+    alike; two props' partly covered tiles overlapping give the MIN of both.
+    Breaks if the device K2 lets a prop row win (determinism critic 3).
+14. **One writer per blocking tile:** the load door refuses overlapping
+    blocking sets, blocking sets on non-enterable tiles and off-grid ones; the
+    device writer count is 1 on every blocking tile of every scene.
+15. **The planes after a landing:** after `props_to_host`, the gate's
+    download and a chained replay, `prop_mob_cap` and `prop_owner` equal a
+    fresh stamp of the landed poses (determinism critic 7).
+16. **The entity bytes follow the store:** moving a prop changes its entity
+    record (`sim.entities` holds views, determinism critic 13); the entity
+    section built from the device tables equals the host's.
+
+Motion (A3, A4):
+17. **Momentum books close** per prop per axis and angularly every tick, the
+    contact transfers balance across all bodies, and no term deletes momentum
+    in a contact (the identity of 4.7 has no `contact_lost`).
+18. **Friction holds below the threshold:** a steady force below `mu m g`
+    never moves a prop and leaves it asleep (all impulse state zero) at the
+    end of every tick; above it the prop moves, and when the force stops it
+    comes to rest exactly. Breaks if step 4 of 4.2 is removed.
+19. **Order-free move:** permuting the props' rows leaves every pose
+    unchanged, including two props racing for one tile and a three-way
+    pile-up; the device equals the host.
+20. **Never overlaps:** after every move no two props share a blocking tile,
+    no blocking tile is a wall, a closed door or off the map, and no prop
+    newly overlaps a living unit's footprint.
+21. **y-mirror physics:** a y-mirrored furnished room in a y-mirrored wind
+    gives y-mirrored poses (`th -> -th`). The ring read has no tie rule, so
+    no tie breaks the symmetry. Breaks if a truncation becomes a floor.
+22. **The wind turns the right props:** an even wind on a balanced prop gives
+    zero spin; a gust on one end of a balanced table spins it with the right
+    sign; an even wind on an off-centre prop spins it with the right sign.
+23. **Tile-size independence:** the same scene built at 0.333 m and at 1.0 m
+    tiles gives the same force in newtons within the stamp's grain. Breaks if
+    `k_wind_q` is built from a tile count instead of an area (physics
+    critic 4).
+24. **Contacts keep momentum:** in a prop-into-unit and a prop-into-prop
+    contact, `J handed on + m_p v_c == m_p v_p` exactly; a refused pair keeps
+    its summed momentum. Breaks on v1's rule (physics critic 3).
+25. **The shove is limited:** a shove of a prop of mass `m` gives at most `m
+    v_hand` (and at most `J_shove`).
+26. **The host's int64 paths equal the Python-int reference** over the whole
+    range of `N`, the wind and `k_wind_q` (the 16-bit splits of 4.8). Breaks
+    if a vectorized product is taken unsplit (determinism critic 9).
+27. **The sleep fast path changes nothing synced:** a breeze over 1000
+    sleepers run with and without the fast path gives equal synced columns
+    every tick.
+28. **The device**, by the existing harnesses only: the shadow lockstep (rows
+    at tol 0, env i of N == alone, the write-set gate, the PUSH requests as a
+    record list, the prop planes as declared field outputs at tol 0), and from
+    A4 the conductor checks with props. Never a hand-rolled compare.
+
+Fire (B0 to B2):
+29. **Heat starts it:** no cell burns without `T_cell` at its row's ignition
+    point and the O2 test passing; a fixture lights a prop only by delivering
+    heat.
+30. **The prop ledger is exact** every tick (9.7), and the gas closure
+    identity holds with burning props (the existing benches, a table scene
+    added).
+31. **Fuel identity:** fuel spent equals O2 drawn, per cell per tick.
+32. **The products are the tile law's:** B0 leaves the tile law
+    byte-identical; a prop burn conserves total N the way a tile burn does
+    (gas plus the soot share's accounting). Breaks on v1's swap.
+33. **The draw order:** two burning props reaching one tile give equal results
+    on the CPU and the device, and no tile's O2 goes below zero (determinism
+    critic 1).
+34. **One side burns:** heating one end of a table lights that end's cells
+    first and the far cells later or never (with the heat cut).
+35. **Moving moves nothing:** a burning prop slid across a room transfers no
+    fuel, mass or energy at the tile boundaries it crosses, and the floor it
+    left keeps its heat.
+36. **The plateau band:** a lone burning table in a large room settles within
+    a band around R4's target temperature and burns out within a band around
+    its time. A property with bands, not a snapshot of a trace.
+37. **No rail:** a room with a burning table runs a `test_e1_hot_rail`-style
+    window with no rail hit.
+
+---
+
+## 13. Accepted gaps
+
+- `ACCEPTED GAP:` a moving prop displaces no air, and no prop seals (3.5, R1).
+- `ACCEPTED GAP:` sight, rounds, grenade flight and the flamethrower's cone
+  pass through props until #227 (7).
+- `ACCEPTED GAP:` planners (A*, the horde field) do not see props (3.3, R6).
+- `ACCEPTED GAP:` one friction coefficient for starting and sliding; linear
+  and angular friction separate, up to about 2x too much dissipation when a
+  prop slides and turns (4.2, R13).
+- `ACCEPTED GAP:` planar pose: tall props slide, never tip (R11).
+- `ACCEPTED GAP:` no bounce off walls; a blocked axis stops (4.5).
+- `ACCEPTED GAP:` two fast props whose paths cross inside one tick may pass
+  through each other; a three-way pile-up in one tick stops all three as on a
+  wall (4.5).
+- `ACCEPTED GAP:` the hull stops a prop; nothing is blown into space (4.5,
+  R2).
+- `ACCEPTED GAP:` a unit flung into a prop stops as on a wall and hands it
+  nothing (4.6), until #228.
+- `ACCEPTED GAP:` the shover feels no reaction (inherited, Unit impulse); bots
+  never shove props (4.4).
+- `ACCEPTED GAP:` the wind is sampled once per tick; a shock that passes in
+  milliseconds is felt by its one-tick sample (4.3, UNVERIFIED size).
+- `ACCEPTED GAP:` coarse-tile levels (1.0 m) hold only props at least 1.5 m
+  across (3.6, R14).
+- `ACCEPTED GAP:` no damage from impacts, no integrity column, no impact
+  noise until #229; the contact event is recorded and unread (4.6, R17).
+- `ACCEPTED GAP:` water does nothing to a prop until #236 (10).
+- `ACCEPTED GAP:` the trained agent cannot see props; no training level holds
+  them before a new observation spec (8, R15).
+- `ACCEPTED GAP:` swarm units ignore props (10).
+- `ACCEPTED GAP:` a level's set of movable props is fixed at load (no spawn, no
+  removal, no break-up) until #229 brings stable-slot spawning.
+- Arc 2: `ACCEPTED GAP:` where two burning props reach one tile the lower row
+  drinks first (9.4); burning does not lighten a prop (9.4); a burnt-out prop
+  stays (R18); a burning prop is invisible to readers of tile fire (10.4);
+  the fuel per unit of O2 inherits the tile-size dependence of
+  `KG_FUEL_PER_N_O2` (9.8).
+
+---
+
+## 14. Systems
+
+### 14.1 Existing canonical systems the design must use
+
+| system (CLAUDE.md index) | how this design uses it | the parallel it must not build |
+|---|---|---|
+| Simulation facade, Tick conductor | the prop laws are call lines in slots 1a, 1b, 3p, 6, 9c2 (arc 2: 9c, 9d, 9e(d''')) | no logic block in `step()` |
+| GameMap | the planes `prop_mob_cap`, `prop_owner`; THE per-tile wind term | no plane outside the map |
+| Material / gas tables | a class names ONE material row; every blocking, thermal and fuel value is that row's | no per-prop material if |
+| Prop tile stamps | static props unchanged; the one-row principle extended to the dynamic planes | movable props never write `material` |
+| Unit impulse, Coupling table, Wind load on a body | THE `add` (with the body's lever clamp), THE per-tile wind term, the shove | no second push law, no second wind reader |
+| Footprint samples builder | the cap reaches the walk's speed through `footprint_mobility` | no second speed reduction |
+| Turning law (its wrap) | the heading wrapped by `turning.normalize_q16` | no second wrap |
+| Fixed-point kits, Q16 boundary modules | `cos_q16` / `sin_q16`, `div_trunc`, `isqrt`, the 128-bit multiply-divide | no re-derived shift or reciprocal |
+| Stamp kernel, Device sorts and 9b | prop rows are rows of THE stamp; K4 in the same TU; prop rows built from `PROP_TABLE` by `unit_kernels.stamp` | no second stamp kernel |
+| Object tables, Device tables, Device unit library, Request list, Per-env serial applier, Device conductor | `PROP_TABLE`; the class tables as rows; `impulse_add` with the clamp; PUSH requests; the PROP_PUSH (and arc 2 PROP_BURN) stages; the conductor's call lines and refusal | no second table mechanism, walker or request list |
+| Entity system, Entity section export | `movable_prop` is an entity class; its record tail through the one serializer; `prop_entity_rows` | no second serializer, no `__props__` carrier |
+| Door table | the DOORS stage reads `prop_owner` | no second door sweep |
+| Level data layer, Level generators | the props studio and later levelgen write through `level_lib` | no hand-written level.toml |
+| Observation spec | v1 unchanged | never a key added to v1 |
+| Static props (render), FireVFX pass | the model drawn at its pose; #235 draws the flames | no second prop renderer or flame renderer |
+| Arc 2: Gas energy seam, Energy closure identity, Temperature solver | the seam's convective part and the gas parcel through `gas_energy_deposit`; the prop ledger beside the solid ledger | no fifth group, no `temperature[...] =` |
+| Arc 2: Radiation sweep, Emissive table, Integer reference | the emission channel on the one traversal, E°(T) from the table, the reference first | no second traversal, no second T^4 |
+| Arc 2: Starting a fire, O2 pressure factor | a cell lights by heat; its O2 test goes through the factor | no `burning = 1` without heat; no new O2 read |
+| Arc 2: Timed charges and heat sources | PROP_BURN follows HEAT_SOURCES as a stage of the same applier | no second hazard walker |
+
+### 14.2 Existing rules the design amends, with the amended wording
+
+Each amendment lands in the patch named.
+
+1. **CLAUDE.md, Prop tile stamps** (A2). Today: "A prop's blocking + fuel are
+   ONE `[materials.*]` row stamped at load, never a per-prop if or a new
+   per-tile flag; props never tick; look fields never synced". Amended: "A
+   STATIC prop's blocking + fuel are ONE `[materials.*]` row stamped at load,
+   never a per-prop if or a new per-tile flag; it never ticks; look fields
+   never synced". (`prop_mob_cap` / `prop_owner` are stamp outputs of the
+   movable prop store, not flags of static props.)
+2. **CLAUDE.md, Wind load on a body** (A0). "THE read of what the air does to
+   a unit" becomes "THE read of what the air does to a body".
+   `.claude/rules/units.md`, Wind load on a body, gains: "The per-tile term
+   `W = N_raw * (v^2 >> 16)` is ONE function: a unit reads its footprint max
+   (no lever, v1); a movable prop reads its windward ring's coverage-weighted
+   mean with a lever per ring tile (`prop_motion`); a fluid pushing a body
+   (#236) is a row of the same read."
+3. **`.claude/rules/units.md`, Unit impulse** (A0). "Anything that pushes a
+   unit hands it an IMPULSE through `add(...)`" becomes "Anything that pushes
+   a unit or a movable prop hands it an IMPULSE through `add(...)`"; new
+   bullet: "`add` / `angular_q` clamp the lever to `r_clamp_q`, `None` meaning
+   the table's `r_body_q`; a prop passes its own `r_lever_q`."
+4. **`.claude/rules/sim-core.md`, Tick conductor** (A3). "Slot 3 is the ONE
+   displacement loop (Unit impulse)" becomes "Slot 3 is the ONE displacement
+   loop of units (Unit impulse); slot 3p, right after it, is the ONE of
+   movable props (Movable prop store), each deciding against the start of its
+   slot."
+5. **`.claude/rules/device-residency.md`, Stamp kernel** (A2). "reset, then
+   MAXes, the permeability a WRITE (the LAST row wins where bodies overlap,
+   not a running min)" becomes "reset (`prop_owner` and `prop_mob_cap`
+   included), then MAXes, the UNITS' permeability a WRITE (the LAST unit row
+   wins where bodies overlap, not a running min; the winner is picked among
+   unit rows only), then the movable props' rows as MIN / MAX over it and
+   their owner and cap as plain writes (one writer per tile)".
+6. **`GameMap.is_passable_block`'s docstring** ("Terrain only") and
+   **`cpp/src/cuda_unit_movement.cu`'s header** ("no derived plane") (A2):
+   "terrain, capped by the movable props' `prop_mob_cap` (the one derived plane
+   both read)".
+7. **`.claude/rules/device-units.md`, Entity section export** (A2): in "(button,
+   terminal, light, prop, the zones, cover)", `prop` becomes "the static
+   `prop`; a `movable_prop` has the Prop table".
+8. **`.claude/rules/sim-core.md`, the door sweep's twin rule** (A2): "a change
+   to the sweep, `_occupancy_clear` ..." gains "(which also reads
+   `prop_owner`)".
+9. **`.claude/rules/render-units.md`, Static props** (A5): a movable prop is
+   drawn by the same path at its pose every frame; its look fields live on its
+   class row.
+10. **CLAUDE.md, Gas pump primitives** (B2). "never a parallel flux path or
+    per-tick FieldEdits" gains, in `.claude/rules/fields-gas.md`: "A movable
+    prop's burn products are the tile law's products function applied in
+    place through the topology seam, not a flux: no N crosses a tile."
+11. **CLAUDE.md, O2 pressure factor** (B1). "read by both law sites on both
+    backends" becomes "read by every law site (the tile sustain, the tile
+    demand, the movable prop's burn cell) on both backends".
+12. **CLAUDE.md, Heat source** (B2). "A thing hot every tick is a
+    `heat_source` entity" becomes "A FIXED thing hot every tick is a
+    `heat_source` entity (a burning movable prop is its own burn cells)".
+13. **`.claude/rules/explosions-fire.md`, Starting a fire** (B1): "a movable
+    prop's burn cell lights under the same rule: by heat at its row's ignition
+    point, never by a write of `burning` alone".
+14. **`.claude/rules/energy-books.md`, Energy closure identity** (B1): beside
+    the solid ledger, "the movable props' ledger: `sum e_cell` closes against
+    `e_prop_bed_sum - e_prop_seam_sum - e_prop_emit_sum`; its gas writes
+    enter through the seams group, its emission through the sweep".
+15. **`.claude/rules/radiation-light.md`, Radiation sweep** (B1): the prop
+    emission is a channel of the one traversal, landed in the integer
+    reference first.
+
+The index lines amended in 1, 2, 11 and 12 keep their length to within a few
+words ("a patch that changes a system amends the rule file, never this line's
+length").
+
+### 14.3 New index rows (three systems, one tool)
+
+| row (index section) | where | draft rule | rule file, section |
+|---|---|---|---|
+| **Movable prop store** (Sim core, after Prop tile stamps) | `src/simulation/movable_props.py` (`Simulation.props`) + `entities/movable_prop.py` + `[movable_props.*]` | THE state of movable props, SoA in entity ordinal order, written only through this facade and its laws (`prop_motion`, arc 2 `prop_fire`); never a `Unit`, a swarm unit or a material stamp; a new column is a schema row, its entity record row and its `PROP_TABLE` column in one patch | `.claude/rules/props.md`, `## Movable prop store` (A2) |
+| **Prop stamp rule** (Sim core) | `src/simulation/prop_stamp.py` + `cpp/src/prop_stamp.h` | THE integer rule that turns a turned rectangle into tile coverage (a 4 x 4 global sample lattice, a closed inside test, half-open quadrants); the Python form is the executable spec and any change lands there first, the FP_HD form held equal; nothing else rasterizes a prop | `.claude/rules/props.md`, `## Prop stamp rule` (A1) |
+| **Prop table** (Device, after Door table) | `unit_schema.PROP_TABLE` + `unit_kernels.props_of` / `props_to_host` / `prop_entity_rows` + `cpp/src/cuda_unit_props.cu` | THE device form of the movable prop store on the object tables, and of its slots 1a, 3p and 9c2 (contacts and shoves as PUSH requests through the applier's PROP_PUSH stage); a store column that crosses a tick is a table column in the same patch | `.claude/rules/device-units.md`, `## Prop table` (A2) |
+| **Props studio** (Tools) | `tools/gen_props_studio.py` -> `levels/props_studio` + its rows in `tools/look_shots.toml` | THE level for judging movable props in wind, blasts and shoves, written by its generator through `level_lib`; never used by a test that pins play | none (a tool row; A5) |
+
+Not systems (scope critic 9): the prop planes are stamp outputs (rule lines in
+the Stamp kernel section and in `props.md`); the motion and the burn cells are
+laws of the store (bullets of `## Movable prop store`); v1's O2 swap is gone
+(9.5), and the products function is an amendment of the combustion twin's
+rules, not a row.
+
+### 14.4 The new rule file `.claude/rules/props.md`
+
+`test_claude_rules_paths.py` fails a `paths:` glob that matches no tracked
+file and a section with no index row of the same name, so the file is created
+by the first patch that creates its first path, and each path is added by the
+patch that creates it. Exact paths, no wildcards that catch other tests
+(v1's `tests/*prop*` matched `test_velocity_clamp_property.py` and others):
+
+| patch | `paths:` added | section added |
+|---|---|---|
+| A1 | `src/simulation/prop_stamp.py`, `cpp/src/prop_stamp.h`, `tests/test_prop_stamp.py` | `## Prop stamp rule` |
+| A2 | `src/simulation/movable_props.py`, `src/simulation/entities/movable_prop.py`, `tests/test_movable_props.py` | `## Movable prop store` |
+| A3 | `src/simulation/prop_motion.py`, `tests/test_prop_motion.py`, `cpp/src/cuda_unit_props.cu`, `tests/cuda_unit_props_check.py` | (bullets of the store section) |
+| B1 | `src/simulation/prop_fire.py`, `tests/test_prop_fire.py` | (bullets of the store section) |
+
+The region table in CLAUDE.md gains `| props.md | movable prop store, prop
+stamp rule |` in A1 (with only the stamp rule) and is completed in A2.
+
+---
+
+## 15. Borrowed dials: tuned for other objects or under the #217 bug
+
+For Erik (physics critic, finding 16): the numbers this design reads that
+were set for something else, or tuned while transport ran at a third of its
+speed under the #217 bug. None is changed by this design; each is a place a
+prop may feel wrong for a reason that is not the prop's.
+
+| dial | where | set for | what it does to a prop |
+|---|---|---|---|
+| `Cd` (new) | `[movable_props.<class>] cd`, proposed 1.1 | the flat-plate value, no source | scales every wind push |
+| frag rows, `expansion_m3_per_strength` | `[payloads.*]`, `[blast]` | grenades against units, tuned under the bug | how far a blast's wind throws furniture |
+| `k_drag2` | `[physics]` drag block | tuned while transport ran at 1/3 | the wind a prop reads after a blast |
+| the wind sampled once per tick | slot 9c2 | units, which react slowly | a shock passing in ms is felt as one sample (UNVERIFIED size) |
+| `impulse_ns` 100 | `[impulse]` shove | a two-handed shove on a person | the shove's ceiling; `v_hand` limits it for light props |
+| `V_MAX_Q` 4 tiles a tick | `unit_impulse.V_MAX_Q` | units at 0.333 m (32 m/s; 96 m/s at 1.0 m) | the prop's top speed |
+| `mu_slide` 0.4 | `[impulse]` | a prone body on deck | the default `mu` of a class without one |
+| `burn_rate` 0.018 | `[physics.combustion]` | tile fires, "re-tune pending" | arc 2's demand scale |
+| `H_FUEL_M` 4.0 | `[physics.combustion]` | a gas-side placeholder at the rail's ceiling | arc 2's gas parcel |
+| `H_BED_M` 38.73 | `[physics.combustion]` | a calibrated lumped constant for a crate's bed | arc 2's bed heat |
+| `soot_yield` 0.5 | `[physics.combustion]` | provisional, for smoke visibility | arc 2's smoke |
+| `h_conv` 6.0 | `[physics.thermal]` | natural convection on a deck-high wall | arc 2's seam (a fire plume is forced convection, 10 to 100) |
+| `KG_FUEL_PER_N_O2` | `materials.py` | fixed at the 0.333 m tile | arc 2's fuel, 9x off at 1.0 m |
+| `heat_flux_to_temp`, `unit_absorption`, `unit_reflectivity`, the 159 W/K body loss | the body law | human skin and a person's shell | NOT used any more (v1 borrowed them for the cells; v2 does not) |
+
+---
+
+## 16. Critique
+
+Three critics read v1 (commit `a647e771`), one lens each, none seeing
+another's report (`docs/movable_props_critique_2026-11-21.md`).
+
+| lens | verdict on v1 | blockers |
+|---|---|---|
+| scope, systems and rules | SOUND WITH FIXES | 1 (S.1: host-only motion breaks the entity-export rule and opens Class-T debt) |
+| physics and the books | UNSOUND (the fire law); the push law fixable in place | 1 (P.1: the fire neither holds its flame nor closes the books) |
+| determinism and the device path | SOUND WITH FIXES | 1 (D.1: several writers draw O2 from one tile) |
+
+Where two critics touched one thing, v2 gives one resolution: the fire law
+(P.1, P.2, P.7, P.12, D.1, D.13: section 9), the contact rule (P.3, P.14, D.2,
+D.5: sections 4.5, 4.6, 6), the patch plan (S.1, S.2, S.3, S.4, S.8, D.8:
+section 11).
+
+What v2 did with each finding:
+
+- **S.1** Taken. `PROP_TABLE` and `prop_entity_rows` in A2, where the state
+  first exists; every patch re-proves and re-marks the twins it touches; no
+  debt carried (11).
+- **S.2** Taken. Every patch touching `gamemap.py` (A0, A2, A3, B1, B2) or
+  `bindings.cpp` (A1) is Class P with `.cuda_green` (11).
+- **S.3** Taken: the host and device stamps land together in A2 (11).
+- **S.4** Taken: two arcs (R0), the smallest arc's patch list (A0 to A4); the
+  collisions with #29 and #217 named per patch. Partly not taken: the unit
+  hand-off and the door read stay in arc 1 (the PUSH path is built for prop to
+  prop anyway; without the door read a door would close on a prop), and the
+  felt-temperature refactor is gone entirely (arc 2 no longer uses it).
+- **S.5** Taken: fifteen amendments with wording (14.2).
+- **S.6** Taken: planar pose (R11), how easily it burns (R12), the integrity
+  column (R17), the door held open (R8), no blowing out to space (R2),
+  wall-like props while planners are blind (R6), fire as a second arc (R0).
+- **S.7** Taken: the row and the column in the table's kinds and codes, every
+  cell closed, the neighbouring cells and the new holes (10).
+- **S.8** Taken: exact paths, created patch by patch (14.4).
+- **S.9** Taken: three index rows plus a tool row (14.3).
+- **S.10** Taken: (a) the row view and `r_clamp_q` (4.1); (b) per-instance
+  constants as `PROP_TABLE` columns, per-class ones as Device tables rows
+  (2.1); (c) the device shove in A4, the bots filtered (4.4); (d) a flung unit
+  stops as on a wall, a gap (4.6); (e) a new class, look fields on its row,
+  A5 draws it (2.2, 11); (f) not hot-reloadable (2.2); (g) the props studio
+  (11, 14.3); (h) the device walker reads the cap in A2 (3.3).
+- **S.11** Taken: the quote is attributed to Claude (1.1).
+- **S.12** Taken: only `dyn_heat_atten_q` and `obstacles` are digested (2.3).
+- **S.13** Taken: 1000 sleepers priced, the sleeper layer and the wind fast
+  path (5, 8).
+- **S.14** Taken: the ring read is named as the read #236 extends (1.1, 4.3).
+- **P.1** Taken as the orchestrator decided: the cell a booked reservoir, the
+  bed heat in it, a booked seam, the gas parcel to the gas, the plateau
+  calculation (9). Added beyond the finding: the seam's radiative part goes
+  into the sweep, because (9.6 c, d) a linear seam cannot plateau and an
+  all-gas seam trips the rail.
+- **P.2** Taken: the tile law's demand form with `hotf`, `o2f`, `W_hop`,
+  `w_path` over a two-hop reach, and a per-class calibration (9.4, R4).
+- **P.3** Taken: common velocity, momentum kept (4.6, R3).
+- **P.4** Taken: `k_wind_q` from an area in m^2 through `_wind_k`; `Cd` a
+  declared class column (2.1, 4.3).
+- **P.5** Taken: the windward ring outside the covered set, the
+  coverage-weighted mean (weight = contact faces), the torque from the
+  per-tile shares (4.3, R9). The weight is the ring tile's contact count, the
+  one coverage measure that does not depend on where the prop sits within its
+  edge tiles.
+- **P.6** Taken: minus, and the refusal floor (2.1, 4.2).
+- **P.7** Taken by removal: the cells no longer use the body law; one currency
+  (game degrees); the room-cooling gap is closed by the booked seam (9.3,
+  9.4). Its numbers no longer need a ruling.
+- **P.8** Taken: `J = min(J_shove, m v_hand)` (4.4, R7).
+- **P.9** Taken: the floor in metres and tiles, the coarse-tile gap stated
+  (3.6, R14).
+- **P.10** Taken: R11, default "slides".
+- **P.11** Taken: R1 with the 72% fridge figure.
+- **P.12** Taken: the tile law's products through one shared function (9.5,
+  R5); the ACCEPTED GAP is gone.
+- **P.13** Taken: the box volume is stored and the meaning of density is
+  #236's, as R16.
+- **P.14** Taken: `clamped_l` booked; the 2x friction overestimate in R13's
+  text; the refusal pass keeps momentum (4.2, 4.5).
+- **P.15** Noted, inherited: in 9.8, 13 and 15; not fixed here (it is the tile
+  law's).
+- **P.16** Taken: the dials table (15).
+- **P.17** Taken: the rulings list rebuilt (17). R15 (training) stays on the
+  list as a scope ruling, marked as one.
+- **D.1** Taken: the draws as a serial applier stage, PROP_BURN. The integer
+  proportional split NOT taken, because its writes would still need ordering
+  through the seams the serial stage already orders (9.4).
+- **D.2** Taken: contacts and shoves as PUSH requests through the applier
+  (6).
+- **D.3** Taken: K1 resets both planes, K2 picks among unit rows, K4 for
+  props; the oracle scenes (3.4).
+- **D.4** Taken as the load refusal plus plain writes, checked by a writer
+  count. `atomicMin` on owner and cap NOT taken: one writer per tile is an
+  invariant the move already keeps, and a MIN would hide its violation instead
+  of refusing it (3.3).
+- **D.5** Taken: the double buffer and the hit-set rule with its partners
+  (4.5, 4.6).
+- **D.6** Taken as a pose-keyed cache on both backends with a sleeper layer.
+  "Recompute every tick on the device" taken for awake props only: at 1000
+  sleepers per env the layer is cheaper and the pose key makes it as safe
+  (5).
+- **D.7** Taken: the planes rebuilt at reset and every landing,
+  `_RESIDENT_UNIT_PLANES`, declared outputs at tol 0 (2.3, property 15).
+- **D.8** Taken: the four device twins in A2 to A4, the refusal by name from
+  A2 (11).
+- **D.9** Taken: ranges at the class door, the 128-bit steps, the 16-bit
+  splits on the host, the zero-wind return (4.8).
+- **D.10** Taken: aligned fixtures and exact headings in property 8.
+- **D.11** Taken: property 2 restated.
+- **D.12** Taken: the y-mirror only; the ring read has no tie rule (properties
+  4, 21).
+- **D.13** Taken: the substep shift and split (4.5), token row names (2.1),
+  row views in `sim.entities` (2.2, property 16), the synced O2 accumulator
+  (2.1, 9.4), the integer tile-list O2 test (9.4).
+
+Not taken, in one place: D.1's proportional split (serial chosen), D.4's
+`atomicMin` (refusal plus writer count chosen), the part of S.4 that would cut
+the unit hand-off and the door read from arc 1, and P.15 (inherited, the tile
+law's). Arc 2 has had no critique of its v2 form; it needs one.
+
+---
+
+## 17. Rulings for Erik
+
+One line each, most game-changing first. Each states the default this design
+assumes, then what changes if Erik says otherwise. **[arc 1]** = needed before
+arc 1 starts; **[arc 2]** = needed before arc 2 starts; **[later]** = can wait.
+
+- **R0 [arc 1] Two builds:** first props that exist, block and get pushed
+  (wind, blasts, shove); fire on props in a second build after its own review.
+  If one build: nothing lands until fire is done too, about twice as long.
+- **R1 [arc 1] No prop seals air:** furniture slows gas but a barricade never
+  stops a decompression (a solid fridge's 72% of the air column is ignored).
+  If props may seal: a prop becomes a moving wall to the gas, a much larger
+  change.
+- **R2 [arc 1] Props stay inside the hull:** a breach slides furniture to the
+  hole and it stops there. If they should blow out into space: props need a
+  removal path, which waits for #229.
+- **R3 [arc 1] A sliding prop shares its speed with what it hits:** a fridge
+  sliding into a marine carries him along (he may stagger or fall), no damage
+  until #229. If no: the prop just stops at a person.
+- **R4 [arc 2] A burning table settles at about 645 C (917 K, like a burning
+  crate), gives the room about 160 kW and burns out in about 7.5 minutes.** If
+  hotter, cooler, faster or slower: one number per kind of prop.
+- **R5 [arc 2] A burning prop uses the room's oxygen and makes the same smoke
+  as a burning crate** (a sealed room starves it). If no: it is cheaper, but
+  once lit it burns to the end even in a sealed room.
+- **R6 [arc 1] Climb or wall, by material:** furniture is climbable at 40%
+  speed like a crate today; a wall-like material blocks, and then bots and
+  zombies can jam on it because their path planning does not see props. If
+  every prop must be climbable in this build: no jams, no barricades.
+- **R7 [arc 1] People push props only with the shove,** at most as fast as a
+  hand moves (2 m/s: a chair or table slides about 0.4 m, a fridge 0.1 m);
+  walking into one does not push it. If walking should push: light props
+  drift away from walkers and the bots must cope.
+- **R8 [arc 1] A prop in a doorway holds the door open:** an airlock cannot
+  seal on a table. If doors should close anyway: a rule for what the door
+  does to the prop (push it, crush it).
+- **R9 [arc 1] Wind pushes on the side of a prop that faces it, read in the
+  air just outside it:** a gust on one end can spin a table. If the simpler
+  strongest-single-spot read is wanted: cheaper, but jumpy, and a balanced
+  table never spins.
+- **R10 [arc 2] Four burning parts per prop** (front-left, front-right,
+  back-left, back-right), so one side can burn alone. If two halves: half
+  the fire state, one long side cannot burn alone; if per tile: more state.
+- **R11 [arc 1] Props slide, never tip:** a tall bookcase slides like a crate
+  (in reality it would tip first). If tipping: a fallen state, a new
+  footprint, and more work.
+- **R12 [arc 2] How easily a prop catches fire comes from its material only**
+  (its ignition temperature and heat capacity), not a per-prop setting. If
+  per prop: one column per kind of prop.
+- **R13 [arc 1] One friction value per prop, the same to start and to keep
+  sliding** (default 0.4); sliding and turning friction counted separately
+  (up to twice too much drag when a prop slides and turns). If "hard to get
+  going, then slides": two values.
+- **R14 [arc 1] A movable prop is at least 0.5 m across its smaller side;**
+  anything smaller is drawn only (debris). If smaller ones should move:
+  thin props need another blocking rule.
+- **R15 [later] No training level holds movable props** until a new
+  observation spec lets the agents see them. If earlier: agents train beside
+  things they cannot see.
+- **R16 [later] Density is mass over the box size** (stored now; then a table
+  and a fridge both float); #236 decides whether floating uses that or the
+  material's own density. If material density: decided in #236.
+- **R17 [later] Props have no hit points** until #229. If now: an integrity
+  column and a damage rule in this build.
+- **R18 [later] A burnt-out prop stays where it is, charred, still blocking
+  and pushable,** until #229 decides breaking. If it should vanish or turn to
+  ash: a removal path, which waits for #229.
