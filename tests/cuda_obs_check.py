@@ -1737,6 +1737,33 @@ def corpus_list():
                  max_ticks=LIST_TICKS)]
 
 
+#: P8.5a's fire hand match: no played match lights a fire near a soldier (the
+#: hand match's incendiary lands on nothing that burns), so the fire plane and
+#: the air block's fire column are constant over the rest of the corpus. The
+#: room with a door, both teams idle, the units placed as in the door match,
+#: and at tick 0 (the reference and the twin alike) a fire started under unit
+#: 0 the way the dev key does it (``debug_keys.debug_ignite``: the patch made
+#: flammable, seeded, its solid tiles heated to their ignition point -- a fire
+#: is started by delivering heat), then the fire burns for FIRE_TICKS.
+FIRE_SEED = 77
+FIRE_TICKS = 60
+
+
+def fire_setup(session):
+    import debug_keys
+    door_setup(session)
+    a = sorted(session.sim.units, key=lambda u: int(u.id))[0]
+    tile = (int(a.center_tile_x()), int(a.center_tile_y()))
+    debug_keys.debug_ignite(session.sim, SimpleNamespace(mouse_to_tile=lambda: tile))
+
+
+def corpus_fire():
+    from dataclasses import replace
+    lv = room_level()
+    spec = replace(lv.match, teams=tuple(replace(t, controller="idle") for t in lv.match.teams))
+    return [play("fire_hand", lv, spec, FIRE_SEED, setup=fire_setup, max_ticks=FIRE_TICKS)]
+
+
 def part_gate():
     ca, cb, cdn = Census(), Census(), Census()
     for p in corpus_a():
@@ -1755,6 +1782,8 @@ def part_gate():
         gate(f"(d turn) {p.name}", [p], cdn)
     for p in corpus_list():
         gate(f"(d list) {p.name}", [p], cdn)
+    for p in corpus_fire():
+        gate(f"(d fire) {p.name}", [p], cdn)
     ca.judge("census (a)", strict=False)
     cb.judge("census (b)", strict=False)
     cdn.judge("census (d)", strict=False)
@@ -1774,7 +1803,7 @@ def part_gate():
     judge_masks(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                 + corpus_door() + corpus_turn() + corpus_list())
     judge_windows(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
-                  + corpus_door() + corpus_turn() + corpus_list())
+                  + corpus_door() + corpus_turn() + corpus_list() + corpus_fire())
     for p in corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round():
         a0, a1 = p.cover_alive
         if a0 != a1:

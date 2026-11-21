@@ -370,3 +370,67 @@ def test_a_team_without_a_visible_slot_is_refused():
     ses.sim.units[0].team = T + 3
     with pytest.raises(device_obs.DeviceObsRefused, match="neither a marine team"):
         device_obs.check_teams(ses.sim, T)
+
+
+# ---------------------------------------------------------------------------
+# #29 P8.5a: the windows' table values and sources
+# ---------------------------------------------------------------------------
+def test_the_window_rows_are_what_physics_value_reads():
+    """Property: the obs table's window rows are, bit for bit, what
+    ``obs_spec_v1.physics_value`` and ``FieldPlanes`` read for every unit:
+    its ``mitigation_for(u).resist_mult[POISON]`` (the zombie profile on
+    ``is_zombie``, else the species' row the table carries), the sim's
+    impulse table's ``wind_k_q``; and every constant the windows' kernel
+    divides by is the host dequantizes' own currency. Breaks when a resist
+    is read from another species or the neutral profile, re-quantized, the
+    wind dial is read from another table, or a currency drifts from its
+    ``*_fixed`` module."""
+    import numpy as np
+    from simulation import atmosphere_fixed, fire_fixed, gas_fixed
+    from simulation import unit_schema as us
+    from simulation.damage import POISON, mitigation_for
+    bits = lambda x: int(np.array(float(x)).view(np.int64))  # noqa: E731
+    ses, ctx, _ = _ship_session()
+    t = device_obs.table_values(ses.sim, ctx)
+    assert int(t[_row("WIND_K_Q")]) == int(ses.sim.impulse_table.wind_k_q)
+    seen_zombie = False
+    for u in ses.sim.units:
+        want = bits(mitigation_for(u).resist_mult[POISON])
+        if u.is_zombie:
+            seen_zombie = True
+            got = int(t[_row("ZOMBIE_RESIST_POISON_BITS")])
+        else:
+            got = int(t[_row("SPECIES_RESIST_POISON") + us.table_row("species", u.species_id)])
+        assert got == want, u.id
+    assert seen_zombie
+    k = dict(device_obs._constants())
+    assert k["OBS_Q16_ONE"] == gas_fixed._Q16_ONE_F
+    assert k["OBS_TRACE_ONE"] == gas_fixed._TRACE_ONE_F
+    assert k["OBS_FIRE_ONE"] == fire_fixed.FP_ONE_F
+    assert k["OBS_ATM_ONE"] == atmosphere_fixed.FP_ONE_F
+    assert k["OBS_WIND_SHIFT"] == atmosphere_fixed.FP_SHIFT
+
+
+def test_the_felt_dials_the_card_reads_are_the_episodes():
+    """Property: the windows' felt temperature runs the unit library's law
+    over the DEVICE TABLES' Q16 dials, and the build refuses a batch whose
+    dials are not ``exchange.heat_dials_q`` of the episode's ``ObsContext``
+    (the observation's own object): equal on a shipped match, refused by
+    name when the episode's dials differ. Breaks when the device tables'
+    heat rows stop being the observation's dials, or the refusal is
+    dropped."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    import pytest
+    ses, ctx, _ = _ship_session()
+    fields = {n: SimpleNamespace(dtype=dt) for n, dt in device_obs.WINDOW_PLANES.items()}
+    c = SimpleNamespace(fields=fields, sims=[ses.sim])
+    device_obs.check_window_sources(c, [ctx])
+    hot = replace(ctx, heat_dials=(ctx.heat_dials[0], ctx.heat_dials[1],
+                                   ctx.heat_dials[2] * 2.0, ctx.heat_dials[3]))
+    with pytest.raises(device_obs.DeviceObsRefused, match="heat dials"):
+        device_obs.check_window_sources(c, [hot])
+    del fields["rad_flux_sweep"]
+    with pytest.raises(device_obs.DeviceObsRefused, match="not resident"):
+        device_obs.check_window_sources(c, [ctx])
