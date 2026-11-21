@@ -372,6 +372,16 @@ def ratio(x, denom) -> float:
     return 0.0 if d == 0.0 else float(x) / d
 
 
+def length(dx: float, dy: float) -> float:
+    """THE length of an offset in the observation: ``sqrt(dx*dx + dy*dy)``
+    in float64, never ``hypot`` (libm's ``hypot`` is its own algorithm per
+    library; two IEEE products, one add and an IEEE ``sqrt`` are what a
+    kernel reproduces bit for bit, #29 P8.0b). The wind plane's array form
+    (:class:`FieldPlanes`) does the same operations element for element."""
+    fx, fy = float(dx), float(dy)
+    return math.sqrt(fx * fx + fy * fy)
+
+
 def d_c(d: float, l_ref: int) -> float:
     """The compressed distance: ``ln(1 + d) / ln(1 + L_ref)``, squashed."""
     return squash(math.log1p(max(0.0, float(d))) / math.log1p(float(l_ref)))  # ingress-exempt: observation output for the network, float by design; never written to synced sim state
@@ -935,7 +945,7 @@ class FieldPlanes:
         load, vx, vy = g.wind_load_plane()
         j = np.floor(np.floor(load / FP_ONE) * k / FP_ONE) if k > 0.0 \
             else np.zeros_like(load)
-        n = np.hypot(vx, vy)  # ingress-exempt: observation output for the network, float by design; never written to synced sim state
+        n = np.sqrt(vx * vx + vy * vy)  # float64: the scalar `length`'s operations, never hypot
         with np.errstate(divide="ignore", invalid="ignore"):
             dx = np.where(n > 0.0, vx / n, 0.0)
             dy = np.where(n > 0.0, vy / n, 0.0)
@@ -1164,7 +1174,7 @@ def _hit_from(hit):
     if hit is None:
         return 0.0, 0.0
     dx, dy = float(hit[1]), float(hit[2])
-    n = math.hypot(dx, dy)  # ingress-exempt: observation output for the network, float by design; never written to synced sim state
+    n = length(dx, dy)
     if n == 0.0:
         return 0.0, 0.0
     return -dx / n, dy / n
@@ -1364,7 +1374,7 @@ def build_vector(know: TeamKnowledge, u, ctx: ObsContext, out,
                 pdx, pdy = pc[0] - cx, pc[1] - cy
                 out[89] = squash(ratio(pdx, ctx.l_ref))
                 out[90] = squash(ratio(pdy, ctx.l_ref))
-                out[91] = d_c(math.hypot(pdx, pdy), ctx.l_ref)  # ingress-exempt: observation output for the network, float by design; never written to synced sim state
+                out[91] = d_c(length(pdx, pdy), ctx.l_ref)
             field = route(world, graph, where, int(u.footprint))
             ay, ax = int(u.tile_y), int(u.tile_x)
             cands = horde.candidates(field, ay, ax)
@@ -1395,7 +1405,7 @@ def _entry_common(e, etype, dx, dy, ctx):
     e[0] = float(etype)
     e[1] = squash(ratio(dx, ctx.l_ref))
     e[2] = squash(ratio(dy, ctx.l_ref))
-    e[3] = d_c(math.hypot(dx, dy), ctx.l_ref)  # ingress-exempt: observation output for the network, float by design; never written to synced sim state
+    e[3] = d_c(length(dx, dy), ctx.l_ref)
 
 
 def _unit_columns(e, it, ctx, tick, rows):
@@ -2312,7 +2322,8 @@ def shapes(n_envs: int, n_rows: int, n_slots: int) -> dict:
 __all__ = [
     "SPEC_NAME", "V", "F", "VECTOR_COLUMNS", "ENTRY_COLUMNS", "DENOMINATORS",
     "FLAG", "KIND", "ANGLE", "UNIT", "COUNT", "Feature", "squash",
-    "squash_array", "ratio", "d_c", "ObsContext", "ObsWorld", "TeamKnowledge",
+    "squash_array", "ratio", "length", "d_c", "ObsContext", "ObsWorld",
+    "TeamKnowledge",
     "TrackerView", "aim_of", "cone_q", "route", "place_plane",
     "status_scale_ticks", "build_vector", "build_list", "build_windows",
     "observe_rows", "shapes", "OBS_KEYS", "TYPE_MATE", "TYPE_SEEN",

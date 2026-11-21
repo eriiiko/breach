@@ -50,9 +50,20 @@ public:
     void append_host(const int64_t* recs, const int64_t* n, int k);
     // The stable compaction of every env (see above).
     void compact();
+    // #29 P8.3: a SIDE ARRAY the compaction carries with the rows (the device
+    // team picture's object serials; no digest reads it): env e's side word
+    // of row i at side + e * side_stride + i, its "rows already numbered"
+    // count at known + e * known_stride. The compaction moves side[i] with
+    // row i and sets known to the kept rows among the first `known`. Null
+    // (the default): no side array.
+    void set_side(int64_t* side, int64_t side_stride, int64_t* known, int64_t known_stride);
 
 private:
     int live_ = 0;
+    int64_t* side_ = nullptr;
+    int64_t side_stride_ = 0;
+    int64_t* known_ = nullptr;
+    int64_t known_stride_ = 0;
     int src_k_ = 0;                 // the append's host staging (records per env)
     int64_t* d_src_ = nullptr;
     int64_t* d_n_ = nullptr;

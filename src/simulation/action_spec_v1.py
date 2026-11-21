@@ -39,6 +39,7 @@ the one control-seam quantizer -- no controller, nothing from ``renderer/``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 import numpy as np
 
@@ -236,10 +237,13 @@ def aim_vector(me, centre):
 
 def onto_reach_q(me, centre) -> int:
     """The lob distance onto ``centre`` (the bots' ``_lob``): the centre-tile
-    distance as Q16 tiles, ``quantize_scalar(sqrt(d2))``."""
+    distance as Q16 tiles, ``quantize_scalar(sqrt(d2))``. The root is the
+    IEEE ``math.sqrt`` (correctly rounded, what a kernel reproduces), never
+    ``** 0.5`` (the C runtime's ``pow``): the change moved no quantized reach
+    over every d2 < 2**31 (``tools/reach_sqrt_sweep.py``, #29 P8.0b)."""
     dx = int(centre[0]) - int(me.center_tile_x())
     dy = int(centre[1]) - int(me.center_tile_y())
-    return quantize_scalar(float(dx * dx + dy * dy) ** 0.5)
+    return quantize_scalar(math.sqrt(float(dx * dx + dy * dy)))
 
 
 def facing_vector(u) -> tuple:

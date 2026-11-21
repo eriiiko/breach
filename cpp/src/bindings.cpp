@@ -48,6 +48,7 @@ const char* breach_build_id();
 #include "cuda_unit_books.h"       // #29 P7e.4: the conductor's one books read     // #29 P7.0b: the device object tables (Class T)
 #include "cuda_edit_door.h"        // #29 P7a.3: the device edit door (Class T)
 #include "cuda_edit_flush.h"       // #29 P7e.3: the edit door, step (c) (Class T)
+#include "cuda_obs.h"               // #29 P8.0: the device observation (Class T)
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -723,6 +724,137 @@ PYBIND11_MODULE(breach_physics, m) {
     // the TEST-ONLY capture-mode probe (begin / end / abort).
     m.def("eos_nsub_reads", &breach_cuda::eos_nsub_reads,
           "#29 P5: how many max(n_sub) reads the resident EOS made (one per tick).");
+    // #29 P8.0: THE DEVICE OBSERVATION's blocks (src/simulation/device_obs.py).
+    m.attr("OBS_LAYOUT_FINGERPRINT") = breach_cuda::obs_layout_fingerprint();
+    m.def("obs_block",
+          [](int n_env, std::uintptr_t store, int n_units, int store_w, std::uintptr_t rowmap,
+             int n_rows, int n_slots, std::uintptr_t solid, int h, int w,
+             breach_cuda::UnitRecordList& doors, breach_cuda::UnitRecordList& door_tiles,
+             std::uintptr_t door_plane,
+             std::uintptr_t tick_row, std::uintptr_t params, std::uintptr_t ended,
+             std::uintptr_t near_u, std::uintptr_t far_f, std::uintptr_t far_u,
+             std::uintptr_t valid, std::uintptr_t in_match) {
+              breach_cuda::obs_block(n_env, store, n_units, store_w, rowmap, n_rows, n_slots,
+                                     solid, h, w, doors, door_tiles, door_plane, tick_row,
+                                     params, ended, near_u, far_f, far_u, valid, in_match);
+          },
+          py::arg("n_env"), py::arg("store"), py::arg("n_units"), py::arg("store_w"),
+          py::arg("rowmap"), py::arg("n_rows"), py::arg("n_slots"), py::arg("solid"),
+          py::arg("h"), py::arg("w"), py::arg("doors"), py::arg("door_tiles"),
+          py::arg("door_plane"), py::arg("tick_row"), py::arg("params"), py::arg("ended"),
+          py::arg("near_u"), py::arg("far_f"), py::arg("far_u"), py::arg("valid"),
+          py::arg("in_match"),
+          "#29 P8.0: the device observation's first block on the tick stream (no sync): "
+          "valid / in_match and the near wall / door, far wall share / door planes of every "
+          "env on its decision tick (cpp/src/cuda_obs.cu).");
+    m.def("obs_vector",
+          [](int n_env, std::uintptr_t store, int n_units, int store_w,
+             const breach_cuda::UnitTablesDevice& tables, std::uintptr_t rowmap, int n_rows,
+             int n_slots, int n_teams, std::uintptr_t obs_table, int table_w,
+             std::uintptr_t teams, std::uintptr_t tick_row, std::uintptr_t params,
+             std::uintptr_t ended, std::uintptr_t vector) {
+              breach_cuda::obs_vector(n_env, store, n_units, store_w, tables, rowmap, n_rows,
+                                      n_slots, n_teams, obs_table, table_w, teams, tick_row,
+                                      params, ended, vector);
+          },
+          py::arg("n_env"), py::arg("store"), py::arg("n_units"), py::arg("store_w"),
+          py::arg("tables"), py::arg("rowmap"), py::arg("n_rows"), py::arg("n_slots"),
+          py::arg("n_teams"), py::arg("obs_table"), py::arg("table_w"), py::arg("teams"),
+          py::arg("tick_row"), py::arg("params"), py::arg("ended"), py::arg("vector"),
+          "#29 P8.1: the device observation's vector columns of the store and the tables "
+          "(device_obs.BUILT['vector']) on the tick stream (no sync), every env on its "
+          "decision tick (cpp/src/cuda_obs.cu).");
+    m.def("obs_probe_half",
+          [](py::array_t<double, py::array::c_style | py::array::forcecast> x, bool via_f32) {
+              py::array_t<uint16_t> out(x.size());
+              breach_cuda::obs_probe_half(x.data(), out.mutable_data(), (int)x.size(), via_f32);
+              return out;
+          },
+          py::arg("x"), py::arg("via_f32") = false,
+          "#29 P8.1 TEST-ONLY: the observation kit's double -> float16 bits on the card "
+          "(via_f32: THE BREAK, double rounding through float32).");
+    m.def("obs_probe_f32",
+          [](py::array_t<double, py::array::c_style | py::array::forcecast> x) {
+              py::array_t<float> out(x.size());
+              breach_cuda::obs_probe_f32(x.data(), out.mutable_data(), (int)x.size());
+              return out;
+          },
+          py::arg("x"), "#29 P8.1 TEST-ONLY: the observation kit's double -> float32 cast.");
+    m.def("obs_probe_muladd",
+          [](py::array_t<double, py::array::c_style | py::array::forcecast> a,
+             py::array_t<double, py::array::c_style | py::array::forcecast> b,
+             py::array_t<double, py::array::c_style | py::array::forcecast> c, bool fused) {
+              if (a.size() != b.size() || a.size() != c.size())
+                  throw std::invalid_argument("obs_probe_muladd: a, b, c sizes differ");
+              py::array_t<double> out(a.size());
+              breach_cuda::obs_probe_muladd(a.data(), b.data(), c.data(), out.mutable_data(),
+                                            (int)a.size(), fused);
+              return out;
+          },
+          py::arg("a"), py::arg("b"), py::arg("c"), py::arg("fused") = false,
+          "#29 P8.1 TEST-ONLY: the observation kit's a*b + c, never fused (fused: THE "
+          "BREAK, an explicit fma).");
+    m.def("obs_probe_squash",
+          [](py::array_t<double, py::array::c_style | py::array::forcecast> x) {
+              py::array_t<double> out64(x.size());
+              py::array_t<float> out32(x.size());
+              breach_cuda::obs_probe_squash(x.data(), out64.mutable_data(),
+                                            out32.mutable_data(), (int)x.size());
+              return py::make_tuple(out64, out32);
+          },
+          py::arg("x"), "#29 P8.1 TEST-ONLY: the observation kit's squash (CUDA's log), "
+          "float64 and its float32.");
+    // #29 P8.2: THE OBSERVATION'S SIGHT (cpp/src/cuda_obs_sight.cu), on the
+    // tick stream, no sync.
+    m.def("obs_vision", &breach_cuda::obs_vision, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("solid"), py::arg("screen"),
+          py::arg("h"), py::arg("w"), py::arg("obs_table"), py::arg("table_w"),
+          py::arg("n_teams"), py::arg("sees"), py::arg("visible"), py::arg("faults"),
+          "#29 P8.2: who sees whom (vision.compute's VisionState) for every env, under "
+          "the match's sight rule from the obs table.");
+    m.def("obs_rays", &breach_cuda::obs_rays, py::arg("n_env"), py::arg("solid"),
+          py::arg("screen"), py::arg("h"), py::arg("w"), py::arg("physical"), py::arg("pairs"),
+          py::arg("n_pairs"), py::arg("out"), py::arg("faults"),
+          "#29 P8.2: vision.rays_clear in bulk on the card, every env in one launch.");
+    m.def("obs_windows", &breach_cuda::obs_windows, py::arg("n_env"), py::arg("solid"),
+          py::arg("screen"), py::arg("h"), py::arg("w"), py::arg("physical"),
+          py::arg("to_window"), py::arg("queries"), py::arg("n_q"), py::arg("wh"),
+          py::arg("ww"), py::arg("out"), py::arg("faults"),
+          "#29 P8.2: vision.window_clear in bulk on the card, every env in one launch.");
+    m.def("obs_lof_pairs", &breach_cuda::obs_lof_pairs, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("solid"), py::arg("h"), py::arg("w"),
+          py::arg("covers"), py::arg("cover_cap"), py::arg("cover_w"), py::arg("cover_count"),
+          py::arg("out"), py::arg("faults"),
+          "#29 P8.2: line_of_fire.solid_in_way over every (row, row) pair of the store, "
+          "over the observation's cover table.");
+    // #29 P8.3: THE DEVICE TEAM PICTURE (cpp/src/cuda_obs_picture.cu), on the
+    // tick stream, no sync.
+    m.def("obs_picture", &breach_cuda::obs_picture, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("ring"), py::arg("grenades"),
+          py::arg("charges"), py::arg("solid"), py::arg("screen"), py::arg("h"), py::arg("w"),
+          py::arg("tick_row"), py::arg("visible"), py::arg("n_teams"), py::arg("state"),
+          py::arg("state_w"), py::arg("faults"), py::arg("first"), py::arg("brk"),
+          "#29 P8.3: TeamPicture.update for every env on the card; returns whether the "
+          "fault bits were deferred into the conductor's books read.");
+    m.def("obs_picture_vector", &breach_cuda::obs_picture_vector, py::arg("n_env"),
+          py::arg("store"), py::arg("n_units"), py::arg("store_w"), py::arg("rowmap"),
+          py::arg("n_rows"), py::arg("n_slots"), py::arg("n_teams"), py::arg("obs_table"),
+          py::arg("table_w"), py::arg("teams"), py::arg("tick_row"), py::arg("params"),
+          py::arg("ended"), py::arg("visible"), py::arg("state"), py::arg("state_w"),
+          py::arg("vector"),
+          "#29 P8.3: the vector columns of the team picture, every env on its decision tick.");
+    m.def("obs_picture_damage_sums", &breach_cuda::obs_picture_damage_sums, py::arg("n_env"),
+          py::arg("store"), py::arg("n_units"), py::arg("store_w"), py::arg("n_teams"),
+          py::arg("state"), py::arg("state_w"), py::arg("out"), py::arg("reverse"),
+          "#29 P8.3: TeamPicture.damage_last_s for every (env, team, store row).");
+    m.def("obs_picture_layout", [](int n_teams, int n_units) {
+              py::dict d;
+              for (const auto& kv : breach_cuda::obs_picture_layout(n_teams, n_units))
+                  d[py::str(kv.first)] = kv.second;
+              return d;
+          },
+          py::arg("n_teams"), py::arg("n_units"),
+          "#29 P8.3: the compiled picture block's section offsets (int64 words).");
     m.def("tick_stream_ptr", []() {
               return reinterpret_cast<std::uintptr_t>(breach_cuda::tick_stream_handle());
           },
@@ -1286,7 +1418,18 @@ PYBIND11_MODULE(breach_physics, m) {
                  }, py::arg("recs"), py::arg("n"),
                  "Append each env's first n[e] records in order (past cap: counted).")
             .def("compact", [](ObjectTable& t) { t.compact(); },
-                 "The stable compaction of every env (rows whose live column is 0 dropped).");
+                 "The stable compaction of every env (rows whose live column is 0 dropped).")
+            .def("set_side",
+                 [](ObjectTable& t, std::uintptr_t side, std::int64_t side_stride,
+                    std::uintptr_t known, std::int64_t known_stride) {
+                     t.set_side(reinterpret_cast<int64_t*>(side), side_stride,
+                                reinterpret_cast<int64_t*>(known), known_stride);
+                 },
+                 py::arg("side"), py::arg("side_stride"), py::arg("known"),
+                 py::arg("known_stride"),
+                 "#29 P8.3: a device side array (int64 words, env e's row i at side + "
+                 "8 * (e * side_stride + i)) the compaction carries with the rows, and its "
+                 "known count (the device team picture's object serials); 0, 0: none.");
     }
 
     // #29 P7b: THE GRENADES AND THE PLANTED CHARGES on their object tables

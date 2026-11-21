@@ -9,6 +9,16 @@ paths:
   - "tests/_1h_forced.py"
   - "tools/rl_smoke.py"
   - "tools/obs_body_imprint.py"
+  - "src/simulation/device_obs.py"
+  - "cpp/src/cuda_obs.*"
+  - "cpp/src/cuda_obs_float.cuh"
+  - "cpp/src/cuda_obs_sight.*"
+  - "cpp/src/cuda_obs_picture.*"
+  - "src/simulation/device_picture.py"
+  - "cpp/src/obs_layout.h"
+  - "tools/gen_obs_layout.py"
+  - "tests/cuda_obs_check.py"
+  - "tests/obs_column_owners.toml"
 ---
 
 # RL agent: the env, the observation, the action, the reward, snapshots
@@ -33,6 +43,7 @@ and who must use it; this file holds the constraints the code cannot say. The
 - THE WALL: the builders take `(know, u)` and reach the sim ONLY through `TeamKnowledge.build` (with `observe_rows`, the door that hands it the sim) and its `ObsWorld` facade (explicit attributes, no fallback); every cache is keyed by its inputs. An object's id is its team's own counter; a uid is an EQUALITY key only.
 - Nothing walks its own lines or floods its own field (sight through Sight for many tiles, the route through the horde's flood). The physics planes are read ONCE per env per decision; the sight plane is cast from RECORDED centres, never live positions.
 - ACCEPTED GAP (Erik, 2026-11-12: "on the wind question, its OK! We accept it!"): the physics planes carry the bodies' own aerodynamic and radiative imprint (`stamp_units`), measured by `tools/obs_body_imprint.py`. So the counterfactual family compares every array but the physics planes and the `air` / `felt_temp` columns.
+- A length in the observation is `obs_spec_v1.length` (float64 `sqrt(dx*dx + dy*dy)`, its array form doing the same operations) and the decoder's lob reach is `math.sqrt`: never `hypot` or a float `**` (libm algorithms a kernel cannot reproduce bit for bit, so the device observation and decoder could not be held EXACT; #29 P8.0b, `tests/test_portable_host_roots.py`).
 - Held by the reconstruction against `tests/_obs_reference.py` and the counterfactual family. Choices beyond the spec are marked `CHOICE` in the module.
 
 ## Full view
@@ -40,6 +51,23 @@ and who must use it; this file holds the constraints the code cannot say. The
 - The OTHER SIDE OF THE WALL: its builders read the sim through ONE `FullView` per env per decision (`FullView.build`, the one door) and keep THEIR OWN caches, never `TeamKnowledge`'s; pair case (f) holds every `obs` array byte-identical with the full view off, built before or after.
 - Over its entry cap the farthest doors, then zombies, then objects, are dropped, never a marine. Its balance column is `reward_v1.standing`, the reward's one implementation.
 - A new privileged input is a new version of this spec.
+
+## Device observation
+- THE device form of observation spec v1, its masks and the full view (`src/simulation/device_obs.py`, `cpp/src/cuda_obs.*`): built on the card in the device conductor's walk (its last call line) into env-owned CuPy buffers with exactly the served keys, shapes and dtypes (and a `final_` set), handed to torch by DLPack. The host builders stay THE reference; never a second observation, never a host copy between the card and the trainer.
+- Every column and plane has ONE owning P8 patch in `tests/obs_column_owners.toml`; a block lands with its owner rows and its `device_obs.BUILT` entry in the same patch. Each gate compares what its patch and the earlier ones own, as RAW BITS, at every decision tick, and fails on an owned column constant over its corpus. ONE check script, `tests/cuda_obs_check.py`, a part per patch: never a second script.
+- A spec constant reaches a kernel only through the generated `cpp/src/obs_layout.h` (`tools/gen_obs_layout.py`), read from the spec's own tables: never a literal in a kernel, never a kernel argument. The observation's device code is its own TU and headers, never `cpp/src/cuda_unit_lib.cuh`; it writes no synced buffer and adds no host sync to the tick.
+- THE OBS TABLE (`device_obs.table_values` / `team_values`): every value a block reads that is not unit state is ONE row of it, read from the reference's OWN object (the episode's `ObsContext`, the sim's weapon rows, the loadout and env-profile tables, the species registry), its offsets only from the generated header. A float the host reads as a float is carried as its own float64 bit pattern, never a Q16 row of the device tables (inventory K4). A config row that moves a block's width (a loadout, weapon, env profile, species or hand-grenade kind) means `tools/gen_obs_layout.py --write`, commit, rebuild.
+- The observation's float arithmetic is `cpp/src/cuda_obs_float.cuh` alone: float64 in the reference's operation order through the never-fused intrinsics, ONE cast per value into the served dtype (float16 only through the kit's hand conversion: never `__double2half`, never through float32). `log` / `log1p` are CUDA's own: a served value they move fails the gate, and is the trigger for the shared log module (the lead's call), never a tolerance.
+- The integer reads a block shares with the unit kernels (`mag_status`, `composed_flags`, `handling_ticks`, `scaled`, `wrap_q16`) are the unit library's, called with the device tables: never a copy in the observation's TU.
+- An owned column the corpus cannot move gets a case in the check's hand match (corpus (d): a hand state at tick 0 given to the reference and the twin alike, hand intents through the tap), never a weakened census.
+- DEVICE VISION (`DeviceObservation.vision`: `sees` (N, U, U) per observer / target row, `visible` (N, T + 1, U) per team slot, the zombie team the last) is THE device form of `vision.state_for`: computed EVERY tick at the walk's `11'` line BEFORE the blocks (`stage`), where the reference's slot 11 first asks (after the advance and the conversion); every device block that asks what a team or a unit sees reads these tables, never its own pair loop. The sight rule and its dials are obs-table rows (`device_obs.sight_values`), never a kernel argument; a team value without a slot is refused at the build.
+- THE COVER TABLE (`device_obs.cover_values`) is staged ONCE at the build: on the continuous path nothing changes a cover's `alive` (`CoverRuntime.chew` is reached only through a round marched with `cover`, which only OnePhaseWEGO passes). A path that starts chewing cover on the continuous ruleset moves the table onto the card in the same patch. Every line of fire (`line_of_fire.solid_in_way`) on the card is `obs_sight::solid_in_way` over it.
+- THE DEVICE TEAM PICTURE (`DeviceObservation.picture`, `src/simulation/device_picture.py`, `cpp/src/cuda_obs_picture.{cuh,cu}`) is updated at the `11'` line between device vision and the blocks, ONCE per tick (a skipped or doubled update is a fault), in `TeamPicture.update`'s order: the per-unit trackers and last hit, then per team the damage window against the records BEFORE the update, the seen deaths, the memory, the sightings, the object tracker. A change to that order or to any tracker lands in the device picture in the same patch, gated every tick by the check's picture comparison. Every later block (the list, the masks' aims, the reward's bars) reads the picture through `cuda_obs_picture.cuh`'s layout and readers, never its own offsets; the damage window's sum is `damage_sum`, in its deque's order.
+- Its capacities are refusals, never clamps: records are one per (team, store row), the tracker holds live objects only (both bounded by the law), the damage window is a FIFO of `DMG_CAP` per team; every fault rides the conductor's ONE books read (`picture_faults`), raised by name with the env.
+- THE OBJECT SERIAL is a side array of the picture's block that the grenade / charge tables' stable compaction carries (`ObjectTableBuffer.set_side`); never a table column (a column reaches the digest) and never the row index. Its host notion is test-side only: an object's position in `projectiles + planted_charges` (`device_picture.host_form`).
+- A per-env reset restages env e's picture through `DevicePicture.restage` (from a host picture or its normal form), never a second conversion.
+- An env is built on ITS decision ticks (its episode start and the run's decimation, read on the card) and skipped while its ended latch is set.
+- The hand-over's ordering rests on the BLOCKING tick stream and CuPy / torch on the legacy default stream: a change to either is a change to the hand-over, held by the check's handover part.
 
 ## Action spec
 - Masks come from the game's own gates, never a copy of them. Every number comes from its row through `action_tables`, quantized once: never a literal. A new grenade row APPENDS a hand entry; a new verb is a hand-table row with its gate in the same patch.
