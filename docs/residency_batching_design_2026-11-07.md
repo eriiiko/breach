@@ -3400,6 +3400,126 @@ N = 256; the blocks with the picture's columns 0.026 / 0.036 / 0.046 ms per
 decision (P8.2's 0.030 / 0.018 / 0.045). No golden re-baseline; no host value moved;
 no table column added.
 
+**P8.4 AS-BUILT (2026-11-21, branch `29-p84-obs-list`, three parts by three
+agents in turn).** THE LIST AND THE FOUR MASKS, each block every env on its
+decision tick on the tick stream, no sync, the host builders the reference.
+PART A (P8.4a) -- `DeviceObservation.aims` over `bp.obs_aims`
+(`cpp/src/cuda_obs.cu`, five launches): the fire lanes of every marine team
+(`lane_grid (N, T, GH, GW)` int32, draw_lanes' codes: -1 nobody, an owner's
+uid, -2 several; `GH, GW = h // cell + 1, w // cell + 1`, the cell and half
+width obs-table rows `LANE_CELL` / `LANE_HALFWIDTH` from
+`TeamKnowledge.lane_dials`), each owner's own lane (`lane_own (N, U, GH,
+GW)`), the served `near_u` plane `lanes`; `aim_of` per (team view, store row)
+(`aim (N, T, U)`: a uid, -1 nobody, -2 not asked: the hit does not depend on
+the observing soldier); per (soldier row, unit its team sees with a record)
+the line of fire (`lof`: ASKED | SOLID through P8.2's `solid_in_way` to the
+RECORDED centre | MATE through `mate_near_segment`) and `ticks_to_within`
+(`ttw`, iterating `unit_lib::turn_law_q16`). The device helpers live in
+`cpp/src/cuda_obs_sight.cuh` (`lane_div` = Python's flooring `//` through
+`floordiv`, `lane_segment`, `lane_steps`, `lane_cell`, `lane_claim` (the
+atomic several-owners rule), `AimKey` / `aim_less` = aim_of's (d2, uid, cx,
+cy) order). The answers are compared with the reference's OWN intermediate
+values at every decision tick through a test-side tap (`AimTap` wraps
+`build_list`, `aim_of`, `solid_in_way` / `mate_in_way`, `_enemy_geometry` +
+`ticks_to_within`, `TeamKnowledge.lanes` / `lane_of` for one `observe_rows`
+and restores them; the builder unchanged). PART B (P8.4b) --
+`DeviceObservation.build_list` over `bp.obs_list` (`cpp/src/cuda_obs_list.cu`,
+one thread per (env, row, block)): the five blocks at fixed places (mates S - 1,
+seen 16, records, objects, doors), every entry column the table gives P8.4b,
+`list_mask`, `list_uid`; the later patches' columns (`on_next_tick`,
+`prev_aim`, the order block 47-51) written 0. THE SORT: every block's key is
+(squared centre distance, id) with an id unique within the block (unit id,
+object uid, door ordinal), so the order is TOTAL and the card takes it by
+successive minima (`next_min`, `key_less`) up to the block's capacity = the
+host's sort then `[:cap]`; no float, no tie left. The row predicates
+(`env_due`, `is_mate`, `is_seen`) moved into ONE header,
+`cpp/src/cuda_obs_rows.cuh` (P8.4a's and the picture's copies retired); the
+obs table gained an AMMO block (OBJ_KIND, RADIUS, TRAVEL_SPEED_BITS per
+`[ammo.*]` row); the wired flags are a static `(N, wired_cap)` per door table
+row (`device_obs.wired_values`). PART C (P8.4c) -- `DeviceObservation.
+build_masks` over `bp.obs_masks` (`k_masks` in `cuda_obs_list.cu`, one thread
+per (env, row), after the list of the same tick): `mask_feet` /
+`mask_trigger` all legal, `mask_aim` the wind-up's KEEP alone
+(`throw_release_tick >= tick + decimation - 1`, the decimation read from the
+env's parameter row) or the 16 tokens + "walk" + the list's entries with
+mask set and type in `AIMABLE_TYPES` (a generated bit set), `mask_hand` ONE
+unit-library gate per bit (`can_reload`, `can_melee(.., at_tick_start =
+true)`, `can_shove`, `can_plant`, `can_throw` per kind; the flashlight 0),
+a row that is not valid `default_masks`; faults (`mask_faults`: a gate's
+index past its table, a live door's span off the tile table) read by the gate.
+THE LIFT: `verb_gates._reach_key`'s geometry was a function local to
+`cpp/src/cuda_unit_verbs.cu::use_door` and restated in the list's
+`door_entry`; it is now ONE library function, `unit_lib::reach_key(row, ty,
+tx)` (`cpp/src/cuda_unit_lib.cuh`: a span tile's row-major index over the
+footprint plus its one-tile ring, -1 outside), called by `use_door`'s two
+passes, the list's `in_reach` and the use mask (`door_in_reach_any`: acts()
+and a live door row with a span tile at `reach_key >= 0`, which is exactly
+`can_use`: `use_door` returns a door iff one is in reach). Choices where the
+design was silent: the per-tile function is the lift (the verb kernel's
+per-tick span rows and the observation's door / tile tables are different
+layouts; the tile is what both share); the masks live in the list's TU (they
+read its buffers; one more launch); the mask faults are their own word, not
+on the books read (like the list's and the aims'); the mask coverage pools
+the aim's entry positions (the mate / object / door places are never
+aimable by the spec) and exempts by name the bits the spec fixes (stand, the
+first trigger option and "nothing" always legal, the flashlight always
+masked). Findings: (1) `tools/bench_conductor.py --obs` timed the blocks on
+the tick it stopped at (70, off the decision cadence of 4), where every kernel
+exits at `env_due`: the P8.1 to P8.3 "obs blocks per decision" figures timed
+early exits; the bench now times every block with each env due (the
+parameter row's decimation set to 1 for the timing and put back) and reports
+`obs_due`; (2) the host computes the per-enemy columns only for the first 16
+seen enemies after the sort, the device buffers hold every seen enemy (the
+served values agree); (3) no corpus level has a hull door or a wired door,
+the bots never set throttle > 0, never take an order, never plant a remote
+charge and never put a seen enemy within the frag radius of a mate, and no
+played match puts a seen enemy past the ticks_to_within cap: two hand matches
+(corpus (d)) carry them: `slow_turn` (range_door, idle, unit 1 facing away
+with hook TURN = ONE/8) and `list_hand` (ship_demo all_round, idle, 24
+ticks: a door made hull and wired, a remote charge, an order with a priority
+target, half throttle, the frag radius). Gates (`tests/cuda_obs_check.py`,
+`PATCH = "P8.4c"`, raw bits at every decision tick, every earlier column
+still equal): part GATE N = 1 on bots 338, bots_v1 69, range_door 51, hand
+81, range_hall 9, hall_cover 7, ship_all_round 121, door_grenade 38,
+slow_turn 11, list_hand 7 env-decisions, the masks equal on their first
+build (as were part a's and b's blocks); the intermediates equal to the tap
+(bots 676 team lanes / 2126 aim_of / 1098 lines of fire / 1100 ticks;
+bots_v1 137 / 850 / 918 / 1168; ship_all_round 242 / 1155 / 748 / 748);
+coverage: lanes crossing a mate 108, cells of several owners 272, a line of
+fire blocked by a wall 792 / a cover crate 2 / a mate 1983 / clear 1889,
+aim_of nobody 3532 / a mate 786 / another side 705, ticks 0 1033 / between
+2094 / at the cap 11; list entries mate 11 180, seen 3 222, record 855,
+grenade 1 043, charge 352, door in reach 1 656 / out of reach 15 211, a
+block over its capacity 4 207 (doors 4 167, objects 40; the host truncates
+after the sort and so does the card); every mask bit the spec does not fix
+both set and clear over the corpus (e.g. reload 578 / 7 046, use 1 656 /
+5 968, an aimable entry 3 956 / 292 220 entry places), the KEEP-only aim 31,
+a default row 3 227. Census over (a)+(b)+(d): every owned column, plane and
+mask non-constant. Batches ship_demo N = 2 / 4 (493 / 805 env-decisions) and
+the room N = 2 / 4 (112 / 220) all equal; 2.00 syncs per steady tick at N = 1
+and 2. THE WALL extended at each part: the unseen enemy's row perturbed (its
+trigger flipped too) moves none of the team's lanes, lanes plane, aims, lines
+of fire, turns, list entries, list mask, uids or four masks (cone 7,
+all_round 6 (team, tick) cases). Breaks, each red at its first decision:
+`lane_trunc` (C's truncation for the floor division: bots tick 420, team 1's
+grid cell (5, 15)), `lane_wide` (the lane one tile wide: bots tick 424),
+`list_tie` (the sort ties by the higher id: bots tick 4, list_uid 1 vs 2),
+`list_cap` (the door block one short: bots tick 4, entry 38), `mask_swap`
+(the reload and shove gates swapped: tick 4 of every match, `mask_hand` row 0
+bit 1), `mask_reach` (the use reach one tile wider: bots tick 4, row 3's use
+bit; range_door tick 152); P8.0 to P8.3's unchanged. The lift is a Class-P
+change to the verb kernel: `tests/test_cuda_unit_verbs.py` (the two-door
+scene, the door in reach / none / dead / hull census), `tests/
+test_cuda_unit_doors.py` and `tests/test_cuda_conductor.py` green unchanged.
+Cost (`tools/bench_conductor.py --obs`, ship_demo, every env due, GPU time
+for all envs): the list + masks 0.265 / 0.452 / 0.877 ms per decision at
+N = 1 / 64 / 256 (the list's successive minima are serial per (row, block),
+one thread each; not yet profiled further); the whole
+decision's blocks 0.357 / 0.610 / 1.237 ms; vision 0.012 / 0.015 / 0.030 and
+the team picture 0.020 / 0.021 / 0.021 ms per tick; 2.0 syncs per tick at
+every N. No golden re-baseline; no host value moved; no table column
+added.
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:
