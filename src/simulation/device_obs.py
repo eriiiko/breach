@@ -163,6 +163,10 @@ BUILT.update({k: None for k in REWARD_KEYS})
 # prev_aim / on_next_tick (``device_decoder``, ``DeviceObservation.build_decoder_obs``)
 BUILT["vector"] = BUILT["vector"] + tuple(f"prev[{h}]" for h in range(6))
 BUILT["list"] = BUILT["list"] + ("on_next_tick", "prev_aim")
+# P8.8: THE FULL VIEW -- the value network's privileged view, every key whole
+# (``DeviceObservation.build_full``)
+FULL_KEYS = ("full_list", "full_mask", "full_uid", "full_match", "full_watched")
+BUILT.update({k: None for k in FULL_KEYS})
 
 #: The served dtypes of the observation's float keys (P8.1, said once): the
 #: float16 keys go through the kit's hand conversion, the float32 ones through
@@ -597,6 +601,45 @@ WIN_BREAK_CODES = {"win_profile": 1, "win_anchor": 2, "win_half": 3, "win_argmax
                    "win_divisor": 5}
 
 
+# ---------------------------------------------------------------------------
+# P8.8: THE FULL VIEW (``bp.obs_full``)
+# ---------------------------------------------------------------------------
+#: Fault bits of ``obs_full`` (a per-env word the gate reads; no served level
+#: reaches one): OVERFLOW (more living marines than the full list holds: the
+#: reference never drops a marine), RANGE (a sight walk's or a bearing's
+#: coordinate past the kit's range), LAW (the turning law past its trial bound).
+FULL_FAULT_BITS = {"OVERFLOW": 1, "RANGE": 2, "LAW": 4}
+#: The check's breaks (``OBS_BREAK``): ``full_vis`` (the full view built from
+#: the team's VISIBLE set instead of every unit), ``full_tie`` (each block's
+#: sort ties by the HIGHER id), ``full_cap`` (the full list's room one entry
+#: short).
+FULL_BREAK_CODES = {"full_vis": 1, "full_tie": 2, "full_cap": 3}
+#: A place-table row (int64): the order's place code (a room's id, or
+#: ``ORDER_OPENING_BASE`` + an opening's id), its centre tile (x, y).
+PLACE_FIELDS = ("WHERE", "X", "Y")
+
+
+def place_values(sim) -> np.ndarray:
+    """ONE env's place table (``(P, PLACE_W)`` int64) for the full view's mate
+    entries' order block: ``obs_spec_v1._place_centre`` over the room graph
+    the observation reads (``unit_orders.graph_of``) -- every room whose id is
+    a room code (``< ORDER_OPENING_BASE``: ``_place_centre`` looks a smaller
+    code up among the rooms only) with its centre, then every opening under
+    ``ORDER_OPENING_BASE + id``; the first row of a code wins, as the
+    reference's search does. Static for the episode (empty without a graph)."""
+    from simulation.unit_orders import ORDER_OPENING_BASE, graph_of
+    g = graph_of(sim)
+    rows = []
+    if g is not None:
+        for r in g.rooms:
+            if int(r.id) < ORDER_OPENING_BASE:
+                rows.append((int(r.id), int(r.x) + int(r.w) // 2, int(r.y) + int(r.h) // 2))
+        for o in g.openings:
+            rows.append((ORDER_OPENING_BASE + int(o.id), int(o.x) + int(o.w) // 2,
+                         int(o.y) + int(o.h) // 2))
+    return np.array(rows, dtype=np.int64).reshape(-1, len(PLACE_FIELDS))
+
+
 def wired_values(sim, cap: int) -> np.ndarray:
     """ONE env's wired flags (``(cap,)`` uint8) per door table row (row k =
     ``sim._doors[k]``, ordinal order): ``room_graph.wired_door_ordinals`` of
@@ -768,6 +811,38 @@ def _constants() -> list:
     # record, the table, the horde latch's layout, faults and breaks)
     from simulation import device_decoder
     out += device_decoder.constants()
+    # -- P8.8: the full view (the full list's layout, the extra columns, the
+    # status kinds it carries, the knowledge codes, the order's sentinels, the
+    # place table, faults and breaks)
+    from simulation import unit_orders
+    xc = {f.name: f.pos for f in o.FULL_EXTRA_COLUMNS}
+    out += [("OBS_FULL_ENTRIES", o.FULL_ENTRIES), ("OBS_FULL_F", o.FULL_F),
+            ("OBS_FX_KNOWLEDGE", xc["knowledge"]), ("OBS_FX_ROUNDS", xc["rounds"]),
+            ("OBS_FX_MAGS", xc["mags"]), ("OBS_FX_AMMO_UNTRACKED", xc["ammo_untracked"]),
+            ("OBS_FX_GRENADE0", xc["grenade[0]"]), ("OBS_FX_CHARGES", xc["charges"]),
+            ("OBS_FX_MELEE_COOL", xc["melee_cool"]), ("OBS_FX_SHOVE_COOL", xc["shove_cool"]),
+            ("OBS_FX_STATUS0", xc[f"status_left[{o.FULL_STATUS_KINDS[0]}]"]),
+            ("OBS_FX_ORDER_WHAT", xc["order_what"]),
+            ("OBS_FULL_N_STATUS", len(o.FULL_STATUS_KINDS))]
+    if [xc[f"grenade[{k}]"] for k in range(o.HAND_GRENADE_SLOTS)] != list(
+            range(xc["grenade[0]"], xc["grenade[0]"] + o.HAND_GRENADE_SLOTS)) or [
+            xc[f"status_left[{k}]"] for k in o.FULL_STATUS_KINDS] != list(
+            range(xc[f"status_left[{o.FULL_STATUS_KINDS[0]}]"],
+                  xc[f"status_left[{o.FULL_STATUS_KINDS[0]}]"] + len(o.FULL_STATUS_KINDS))):
+        raise DeviceObsRefused("device observation: the full view's grenade / status columns "
+                               "are not consecutive (the kernel writes them as runs)")
+    if len(o.FULL_STATUS_KINDS) != 4:
+        raise DeviceObsRefused(f"device observation: the full view carries "
+                               f"{len(o.FULL_STATUS_KINDS)} status kinds, the kernel 4")
+    out += [(f"OBS_FULL_STATUS_KIND_{j}", int(k)) for j, k in enumerate(o.FULL_STATUS_KINDS)]
+    out += [("OBS_KNOW_SEEN", o.KNOW_SEEN), ("OBS_KNOW_RECORD", o.KNOW_RECORD),
+            ("OBS_KNOW_UNKNOWN", o.KNOW_UNKNOWN),
+            ("OBS_NO_PLACE", int(unit_orders.NO_PLACE)),
+            ("OBS_NO_LIMIT", int(unit_orders.NO_LIMIT))]
+    out += [(f"OBS_PLACE_{f}", i) for i, f in enumerate(PLACE_FIELDS)]
+    out.append(("OBS_PLACE_W", len(PLACE_FIELDS)))
+    out += [(f"OBS_FULL_FAULT_{k}", v) for k, v in FULL_FAULT_BITS.items()]
+    out += [(f"OBS_FULL_BREAK_{k.upper()}", v) for k, v in FULL_BREAK_CODES.items()]
     return out
 
 
@@ -1105,6 +1180,17 @@ class DeviceObservation:
         self.win_faults = cp.zeros((N,), dtype=cp.int32)
         self.win_brk = 0                      # THE BREAK hook (the check's), 0 in a real run
         self._null_decoder = None             # P8.6a: the decoder's columns with no decoder
+        # -- P8.8: the full view (its every-unit aims, the place table) --------
+        places = [place_values(sim) for sim in c.sims]
+        self.place_cap = max(1, max(len(x) for x in places))
+        pl = np.zeros((N, self.place_cap, len(PLACE_FIELDS)), dtype=np.int64)
+        for e, x in enumerate(places):
+            pl[e, :len(x)] = x
+        self.places = cp.asarray(pl)
+        self.place_count = cp.asarray(np.array([len(x) for x in places], dtype=np.int32))
+        self.full_aim = cp.full((N, 2, U), AIM_CODES["AIM_NONE"], dtype=cp.int32)
+        self.full_faults = cp.zeros((N,), dtype=cp.int32)
+        self.full_brk = 0                     # THE BREAK hook (the check's), 0 in a real run
         # -- P8.7: the device books (the reward, termination, the ended latch)
         self.books = device_books.DeviceBooks(self, self.reward_terms)
         c.attach_observation(self)
@@ -1228,6 +1314,8 @@ class DeviceObservation:
         # P8.6a: the decoder's columns (prev, prev_aim, on_next_tick) after the
         # vector, the list and the windows
         self.build_decoder_obs(store)
+        # P8.8: the full view (the list's entry builders, the windows' sight)
+        self.build_full(store)
         self.builds += 1
 
     def build_decoder_obs(self, store_ptr=None) -> None:
@@ -1363,6 +1451,44 @@ class DeviceObservation:
             int(b["near_u"].data.ptr), int(b["far_f"].data.ptr), int(b["far_u"].data.ptr),
             int(b["vector"].data.ptr), int(self.win_faults.data.ptr), int(self.win_brk))
 
+    def build_full(self, store_ptr=None) -> None:
+        """P8.8 for every env on its decision tick: THE FULL VIEW
+        (``obs_spec_v1.observe_full_rows``, the other side of the wall) --
+        ``full_list`` / ``full_mask`` / ``full_uid`` (the soldier itself, then
+        EVERY other living unit where it truly is: the marines by (team, slot,
+        id), the zombies, the live objects and the living doors nearest first
+        by (d2, id); over the cap the farthest doors, then zombies, then
+        objects dropped), ``full_match`` and ``full_watched``, for every row
+        whose roster place holds a unit, dead or turned included. The entry
+        builders are the list's (one copy), the every-unit aim its own
+        buffer (:attr:`full_aim`), ``full_watched`` the windows'
+        ``obs_sight::window_cell``. Four launches on the tick stream, no sync;
+        faults into :attr:`full_faults`. ``store_ptr``: the store read
+        (default the conductor's; the WALL gate hands a perturbed copy)."""
+        c = self.c
+        b = self.buffers
+        store = int(c.store.device_ptr) if store_ptr is None else int(store_ptr)
+        pic = self.picture
+        gh, gw = self.lane_shape
+        self.bp.obs_full(
+            int(self.N), store, int(c.U), int(c.store.shape[2]), c.store.tables,
+            int(self.rowmap.data.ptr), int(self.n_rows), int(self.S), int(self.T),
+            int(self.table.data.ptr), int(self.table.shape[1]), int(self.teams.data.ptr),
+            int(c.trow.ptr), int(self.params.data.ptr), int(self.ended.data.ptr),
+            int(self.visible.data.ptr), int(self.sees.data.ptr), int(pic.state.data.ptr),
+            int(pic.W), int(self.lane_own.data.ptr), int(gh), int(gw), c.grenades.buffer,
+            c.charges.buffer, c.doors.buffer, c.door_tiles.buffer,
+            int(c.fields["is_vacuum"].data.ptr), int(c.fields["is_ambient"].data.ptr),
+            int(c.fields["solid"].data.ptr), int(c.fields["sight_screen"].data.ptr),
+            int(c.h), int(c.w), int(self.wired.data.ptr), int(self.wired_cap),
+            int(self.cover.data.ptr), int(self.cover_cap), int(self.cover.shape[2]),
+            int(self.cover_count.data.ptr), int(self.places.data.ptr), int(self.place_cap),
+            int(self.places.shape[2]), int(self.place_count.data.ptr),
+            int(self.full_aim.data.ptr), int(b["full_list"].data.ptr),
+            int(b["full_mask"].data.ptr), int(b["full_uid"].data.ptr),
+            int(b["full_match"].data.ptr), int(b["full_watched"].data.ptr),
+            int(self.full_faults.data.ptr), int(self.full_brk))
+
     # -- the hand-over -------------------------------------------------------
     def torch(self) -> dict:
         """Every served buffer as a torch tensor sharing its memory (DLPack;
@@ -1397,4 +1523,5 @@ __all__ = ["HEADER_REL", "GENERATOR", "BUILT", "DeviceObsRefused", "DeviceObserv
            "lane_values", "lane_grid_shape", "AIM_CODES", "AIM_FAULT_BITS", "AIM_BREAK_CODES",
            "AMMO_FIELDS", "LIST_FAULT_BITS", "LIST_BREAK_CODES", "wired_values",
            "MASK_FAULT_BITS", "MASK_BREAK_CODES", "WIN_FAULT_BITS", "WIN_BREAK_CODES",
-           "WINDOW_PLANES", "check_window_sources", "window_values"]
+           "WINDOW_PLANES", "check_window_sources", "window_values", "FULL_KEYS",
+           "FULL_FAULT_BITS", "FULL_BREAK_CODES", "PLACE_FIELDS", "place_values"]

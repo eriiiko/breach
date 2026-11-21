@@ -209,6 +209,35 @@ void obs_masks(int n_env, std::uintptr_t store, int n_units, int store_w,
                std::uintptr_t mask_feet, std::uintptr_t mask_aim, std::uintptr_t mask_trigger,
                std::uintptr_t mask_hand, std::uintptr_t faults, int brk);
 
+// ---------------------------------------------------------------------------
+// #29 P8.8: THE FULL VIEW (cpp/src/cuda_obs_list.cu): obs_spec_v1.
+// observe_full_rows for every env on its decision tick with its ended latch
+// clear, on the tick stream, no sync: full_aim (N, 2, U) int32 (FullView.aim
+// along each living unit's facing / facing target), full_list (N, n_rows,
+// OBS_FULL_ENTRIES, OBS_FULL_F) float32, full_mask / full_uid (N, n_rows,
+// OBS_FULL_ENTRIES) uint8 / int32, full_match (N, n_rows, 2 T + 3) float32,
+// full_watched (N, n_rows, 25, 25) uint8, for every row whose roster place
+// holds a unit (dead or turned included). Reads what the list reads (the
+// list's entry builders are called, never copied) plus the cover table, the
+// sight screen and the place table (N, place_cap, OBS_PLACE_W) int64 (the
+// room graph's places and their centres) with its (N,) counts. `faults`: (N,)
+// int32 bits OBS_FULL_FAULT_*; `brk`: the check's breaks (OBS_FULL_BREAK_*),
+// 0 in every real run.
+void obs_full(int n_env, std::uintptr_t store, int n_units, int store_w,
+              const UnitTablesDevice& tables, std::uintptr_t rowmap, int n_rows, int n_slots,
+              int n_teams, std::uintptr_t obs_table, int table_w, std::uintptr_t teams,
+              std::uintptr_t tick_row, std::uintptr_t params, std::uintptr_t ended,
+              std::uintptr_t visible, std::uintptr_t sees, std::uintptr_t state, int state_w,
+              std::uintptr_t lane_own, int gh, int gw, ObjectTable& grenades,
+              ObjectTable& charges, UnitRecordList& doors, UnitRecordList& door_tiles,
+              std::uintptr_t is_vacuum, std::uintptr_t is_ambient, std::uintptr_t solid,
+              std::uintptr_t screen, int h, int w, std::uintptr_t wired, int wired_cap,
+              std::uintptr_t covers, int cover_cap, int cover_w, std::uintptr_t cover_count,
+              std::uintptr_t places, int place_cap, int place_w, std::uintptr_t place_count,
+              std::uintptr_t full_aim, std::uintptr_t full_list, std::uintptr_t full_mask,
+              std::uintptr_t full_uid, std::uintptr_t full_match, std::uintptr_t full_watched,
+              std::uintptr_t faults, int brk);
+
 // #29 P8.5a: THE WINDOWS (cuda_obs_windows.cu) for every env on its decision
 // tick with its ended latch clear, on the tick stream, no sync: the eight
 // physics planes of near_f and far_f (from the RESIDENT planes temperature,

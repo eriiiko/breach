@@ -224,7 +224,7 @@ FAILS: list = []
 BREAK = os.environ.get("OBS_BREAK", "")
 #: The patch this script's gates are at: every column owned by it or an
 #: earlier patch of the version-2 table is compared.
-PATCH = "P8.6a"
+PATCH = "P8.8"
 #: The decision cadence of the corpus (design 13.1's decimation, a run file's
 #: ``[run] decimation``; the device observation takes it as its argument).
 DECIMATION = 4
@@ -361,6 +361,10 @@ class Played:
         self.ref_horde = {}                   # tick -> latch row
         self.digests = {}                     # tick (after the step) -> digests
         self.dec_cov = {}
+        # P8.8: the full view's coverage, counted off the reference, and the
+        # distinct values of each full_match column (raw bits, capped)
+        self.full_cov = {k: 0 for k in FULL_CASES}
+        self.full_match_vals = {}
 
 
 _PLAYED: dict = {}
@@ -443,6 +447,12 @@ def host_observation(session, ctx, T, S, aimed_out=None, aims_of=None) -> dict:
     valid, in_match = rl_env.EnvRunner.row_flags(me)
     out["valid"][...] = valid
     out["in_match"][...] = in_match
+    # P8.8: the full view for the rows' ROSTER units (EnvRunner.observe's own
+    # call through the accessor's door: observe_full_rows, after the
+    # observation; its own caches, so the order cannot move a value)
+    for k, (sh, dt) in o.full_shapes(1, T * S, T).items():
+        out[k] = np.zeros(sh[1:], dtype=dt)
+    o.observe_full_rows(session.sim, ctx, rl_env.EnvRunner.roster_units(me), out)
     return out
 
 
@@ -510,6 +520,7 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None,
         p.obs[int(s.sim.tick)] = owned_parts(host, own, False)
         count_list(p.list_cov, host, len(ctx.hand_rows))
         count_masks(p.mask_cov, host)
+        count_full(p, s, host)
         p.aims[int(s.sim.tick)] = at.rec
         p.lof[int(s.sim.tick)], p.lof_cover[int(s.sim.tick)] = host_lof(s.sim)
         t_obs += time.perf_counter() - ts
@@ -676,6 +687,8 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
         obs.masks_brk = dobs.MASK_BREAK_CODES[BREAK]
     if BREAK in dobs.WIN_BREAK_CODES:              # P8.5a: profile row, anchor, half, argmax
         obs.win_brk = dobs.WIN_BREAK_CODES[BREAK]
+    if BREAK in dobs.FULL_BREAK_CODES:             # P8.8: the visible set, the tie, the cap
+        obs.full_brk = dobs.FULL_BREAK_CODES[BREAK]
     import cupy as cp
     n_cmp = 0
     end = max(p.end for p in played)
@@ -706,6 +719,10 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
             wf = obs.win_faults.get()
             if wf.any():
                 fail(f"{label}: tick {tick}: window fault bits {wf.tolist()}")
+                return False
+            ff = obs.full_faults.get()
+            if ff.any():
+                fail(f"{label}: tick {tick}: full view fault bits {ff.tolist()}")
                 return False
         if tick % DECIMATION == 0:
             got = obs.host(own)
@@ -1295,6 +1312,83 @@ def judge_masks(played) -> None:
 #: tile, a tile that sees the aimed target, a near window hanging over each
 #: edge of the map, a far window cell on a block that straddles the map's
 #: edge (part pad, part map), a far window cell off the block grid.
+FULL_CASES = ("mate", "enemy_seen", "enemy_record", "enemy_unknown", "zombie", "object_seen",
+              "object_known", "object_unknown", "door", "corpse", "overflow", "watched",
+              "order_block", "aim_on_unit")
+
+
+def count_full(p, session, host) -> None:
+    """P8.8: the full view's coverage over one reference decision, counted off
+    the reference's served arrays (and, for the cut, the sim's own counts: a
+    row whose candidates pass the full list's capacity)."""
+    import rl_env
+    from simulation import obs_spec_v1 as o
+    from simulation.team_picture import live_objects
+    cov = p.full_cov
+    fl, fm, fw = host["full_list"], host["full_mask"], host["full_watched"]
+    im, va = host["in_match"].astype(bool), host["valid"].astype(bool)
+    K = o.F                                            # the knowledge column
+    for r in np.flatnonzero(im):
+        m = fm[r].astype(bool)
+        e = fl[r][m]
+        ty, kn = e[:, 0].astype(int), e[:, K].astype(int)
+        unit1 = ty == o.TYPE_SEEN
+        cov["mate"] += int(np.count_nonzero(ty[1:] == o.TYPE_MATE))
+        cov["enemy_seen"] += int(np.count_nonzero(unit1 & (kn == o.KNOW_SEEN)))
+        cov["enemy_record"] += int(np.count_nonzero(unit1 & (kn == o.KNOW_RECORD)))
+        cov["enemy_unknown"] += int(np.count_nonzero(unit1 & (kn == o.KNOW_UNKNOWN)))
+        cov["zombie"] += int(np.count_nonzero(unit1 & (e[:, 33] != 0)))
+        obj = ty == o.TYPE_OBJECT
+        cov["object_seen"] += int(np.count_nonzero(obj & (kn == o.KNOW_SEEN)))
+        cov["object_known"] += int(np.count_nonzero(obj & (kn == o.KNOW_RECORD)))
+        cov["object_unknown"] += int(np.count_nonzero(obj & (kn == o.KNOW_UNKNOWN)))
+        cov["door"] += int(np.count_nonzero(ty == o.TYPE_DOOR))
+        cov["order_block"] += int(np.count_nonzero(e[:, 47] != 0))
+        cov["aim_on_unit"] += int(np.count_nonzero((ty == o.TYPE_MATE) & (e[:, 41] != 0)))
+        cov["watched"] += int(np.count_nonzero(fw[r]))
+        if not va[r]:
+            cov["corpse"] += 1
+    sim = session.sim
+    living = [u for u in sim.units if u.alive]
+    n_mar = sum(1 for u in living if not u.is_zombie)
+    n_z = len(living) - n_mar
+    n_o = len(tuple(live_objects(sim)))
+    n_d = sum(1 for d in sim._doors if d.alive)
+    me = SimpleNamespace(session=session, layout=SimpleNamespace(n_slots=p.S, n_rows=p.T * p.S))
+    for u in rl_env.EnvRunner.roster_units(me):
+        if u is None:
+            continue
+        others = n_mar - (1 if (u.alive and not u.is_zombie) else 0)
+        if 1 + others + n_z + n_o + n_d > o.FULL_ENTRIES:
+            cov["overflow"] += 1
+    fmatch = host["full_match"]
+    for col in range(fmatch.shape[1]):
+        vs = p.full_match_vals.setdefault(col, set())
+        if len(vs) < 4:
+            vs.update(int(x) for x in np.unique(raw(fmatch[im][:, col]))[:4])
+
+
+def judge_full(played) -> None:
+    """P8.8: every coverage case of the full view > 0 over the corpus, and each
+    full_match column moved (two distinct values at least)."""
+    tot = {k: 0 for k in FULL_CASES}
+    vals = {}
+    for p in played:
+        for k, n in p.full_cov.items():
+            tot[k] += n
+        for col, vs in p.full_match_vals.items():
+            vals.setdefault(col, set()).update(vs)
+    print(f"    full view coverage: {tot}")
+    for k, n in tot.items():
+        if n == 0:
+            fail(f"full view: coverage case {k!r} never reached (vacuous)")
+    for col in sorted(vals):
+        if len(vals[col]) < 2:
+            fail(f"full view: full_match column {col} never moved over the corpus")
+    print(f"    full_match columns, distinct values: "
+          f"{ {c: len(v) for c, v in sorted(vals.items())} }")
+
+
 WIN_CASES = ("watched", "sees_target", "near_over_left", "near_over_right", "near_over_top",
              "near_over_bottom", "far_block_straddles", "far_off_grid", "aimed_found",
              "aimed_not_found")
@@ -2208,6 +2302,9 @@ def part_gate():
     judge_windows(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                   + corpus_door() + corpus_turn() + corpus_list() + corpus_fire())
     judge_decoder(corpus_c())
+    judge_full(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
+               + corpus_door() + corpus_turn() + corpus_list() + corpus_fire()
+               + corpus_clock() + corpus_c())
     judge_books(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                 + corpus_door() + corpus_turn() + corpus_list() + corpus_fire()
                 + corpus_clock(), BOOK_CENSUS)
@@ -2653,6 +2750,7 @@ def part_wall():
                                             "current_hp", "omega_q", "effort", "exposure",
                                             "live_trigger")}
     aims_done = {}
+    full_done = {}
     col["valid"] = lay.valid
     dead = 1                                         # unit_schema._LIFE_CHOICES.index("dead")
     total = {}
@@ -2704,6 +2802,7 @@ def part_wall():
                 # P8.4a: nothing team t's soldiers are told of their lanes, aims,
                 # lines of fire or turns moves with the unseen enemy's row
                 base = team_aims(obs, t, p.S)
+                full_base = team_full(obs, t, p.S)
                 pert = c._rows.copy()
                 perturb(u)(pert)
                 pert[0, u, col["live_trigger"]] = 1 - int(pert[0, u, col["live_trigger"]])
@@ -2712,18 +2811,28 @@ def part_wall():
                 obs.build_list(store_ptr=int(pert.data.ptr))
                 obs.build_masks(store_ptr=int(pert.data.ptr))
                 obs.build_windows(store_ptr=int(pert.data.ptr))
+                obs.build_full(store_ptr=int(pert.data.ptr))
                 moved = [k for k, v in team_aims(obs, t, p.S).items()
                          if not np.array_equal(v, base[k])]
+                full_moved = [k for k, v in team_full(obs, t, p.S).items()
+                              if not np.array_equal(v, full_base[k])]
                 del pert
                 obs.vision()
                 obs.aims()
                 obs.build_list()
                 obs.build_masks()
                 obs.build_windows()
+                obs.build_full()
                 if moved:
                     fail(f"wall {p.name}: tick {int(c.sims[0].tick)}, team {t}: perturbing "
                          f"unseen enemy {p.uids[u]}'s row moved the team's {moved}")
                     return
+                # P8.8: the other side of the wall -- the full view DOES see it
+                if "full_list" not in full_moved:
+                    fail(f"wall {p.name}: tick {int(c.sims[0].tick)}, team {t}: perturbing "
+                         f"unseen enemy {p.uids[u]}'s row did not move the team's full view")
+                    return
+                full_done[p.rule] = full_done.get(p.rule, 0) + 1
                 aims_done[p.rule] = aims_done.get(p.rule, 0) + 1
                 if not np.array_equal(run(perturb(sv)), vis[t]):
                     fail(f"wall {p.name}: tick {int(c.sims[0].tick)}, team {t}: perturbing seen "
@@ -2751,6 +2860,18 @@ def part_wall():
     print(f"  wall P8.4a / P8.4b / P8.4c: {aims_done} (team, tick) cases: the unseen enemy's "
           f"row perturbed (and its trigger flipped) -> the team's lanes, lanes plane, aims, "
           f"lines of fire, turns, list (entries, mask, uids) and four masks unchanged")
+    for rule in ("cone", "all_round"):
+        if not full_done.get(rule):
+            fail(f"wall: no P8.8 case under the {rule!r} rule (vacuous)")
+    print(f"  wall P8.8: {full_done} (team, tick) cases: the same perturbation MOVES the "
+          f"team's full view (the other side of the wall) while no policy value moved")
+
+
+def team_full(obs, t, S) -> dict:
+    """Team t's full view of env 0 (P8.8's WALL reading): every full key of
+    its rows."""
+    rows = slice(t * S, (t + 1) * S)
+    return {k: obs.buffers[k][0, rows].get() for k in dobs.FULL_KEYS}
 
 
 def team_aims(obs, t, S) -> dict:

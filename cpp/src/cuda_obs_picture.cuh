@@ -79,6 +79,15 @@ __device__ __forceinline__ double hp_over_bar(int64_t hp_q, const int64_t* m, do
     return obs_f64::squash(d == 0.0 ? 0.0 : obs_f64::div(x, d), cap);
 }
 
+// reward_v1.bar_ratio: min(max(hp_q, 0), bar_q) / float(bar_q), 0 without a
+// bar (the books' standing and the full view's balance column: one copy).
+__device__ __forceinline__ double bar_ratio(int64_t hp, int64_t bar) {
+    if (bar <= 0) return 0.0;
+    int64_t m = hp > 0 ? hp : 0;
+    m = m < bar ? m : bar;
+    return obs_f64::div((double)m, (double)bar);
+}
+
 // TeamPicture.velocity_q(uid): the motion tracker's one-tick displacement
 // (Q16), (0, 0) before its second sample.
 __device__ __forceinline__ void motion_of(const int64_t* m, int64_t* vx, int64_t* vy) {

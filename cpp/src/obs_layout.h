@@ -14,7 +14,7 @@
 
 namespace obs_layout {
 
-constexpr const char* OBS_LAYOUT_FINGERPRINT = "8aa2654c011d3cf73e797dff2218522fe639eaf5572e06b27166e7afbc944da7";
+constexpr const char* OBS_LAYOUT_FINGERPRINT = "21e96ae3a551ac715fa43e176a1f70cb24c5596ebbedb31406861e5cdcf7c02f";
 
 constexpr int OBS_WIN = 25;
 constexpr int OBS_HALF = 12;
@@ -562,6 +562,38 @@ constexpr int OBS_DEC_HORDE_SET = 1;
 constexpr int OBS_DEC_HORDE_EMPTY = 0;
 constexpr int OBS_DEC_HORDE_DEVICE = 1;
 constexpr int OBS_DEC_HORDE_IDLE = 2;
+constexpr int OBS_FULL_ENTRIES = 64;
+constexpr int OBS_FULL_F = 85;
+constexpr int OBS_FX_KNOWLEDGE = 67;
+constexpr int OBS_FX_ROUNDS = 68;
+constexpr int OBS_FX_MAGS = 69;
+constexpr int OBS_FX_AMMO_UNTRACKED = 70;
+constexpr int OBS_FX_GRENADE0 = 71;
+constexpr int OBS_FX_CHARGES = 77;
+constexpr int OBS_FX_MELEE_COOL = 78;
+constexpr int OBS_FX_SHOVE_COOL = 79;
+constexpr int OBS_FX_STATUS0 = 80;
+constexpr int OBS_FX_ORDER_WHAT = 84;
+constexpr int OBS_FULL_N_STATUS = 4;
+constexpr int OBS_FULL_STATUS_KIND_0 = 0;
+constexpr int OBS_FULL_STATUS_KIND_1 = 2;
+constexpr int OBS_FULL_STATUS_KIND_2 = 4;
+constexpr int OBS_FULL_STATUS_KIND_3 = 5;
+constexpr int OBS_KNOW_SEEN = 0;
+constexpr int OBS_KNOW_RECORD = 1;
+constexpr int OBS_KNOW_UNKNOWN = 2;
+constexpr int OBS_NO_PLACE = -1;
+constexpr int OBS_NO_LIMIT = -1;
+constexpr int OBS_PLACE_WHERE = 0;
+constexpr int OBS_PLACE_X = 1;
+constexpr int OBS_PLACE_Y = 2;
+constexpr int OBS_PLACE_W = 3;
+constexpr int OBS_FULL_FAULT_OVERFLOW = 1;
+constexpr int OBS_FULL_FAULT_RANGE = 2;
+constexpr int OBS_FULL_FAULT_LAW = 4;
+constexpr int OBS_FULL_BREAK_FULL_VIS = 1;
+constexpr int OBS_FULL_BREAK_FULL_TIE = 2;
+constexpr int OBS_FULL_BREAK_FULL_CAP = 3;
 
 // float16 bit patterns of k / (OBS_BLOCK * OBS_BLOCK), k = 0 .. OBS_BLOCK^2
 // (a __constant__ table's initialiser in the kernel's TU).
