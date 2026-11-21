@@ -28,6 +28,7 @@
 
 #include "cuda_batch.cuh"          // tstream(): THE tick stream (blocking)
 #include "cuda_obs_float.cuh"      // #29 P8.1: the observation's float kit
+#include "cuda_obs_picture.cuh"    // #29 P8.4a: the picture's records (the aim's candidates)
 #include "cuda_obs_sight.cuh"      // #29 P8.2: the observation's sight (floordiv, tile_of)
 #include "cuda_unit_events.h"      // UnitRecordList (the door tables' buffers)
 #include "cuda_unit_lib.cuh"       // #29 P8.1: the unit library's integer reads (used, never added to)
@@ -381,6 +382,349 @@ __global__ void k_obs_vector(const int64_t* store, int n_units, const int64_t* t
 }
 
 // ---------------------------------------------------------------------------
+// #29 P8.4a: THE LANES, AIM_OF, THE LINE OF FIRE, TICKS_TO_WITHIN -- the
+// per-unit answers the list (P8.4b) reads, and the served lanes plane
+// (near_u "lanes", spec 3.6). Every env on its decision tick with its ended
+// latch clear; pure integer (no float: the cone is the Q16 bearing, the line
+// of fire's slab test is the sight header's float64 through the kit).
+//   lane_grid (N, T, GH, GW) int32: TeamKnowledge.lanes of team t
+//     (fire_lanes_of over its mates): -1 nobody, an owner's uid, -2 several;
+//   lane_own (N, U, GH, GW) uint8: TeamKnowledge.lane_of(uid of row q) == uid
+//     (the rasteriser over that one unit), 1 where its own lane is drawn;
+//   aim (N, T, U) int32: aim_of(know of team t, the unit of row q)'s uid
+//     (-1 nobody), for every mate of t and every unit t sees now that it holds
+//     a record of (TeamKnowledge.seen); OBS_AIM_NOT_ASKED elsewhere;
+//   lof (N, n_rows, U) uint8: for the soldier of row r and every unit t sees
+//     now with a record (q), OBS_LOF_ASKED | solid_in_way (me -> the record's
+//     centre) << 1 | mate_in_way << 2; 0 elsewhere;
+//   ttw (N, n_rows, U) int32: turning.ticks_to_within of the soldier toward
+//     the record's centre (_enemy_geometry's), -1 where not asked.
+// ---------------------------------------------------------------------------
+using obs_pic::PicLayout;
+using obs_pic::pic_layout;
+
+// A store row that is a living mate of team t (TeamKnowledge.mates).
+__device__ __forceinline__ bool is_mate(const int64_t* m, int64_t t) {
+    using namespace unit_store;
+    return m[UNIT_COL_VALID] && m[UNIT_COL_LIFE_STATE] == OBS_LIFE_ALIVE &&
+           !m[UNIT_COL_IS_ZOMBIE] && m[UNIT_COL_TEAM] == t;
+}
+
+// A store row team t sees now and holds a record of (TeamKnowledge.seen:
+// visible_by_team[t] restricted to the records).
+__device__ __forceinline__ bool is_seen(const uint8_t* vis_t, const int64_t* blk,
+                                        const PicLayout& L, int U, int t, int q) {
+    return vis_t[q] && obs_pic::rec_of(blk, L, U, t, q)[OBS_PIC_REC_PRESENT];
+}
+
+// _cone_of: a zombie the reference kit's melee arc; a ranged weapon (range >
+// 0) its shot cone (the SPREAD hook over the cone door of spread_deg); else
+// its melee row's arc; else the reference kit's melee arc.
+__device__ __forceinline__ int64_t aim_cone(const int64_t* u, const int64_t* ot,
+                                            const int64_t* tab) {
+    using namespace unit_store;
+    if (u[UNIT_COL_IS_ZOMBIE]) return ot[OBS_TAB_REF_MELEE_ARC_Q];
+    const int64_t wr = u[UNIT_COL_WEAPON_ID];
+    if (wr >= 0) {
+        const int64_t* W = ot + OBS_TAB_WEAPON + wr * OBS_WEAPON_W;
+        if (W[OBS_WEAPON_RANGE_TILES] > 0)
+            return unit_lib::scaled(u, unit_tables::UNIT_HOOK_SPREAD, W[OBS_WEAPON_CONE_AIM_Q]);
+    }
+    const int64_t mr = u[UNIT_COL_MELEE_ID];
+    if (mr >= 0) return tab[unit_tables::UNIT_TAB_WEAPON_MELEE_ARC_HALF_Q + mr];
+    return ot[OBS_TAB_REF_MELEE_ARC_Q];
+}
+
+// The kit's atan2_q16(-dy << 16, dx << 16) (the bearing of an integer tile
+// offset); *bad when an argument leaves the kit's int32 (pybind would refuse).
+__device__ __forceinline__ int64_t bearing_q16(int64_t dx, int64_t dy, bool* bad) {
+    const int64_t y = -dy * 65536, x = dx * 65536;
+    if (!unit_lib::fits_i32(y) || !unit_lib::fits_i32(x)) {
+        *bad = true;
+        return 0;
+    }
+    return fixedpoint::atan2_q16((int32_t)y, (int32_t)x);
+}
+
+// turning.ticks_to_within: the ticks until |wrap(target - facing)| <= tol for
+// the unit turning under its own a / w from its facing and omega + dw, by
+// ITERATING the unit library's law (never a copy); cap when not reached.
+__device__ inline int64_t ticks_to_within(int64_t facing, int64_t omega, int64_t target,
+                                          int64_t a, int64_t w, int64_t tol, int64_t cap,
+                                          bool* bad) {
+    int64_t n = 0;
+    while (n < cap) {
+        const int64_t d = unit_lib::wrap_q16(target - facing);
+        if ((d < 0 ? -d : d) <= tol) return n;
+        int64_t f2, o2;
+        unit_lib::turn_law_q16(facing, omega, target, a, w, &f2, &o2, bad);
+        facing = f2;
+        omega = o2;
+        ++n;
+    }
+    return cap;
+}
+
+__device__ __forceinline__ bool lanes_trunc(int brk) { return brk == OBS_AIM_BREAK_LANE_TRUNC; }
+
+// Clear the due envs' lane grids (-1) and own lanes (0).
+__global__ void k_lane_clear(int T, int U, int gh, int gw, const int64_t* trow,
+                             const int64_t* params, const uint8_t* ended, int32_t* grid,
+                             uint8_t* own) {
+    const int e = blockIdx.y;
+    const int64_t cells = (int64_t)gh * gw;
+    const int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (int64_t)(T + U) * cells || !env_due(e, trow, params, ended)) return;
+    if (idx < (int64_t)T * cells)
+        grid[(size_t)e * T * cells + idx] = -1;
+    else
+        own[(size_t)e * U * cells + (idx - (int64_t)T * cells)] = 0;
+}
+
+// One thread per (env, store row q): q's segment if it owns a lane
+// (fire_lanes_of: a living non-zombie of a marine team of the layout, its
+// trigger held, its weapon row's range > 0), drawn into its team's grid
+// (the atomic cell rule) and into its own lane.
+__global__ void k_lane_draw(const int64_t* store, int U, int T, const int64_t* otab,
+                            const uint8_t* solid, int h, int w, int gh, int gw,
+                            const int64_t* trow, const int64_t* params, const uint8_t* ended,
+                            int32_t* grid, uint8_t* own, int32_t* faults, int brk) {
+    using namespace unit_store;
+    const int e = blockIdx.y;
+    const int q = blockIdx.x * blockDim.x + threadIdx.x;
+    if (q >= U || !env_due(e, trow, params, ended)) return;
+    const int64_t* u = store + ((size_t)e * U + q) * UNIT_STORE_W;
+    const int64_t t = u[UNIT_COL_TEAM];
+    if (t < 0 || t >= T || !is_mate(u, t) || !u[UNIT_COL_LIVE_TRIGGER]) return;
+    const int64_t wr = u[UNIT_COL_WEAPON_ID];
+    if (wr < 0) return;
+    const int64_t* ot = otab + (size_t)e * OBS_TAB_W;
+    const int64_t rng = ot[OBS_TAB_WEAPON + wr * OBS_WEAPON_W + OBS_WEAPON_RANGE_TILES];
+    if (rng <= 0) return;
+    const int64_t k = ot[OBS_TAB_LANE_CELL], r = ot[OBS_TAB_LANE_HALFWIDTH];
+    if (k < 1 || h / k + 1 != gh || w / k + 1 != gw) {          // the grid's shape: refused
+        atomicOr(faults + e, OBS_AIM_FAULT_GRID);
+        return;
+    }
+    const bool trunc = lanes_trunc(brk);
+    const int64_t sx = obs_sight::centre_x(u), sy = obs_sight::centre_y(u);
+    int64_t ex, ey;
+    obs_sight::lane_segment(solid + (size_t)e * h * w, h, w, sx, sy, u[UNIT_COL_FACING_Q], rng,
+                            trunc, brk == OBS_AIM_BREAK_LANE_WIDE ? 1 : 0, &ex, &ey);
+    const int64_t n = obs_sight::lane_steps(sx, sy, ex, ey, k);
+    const int64_t cells = (int64_t)gh * gw;
+    int32_t* g = grid + ((size_t)e * T + t) * cells;
+    uint8_t* mine = own + ((size_t)e * U + q) * cells;
+    const int32_t uid = (int32_t)u[UNIT_COL_ID];
+    for (int64_t i = 1; i <= n; ++i) {
+        int64_t gx, gy;
+        obs_sight::lane_cell(sx, sy, ex, ey, n, i, k, trunc, &gx, &gy);
+        const int64_t y0 = gy - r > 0 ? gy - r : 0, y1 = gy + r + 1 < gh ? gy + r + 1 : gh;
+        const int64_t x0 = gx - r > 0 ? gx - r : 0, x1 = gx + r + 1 < gw ? gx + r + 1 : gw;
+        for (int64_t y = y0; y < y1; ++y)
+            for (int64_t x = x0; x < x1; ++x) {
+                obs_sight::lane_claim(g + y * gw + x, uid);
+                mine[y * gw + x] = 1;
+            }
+    }
+}
+
+// One thread per (env, row, window cell): the lanes plane (build_windows
+// 3.6) -- a cell on the map whose coarse cell holds several owners or an
+// owner other than the soldier; 0 off the map and on a row that is not valid.
+__global__ void k_lanes_plane(const int64_t* store, int U, const int32_t* rowmap, int n_rows,
+                              int n_slots, int T, const int64_t* otab, int h, int w, int gh,
+                              int gw, const int32_t* grid, const int64_t* trow,
+                              const int64_t* params, const uint8_t* ended, uint8_t* near_u) {
+    using namespace unit_store;
+    const int e = blockIdx.y;
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_rows * CELLS || !env_due(e, trow, params, ended)) return;
+    const int r = idx / CELLS, cell = idx % CELLS;
+    const size_t er = (size_t)e * n_rows + r;
+    uint8_t* out = near_u + er * OBS_NEAR_U_PLANES * CELLS + OBS_NEAR_U_LANES * CELLS + cell;
+    const int team = r / n_slots;
+    const int sr = rowmap[er];
+    const int64_t* u = (sr >= 0 && sr < U) ? store + ((size_t)e * U + sr) * UNIT_STORE_W : nullptr;
+    if (!u || u[UNIT_COL_LIFE_STATE] != OBS_LIFE_ALIVE || u[UNIT_COL_TEAM] != (int64_t)team) {
+        *out = 0;
+        return;
+    }
+    const int64_t k = otab[(size_t)e * OBS_TAB_W + OBS_TAB_LANE_CELL];
+    const int64_t y = obs_sight::centre_y(u) - OBS_HALF + cell / OBS_WIN;
+    const int64_t x = obs_sight::centre_x(u) - OBS_HALF + cell % OBS_WIN;
+    if (!(0 <= y && y < h && 0 <= x && x < w) || k < 1) {
+        *out = 0;
+        return;
+    }
+    const int64_t gy = floordiv(y, k), gx = floordiv(x, k);
+    if (gy >= gh || gx >= gw) {                    // the grid's shape is refused by the draw
+        *out = 0;
+        return;
+    }
+    const int32_t owner = grid[(((size_t)e * T + team) * gh + gy) * gw + gx];
+    *out = (owner == -2 || (owner >= 0 && (int64_t)owner != u[UNIT_COL_ID])) ? 1 : 0;
+}
+
+// One thread per (env, team t, store row q): aim_of(know of t, unit q) for
+// every unit the list asks about (a mate of t, or a unit t sees with a
+// record): among t's mates at their live centres and t's records at their
+// recorded centres, the nearest other than q by (d2, uid, cx, cy) whose
+// bearing lies within q's cone of its facing ray (facing_target for a mate,
+// facing otherwise) and to which the sight line from q's centre is clear.
+__global__ void k_aim(const int64_t* store, int U, int T, const int64_t* otab,
+                      const int64_t* tables, const uint8_t* solid, const uint8_t* screen, int h,
+                      int w, const uint8_t* visible, const int64_t* state, int W,
+                      const int64_t* trow, const int64_t* params, const uint8_t* ended,
+                      int32_t* aim, int32_t* faults) {
+    using namespace unit_store;
+    const int e = blockIdx.y;
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= T * U || !env_due(e, trow, params, ended)) return;
+    const int t = idx / U, q = idx % U;
+    int32_t* out = aim + ((size_t)e * T + t) * U + q;
+    const int64_t* rows = store + (size_t)e * U * UNIT_STORE_W;
+    const int64_t* u = rows + (size_t)q * UNIT_STORE_W;
+    const PicLayout L = pic_layout(T, U);
+    const int64_t* blk = state + (size_t)e * W;
+    const uint8_t* vis_t = visible + ((size_t)e * (T + 1) + t) * U;
+    const bool mate = is_mate(u, t);
+    if (!mate && !is_seen(vis_t, blk, L, U, t, q)) {
+        *out = OBS_AIM_NOT_ASKED;
+        return;
+    }
+    const int64_t* ot = otab + (size_t)e * OBS_TAB_W;
+    const int64_t* tab = tables + (size_t)e * unit_tables::UNIT_TABLES_W;
+    const int64_t ray = mate ? u[UNIT_COL_FACING_TARGET_Q] : u[UNIT_COL_FACING_Q];
+    const int64_t cone = aim_cone(u, ot, tab);
+    const int64_t ux = obs_sight::centre_x(u), uy = obs_sight::centre_y(u);
+    const int64_t uid_u = u[UNIT_COL_ID];
+    const uint8_t* so = solid + (size_t)e * h * w;
+    const uint8_t* sc = screen + (size_t)e * h * w;
+    bool bad = false;
+    obs_sight::AimKey prev{};
+    bool have_prev = false;
+    int32_t hit = OBS_AIM_NONE;
+    for (;;) {
+        obs_sight::AimKey best{};
+        bool have_best = false;
+        for (int c = 0; c < 2 * U; ++c) {
+            obs_sight::AimKey key;
+            if (c < U) {                                   // the mates, live centres
+                const int64_t* m = rows + (size_t)c * UNIT_STORE_W;
+                if (!is_mate(m, t) || m[UNIT_COL_ID] == uid_u) continue;
+                key.cx = obs_sight::centre_x(m);
+                key.cy = obs_sight::centre_y(m);
+                key.uid = m[UNIT_COL_ID];
+            } else {                                       // the records, recorded centres
+                const int64_t* rc = obs_pic::rec_of(blk, L, U, t, c - U);
+                if (!rc[OBS_PIC_REC_PRESENT] || rc[OBS_PIC_REC_UID] == uid_u) continue;
+                key.cx = rc[OBS_PIC_REC_CENTRE_X];
+                key.cy = rc[OBS_PIC_REC_CENTRE_Y];
+                key.uid = rc[OBS_PIC_REC_UID];
+            }
+            const int64_t dx = key.cx - ux, dy = key.cy - uy;
+            key.d2 = dx * dx + dy * dy;
+            if (have_prev && !obs_sight::aim_less(prev, key)) continue;   // tried already
+            if (have_best && !obs_sight::aim_less(key, best)) continue;
+            const int64_t b = bearing_q16(dx, dy, &bad);
+            const int64_t off = unit_lib::wrap_q16(b - ray);
+            if ((off < 0 ? -off : off) > cone) continue;
+            best = key;
+            have_best = true;
+        }
+        if (!have_best || bad) break;
+        if (obs_sight::line_clear(so, sc, h, w, false, uy, ux, best.cy, best.cx, &bad)) {
+            hit = (int32_t)best.uid;
+            break;
+        }
+        prev = best;
+        have_prev = true;
+    }
+    if (bad) atomicOr(faults + e, OBS_AIM_FAULT_RANGE);
+    *out = hit;
+}
+
+// One thread per (env, row r, store row q): for the soldier of row r and a
+// unit q its team sees now with a record, the line of fire to the record's
+// centre (solid_in_way over the cover table; mate_in_way over the other
+// mates) and ticks_to_within toward it (_enemy_geometry: the soldier's own
+// a / w / pending spin, its weapon's shot cone, the cap 4 x half turn).
+__global__ void k_lof(const int64_t* store, int U, const int32_t* rowmap, int n_rows,
+                      int n_slots, int T, const int64_t* otab, const int64_t* tables,
+                      const uint8_t* solid, int h, int w, const int64_t* covers, int cover_cap,
+                      const int32_t* cover_count, const uint8_t* visible, const int64_t* state,
+                      int W, const int64_t* trow, const int64_t* params, const uint8_t* ended,
+                      uint8_t* lof, int32_t* ttw, int32_t* faults) {
+    using namespace unit_store;
+    const int e = blockIdx.y;
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_rows * U || !env_due(e, trow, params, ended)) return;
+    const int r = idx / U, q = idx % U;
+    const size_t o = ((size_t)e * n_rows + r) * U + q;
+    lof[o] = 0;
+    ttw[o] = -1;
+    const int t = r / n_slots;
+    const int sr = rowmap[(size_t)e * n_rows + r];
+    const int64_t* rows = store + (size_t)e * U * UNIT_STORE_W;
+    if (sr < 0 || sr >= U) return;
+    const int64_t* me = rows + (size_t)sr * UNIT_STORE_W;
+    if (me[UNIT_COL_LIFE_STATE] != OBS_LIFE_ALIVE || me[UNIT_COL_TEAM] != (int64_t)t) return;
+    const PicLayout L = pic_layout(T, U);
+    const int64_t* blk = state + (size_t)e * W;
+    const uint8_t* vis_t = visible + ((size_t)e * (T + 1) + t) * U;
+    if (!is_seen(vis_t, blk, L, U, t, q)) return;
+    const int64_t* rc = obs_pic::rec_of(blk, L, U, t, q);
+    const int64_t ex = rc[OBS_PIC_REC_CENTRE_X], ey = rc[OBS_PIC_REC_CENTRE_Y];
+    const int64_t cx = obs_sight::centre_x(me), cy = obs_sight::centre_y(me);
+    const int64_t* ot = otab + (size_t)e * OBS_TAB_W;
+    bool bad = false;
+    // -- col 25: something solid in the way (the physical walk, every live cover)
+    const bool solid_way = obs_sight::solid_in_way(
+        solid + (size_t)e * h * w, h, w, covers + (size_t)e * cover_cap * OBS_COVER_W,
+        cover_count[e], cx, cy, ex, ey, &bad);
+    // -- col 26: a team-mate's body near the segment (the other mates' centres)
+    bool mate_way = false;
+    {
+        const int64_t dx = ex - cx, dy = ey - cy, dd = dx * dx + dy * dy;
+        if (dd != 0) {
+            const int64_t cr = floordiv(me[UNIT_COL_FOOTPRINT], 2) + ot[OBS_TAB_LINE_CLEAR_TILES];
+            for (int k = 0; k < U && !mate_way; ++k) {
+                const int64_t* m = rows + (size_t)k * UNIT_STORE_W;
+                if (k == sr || !is_mate(m, t)) continue;
+                mate_way = obs_sight::mate_near_segment(cx, cy, dx, dy, dd, cr,
+                                                        obs_sight::centre_x(m),
+                                                        obs_sight::centre_y(m));
+            }
+        }
+    }
+    // -- col 27's ticks: the soldier's own turn toward the record's centre
+    const int64_t* tab = tables + (size_t)e * unit_tables::UNIT_TABLES_W;
+    const int64_t want = bearing_q16(ex - cx, ey - cy, &bad);
+    const int64_t a = unit_lib::scaled(me, unit_tables::UNIT_HOOK_TURN,
+                                       tab[unit_tables::UNIT_TAB_TURN_ACCEL_CLASS_Q16]);
+    const int64_t wq = unit_lib::scaled(me, unit_tables::UNIT_HOOK_TURN,
+                                        tab[unit_tables::UNIT_TAB_TURN_RATE_CLASS_Q16]);
+    const int64_t l = me[UNIT_COL_IMP_L];
+    const int64_t dw = l ? l / tab[unit_tables::UNIT_TAB_IMPULSE_INERTIA_G] : 0;  // div_trunc
+    const int64_t wr = me[UNIT_COL_WEAPON_ID];
+    const int64_t spread = wr >= 0 ? unit_lib::scaled(me, unit_tables::UNIT_HOOK_SPREAD,
+                                                      ot[OBS_TAB_WEAPON + wr * OBS_WEAPON_W +
+                                                         OBS_WEAPON_CONE_AIM_Q])
+                                   : 0;
+    bool law_bad = false;
+    const int64_t ticks = bad ? 0 : ticks_to_within(me[UNIT_COL_FACING_Q],
+                                                    me[UNIT_COL_OMEGA_Q] + dw, want, a, wq,
+                                                    spread, 4 * ot[OBS_TAB_HALF_TURN_TICKS],
+                                                    &law_bad);
+    if (bad) atomicOr(faults + e, OBS_AIM_FAULT_RANGE);
+    if (law_bad) atomicOr(faults + e, OBS_AIM_FAULT_LAW);
+    lof[o] = (uint8_t)(OBS_LOF_ASKED | (solid_way ? OBS_LOF_SOLID : 0) |
+                       (mate_way ? OBS_LOF_MATE : 0));
+    ttw[o] = (int32_t)ticks;
+}
+
+// ---------------------------------------------------------------------------
 // #29 P8.1 TEST-ONLY probes of the float kit (part FLOATKIT of the check).
 // ---------------------------------------------------------------------------
 __global__ void k_probe_half(const double* x, uint16_t* out, int n, int via_f32) {
@@ -476,6 +820,66 @@ void obs_vector(int n_env, std::uintptr_t store, int n_units, int store_w,
     const cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess)
         throw std::runtime_error(std::string("obs_vector: launch failed: ") +
+                                 cudaGetErrorString(err));
+}
+
+void obs_aims(int n_env, std::uintptr_t store, int n_units, int store_w,
+              const UnitTablesDevice& tables, std::uintptr_t rowmap, int n_rows, int n_slots,
+              int n_teams, std::uintptr_t obs_table, int table_w, std::uintptr_t tick_row,
+              std::uintptr_t params, std::uintptr_t ended, std::uintptr_t solid,
+              std::uintptr_t screen, int h, int w, std::uintptr_t covers, int cover_cap,
+              int cover_w, std::uintptr_t cover_count, std::uintptr_t visible,
+              std::uintptr_t state, int state_w, std::uintptr_t lane_grid,
+              std::uintptr_t lane_own, int gh, int gw, std::uintptr_t aim, std::uintptr_t lof,
+              std::uintptr_t ttw, std::uintptr_t near_u, std::uintptr_t faults, int brk) {
+    need(n_env >= 1 && n_units >= 1 && n_rows >= 1 && n_slots >= 1 && n_teams >= 1 && h >= 1 &&
+         w >= 1 && gh >= 1 && gw >= 1 && cover_cap >= 1, "obs_aims: a non-positive size");
+    need(n_rows == n_teams * n_slots, "obs_aims: n_rows is not n_teams x n_slots");
+    need(store_w == unit_store::UNIT_STORE_W, "obs_aims: the store's width is not UNIT_STORE_W");
+    need(table_w == OBS_TAB_W, "obs_aims: the obs table's width is not OBS_TAB_W (regenerate obs_layout.h)");
+    need(cover_w == OBS_COVER_W, "obs_aims: the cover table's width is not OBS_COVER_W");
+    need(state_w == pic_layout(n_teams, n_units).w, "obs_aims: the picture block's width");
+    need(tables.n_env() == n_env && tables.width() == unit_tables::UNIT_TABLES_W,
+         "obs_aims: the device tables' shape");
+    need(store && rowmap && obs_table && tick_row && params && ended && solid && screen &&
+         covers && cover_count && visible && state && lane_grid && lane_own && aim && lof &&
+         ttw && near_u && faults, "obs_aims: a null device pointer");
+    cudaStream_t s = tstream();
+    const int64_t* st = reinterpret_cast<const int64_t*>(store);
+    const int64_t* ot = reinterpret_cast<const int64_t*>(obs_table);
+    const int64_t* trow = reinterpret_cast<const int64_t*>(tick_row);
+    const int64_t* prm = reinterpret_cast<const int64_t*>(params);
+    const uint8_t* end = reinterpret_cast<const uint8_t*>(ended);
+    const uint8_t* so = reinterpret_cast<const uint8_t*>(solid);
+    const int32_t* rm = reinterpret_cast<const int32_t*>(rowmap);
+    const uint8_t* vis = reinterpret_cast<const uint8_t*>(visible);
+    const int64_t* pic = reinterpret_cast<const int64_t*>(state);
+    int32_t* grid = reinterpret_cast<int32_t*>(lane_grid);
+    uint8_t* own = reinterpret_cast<uint8_t*>(lane_own);
+    int32_t* flt = reinterpret_cast<int32_t*>(faults);
+    const int64_t clear = (int64_t)(n_teams + n_units) * gh * gw;
+    need(clear < ((int64_t)1 << 31), "obs_aims: the lane grids are too large for one launch");
+    k_lane_clear<<<dim3((unsigned)((clear + 255) / 256), n_env), 256, 0, s>>>(
+        n_teams, n_units, gh, gw, trow, prm, end, grid, own);
+    k_lane_draw<<<dim3((n_units + 63) / 64, n_env), 64, 0, s>>>(
+        st, n_units, n_teams, ot, so, h, w, gh, gw, trow, prm, end, grid, own, flt, brk);
+    const int cells = n_rows * CELLS;
+    k_lanes_plane<<<dim3((cells + 255) / 256, n_env), 256, 0, s>>>(
+        st, n_units, rm, n_rows, n_slots, n_teams, ot, h, w, gh, gw, grid, trow, prm, end,
+        reinterpret_cast<uint8_t*>(near_u));
+    const int ta = n_teams * n_units;
+    k_aim<<<dim3((ta + 63) / 64, n_env), 64, 0, s>>>(
+        st, n_units, n_teams, ot, tables.values(), so, reinterpret_cast<const uint8_t*>(screen),
+        h, w, vis, pic, state_w, trow, prm, end, reinterpret_cast<int32_t*>(aim), flt);
+    const int rq = n_rows * n_units;
+    k_lof<<<dim3((rq + 63) / 64, n_env), 64, 0, s>>>(
+        st, n_units, rm, n_rows, n_slots, n_teams, ot, tables.values(), so, h, w,
+        reinterpret_cast<const int64_t*>(covers), cover_cap,
+        reinterpret_cast<const int32_t*>(cover_count), vis, pic, state_w, trow, prm, end,
+        reinterpret_cast<uint8_t*>(lof), reinterpret_cast<int32_t*>(ttw), flt);
+    const cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess)
+        throw std::runtime_error(std::string("obs_aims: launch failed: ") +
                                  cudaGetErrorString(err));
 }
 

@@ -142,6 +142,28 @@ void obs_picture_damage_sums(int n_env, std::uintptr_t store, int n_units, int s
 // The compiled block layout's section offsets for (n_teams, n_units).
 std::vector<std::pair<std::string, int64_t>> obs_picture_layout(int n_teams, int n_units);
 
+// ---------------------------------------------------------------------------
+// #29 P8.4a: THE LANES, AIM_OF, THE LINE OF FIRE, TICKS_TO_WITHIN (cuda_obs.cu)
+// for every env on its decision tick with its ended latch clear, on the tick
+// stream, no sync: the fire lanes of every marine team (lane_grid (N, T, gh,
+// gw) int32) and every lane owner's own lane (lane_own (N, U, gh, gw) uint8);
+// the served lanes plane of near_u; aim_of's uid per (team, store row) (aim
+// (N, T, U) int32, OBS_AIM_NOT_ASKED where the list asks nothing); the line
+// of fire and ticks_to_within per (row, store row) of an enemy seen with a
+// record (lof (N, n_rows, U) uint8 bits OBS_LOF_*, ttw (N, n_rows, U) int32).
+// Reads the device vision's visible table, the picture's block, the cover
+// table. `faults`: (N,) int32 bits OBS_AIM_FAULT_*; `brk`: the check's breaks
+// (OBS_AIM_BREAK_*), 0 in every real run.
+void obs_aims(int n_env, std::uintptr_t store, int n_units, int store_w,
+              const UnitTablesDevice& tables, std::uintptr_t rowmap, int n_rows, int n_slots,
+              int n_teams, std::uintptr_t obs_table, int table_w, std::uintptr_t tick_row,
+              std::uintptr_t params, std::uintptr_t ended, std::uintptr_t solid,
+              std::uintptr_t screen, int h, int w, std::uintptr_t covers, int cover_cap,
+              int cover_w, std::uintptr_t cover_count, std::uintptr_t visible,
+              std::uintptr_t state, int state_w, std::uintptr_t lane_grid,
+              std::uintptr_t lane_own, int gh, int gw, std::uintptr_t aim, std::uintptr_t lof,
+              std::uintptr_t ttw, std::uintptr_t near_u, std::uintptr_t faults, int brk);
+
 // The compiled layout's fingerprint (obs_layout.h): what device_obs checks.
 const char* obs_layout_fingerprint();
 
