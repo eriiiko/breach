@@ -276,8 +276,11 @@ void obs_planes(int n_env, std::uintptr_t store, int n_units, int store_w,
 // (3, N) int64: the RewardBooksMismatch count, the fault bits
 // (OBS_BK_FAULT_*), ended this tick. `first`: the books' constructor (the
 // snapshot, the standing, the living teams). `brk`: the check's breaks
-// (OBS_BK_BREAK_*), 0 in every real run. Returns true when the words were
-// deferred into the conductor's books read.
+// (OBS_BK_BREAK_*), 0 in every real run. `only_env` (#29 P8.9b, a per-env
+// reset): >= 0 runs env only_env alone (its constructor, after the caller
+// reset its block), every other env's block, served arrays and words
+// untouched; -1 every env. Returns true when the words were deferred into
+// the conductor's books read.
 bool obs_books(int n_env, std::uintptr_t store, int n_units, int store_w, UnitEventRing& ring,
                std::uintptr_t rowmap, int n_rows, int n_slots, int n_teams,
                std::uintptr_t obs_table, int table_w, std::uintptr_t tick_row,
@@ -285,7 +288,8 @@ bool obs_books(int n_env, std::uintptr_t store, int n_units, int store_w, UnitEv
                std::uintptr_t state, int state_w, std::uintptr_t reward, std::uintptr_t counters,
                std::uintptr_t team_balance, std::uintptr_t team_uncredited,
                std::uintptr_t team_outcome, std::uintptr_t rows_ended, std::uintptr_t terminated,
-               std::uintptr_t truncated, std::uintptr_t words, bool first, int brk);
+               std::uintptr_t truncated, std::uintptr_t words, bool first, int brk,
+               int only_env = -1);
 // The compiled books block's section offsets for (n_teams, n_units, n_rows).
 std::vector<std::pair<std::string, int64_t>> obs_books_layout(int n_teams, int n_units,
                                                               int n_rows);

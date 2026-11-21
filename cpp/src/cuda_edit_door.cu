@@ -41,7 +41,7 @@ void EditDoor::begin() {
     ed_check(cudaMemsetAsync(d_seq_, 0, (size_t)n_env() * sizeof(int64_t), tstream()), "zero seq");
 }
 
-void EditDoor::reset_env(int e) {
+void EditDoor::reset_env(int e, int64_t seq) {
     if (e < 0 || e >= n_env()) throw std::invalid_argument("EditDoor.reset_env: env outside");
     cudaStream_t st = tstream();
     for (UnitRecordList* l : {&edits_, &tiles_}) {
@@ -51,7 +51,11 @@ void EditDoor::reset_env(int e) {
         ed_check(cudaMemsetAsync(l->stage_count_dev() + (size_t)e * l->n_units(), 0,
                                  (size_t)l->n_units() * sizeof(int64_t), st), "zero staging");
     }
-    ed_check(cudaMemsetAsync(d_seq_ + e, 0, sizeof(int64_t), st), "zero seq");
+    if (seq == 0)
+        ed_check(cudaMemsetAsync(d_seq_ + e, 0, sizeof(int64_t), st), "zero seq");
+    else
+        ed_check(cudaMemcpyAsync(d_seq_ + e, &seq, sizeof(int64_t), cudaMemcpyHostToDevice, st),
+                 "H2D seq");
 }
 
 void EditDoor::set_seq(const int64_t* seq) {

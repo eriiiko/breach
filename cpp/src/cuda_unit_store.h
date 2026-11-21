@@ -55,6 +55,11 @@ public:
     // still run); download returns once the copy has landed.
     void upload(const int64_t* host);
     void download(int64_t* host);
+    // #29 P8.9a: env e's rows ALONE (n_units * width int64, row-major (U, W))
+    // from host memory, one async copy on the tick stream with no host sync
+    // (a pageable source is staged before cudaMemcpyAsync returns); every
+    // other env untouched. A per-env reset's restage of the store slice.
+    void upload_env(int e, const int64_t* host);
 
     // THE COUNTS every slot kernel writes, 3 x N unsigned 64-bit on the
     // device: [0, N) coverage, [N, 2N) faults, [2N, 3N) refused. A kernel's
@@ -103,6 +108,9 @@ public:
     // a build-time upload, never per tick); download for the gate.
     void upload(const int64_t* host);
     void download(int64_t* host);
+    // #29 P8.9a: env e's vector ALONE (width int64) from host memory, on the
+    // tick stream with no host sync (a per-env reset's restage).
+    void upload_env(int e, const int64_t* host);
 
 private:
     int n_env_ = 0, width_ = 0;

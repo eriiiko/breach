@@ -414,10 +414,11 @@ __global__ void k_books(const int64_t* store, int U, const int64_t* ring, const 
                         float* reward, float* counters, float* team_balance,
                         float* team_uncredited, float* team_outcome, uint8_t* rows_ended,
                         uint8_t* terminated, uint8_t* truncated, int64_t* words, int n_env,
-                        int first, int brk) {
+                        int first, int brk, int only_env) {
     using namespace obs_f64;
     const int e = blockIdx.x * blockDim.x + threadIdx.x;
     if (e >= n_env) return;
+    if (only_env >= 0 && e != only_env) return;     // #29 P8.9b: a per-env reset
     Env E;
     E.blk = state + (size_t)e * W;
     E.L = bk_layout(T, U, R);
@@ -690,8 +691,10 @@ bool obs_books(int n_env, std::uintptr_t store, int n_units, int store_w, UnitEv
                std::uintptr_t state, int state_w, std::uintptr_t reward, std::uintptr_t counters,
                std::uintptr_t team_balance, std::uintptr_t team_uncredited,
                std::uintptr_t team_outcome, std::uintptr_t rows_ended, std::uintptr_t terminated,
-               std::uintptr_t truncated, std::uintptr_t words, bool first, int brk) {
+               std::uintptr_t truncated, std::uintptr_t words, bool first, int brk,
+               int only_env) {
     const char* who = "obs_books";
+    need(only_env >= -1 && only_env < n_env, who, "only_env outside -1 .. n_env - 1");
     need(n_env >= 1 && n_units >= 1 && n_rows >= 1 && n_slots >= 1 && n_teams >= 1, who,
          "a non-positive size");
     need(n_teams <= OBS_BK_TMAX, who, "more marine teams than the books hold (OBS_BK_TMAX)");
@@ -718,7 +721,7 @@ bool obs_books(int n_env, std::uintptr_t store, int n_units, int store_w, UnitEv
         reinterpret_cast<float*>(team_balance), reinterpret_cast<float*>(team_uncredited),
         reinterpret_cast<float*>(team_outcome), reinterpret_cast<uint8_t*>(rows_ended),
         reinterpret_cast<uint8_t*>(terminated), reinterpret_cast<uint8_t*>(truncated), wd, n_env,
-        first ? 1 : 0, brk);
+        first ? 1 : 0, brk, only_env);
     launched(who);
     // the words ride the conductor's one books read; outside a conductor tick
     // the caller reads them (the build)

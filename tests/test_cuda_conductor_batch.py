@@ -70,6 +70,23 @@ def test_the_sync_count_of_a_batch_tick_does_not_depend_on_n():
     _run(["syncs"])
 
 
+def test_an_env_reset_mid_batch_equals_its_episode_built_alone():
+    """PROPERTY (#29 P8.9a): env e reset mid-batch (``DeviceConductor.
+    reset_env``) to a new episode (ship_demo with bots and zombies;
+    larva_studio with swarm units alive), resets at different ticks for
+    different envs, the same env twice and a reset on the tick after another
+    env's, at N = 2 and 4: the reset env equals a fresh N = 1 conductor of the
+    same (level, seed) at every tick, and every other env equals the same
+    batch run without the reset at the reset tick and every tick after
+    (digests, the state in no digest, swarm deaths). BREAKS IF a reset
+    leaves a table unstaged (CONDUCTOR_BATCH_BREAK=reset_table), keeps the
+    old episode's draw key (reset_key), writes a row of the neighbouring env
+    (reset_neighbour), or touches or pauses another env. And a sim that does
+    not fit the batch (another grid, more units than U) is refused by name
+    with nothing written."""
+    _run(["reset", "reset_refusals"], timeout=7200)
+
+
 def test_a_fault_in_env_k_names_env_k():
     """PROPERTY: a refusal met in one env of a batch is raised by name with
     that env (``.env`` and the message) and refuses the batch. BREAKS IF the

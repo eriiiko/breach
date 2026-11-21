@@ -137,6 +137,22 @@ void UnitRecordList::upload(const int64_t* recs, const int64_t* counts) {
     ev_check(counted_sync(tstream(), "cuda_unit_events.cu:127"), "upload sync");
 }
 
+void UnitRecordList::upload_env(int e, const int64_t* recs, int64_t count) {
+    if (e < 0 || e >= n_env_)
+        throw std::invalid_argument("UnitRecordList.upload_env: env outside 0 .. n_env");
+    if (count < 0 || count > cap_)
+        throw std::invalid_argument("UnitRecordList.upload_env: count outside 0 .. cap");
+    cudaStream_t st = tstream();
+    const size_t row = (size_t)cap_ * width_;
+    ev_check(cudaMemcpyAsync(d_ring_ + (size_t)e * row, recs, row * sizeof(int64_t),
+                             cudaMemcpyHostToDevice, st), "H2D env list");
+    ev_check(cudaMemcpyAsync(d_count_ + e, &count, sizeof(int64_t), cudaMemcpyHostToDevice, st),
+             "H2D env count");
+    ev_check(cudaMemsetAsync(d_drop_ + e, 0, sizeof(unsigned long long), st), "zero env dropped");
+    ev_check(cudaMemsetAsync(d_stage_n_ + (size_t)e * n_units_, 0,
+                             (size_t)n_units_ * sizeof(int64_t), st), "zero env staging");
+}
+
 UnitEventRing::UnitEventRing(int n_env, int n_units, int e_max)
     : UnitRecordList(n_env, n_units, e_max, unit_events::UNIT_EVENT_F,
                      unit_events::UNIT_EVENT_ROW_CAP) {}

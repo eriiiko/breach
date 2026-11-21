@@ -479,6 +479,34 @@ class DeviceTable:
             counts[e] = r.shape[0]
         self.upload(rows, counts)
 
+    def env_rows(self, e: int, records) -> tuple:
+        """#29 P8.9a: env ``e``'s ``((cap, W) rows, count)`` from its host
+        records (``(R, W)``, :func:`records` of the env's host list),
+        checked: more than the capacity is refused by name, naming the env.
+        The first half of a per-env restage, so a reset checks every table
+        before it writes any (:meth:`stage_env_rows` the second)."""
+        if not 0 <= int(e) < self.shape[0]:
+            raise IndexError(f"object table {self.name!r}: env {e} of {self.shape[0]}")
+        r = np.asarray(records, dtype=np.int64).reshape(-1, self.shape[2])
+        if r.shape[0] > self.shape[1]:
+            raise ObjectTableOverflow(
+                f"object table {self.name!r}: {r.shape[0]} objects in env "
+                f"{e} do not fit its capacity {self.shape[1]}")
+        rows = np.zeros(self.shape[1:], dtype=np.int64)
+        rows[:r.shape[0]] = r
+        return rows, int(r.shape[0])
+
+    def stage_env_rows(self, e: int, rows_count) -> None:
+        """#29 P8.9a: write :meth:`env_rows`' result into env ``e`` ALONE (its
+        overflow and staging counts to 0; every other env untouched; on the
+        tick stream, no host sync): the per-env form of :meth:`stage_lists`."""
+        rows, n = rows_count
+        self._buf.upload_env(int(e), np.ascontiguousarray(rows, dtype=np.int64), int(n))
+
+    def stage_env(self, e: int, records) -> None:
+        """#29 P8.9a: env ``e``'s table alone from its host records."""
+        self.stage_env_rows(e, self.env_rows(e, records))
+
     def begin(self) -> None:
         """#29 P7b: every env's table empty (the record lists' face)."""
         self.upload(np.zeros(self.shape, dtype=np.int64),

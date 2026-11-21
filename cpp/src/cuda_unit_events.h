@@ -67,6 +67,13 @@ public:
     // staging counts back to 0. Returns once the copies landed (the object
     // tables' upload, moved here so every record list can be staged).
     void upload(const int64_t* recs, const int64_t* counts);
+    // #29 P8.9a: SET env e's list ALONE from host memory: recs (cap * width,
+    // the rows past count zero) and its count (0 .. cap: the caller checks);
+    // env e's dropped and staging counts back to 0; every other env
+    // untouched. Enqueued on the tick stream with no host sync (a pageable
+    // source is staged before cudaMemcpyAsync returns): the per-env form of
+    // upload that a per-env reset restages a list or a table with.
+    void upload_env(int e, const int64_t* recs, int64_t count);
 
 private:
     int n_env_ = 0, n_units_ = 0, cap_ = 0, width_ = 0, row_cap_ = 0;

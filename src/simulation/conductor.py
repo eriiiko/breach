@@ -262,23 +262,11 @@ class DeviceConductor:
         self.timed, self.heat = uk.hazard_tables(N, bp=bp)
         self.sig = uk.signal_tables(N, bp=bp)
         self.sig["doors"] = self.doors
-        w_ = lambda t, objs: np.array(ot.records(t, objs), dtype=np.int64).reshape(  # noqa: E731
-            -1, ot.table_layout(t).width)
-        self.rounds.stage_lists([uk.rounds_of(s) for s in sims])
-        self.noise.stage_lists([uk.noise_of(s) for s in sims])
-        self.blast_log.stage_lists([uk.blast_log_of(s) for s in sims])
-        self.grenades.stage_lists([w_(us.GRENADE_TABLE, s.projectiles) for s in sims])
-        self.charges.stage_lists([w_(us.CHARGE_TABLE, s.planted_charges) for s in sims])
-        self.doors.stage_lists([uk.doors_of(s) for s in sims])
-        self.door_tiles.stage_lists([uk.door_tiles_of(s) for s in sims])
-        self.ducts.stage_lists([uk.ducts_of(s) for s in sims])
-        self.vents.stage_lists([uk.vents_of(s) for s in sims])
-        self.sources.stage_lists([uk.sources_of(s) for s in sims])
-        self.source_tiles.stage_lists([uk.source_tiles_of(s) for s in sims])
-        self.timed.stage_lists([uk.timed_charges_of(s) for s in sims])
-        self.heat.stage_lists([uk.heat_sources_of(s) for s in sims])
-        for ln in uk.SIGNAL_LISTS:
-            self.sig[ln].stage_lists([uk.SIGNAL_RECORDS[ln](s) for s in sims])
+        # (ONE list of the tables and their record functions, used by the
+        # build for every env and by reset_env for one: never two lists)
+        per_env = [self._table_records(s) for s in sims]
+        for k, (tab, _r) in enumerate(per_env[0]):
+            tab.stage_lists([recs[k][1] for recs in per_env])
         self.cache = horde_cache.DeviceHordeCache(N, U, persistent=True)
         self.cache.stage_lists([horde_cache.cache_records(s) for s in sims])
         self.cache.begin()
@@ -299,12 +287,7 @@ class DeviceConductor:
         # -- the 9e gates: the level's entity classes (load constants; a slot
         # runs when ANY env holds its class -- an env without rows is a no-op
         # of the face, held by the batch invariance gate) ------------------------
-        self.has_bus = any(s._signal_bus is not None for s in sims)
-        self.has_ducts = any(bool(s._ducts) for s in sims)
-        self.has_doors = any(bool(s._doors) for s in sims)
-        self.has_timed = any(bool(s._timed_charges) for s in sims)
-        self.has_heat = any(bool(s._heat_sources) for s in sims)
-        self.has_pumps = any(bool(s._pumps) for s in sims)
+        self._entity_gates()
         self.ticks = 0
         self.last_books: dict = {}           # book -> (N,) this tick's applier books
         self.last_profile = None
@@ -341,6 +324,138 @@ class DeviceConductor:
         self._dec_uids = [frozenset(int(u.id) for t in range(drive.shape[1]) if drive[e, t]
                                     for u in s.roster(t) if u is not None)
                           for e, s in enumerate(self.sims)]
+
+    # ------------------------------------------------------------------
+    # The object and entity tables: ONE list (the build and the reset)
+    # ------------------------------------------------------------------
+    def _table_records(self, s) -> list:
+        """Every object and entity table with env ``s``'s host records, in
+        staging order: the build stages each table for every env from it,
+        :meth:`reset_env` one env. A new table is a row HERE (its per-env
+        staging comes with it)."""
+        from simulation import object_tables as ot, unit_kernels as uk, unit_schema as us
+        w_ = lambda t, objs: np.array(ot.records(t, objs), dtype=np.int64).reshape(  # noqa: E731
+            -1, ot.table_layout(t).width)
+        out = [(self.rounds, uk.rounds_of(s)), (self.noise, uk.noise_of(s)),
+               (self.blast_log, uk.blast_log_of(s)),
+               (self.grenades, w_(us.GRENADE_TABLE, s.projectiles)),
+               (self.charges, w_(us.CHARGE_TABLE, s.planted_charges)),
+               (self.doors, uk.doors_of(s)), (self.door_tiles, uk.door_tiles_of(s)),
+               (self.ducts, uk.ducts_of(s)), (self.vents, uk.vents_of(s)),
+               (self.sources, uk.sources_of(s)), (self.source_tiles, uk.source_tiles_of(s)),
+               (self.timed, uk.timed_charges_of(s)), (self.heat, uk.heat_sources_of(s))]
+        out += [(self.sig[ln], uk.SIGNAL_RECORDS[ln](s)) for ln in uk.SIGNAL_LISTS]
+        return out
+
+    def _entity_gates(self) -> None:
+        """The 9e gates from the envs' entity classes (a slot runs when ANY
+        env holds its class; the others run its face as a no-op)."""
+        sims = self.sims
+        self.has_bus = any(s._signal_bus is not None for s in sims)
+        self.has_ducts = any(bool(s._ducts) for s in sims)
+        self.has_doors = any(bool(s._doors) for s in sims)
+        self.has_timed = any(bool(s._timed_charges) for s in sims)
+        self.has_heat = any(bool(s._heat_sources) for s in sims)
+        self.has_pumps = any(bool(s._pumps) for s in sims)
+
+    # ------------------------------------------------------------------
+    # #29 P8.9a: THE PER-ENV RESET
+    # ------------------------------------------------------------------
+    def reset_env(self, e: int, sim, spec=None) -> dict:
+        """THE ONE RESET ENTRY: env ``e``'s next episode from ``sim`` -- a
+        host ``Simulation`` at its tick 0, built as the reference builds an
+        episode (``MatchSession``; equal to the reference by construction) --
+        restaged into env ``e``'s slice of every device structure the build
+        stages, every other env untouched and never paused. Called BETWEEN
+        ticks (never inside the walk). Every refusal is checked, by name
+        (:class:`ConductorRefused` / the structure's own), BEFORE anything is
+        written: the new sim must fit the batch (grid, gas table, tilt, tick
+        rate, stamp path, U, every table's and the horde cache's capacity) and
+        the build's refusals hold for it. ``sim`` becomes ``sims[e]`` (the
+        twin the gate's download lands on). Returns the restage's host work
+        (``{"ms", "uploads"}``; ``"obs"`` the observation side's). With a
+        device observation attached (P8.9b) its side is restaged too and the
+        new episode's ``spec`` (its ``MatchSpec``) is required: the team
+        picture, the books, the decoder's slot state, the per-env obs rows,
+        the ended latch cleared, then the tick-0 observation built into the
+        live buffers for env ``e`` alone (``DeviceObservation.reset_env``)."""
+        import time as _time
+        from simulation import applier, horde_cache, unit_draws, unit_kernels as uk
+        from simulation import unit_store, unit_tables
+        t0 = _time.perf_counter()
+        cp = self.cp
+        e = int(e)
+        if not 0 <= e < self.N:
+            raise IndexError(f"device conductor: env {e} of {self.N}")
+        who = f"device conductor reset (env {e})"
+        # -- every refusal first: nothing is written before the last one ------
+        self._refuse(sim, e)
+        uk.shooting_door(sim)
+        uk.refuse_wego([sim])
+        try:
+            self.batch.check_reset(e, sim)
+        except ValueError as ex:
+            raise ConductorRefused(f"{who}: {ex}") from ex
+        if (sim.gmap.obstacles is sim.gmap.solid) != self.obstacles_is_solid:
+            raise ConductorRefused(f"{who}: the new sim's stamp path differs from the "
+                                   f"batch's (obstacles is solid: {self.obstacles_is_solid})")
+        if len(sim.units) > self.U:
+            raise ConductorRefused(f"{who}: {len(sim.units)} units do not fit the batch's "
+                                   f"U = {self.U}")
+        planes = {}
+        for name in applier.non_resident_planes():
+            a = np.ascontiguousarray(getattr(sim.gmap, name))
+            if a.shape != tuple(self.fields[name].shape[1:]) or a.dtype != self.fields[name].dtype:
+                raise ConductorRefused(f"{who}: plane {name!r} is {a.dtype} {a.shape}, the "
+                                       f"batch's {self.fields[name].dtype} "
+                                       f"{tuple(self.fields[name].shape[1:])}")
+            planes[name] = a
+        rows = unit_store.pack(sim.units, self.U)
+        tab = unit_tables.values(sim)               # its ranges refused by name
+        trow = unit_draws.tick_row(sim)
+        staged = [(t, t.env_rows(e, r)) for t, r in self._table_records(sim)]
+        cache_rc = horde_cache.cache_records(sim)
+        self.cache.check_env(e, cache_rc)
+        obs_prep = None
+        if self.obs is not None:
+            obs_prep = self.obs.reset_prepare(e, sim, spec)   # P8.9b: its refusals too
+        # -- the writes: env e's slice of every structure, on the tick stream /
+        # the null stream (ordered with it), no host sync ----------------------
+        uploads = 0
+        self.batch.reset_env(e, sim)                # every resident plane, the swarm
+        uploads += len(self.batch.buffers)
+        for name, a in planes.items():
+            self.fields[name][e] = cp.asarray(a)
+            uploads += 1
+        self.store.upload_env(e, rows, tables=tab)
+        self.trow.write_env(e, trow)
+        uploads += 3
+        for t, rc in staged:
+            t.stage_env_rows(e, rc)
+            uploads += 1
+        self.cache.stage_env(e, cache_rc)
+        uploads += 4
+        self.door.reset_env(e, int(sim.edit_queue._seq))
+        uploads += 1
+        # -- the host side of env e: the twin, the row maps, the latches -------
+        self.sims[e] = sim
+        self.sim = self.sims[0]
+        self.uids[e] = [int(u.id) for u in sim.units]
+        self.row_of[e] = {uid: r for r, uid in enumerate(self.uids[e])}
+        self._zombie[e] = [bool(u.is_zombie) for u in sim.units]
+        self._cols = {k: v for k, v in self._cols.items() if k[0] != e}
+        self._orders[e] = {}
+        self._zreqs[e] = (None if sim._zombie_requests is None
+                          else set(sim._zombie_requests))
+        self._entity_gates()
+        self.box_max = max(self.box_max, uk.spray_box_of(tab[None, :], self.h, self.w))
+        self.swarm_death_rows[e] = None
+        self.ended_now[e] = False
+        work = {"ms": 1000.0 * (_time.perf_counter() - t0), "uploads": uploads}
+        if self.obs is not None:
+            work["obs"] = self.obs.reset_env(e, sim, obs_prep)
+            work["ms"] = 1000.0 * (_time.perf_counter() - t0)
+        return work
 
     # ------------------------------------------------------------------
     # The build's refusals

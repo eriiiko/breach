@@ -309,10 +309,12 @@ class DeviceEditDoor:
                                    f"capacity {cap}")
 
 
-    def reset_env(self, e: int) -> None:
+    def reset_env(self, e: int, seq: int = 0) -> None:
         """Env ``e``'s reset alone (an env reset inside a batch): its rows
-        empty, its seq 0; the other envs' windows untouched."""
-        self._buf.reset_env(int(e))
+        empty, its seq 0 -- #29 P8.9a: or ``seq``, the new episode's host
+        queue seq (the noise key's absolute base); the other envs' windows
+        untouched; no host sync."""
+        self._buf.reset_env(int(e), int(seq))
 
     def append_probe(self, e: int, edits, tiles) -> None:
         """TEST-ONLY (#29 P7e.3): host rows (``door_rows``' form, the tiles'
