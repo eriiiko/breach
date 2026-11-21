@@ -91,7 +91,7 @@ strategy. Every rule below serves that.
 | `render-units.md` | 3D units, held props, pose layer, static props, larva bodies |
 | `audio.md` | sound layer, sound samples |
 | `levels.md` | level data layer, generators, recipes, archetype grammar, layout stage, LevelSpec, brood placement |
-| `determinism-gates.md` | tests, field digest, test conventions, E2E driver, benches |
+| `determinism-gates.md` | tests, field digest, test conventions, E2E driver, benches, staging gate |
 | `characters.md` | character kit, game-ready step, toon look, worker builder |
 
 ## Canonical systems — check before building anything new
@@ -358,6 +358,7 @@ amends the rule file, never this line's length.
 | Headless match runner | `tools/run_match.py` | THE one way a match runs to a result without a window; tests and benches call `run_match` |
 | Bot tournament | `tools/bot_tournament.py` | THE measure of a bot change: tuning seeds, held-out report |
 | E2E driver | `tools/e2e_drive.py` | THE headless end-to-end reproduction and frame profiler; bug fixes start here |
+| Staging gate | `tools/staging_gate.py` + `tools/staging_machines.toml` | THE way several ready branches share one full suite and one cuda_green, on one throwaway staging commit (one machine, or split `cpu` / `cuda` over two); never merges to main, never resolves a conflict |
 
 ## Working style
 

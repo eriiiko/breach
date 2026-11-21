@@ -35,6 +35,7 @@ import ast
 import re
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -185,41 +186,68 @@ class Selection:
     why: dict = field(default_factory=dict)
 
 
+def reach(path: str, candidates=None) -> tuple:
+    """``(tests, why, full)`` for ONE changed repo-relative path: the test
+    files among ``candidates`` (default: ``tests/test_*.py``) whose closure
+    the change reaches, the reason, and whether the closure cannot see it
+    (then every test is reached). THE per-path rule of :func:`select`; the
+    staging gate (``tools/staging_gate.py``) asks it which change reaches a
+    red test."""
+    cands = test_files() if candidates is None else tuple(candidates)
+    if not (ROOT / path).exists():
+        return set(), "FULL: deleted or renamed file", True
+    if _INERT.search(path):
+        return set(), "inert (docs / scratch)", False
+    if _EVERYTHING.search(path):
+        return set(), "FULL: the closure cannot see this file", True
+    if path.endswith(".py"):
+        hit = {t for t in cands if path in closure(t)}
+    elif path.startswith("cpp/"):
+        hit = {t for t in cands if NATIVE in closure(t)}
+    else:
+        key = path.split("/")[0]
+        readers = {f for f in python_files() if key in _text(f)}
+        if not readers and path.endswith(".md"):
+            # Prose nothing names: no test reads it (a reader of the
+            # rules names .claude, of the index CLAUDE.md).
+            return set(), "inert (Markdown no Python file names)", False
+        if not readers:
+            return set(), f"FULL: no Python file names {key!r}", True
+        hit = {t for t in cands if closure(t) & readers}
+    return hit, f"{len(hit)} test file(s)", False
+
+
 def select(changed) -> Selection:
     """The test files ``changed`` (repo-relative posix paths) can break."""
     sel = Selection()
     for path in sorted(set(changed)):
-        if not (ROOT / path).exists():
-            sel.full = True
-            sel.why[path] = "FULL: deleted or renamed file"
-            continue
-        if _INERT.search(path):
-            sel.why[path] = "inert (docs / scratch)"
-            continue
-        if _EVERYTHING.search(path):
-            sel.full = True
-            sel.why[path] = "FULL: the closure cannot see this file"
-            continue
-        if path.endswith(".py"):
-            hit = {t for t in test_files() if path in closure(t)}
-        elif path.startswith("cpp/"):
-            hit = {t for t in test_files() if NATIVE in closure(t)}
-        else:
-            key = path.split("/")[0]
-            readers = {f for f in python_files() if key in _text(f)}
-            if not readers and path.endswith(".md"):
-                # Prose nothing names: no test reads it (a reader of the
-                # rules names .claude, of the index CLAUDE.md).
-                sel.why[path] = "inert (Markdown no Python file names)"
-                continue
-            if not readers:
-                sel.full = True
-                sel.why[path] = f"FULL: no Python file names {key!r}"
-                continue
-            hit = {t for t in test_files() if closure(t) & readers}
+        hit, why, full = reach(path)
+        sel.full |= full
         sel.tests |= hit
-        sel.why[path] = f"{len(hit)} test file(s)"
+        sel.why[path] = why
     return sel
+
+
+_CACHED = (_resolve, deps_of, closure, test_files, python_files, _text)
+
+
+@contextmanager
+def rooted(root):
+    """Read another checkout (a staging worktree) for the duration: the
+    module's ``ROOT`` / ``ROOTS`` re-pointed and every cache cleared, both
+    restored on exit."""
+    global ROOT, ROOTS
+    saved = ROOT, ROOTS
+    for fn in _CACHED:
+        fn.cache_clear()
+    ROOT = Path(root).resolve()
+    ROOTS = (ROOT, ROOT / "src", ROOT / "tools", ROOT / "tests")
+    try:
+        yield
+    finally:
+        ROOT, ROOTS = saved
+        for fn in _CACHED:
+            fn.cache_clear()
 
 
 def changed_files(base: str) -> list:
