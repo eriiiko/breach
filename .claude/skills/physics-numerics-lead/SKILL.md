@@ -152,3 +152,20 @@ noise. Training speed matters to him as much as looks.
   no divergence source) get k = 1 for two ticks. Open: the ring-adjacent
   arena winds (outside the k-set by design), the breach's k tail on
   residual pockets.
+- 2026-11-21: #217 §8 to "ready except the full run" (design §8.17). Learned:
+  (a) a stability term must read what MOVES MASS: the k-rule read the
+  collocated, permeability-blind divergence, and at unit footprints it implied
+  55x the compression that happened -- prove noise by measuring the mass moved
+  (|dN|/N per tick at the argmax cell) against what the term implies, then
+  exclude; ship_demo's training cost fell back to pre-§8. (b) A lever whose gate
+  margin is one notch (warm V-cycles: T3 holds at 6 of 8, fails at 5) is not
+  worth a 4 % gain; measure the residual per notch before reading cost. (c)
+  Honest transport moves a scene's blast wind 50 tiles further than before:
+  scene guards staged on the old reach go vacuous (two CUDA scene checks);
+  re-stage the scene, never the equality, and check the re-stage's own side
+  effects (the first payload re-stage emptied the shell sites). (d) A device
+  twin's proved range must cover the game's legal state (T_MAX_PHYS), not the
+  range the old regime happened to reach; cite the constant and its source in
+  the proof. (e) Never leave an uncommitted binding-side edit in a worktree
+  whose GPU gates are running: the gates import the working tree and the old
+  module, and one parked line voided a 21-minute run.

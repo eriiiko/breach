@@ -1867,3 +1867,188 @@ None is fixed in this patch; the branch does NOT carry a stamp.
    input caches hold the last sub-tick's inputs. Fixed like
    `cuda_kick_check` PART 2 (`subtick_loop` off in the replay; the ceiling and
    the cap heat on): green after the fix.
+
+### 8.17 To "ready except the full run" (2026-11-21, second build session)
+
+PROVED means measured on this branch or read in its code; INFERENCE says so.
+Erik's five rulings (§8.14) stand; nothing here reopens them.
+
+#### The device vent detour (exit: "the device vent stage accepts every legal gas temperature up to T_MAX_PHYS, so the 9 conductor, hazard and obs runs replay equal to their end")
+
+- **The fault** was the topology seam's extraction, not the ledger check:
+  `topo::extract_gas_n_vec` pre-checked its donor at |T_abs| < 2^28 raw
+  (4096 game degrees absolute) and faulted the duct (ApplierFault, slot 9e(d)).
+  Main had not touched `cuda_unit_vents.cuh` or the seam since the merge base.
+- **The new proved range** (`cpp/src/cuda_topology.cuh`, the one-term
+  primitive): the extraction moves ONE energy term out of ONE cell
+  (want < 2^32, the cell's bulk), so its donor is proved to
+  |T_abs| < 2^30 (`T_BOUND_ONE`): |want·T_abs| < 2^62 and
+  |E − de| < 2^61 + 2^62 < 2^63 (int64 headroom 2^63 / (2^61 + 2^62) = 4/3).
+  It covers `[physics.thermal] T_MAX_PHYS` = 16000 game degrees above ambient
+  (`config.toml:256`, bound in `physics_runner.py`) with T_abs = temperature +
+  T_AMB (`GameMap.gas_t_abs_at`, no S_EOS factor), T_AMB = 293: the hottest
+  railed gas is 16293 · 65536 = 1,067,778,048 < 2^30 = 1,073,741,824 (91 game
+  degrees of margin). The proof is the PRE-CHECK, not the rail: a mirror a seam
+  wrote above the rail before the next recovery is still a refusal by name past
+  2^30, never an overflow. No 128-bit intermediate was needed.
+- **The vent ledger** (`cpp/src/cuda_unit_vents.cuh`): its relative-T bound is
+  now the int32 plane's own (|T| ≤ 2^31, `TILE_T_SHIFT` 29 → 31, host twin
+  `unit_kernels.VENT_TILE_T_SHIFT`), so B_E = B_N · 2^31, refused (as out of
+  range) when B_N > 2^30, and |e_plenum| ≤ 2^61 − B_E. The refusal stays a
+  refusal past the new range, never a clamp.
+- **ACCEPTED GAP** (rule line in `device-units.md`): `seal_tiles`,
+  `unseal_tiles` and `transfer_gas_n` keep 2^28; their multi-term proofs were
+  not redone (a door sealing or a transfer pump moving air above 4096 game
+  degrees absolute faults on the device). The #29 session is widening the seam
+  in parallel (branch `29-topology-range`, not yet on origin when this was
+  written): its merge meets `T_BOUND_ONE` in the same header.
+- **Gate:** `tests/cuda_unit_vents_check.py` passed, PART PROBE included, with
+  a new leg: a tile railed at T_MAX_PHYS and one at T_abs = 2^30 − 1 extract
+  equal to the host, T_abs = 2^30 faults on the device writing nothing, and the
+  config's T_MAX_PHYS + T_AMB is asserted under 2^30. The 9 refused runs: see
+  "The gates" below.
+
+#### The two re-staged scenes
+
+- **`cuda_unit_kernels` PART DOORWAY.** The driver opened the deck's doors
+  through `MAT_DOOR`, which #215 retired; the e2e scene it says it follows
+  (`test_wind_doorway_e2e`) reads `MAT_DOOR_CLOSED`. So the room vented into its
+  closed antechamber. Before §8 that jet still floored the squad; under §8 it
+  peaks at 4.0× the hold and floors nobody (CPU build: 0 knockdowns). Opening
+  the deck's doors as the e2e does: 13.2× the hold, 2 knockdowns, 86 prone
+  ticks. The equality is unchanged; the part passed on the card.
+- **`cuda_unit_payloads` PART SCENE.** The six pairs were all at the grenade
+  site, and in sets S2, S3 and S7 no grenade left the hand. The strength rows'
+  shells (fired at s, s + 1) now blow 45-62 m/s across the room at the
+  throwers by tick s + 6 (9-12 m/s with the legacy switches on this build),
+  flooring them mid wind-up (0.3 s). First attempt: the shooters fired after
+  the wind-up. That put the shells inside the planted charges' blast window
+  (s + 8 on), and every shell pair went missing (85 of 144): reverted. Adopted:
+  a steel partition, hull to hull at x = 55, between the grenades' half
+  (x ≤ 49) and the shells' and charges' half (x ≥ 58). The six rows detonate
+  at the grenade site in two sets each. The scene part passed on the card:
+  every (site, row) pair and every branch, the corpse-skip landing included.
+  Both carry a dated "#217 §8" note.
+
+#### The training-cost levers (a numerics method choice)
+
+**(a) Partial-permeability cells out of the k-set: ADOPTED.**
+
+- *The divergence there is noise, PROVED* (ship_demo bots match, seed 1, 300
+  CPU ticks, the k-set rebuilt in numpy from each tick's entry state; the
+  offline k equals `dbg_last_k` on 100 % of ticks). k > 1 on 80 % of ticks
+  (mean 3.38). The k-set's max |div u| sits on a stamped cell on 227 of the
+  239 k > 1 ticks. There γ·dt·|div u| implies a relative compression of 1.76
+  per tick (median); the cell's bulk N actually changes by 0.032 (median,
+  max 0.13): 1/55. The body cells' own wind is 1.28 tiles per tick (median),
+  but the donor flux moves perm·u = 0.64 tiles through them. The mechanism:
+  the solve's divergence is the collocated, permeability-blind face mean, while
+  transport scales every face by min(perm).
+- *The rule:* a cell with permeability < 1 (a unit's footprint, a crate:
+  stamped and material rows alike) is out of the k-set, in `eos_kset_scan`,
+  its device twin `K_kset_scan` and the per-call path. It is a test seam,
+  `EOSSolver.kset_skip_partial`, default on. Offline on the CPU match: mean k
+  3.38 → 2.41 (seed 1), 3.50 → 2.50 (seed 2). What keeps k = 2 there is the
+  match's residual 8-12 m/s room winds (F5's class; k_u = 2 above 8 m/s at
+  0.333 m, read correctly) and the return vent's aperture (the vents' source
+  data, §8.4).
+- *Gates:* T1-T6 green (16 tests). The rail gate is green. The four E2E traces
+  (smoke_light_studio, the fire_studio frag, the 30 s arena, ship_demo idle)
+  are identical in every summary column with the seam on and off (no units
+  there, and the props never set k). The new **T2 body leg**
+  (`test_a_frag_beside_a_body_leaves_no_sink_and_no_pile`): a marine three
+  tiles from the frag. Its cells are out of the k-set, yet they carry a wind
+  past one tile per tick (non-vacuity). The source ring stays ≥ 0.05 N0, no
+  pile is above 4 N0, the body's cells stay in [0.05, 4] N0, and the
+  detonation tick runs k = K_MAX. With k forced to 1 it breaks
+  (`test_the_body_leg_breaks_with_one_update_per_tick`).
+- *Pins:* five ship_demo match pins moved, re-pinned with dated notes:
+  `test_grenade_kinds`, `test_horde_behaviours`, `test_turning_law`,
+  `test_turn_rate`, `test_zombie_control`. SOLE CAUSE, verified: all five pass
+  with the seam off on the same build. The controller pin's bots match is a
+  team-1 win at 741 ticks again (a 7200-tick draw under §8). The golden
+  readers did not move (`test_b6_logic_golden`, the swarm digests,
+  `test_b1` / `test_b2`, `test_fire_flicker`, `test_light_field`: green), and
+  neither did the box pins.
+
+**(b) Fewer V-cycles on warm sub-ticks: MEASURED, NOT ADOPTED.**
+
+- The residual, max|b − AP| / max|b| at level 0 after the solve (the
+  `dbg_residual` seam, kept as the instrument):
+  - fire_studio frag, warm sub-ticks: median / p99 0.039 / 0.12 at 8 cycles,
+    0.029 / 0.14 at 4, 0.063 / 1.83 at 2, 0.31 / 3.44 at 1. Mean k: 1.51,
+    1.33, 1.68 and 4.50 (at 1 an under-converged solve feeds the wind it
+    should damp).
+  - smoke_light_studio: 0.019 / 0.26 at 8, 0.044 / 0.70 at 4, 0.15 / 1.08 at 2.
+- T3 (the stored pressure tracks the air) fails at 4 and at 5 warm cycles (the
+  third charge's P / p* leaves the band again, 1.053) and passes at 6.
+- The cost at 6 (staggered bench below): range_hall −4 % at N = 16 / 64, +5 % at
+  N = 1 (k's distribution moved, E[k] 1.267 → 1.292). ship_demo is unchanged,
+  since lever (a) leaves its bench at k = 1.
+- A 4 % gain on a lever whose gate margin is one V-cycle is not taken. The dial
+  is removed, not left at an off value. `mg_cycles = 8` stays as it is.
+
+**(c) Launch overhead without a new system: NOTED.**
+
+- On ship_demo (70 × 100) a V-cycle is two launched fine levels plus one fused
+  coarse-tail block: 23 launches per cycle, 184 per solve. range_hall (26 × 39,
+  1014 cells ≤ `MG_TAIL_MAX_CELLS` = 1024) runs the whole hierarchy in ONE
+  fused-tail block per env per cycle: its solve is single-block latency, not
+  launch count.
+- The tail threshold is the one existing knob that trades launches for
+  single-block work. It was not measured here (a rebuild per value).
+- P9's graph capture of the sub-tick loop is #29's, out of scope.
+
+#### The cost table (`tools/bench_conductor.py --stagger 1`, 10 + 120 + 20 ticks)
+
+The card was idle before every sweep (`nvidia-smi`: no python process, 0 %).
+"Before" is the §8 k-set (`--eos kset_skip_partial=0`) on this build; "after"
+is lever (a). Each was run twice; the spread is ≤ 1.5 % on every row.
+
+| level | N | pre-§8 base `3ac5cfe9` (§8.16) | §8, before (2 runs) | after (a) (2 runs) | after vs pre-§8 | E[max k] after | E[k] after |
+|---|---|---|---|---|---|---|---|
+| range_hall | 1 | 6.91 | 7.32 / 7.36 | 7.33 / 7.31 | +6 % | 1.27 | 1.27 |
+| range_hall | 16 | 9.12 | 13.95 / 13.89 | 13.92 / 13.90 | +53 % | 3.04 | 1.28 |
+| range_hall | 64 | 16.86 | 32.22 / 31.99 | 32.10 / 31.96 | +90 % | 6.69 | 1.28 |
+| ship_demo | 1 | 9.53 | 14.37 / 14.55 | 9.49 / 9.53 | 0 % | 1.00 | 1.00 |
+| ship_demo | 16 | 20.14 | 35.03 / 34.99 | 20.28 / 20.43 | +1 % | 1.00 | 1.00 |
+| ship_demo | 64 | 55.95 | 87.42 / 87.63 | 56.56 / 56.58 | +1 % | 1.00 | 1.00 |
+
+(a) + (b at 6): range_hall 7.67 / 13.38 / 30.88, ship_demo 9.51 / 20.30 / 56.59.
+
+Reading:
+
+- **ship_demo is back to the pre-§8 cost.** The bench's 150-tick window of its
+  recorded match runs k = 1 on every tick once the bodies are out.
+  INFERENCE: longer matches still pay k = 2 where the F5-class room winds pass
+  8 m/s (the CPU match's mean k 2.4).
+- **range_hall's cost is the blasts' own.** Its k comes from the frags and the
+  C4 (k_src, k_u), at the floor of 1.6-2.7 ms per extra sub-tick of §8.16.
+  None of (a)-(c) moves it. What would is P9's capture or a fused solve: #29 /
+  a later perf patch. The bench's dense schedule (every env throws every 32
+  ticks) makes this the upper end (§8.16).
+
+#### The gates (targeted; the full suite is the joint run with #29, Erik 2026-11-21)
+
+- On the CUDA build with the vent detour and lever (a) (before merging main's
+  P8.5a + P8.7): `test_cuda_unit_payloads`, `test_cuda_unit_vents`,
+  `test_cuda_conductor` ×5, `test_cuda_conductor_batch` ×7,
+  `test_cuda_unit_hazards`, `test_cuda_obs` (batch, torch),
+  `test_cuda_prestage_parity`, `test_cuda_s8a_residency`: **25 passed, 1
+  failed** (51 min). The 9 runs refused at `16ff92cf` now replay equal to their
+  end, the pinned bots_v1 and bots matches included. Lever (a)'s device twin
+  equals the host on every replayed tick with units, in batches too.
+  `test_cuda_unit_kernels` passed in the run before.
+- **The one red is in #29's area (named, not bent):**
+  `test_cuda_obs::test_the_device_observation_equals_the_host_one_on_the_corpus`.
+  Every compared tick is equal (the pictures, the vision, the lines of fire,
+  both pinned matches to their end). Its coverage guard fails: the
+  team-picture cases `death_unseen` and `conversion_with_record` are never
+  reached over the corpus. INFERENCE: the corpus matches moved with §8 and
+  lever (a); the bots match is now a 741-tick win, and these cases came from
+  its longer play. The corpus is the observation check's (#29's) to re-stage.
+- CPU: `test_eos_substep_whole_tick` 16 passed; the five re-pinned files 123
+  passed; `test_b6_logic_golden`, `test_swarm_digest`, `test_field_ab_harness`,
+  `test_b1_signal_bus`, `test_b2_nodes`, `test_fire_flicker`,
+  `test_light_field`, `test_claude_rules_paths`, `test_no_float_in_sim_tu`,
+  `test_ingress_lint` green.
