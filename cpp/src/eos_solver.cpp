@@ -739,6 +739,8 @@ void EOSSolver::step(
         h, w, inv_2dx_q, kset_.data());
     const int64_t kset_max_rad = km.max_rad, kset_max_div = km.max_div,
                   max_src = km.max_src;
+    dbg_last_kset[0] = kset_max_rad; dbg_last_kset[1] = kset_max_div;
+    dbg_last_kset[2] = max_src;
     const q16 gdt_q   = quantize(gamma_d * dt_d);
     const q16 cp_dx_q = quantize(dx_d);              // C_P = 1 tile
     const int k_ticks = subtick_loop

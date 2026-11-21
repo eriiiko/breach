@@ -5115,6 +5115,8 @@ PYBIND11_MODULE(breach_physics, m) {
         // #217 §8.9 test seams
         .def_readonly("dbg_last_k",              &EOSSolver::dbg_last_k)
         .def_readonly("dbg_solves_last_step",    &EOSSolver::dbg_solves_last_step)
+        .def_property_readonly("dbg_last_kset", [](const EOSSolver& s) {
+            return py::make_tuple(s.dbg_last_kset[0], s.dbg_last_kset[1], s.dbg_last_kset[2]); })
         .def_readwrite("dbg_record_subtick_umax", &EOSSolver::dbg_record_subtick_umax)
         .def_property_readonly("dbg_subtick_umax", [](const EOSSolver& s) {
             return std::vector<int32_t>(s.dbg_subtick_umax.begin(), s.dbg_subtick_umax.end()); })

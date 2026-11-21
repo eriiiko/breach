@@ -563,6 +563,9 @@ public:
     //                         transport entry; recorded only while
     //                         dbg_record_subtick_umax is set
     mutable int dbg_last_k = 0;
+    //   dbg_last_kset         the k-rule's three inputs of the last step():
+    //                         { max|u|^2 (Q32.32), max|div u| (Q16), max|S| (Q16) }
+    mutable int64_t dbg_last_kset[3] = {0, 0, 0};
     mutable int dbg_solves_last_step = 0;
     bool dbg_record_subtick_umax = false;
     mutable std::vector<int32_t> dbg_subtick_umax;
