@@ -62,6 +62,12 @@ Per (level, N):
   and put back): the kernels skip an env off its decision tick, so a timing
   taken on such a tick measures early exits (``obs_due`` says whether the
   tick the bench stopped on was one).
+  #29 P8.6a: the device decoder, attached after the profiled ticks (the
+  recorded bots' teams named ``policy`` for it): ``decode_ms`` the GPU time of
+  one tick head's decode (every row, all-zero decisions, with the horde
+  latch) for all N envs, ``decision_ms`` one decision's hand-over (the check,
+  the masked count, the pointer resolution), ``decoder_obs_ms`` one
+  decision's decoder columns (prev, prev_aim, on_next_tick).
 
 Levels: ``ship_demo`` and a training room (``tools/gen_training_rooms.py``
 writes it into ``<--levels-dir>``, a scratch folder, the default a temp dir).
@@ -280,6 +286,45 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
                 seg_host[label] = []
             seg_gpu[label].append(0.0 if g is None else float(g))
             seg_host[label].append(float(h))
+    # #29 P8.6a: the device decoder (attached after the profiled ticks: from
+    # then on the recorded bots' column intents are refused for its rows), its
+    # decode at the tick head (every row of every env, the horde latch with
+    # it), a decision's hand-over (the check and pointer resolution) and its
+    # observation columns, GPU time for all N envs
+    dec_ms = dec_set_ms = dec_obs_ms = None
+    if dev_obs is not None:
+        import cupy as cp
+        from simulation.device_decoder import DeviceDecoder
+        from simulation.device_obs import PARAM_DECIMATION
+        st = cp.cuda.ExternalStream(int(bp.tick_stream_ptr()))
+        a, b = cp.cuda.Event(), cp.cuda.Event()
+        pspec = replace(rec.spec, teams=tuple(replace(t, controller="policy")
+                                              for t in rec.spec.teams))
+        dec = DeviceDecoder(dev_obs, [pspec] * n)
+        acts = cp.zeros(dec.decisions.shape, dtype=cp.int32)
+        dec.set_decisions(acts)
+        dec.decode()
+        a.record(st)
+        for _ in range(obs_builds):
+            dec.set_decisions(acts)
+        b.record(st)
+        b.synchronize()
+        dec_set_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
+        a.record(st)
+        for _ in range(obs_builds):
+            dec.decode()
+        b.record(st)
+        b.synchronize()
+        dec_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
+        saved_dec = dev_obs.params[:, PARAM_DECIMATION].copy()
+        dev_obs.params[:, PARAM_DECIMATION] = 1
+        a.record(st)
+        for _ in range(obs_builds):
+            dec.build_obs()
+        b.record(st)
+        b.synchronize()
+        dec_obs_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
+        dev_obs.params[:, PARAM_DECIMATION] = saved_dec
     ms = 1000.0 * float(np.mean(wall))
     names = sorted({x.partition(" | ")[2] for lg in syncs for x in lg})
     return {
@@ -301,6 +346,9 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         "books_due_ms": None if books_due_ms is None else round(float(books_due_ms), 4),
         "decimation": decimation,
         "obs_due": obs_due,
+        "decode_ms": None if dec_ms is None else round(float(dec_ms), 4),
+        "decision_ms": None if dec_set_ms is None else round(float(dec_set_ms), 4),
+        "decoder_obs_ms": None if dec_obs_ms is None else round(float(dec_obs_ms), 4),
         "window_ms": None if window_ms is None else round(float(window_ms), 4),
         "window_shape": window_shape,
         "segments": [{"label": k, "gpu_ms": round(float(np.mean(seg_gpu[k])), 4),
@@ -357,7 +405,11 @@ def format_rows(rows) -> str:
                            f"picture)")
                    + ("" if r.get("books_ms") is None
                       else f", books {r['books_ms']:.3f} ms per tick, {r['books_due_ms']:.3f} ms "
-                           f"on a tick that serves a step"))
+                           f"on a tick that serves a step")
+                   + ("" if r.get("decode_ms") is None
+                      else f", decoder {r['decode_ms']:.3f} ms per tick (decode + horde latch), "
+                           f"{r['decision_ms']:.3f} ms per decision hand-over, "
+                           f"{r['decoder_obs_ms']:.3f} ms per decision of its columns"))
     return "\n".join(out)
 
 

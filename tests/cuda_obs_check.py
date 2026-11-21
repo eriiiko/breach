@@ -135,7 +135,32 @@ P8.5a (the windows: ``DeviceObservation.build_windows``) --
 - PART WALL extended: the unseen enemy's row perturbed moves no window plane
   of the team, nor its air block or felt temperature.
 
-THE BREAKS (``OBS_BREAK``), each must turn a part red: ``win_divisor``,
+P8.6a (the device decoder: ``simulation.device_decoder``) --
+- CORPUS (c), GENERATED LIVE (:class:`PolicyDriver`, :data:`DEC_RUNS`): an
+  in-process ``rl_env.EnvRunner`` per run, every team a v1 ``policy``, its
+  session played as ``EnvRunner.step`` plays it on seeded masked-random
+  decisions (forced masked choices and fallbacks now and then), a hand kit
+  and, on the crowd runs, every unit put together at tick 0
+  (:func:`dec_crowd`); the reference's latch columns, slot states and horde
+  latch taken after the controllers' ``handle_frame``, its digests after the
+  step. Inside part GATE / DEC_GATE (:func:`decoder_tick`): the decisions
+  handed to the device decoder before the decision's first tick, then at
+  EVERY tick the store's latch columns after the decode, every slot state,
+  the horde latch and the digests equal; ``masked_choices`` at every
+  decision; the owned observation (the decoder's ``prev``, ``prev_aim``,
+  ``on_next_tick`` and every earlier column) raw-bit equal at every
+  decision; the coverage (:data:`DEC_CASES`, every feet option), each > 0;
+- PART DECODER: the refusals, an out-of-range decision raised at the books
+  read with the host's message, the syncs and uploads per steady tick at N =
+  1 and 2, the aim arithmetic over a square of offsets.
+
+THE BREAKS (``OBS_BREAK``), each must turn a part red: ``dec_every``,
+``dec_late``, ``dec_horde_late``, ``dec_next_uid`` (P8.6a, part DEC_GATE: the
+hand latch on every tick of a decision; the decode after the walk; the horde
+latch at the previous tick's end, before the conversion; the pointer against
+the next observation's list_uid) and ``dec_div`` (P8.6a, part DECODER: the
+aim vector as dx / mag -- it moves no quantized value on the square, so it
+CANNOT turn red; run to show it); ``win_divisor``,
 ``win_anchor``, ``win_half``, ``win_argmax`` (P8.5a, part GATE: each gas plane
 divided by the neighbouring density row; the far window's block anchor one
 block off; the float16 cast through float32; the far wind's argmax taking the
@@ -3349,7 +3374,7 @@ def part_decoder():
         fail(f"decoder syncs: the per-tick count depends on N ({counts[1][:6]} vs {counts[2][:6]})")
     # -- the floats: aim_vector / onto_reach_q on the card against the host's
     # arithmetic over every offset a map of the corpus allows
-    R = max(int(x) for x in (ship_level().tilemap.shape))
+    R = max(400, max(int(x) for x in ship_level().tilemap.shape))
     ax = np.arange(-R, R + 1, dtype=np.int64)
     dx, dy = (v.ravel() for v in np.meshgrid(ax, ax))
     out = cp.zeros((len(dx), 4), dtype=cp.int64)

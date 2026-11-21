@@ -196,3 +196,37 @@ def test_the_device_books_serve_every_named_profile_and_refuse_counters():
     BREAKS IF the books read a term from a constant instead of the obs
     table's profile rows, or the "counters" profile is served."""
     _run(["books"], timeout=7200)
+
+
+def test_the_device_decoder_decodes_as_the_policy_controller_does():
+    """PROPERTY (#29 P8.6a): on corpus (c) -- in-process EnvRunner runs, every
+    team a v1 ``policy``, seeded masked-random decisions, generated live --
+    at EVERY tick the store's latch columns after the device decode equal the
+    reference units' latch attributes after ``handle_frame``, every slot
+    state (held throw aim, last vector, aimed uid, prev) equals the
+    policy's, the horde latch equals the zombie controller's request set,
+    and the digests stay equal through every episode; the decoder's
+    observation columns are raw-bit equal at every decision; every coverage
+    case (every feet option, every aim kind, every hand verb, every throw
+    kind with every reach, every plant timer, the fallbacks, a held throw
+    aim, an aimed unit lost or dead, a masked choice, a zombie that dies and
+    one that rises) occurs. BREAKS IF the hand latch is issued on every tick
+    of a decision (OBS_BREAK=dec_every), the decode runs after the walk
+    (dec_late), the horde latch is taken at the previous tick's end
+    (dec_horde_late) or a pointer resolves against the next observation's
+    list_uid (dec_next_uid)."""
+    _run(["dec_gate"], timeout=7200)
+
+
+def test_the_device_decoder_refuses_by_name_and_adds_no_sync():
+    """PROPERTY (#29 P8.6a): a team the decoder does not drive is refused at
+    the build, an out-of-range decision is refused at the tick's books read
+    with ``check_actions``' own ValueError message, a tap column intent for a
+    decoder-driven unit is refused; with the decoder a steady tick makes only
+    the conductor's two syncs at N = 1 and 2 and uploads nothing from the
+    host; ``aim_vector`` / ``onto_reach_q`` on the card equal the host's over
+    every offset of a 801 x 801 square. BREAKS IF the decoder adds a sync or
+    a per-tick upload, the refusals go, or the card's aim arithmetic changes
+    its operation order where it moves a quantized value (OBS_BREAK=dec_div:
+    dx / mag; it moves none on the square, so this break cannot turn red)."""
+    _run(["decoder"])
