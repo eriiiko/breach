@@ -320,6 +320,70 @@ def first_difference(want: dict, got: dict):
     return walk((), want, got)
 
 
+def block_from_form(form: dict, uids, T: int, U: int, params, where: str = "") -> np.ndarray:
+    """ONE env's device block (``(PIC_W,)`` int64) from a normal form
+    (:func:`host_form`): THE conversion the restage (P8.9b's seam) uploads;
+    :func:`device_form` of it is the form again. ``uids``: the store's rows'
+    unit ids (row order); ``params``: the env's PARAM row. Objects get the
+    serial = their position (the side arrays renumbered 0 .. n-1)."""
+    hf = form
+    row = {u: r for r, u in enumerate(uids)}
+    blk = np.zeros((width(T, U),), dtype=np.int64)
+    sec = {n: blk[o:o + int(np.prod(s))].reshape(s) for n, o, s in layout(T, U)}
+    R = {f: i for i, f in enumerate(REC_FIELDS)}
+    Q = {f: i for i, f in enumerate(UNIT_FIELDS)}
+    for t, recs in hf["records"].items():
+        for uid, vals in recs.items():
+            x = sec["REC"][t, row[uid]]
+            x[R["PRESENT"]], x[R["UID"]] = 1, uid
+            x[2:] = vals
+    for uid, b in hf["bars"].items():
+        sec["UNIT"][row[uid], Q["BAR_SET"]], sec["UNIT"][row[uid], Q["BAR_Q"]] = 1, b
+    for uid in hf["turned"]:
+        sec["UNIT"][row[uid], Q["TURNED"]] = 1
+    for uid, tk in hf["death_tick"].items():
+        sec["UNIT"][row[uid], Q["DEATH_SET"]], sec["UNIT"][row[uid], Q["DEATH_TICK"]] = 1, tk
+    for uid, m in hf["motion"].items():
+        x = sec["UNIT"][row[uid]]
+        x[Q["MOTION_SET"]] = 1
+        x[[Q["PREV_X"], Q["PREV_Y"], Q["NOW_X"], Q["NOW_Y"]]] = m
+    for uid, h in hf["last_hit"].items():
+        if uid not in row:
+            raise PictureRefused(f"device picture: {where}: a last hit on unit "
+                                 f"{uid}, which the store does not hold")
+        x = sec["UNIT"][row[uid]]
+        x[Q["HIT_SET"]] = 1
+        x[[Q["HIT_TICK"], Q["HIT_DX"], Q["HIT_DY"], Q["HIT_CAUSE"]]] = h
+    for t, d in hf["damage"].items():
+        # any interleaving of the victims' deques that keeps each deque's
+        # order and the ticks sorted is the same window (module doc)
+        ent = sorted(((tk, k, uid, dq) for uid, q in d.items()
+                      for k, (tk, dq) in enumerate(q)), key=lambda z: (z[0], z[2], z[1]))
+        if len(ent) > DMG_CAP:
+            raise PictureRefused(f"device picture: {where}: team {t}'s damage "
+                                 f"window holds {len(ent)} entries, the capacity {DMG_CAP}")
+        for k, (tk, _k, uid, dq) in enumerate(ent):
+            sec["DMG"][t, k] = (uid, tk, dq)
+        sec["DMG_HD"][t] = (0, len(ent))
+    g_cnt = int(hf["n_grenades"])
+    c_cnt = int(hf["n_objects"]) - g_cnt
+    sec["SIDE_G"][:g_cnt] = np.arange(g_cnt)
+    sec["SIDE_C"][:c_cnt] = g_cnt + np.arange(c_cnt)
+    sec["KNOWN_G"][0], sec["KNOWN_C"][0] = g_cnt, c_cnt
+    sec["SERIAL_NEXT"][0] = g_cnt + c_cnt
+    for t, objs in hf["objects"].items():
+        for k, (p, v) in enumerate(sorted(objs.items())):
+            sec["OBJ"][t, k] = (p, v)
+        sec["OBJ_N"][t] = len(objs)
+        sec["OBJ_NEXT"][t] = hf["obj_next"][t]
+        for k, (p, v) in enumerate(hf["seen_now"][t]):
+            sec["SEEN"][t, k] = (p, v)
+        sec["SEEN_N"][t] = len(hf["seen_now"][t])
+    sec["PARAM"][:] = params
+    sec["TICK"][0] = -1 if hf["tick"] is None else hf["tick"]
+    return blk
+
+
 # ---------------------------------------------------------------------------
 # The device picture
 # ---------------------------------------------------------------------------
@@ -379,11 +443,12 @@ class DevicePicture:
         return self.state[:, o:o + n].reshape((self.N,) + tuple(s))
 
     # -- the update ------------------------------------------------------
-    def update(self, first: bool = False) -> None:
+    def update(self, first: bool = False, check: bool = True) -> None:
         """THE stage (the ``11'`` call line): every env's picture brought to
         the tick, on the tick stream. Inside a conductor tick the fault bits
         ride the books read; outside (the build's first update) they are
-        read here (a sync) and raised by name."""
+        read here (a sync) and raised by name (``check``: False only for the
+        bench, which times repeated launches)."""
         o, c = self.obs, self.c
         deferred = self.bp.obs_picture(
             int(self.N), int(c.store.device_ptr), int(self.U), int(c.store.shape[2]),
@@ -393,7 +458,7 @@ class DevicePicture:
             int(self.state.data.ptr), int(self.W), int(self.faults.data.ptr), bool(first),
             int(self.brk))
         self.updates += 1
-        if not deferred:
+        if not deferred and check:
             self.check_faults()
 
     def check_faults(self) -> None:
@@ -425,63 +490,8 @@ class DevicePicture:
             sim = self.c.sims[e] if sim is None else sim
             picture = sim.team_picture if picture is None else picture
             form = host_form(picture, sim)
-        hf = form
-        uids = self.c.uids[e]
-        row = {u: r for r, u in enumerate(uids)}
-        T, U = self.T, self.U
-        blk = np.zeros((self.W,), dtype=np.int64)
-        sec = {n: blk[o:o + int(np.prod(s))].reshape(s) for n, (o, s) in self.layout.items()}
-        R = {f: i for i, f in enumerate(REC_FIELDS)}
-        Q = {f: i for i, f in enumerate(UNIT_FIELDS)}
-        for t, recs in hf["records"].items():
-            for uid, vals in recs.items():
-                x = sec["REC"][t, row[uid]]
-                x[R["PRESENT"]], x[R["UID"]] = 1, uid
-                x[2:] = vals
-        for uid, b in hf["bars"].items():
-            sec["UNIT"][row[uid], Q["BAR_SET"]], sec["UNIT"][row[uid], Q["BAR_Q"]] = 1, b
-        for uid in hf["turned"]:
-            sec["UNIT"][row[uid], Q["TURNED"]] = 1
-        for uid, tk in hf["death_tick"].items():
-            sec["UNIT"][row[uid], Q["DEATH_SET"]], sec["UNIT"][row[uid], Q["DEATH_TICK"]] = 1, tk
-        for uid, m in hf["motion"].items():
-            x = sec["UNIT"][row[uid]]
-            x[Q["MOTION_SET"]] = 1
-            x[[Q["PREV_X"], Q["PREV_Y"], Q["NOW_X"], Q["NOW_Y"]]] = m
-        for uid, h in hf["last_hit"].items():
-            if uid not in row:
-                raise PictureRefused(f"device picture: restage of env {e}: a last hit on unit "
-                                     f"{uid}, which the store does not hold")
-            x = sec["UNIT"][row[uid]]
-            x[Q["HIT_SET"]] = 1
-            x[[Q["HIT_TICK"], Q["HIT_DX"], Q["HIT_DY"], Q["HIT_CAUSE"]]] = h
-        for t, d in hf["damage"].items():
-            # any interleaving of the victims' deques that keeps each deque's
-            # order and the ticks sorted is the same window (module doc)
-            ent = sorted(((tk, k, uid, dq) for uid, q in d.items()
-                          for k, (tk, dq) in enumerate(q)), key=lambda z: (z[0], z[2], z[1]))
-            if len(ent) > DMG_CAP:
-                raise PictureRefused(f"device picture: restage of env {e}: team {t}'s damage "
-                                     f"window holds {len(ent)} entries, the capacity {DMG_CAP}")
-            for k, (tk, _k, uid, dq) in enumerate(ent):
-                sec["DMG"][t, k] = (uid, tk, dq)
-            sec["DMG_HD"][t] = (0, len(ent))
-        g_cnt = int(hf["n_grenades"])
-        c_cnt = int(hf["n_objects"]) - g_cnt
-        sec["SIDE_G"][:g_cnt] = np.arange(g_cnt)
-        sec["SIDE_C"][:c_cnt] = g_cnt + np.arange(c_cnt)
-        sec["KNOWN_G"][0], sec["KNOWN_C"][0] = g_cnt, c_cnt
-        sec["SERIAL_NEXT"][0] = g_cnt + c_cnt
-        for t, objs in hf["objects"].items():
-            for k, (p, v) in enumerate(sorted(objs.items())):
-                sec["OBJ"][t, k] = (p, v)
-            sec["OBJ_N"][t] = len(objs)
-            sec["OBJ_NEXT"][t] = hf["obj_next"][t]
-            for k, (p, v) in enumerate(hf["seen_now"][t]):
-                sec["SEEN"][t, k] = (p, v)
-            sec["SEEN_N"][t] = len(hf["seen_now"][t])
-        sec["PARAM"][:] = self.params_host[e]
-        sec["TICK"][0] = -1 if hf["tick"] is None else hf["tick"]
+        blk = block_from_form(form, self.c.uids[e], self.T, self.U, self.params_host[e],
+                              where=f"restage of env {e}")
         self.state[e] = self.cp.asarray(blk)
 
     # -- readers -------------------------------------------------------------
@@ -494,7 +504,7 @@ class DevicePicture:
         self.bp.obs_picture_damage_sums(int(self.N), int(self.c.store.device_ptr), int(self.U),
                                         int(self.c.store.shape[2]), int(self.T),
                                         int(self.state.data.ptr), int(self.W),
-                                        int(out.data.ptr), int(self.brk))
+                                        int(out.data.ptr), False)
         return out
 
     def forms(self) -> list:
@@ -518,5 +528,6 @@ class PictureFault(RuntimeError):
 
 __all__ = ["REC_FIELDS", "UNIT_FIELDS", "DMG_FIELDS", "PARAM_FIELDS", "DMG_CAP", "FAULT_BITS",
            "BREAK_CODES", "layout", "width", "constants", "PictureRefused", "PictureFault",
-           "fault_names", "fault_text", "host_form", "device_form", "first_difference",
+           "fault_names", "fault_text", "host_form", "device_form", "block_from_form",
+           "first_difference",
            "DevicePicture"]

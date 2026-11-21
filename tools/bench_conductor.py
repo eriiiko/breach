@@ -46,7 +46,8 @@ Per (level, N):
   for all N envs (a tick's), ``window_ms`` one representative window call
   per decision (per env, per roster row, a 25 x 25 window around the row's
   unit from every unit's centre: ``window_shape`` = [windows per env,
-  cells per window]).
+  cells per window]). #29 P8.3: ``picture_ms`` the GPU time of one team
+  picture update for all N envs (a tick's; the state put back after).
 
 Levels: ``ship_demo`` and a training room (``tools/gen_training_rooms.py``
 writes it into ``<--levels-dir>``, a scratch folder, the default a temp dir).
@@ -141,7 +142,7 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         wall.append(time.perf_counter() - ts)
         syncs.append(list(bp.host_sync_log_end()))
     used1 = _device_used()
-    obs_ms = vision_ms = window_ms = window_shape = None
+    obs_ms = vision_ms = window_ms = window_shape = picture_ms = None
     if dev_obs is not None:
         import cupy as cp
         st = cp.cuda.ExternalStream(int(bp.tick_stream_ptr()))
@@ -164,6 +165,18 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         b.record(st)
         b.synchronize()
         vision_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
+        # P8.3: the team picture's update (one per tick, every env), its
+        # state kept and put back so the profiled ticks below run on it
+        pic = dev_obs.picture
+        saved = pic.state.copy()
+        a.record(st)
+        for _ in range(obs_builds):
+            pic.update(check=False)
+        b.record(st)
+        b.synchronize()
+        picture_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
+        pic.state[...] = saved
+        pic.faults[...] = 0
         from simulation import unit_store
         from simulation.device_obs import window_clear_device
         lay = unit_store.layout()
@@ -221,6 +234,7 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         "mem_per_env_mb": round((used1 - used0) / 2 ** 20 / n, 2),
         "obs_build_ms": None if obs_ms is None else round(float(obs_ms), 4),
         "vision_ms": None if vision_ms is None else round(float(vision_ms), 4),
+        "picture_ms": None if picture_ms is None else round(float(picture_ms), 4),
         "window_ms": None if window_ms is None else round(float(window_ms), 4),
         "window_shape": window_shape,
         "segments": [{"label": k, "gpu_ms": round(float(np.mean(seg_gpu[k])), 4),
@@ -265,7 +279,9 @@ def format_rows(rows) -> str:
                       else f"  | obs blocks {r['obs_build_ms']:.3f} ms per decision")
                    + ("" if r.get("vision_ms") is None
                       else f", vision {r['vision_ms']:.3f} ms per tick, window call "
-                           f"{r['window_ms']:.3f} ms ({r['window_shape'][0]} windows/env)"))
+                           f"{r['window_ms']:.3f} ms ({r['window_shape'][0]} windows/env)")
+                   + ("" if r.get("picture_ms") is None
+                      else f", team picture {r['picture_ms']:.3f} ms per tick"))
     return "\n".join(out)
 
 

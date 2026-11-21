@@ -432,9 +432,10 @@ def gate(label, played: list, census: Census | None = None) -> bool:
     t0 = time.perf_counter()
     for k in range(end + 1):
         tick = int(c.sims[0].tick)
-        if not vision_equal(label, obs, played, tick):
-            return False
+        # the picture first: its break (early_picture) moves vision with it
         if not picture_equal(label, obs, played, tick):
+            return False
+        if not vision_equal(label, obs, played, tick):
             return False
         if tick % DECIMATION == 0 and not lof_equal(label, obs, played, tick):
             return False
@@ -948,6 +949,47 @@ def corpus_round():
     return [play("ship_all_round", lv, spec, 61, max_ticks=ROUND_TICKS)]
 
 
+#: P8.3's door hand match: the training room with a door (``range_door``),
+#: both teams ``idle`` (only the hand intents move anything), the two units
+#: placed at tick 0 on either side of the open door; unit 0 lobs a short-fuse
+#: grenade, then a long-fuse one (the first detonates and the table's
+#: compaction moves the second down a row while both teams track it); unit 1,
+#: beside the door, shuts it (team 1 loses the grenade) and opens it again
+#: (team 1 re-sees it under the same id).
+DOOR_SEED = 71
+DOOR_TICKS = 150
+DOOR_THROWS = ((2, 20), (14, 280))      # (tick, fuse ticks)
+DOOR_USES = (60, 95)
+
+
+def door_setup(session):
+    from simulation import unit_fixed
+    one = unit_fixed.FP_ONE
+    a, b = sorted(session.sim.units, key=lambda u: int(u.id))[:2]
+    a.set_pos_q(16 * one, 16 * one)
+    b.set_pos_q(23 * one, 17 * one)
+
+
+def door_script(sim):
+    from simulation import unit_fixed
+    one = unit_fixed.FP_ONE
+    a, b = sorted(sim.units, key=lambda u: int(u.id))[:2]
+    t = int(sim.tick)
+    for tk, fuse in DOOR_THROWS:
+        if t == tk and a.alive:
+            sim.throw_grenade_intent(int(a.id), one, 0, fuse, reach_q=3 * one, kind=1)
+    if t in DOOR_USES and b.alive:
+        sim.use_intent(int(b.id))
+
+
+def corpus_door():
+    from dataclasses import replace
+    lv = room_level()
+    spec = replace(lv.match, teams=tuple(replace(t, controller="idle") for t in lv.match.teams))
+    return [play("door_grenade", lv, spec, DOOR_SEED, setup=door_setup, script=door_script,
+                 max_ticks=DOOR_TICKS)]
+
+
 def part_gate():
     ca, cb, cdn = Census(), Census(), Census()
     for p in corpus_a():
@@ -960,6 +1002,8 @@ def part_gate():
         gate(f"(b/d cover) {p.name}", [p], cb)
     for p in corpus_round():
         gate(f"(d all_round) {p.name}", [p], cdn)
+    for p in corpus_door():
+        gate(f"(d door) {p.name}", [p], cdn)
     ca.judge("census (a)", strict=False)
     cb.judge("census (b)", strict=False)
     cdn.judge("census (d)", strict=False)
@@ -970,7 +1014,8 @@ def part_gate():
             both.values.setdefault(k, set()).update(src.values.get(k, set()))
     both.judge("census (a)+(b)+(d)")
     judge_vision()
-    judge_picture(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round())
+    judge_picture(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
+                  + corpus_door())
     for p in corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round():
         a0, a1 = p.cover_alive
         if a0 != a1:
