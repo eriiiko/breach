@@ -137,3 +137,18 @@ noise. Training speed matters to him as much as looks.
 
 - 2026-11-21: created from #217's §8 phase (diagnosis, independent numerics
   review, two critics, v2, implementation brief).
+- 2026-11-21: #217 §8 built (whole-step sub-ticks, per-env k, the budget
+  ceiling, the cap heat; design §8.16). Learned: (a) the A/B baseline must be
+  captured on the base build BEFORE the first code commit, and every switch
+  of a new mechanism needs its "legacy == HEAD" guard committed -- the
+  three-switch T6 found nothing, which is the point; (b) a full suite on
+  this PC is ~1 h 40 min serial and shares the card with other sessions:
+  run targeted tests while building and ONE full suite at the end (Erik,
+  2026-11-21), shard by file if forced to run one; (c) "test with each
+  limiter off" paid again: `k_drag2 = 0` stays stable under the ceiling, so
+  drag is no longer the hidden limiter (design §8.16, "Drag after §8");
+  (d) a rule from the entry state lags an in-tick kick by one tick -- a
+  1 / 2 limit cycle in k after a blast, and the legacy studio rows (heat with
+  no divergence source) get k = 1 for two ticks. Open: the ring-adjacent
+  arena winds (outside the k-set by design), the breach's k tail on
+  residual pockets.

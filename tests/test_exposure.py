@@ -628,7 +628,14 @@ _PRE_G4P_SHIP_DEMO = dict(
     # oracles and GOLDEN_AGGREGATE are unmoved (bit-identical at dx = 1.0).
     # (was win team=0 ticks=276; field d463ec536c7006b4a4188a13e76e7323e7b62ab8cbfbc91632b466a4ab07c672;
     #  tick 301094e0b5c7f90b4369d7cd3bec557d085913d58608b69ed513e796d04eab6d; units e3fc1ecb5b9f1fa9c4370d438ccced5cc93802fc4fbfa0e65a411985b0ccdb3a)
-    outcome="win", team=1, ticks=816,
+    # #217 §8 re-pin (2026-11-21, Erik: "5 decisions: yes to all"): whole-step
+    # EOS sub-ticks (k per tick from the wind / divergence / blast source), the
+    # 64 m/s budget ceiling at ship_demo's 0.333 m and the cap that returns the
+    # kick's own energy as heat move every blast and breach of the match: the
+    # GAME moved, by design (docs/eos_checkerboard_design_2026-11-20.md §8).
+    # The 1.0 m box pins pass unchanged.
+    # (was outcome="win", team=1, ticks=816)
+    outcome="win", team=0, ticks=290,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -648,8 +655,10 @@ _PRE_G4P_SHIP_DEMO = dict(
     # (was d5e0e90969e747038c0a8d7391303b21804bae0d0cc7c9bf7d4ded8c258c4174)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was ab8d586ee11eab6ef9e5acfc14b0bc2c7f179231d086cec366693382d872aedd)
-    field_digest="23596e83fde43bb17d1ab5581cb7e04a"
-                 "fe441ac2eaa2891deb666b36a4203d19",
+    # #217 §8 re-pin (2026-11-21), the causes above.
+    # (was 23596e83fde43bb17d1ab5581cb7e04afe441ac2eaa2891deb666b36a4203d19)
+    field_digest="be8384d99925c2e64ad85ed5bd9c2ff3"
+                 "671a1f00d433a219853adbad1ce84a18",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -693,8 +702,10 @@ _PRE_G4P_SHIP_DEMO = dict(
     # divergence: a unit dying with its body off ambient,
     # docs/swarm_P5c_impl.md, the pin table).
     # (was 2ee6ba63a8b97cf03823407e05db64f68e27a05f21488b25910b71478e6c6623)
-    tick_digest="e80cb4fb1253d65b89a5401a0449e3e5"
-                "4e0105108dbd257ec74bfa5316fda7bc",
+    # #217 §8 re-pin (2026-11-21), the causes above.
+    # (was e80cb4fb1253d65b89a5401a0449e3e54e0105108dbd257ec74bfa5316fda7bc)
+    tick_digest="a6ab377ab5a273d370c0191e7e3a940c"
+                "d18db89e41e12f292a74bb47afba6202",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -738,8 +749,10 @@ _PRE_G4P_SHIP_DEMO = dict(
     # divergence: a unit dying with its body off ambient,
     # docs/swarm_P5c_impl.md, the pin table).
     # (was 2344d22f77de82c52afa70dd8833f784310a2c34071c5329b9d786bd90b9588f)
-    unit_stream="d11a6bca8aede8405411ca4c7fd7b1f6"
-                "d46b96cd4822f0f5591bb7c572ac1fac")
+    # #217 §8 re-pin (2026-11-21), the causes above.
+    # (was d11a6bca8aede8405411ca4c7fd7b1f6d46b96cd4822f0f5591bb7c572ac1fac)
+    unit_stream="35dc08e43a54338a5d145583bf7aed21"
+                "177778c2f665087b4eb19f0ef79cbc0b")
 
 
 def test_with_the_law_dormant_the_pinned_match_is_the_pre_g4p_match(

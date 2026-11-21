@@ -6,7 +6,7 @@ import collections.abc
 import numpy
 import numpy.typing
 import typing
-__all__: list[str] = ['ATMOSPHERE_FIXEDPOINT', 'ATMOSPHERE_FP_ONE', 'ATMOSPHERE_FP_SHIFT', 'AtmosphereSolver', 'CAP_SHIFT_MAX', 'CAP_SHIFT_MIN', 'CombustionSolver', 'EDIT_FIELD_ORDINALS', 'EDIT_QUEUE_LAYOUT', 'EOSSolver', 'E_CEILING_TOP_Q', 'E_FINE_BITS', 'E_INV_TOP_GAME', 'E_TABLE_SIZE', 'E_TABLE_TOP_MAX', 'EditDoorBuffer', 'EditFlushBuffer', 'EmissiveTable', 'FieldApplierBuffer', 'FireParams', 'FireSimulation', 'HAS_CUDA', 'L_CHANNELS', 'L_FINE_BITS', 'L_TABLE_TOP_MAX', 'LightEmissionTable', 'ObjectTableBuffer', 'PHILOX32_TWO_PI_Q16', 'PhysicsEngine', 'RADIATION_SWEEP_CNT_SLOTS', 'RS_BAD_HEAT_ABSORB', 'RS_SLOT_BAD_AMBIENT', 'RS_SLOT_BAD_EXTINCTION', 'RS_SLOT_BAD_LIGHT_EXTINCTION', 'RS_SLOT_BAD_SCALARS', 'RS_SLOT_LIGHT_ABSORB', 'RS_SLOT_LIGHT_EMIT', 'RS_SLOT_LIGHT_MAX_STREAM', 'RS_SLOT_LIGHT_MIN_STREAM', 'RS_SLOT_LIGHT_RING_IN', 'RS_SLOT_LIGHT_RING_OUT', 'RS_SLOT_MAX_STREAM', 'RS_SLOT_MIN_STREAM', 'RadiationSweep', 'SWARM_CONSTANTS', 'SWARM_LARVA_BRANCHES', 'SWARM_SPECIES_LAWS', 'SWARM_TABLES_FINGERPRINT', 'TRACE_CELL_MAX', 'TRACE_FINE_BITS', 'TRACE_SHIFT', 'TemperatureSolver', 'UnitEventRingBuffer', 'UnitRecordListBuffer', 'UnitStoreBuffer', 'UnitTablesBuffer', 'WATER_FIXEDPOINT', 'WATER_FP_ONE', 'WATER_FP_SHIFT', 'WAVE_FIXEDPOINT', 'WAVE_FP_ONE', 'WAVE_FP_SHIFT', 'WIND_FIXEDPOINT', 'WIND_FP_ONE', 'WIND_FP_SHIFT', 'WaterSolver', 'applier_blast_probe', 'applier_layout', 'applier_run', 'atan2_q16', 'build_id', 'bulk_flux_transport', 'conduction_cell_capacity_q', 'conductor_books_begin', 'conductor_books_deferring', 'conductor_books_end', 'conductor_label', 'cos_q16', 'cuda_available', 'cuda_bulk_flux_transport', 'cuda_combustion_step', 'cuda_device_info', 'cuda_eos_energy_flux', 'cuda_eos_kick_compression', 'cuda_eos_mg_solve', 'cuda_eos_sl_advect', 'cuda_fire_step', 'cuda_map_mul_q16', 'cuda_radiation_sweep_launch_count', 'cuda_radiation_sweep_resident', 'cuda_radiation_sweep_run', 'cuda_spike_add1', 'cuda_swarm_resident_probe', 'cuda_swarm_species_step', 'cuda_temperature_step', 'cuda_water_step', 'edit_door_append_probe', 'edit_door_layout', 'edit_flush_layout', 'edit_queue_contrib_probe', 'eos_energy_books_sum', 'eos_kick_compression_ref', 'eos_mg_build_parity', 'eos_mg_solve_ref', 'eos_nsub_reads', 'eos_prestage_parity', 'eos_resident_calls', 'eos_sl_advect_ref', 'eos_step_cuda_calls', 'fp_deposit_dT_wide_i64', 'fp_deposit_dT_wide_q16', 'fp_div_round', 'fp_div_trunc', 'fp_effort_step', 'fp_falloff_floor', 'fp_falloff_round', 'fp_fine_heat_shr', 'fp_floordiv', 'fp_half_up', 'fp_isqrt', 'fp_isqrt_ceil', 'fp_isqrt_u128', 'fp_isqrt_u64', 'fp_make_recip', 'fp_mul_q16_round', 'fp_muldiv_floor', 'fp_quantize', 'fp_quantize_trace', 'fp_recip_mul', 'fp_reciprocal_q16', 'fp_shr_round0', 'fp_shr_round0_i64', 'fp_shr_round0_signed_i64', 'fp_shr_trunc', 'fp_sqrt_q16', 'fp_trace_add_sat', 'fp_trace_density_shr', 'fp_trace_from_bulk', 'get_bulk_flux_backend', 'get_combustion_backend', 'get_eos_step_backend', 'get_fire_backend', 'get_kick_compression_backend', 'get_mg_solve_backend', 'get_radiation_backend', 'get_sl_advection_backend', 'get_swarm_backend', 'get_temperature_backend', 'get_water_backend', 'horde_flood_probe', 'host_sync_log_begin', 'host_sync_log_end', 'object_tables_layout', 'philox32_4x32_10', 'philox32_4x32_10_np', 'philox32_angle_q16', 'philox32_below', 'philox32_uniform_q16', 'radiation_sweep_cuda_calls', 'resident_burn_list', 'resident_capture_abort', 'resident_capture_begin', 'resident_capture_end', 'resident_ignition_probe', 'resident_stage_counters', 'set_bulk_flux_backend', 'set_combustion_backend', 'set_fire_backend', 'set_kick_compression_backend', 'set_mg_solve_backend', 'set_radiation_backend', 'set_sl_advection_backend', 'set_swarm_backend', 'set_temperature_backend', 'set_water_backend', 'sin_q16', 'sky_exchange_step', 'swarm_branch_tally', 'swarm_cpu_calls', 'swarm_cuda_calls', 'swarm_larva_felt_T', 'swarm_species_step', 'swarm_wrap_heading_q16', 'tick_end_clears', 'tick_stream_ptr', 'topology_probe_seam', 'topology_probe_tile_changed', 'unit_apply_orders', 'unit_burn_sort', 'unit_burst_walls', 'unit_charges_tick', 'unit_convert_zombies', 'unit_damage_probe', 'unit_door_uses', 'unit_draws_layout', 'unit_events_layout', 'unit_expire_orders', 'unit_exposure_decay', 'unit_flight_plane', 'unit_gas_rows', 'unit_grenades', 'unit_heat_damage', 'unit_ignition', 'unit_integrate_turn', 'unit_kit_draws_probe', 'unit_kit_falloff_probe', 'unit_kit_sight_probe', 'unit_lib_probe', 'unit_match_done', 'unit_melee', 'unit_movement', 'unit_movement_probe', 'unit_requests_layout', 'unit_rounds', 'unit_shooting', 'unit_spray_cone_probe', 'unit_sprays', 'unit_stamp', 'unit_status_tick', 'unit_store_layout', 'unit_table_appends', 'unit_verbs', 'unit_verbs_probe', 'unit_verbs_tables', 'unit_wind_impulse', 'water_substeps_resident']
+__all__: list[str] = ['ATMOSPHERE_FIXEDPOINT', 'ATMOSPHERE_FP_ONE', 'ATMOSPHERE_FP_SHIFT', 'AtmosphereSolver', 'CAP_SHIFT_MAX', 'CAP_SHIFT_MIN', 'CombustionSolver', 'EDIT_FIELD_ORDINALS', 'EDIT_QUEUE_LAYOUT', 'EOSSolver', 'E_CEILING_TOP_Q', 'E_FINE_BITS', 'E_INV_TOP_GAME', 'E_TABLE_SIZE', 'E_TABLE_TOP_MAX', 'EditDoorBuffer', 'EditFlushBuffer', 'EmissiveTable', 'FieldApplierBuffer', 'FireParams', 'FireSimulation', 'HAS_CUDA', 'L_CHANNELS', 'L_FINE_BITS', 'L_TABLE_TOP_MAX', 'LightEmissionTable', 'OBS_LAYOUT_FINGERPRINT', 'ObjectTableBuffer', 'PHILOX32_TWO_PI_Q16', 'PhysicsEngine', 'RADIATION_SWEEP_CNT_SLOTS', 'RS_BAD_HEAT_ABSORB', 'RS_SLOT_BAD_AMBIENT', 'RS_SLOT_BAD_EXTINCTION', 'RS_SLOT_BAD_LIGHT_EXTINCTION', 'RS_SLOT_BAD_SCALARS', 'RS_SLOT_LIGHT_ABSORB', 'RS_SLOT_LIGHT_EMIT', 'RS_SLOT_LIGHT_MAX_STREAM', 'RS_SLOT_LIGHT_MIN_STREAM', 'RS_SLOT_LIGHT_RING_IN', 'RS_SLOT_LIGHT_RING_OUT', 'RS_SLOT_MAX_STREAM', 'RS_SLOT_MIN_STREAM', 'RadiationSweep', 'SWARM_CONSTANTS', 'SWARM_LARVA_BRANCHES', 'SWARM_SPECIES_LAWS', 'SWARM_TABLES_FINGERPRINT', 'TRACE_CELL_MAX', 'TRACE_FINE_BITS', 'TRACE_SHIFT', 'TemperatureSolver', 'UnitEventRingBuffer', 'UnitRecordListBuffer', 'UnitStoreBuffer', 'UnitTablesBuffer', 'WATER_FIXEDPOINT', 'WATER_FP_ONE', 'WATER_FP_SHIFT', 'WAVE_FIXEDPOINT', 'WAVE_FP_ONE', 'WAVE_FP_SHIFT', 'WIND_FIXEDPOINT', 'WIND_FP_ONE', 'WIND_FP_SHIFT', 'WaterSolver', 'applier_blast_probe', 'applier_layout', 'applier_run', 'atan2_q16', 'build_id', 'bulk_flux_transport', 'conduction_cell_capacity_q', 'conductor_books_begin', 'conductor_books_deferring', 'conductor_books_end', 'conductor_label', 'conductor_profile_begin', 'conductor_profile_end', 'conductor_profile_mark', 'cos_q16', 'cuda_available', 'cuda_bulk_flux_transport', 'cuda_combustion_step', 'cuda_device_info', 'cuda_eos_energy_flux', 'cuda_eos_kick_compression', 'cuda_eos_mg_solve', 'cuda_eos_sl_advect', 'cuda_fire_step', 'cuda_map_mul_q16', 'cuda_radiation_sweep_launch_count', 'cuda_radiation_sweep_resident', 'cuda_radiation_sweep_run', 'cuda_spike_add1', 'cuda_swarm_resident_probe', 'cuda_swarm_species_step', 'cuda_temperature_step', 'cuda_water_step', 'edit_door_append_probe', 'edit_door_layout', 'edit_flush_layout', 'edit_queue_contrib_probe', 'eos_energy_books_sum', 'eos_kick_compression_ref', 'eos_mg_build_parity', 'eos_mg_solve_ref', 'eos_nsub_reads', 'eos_prestage_parity', 'eos_resident_calls', 'eos_sl_advect_ref', 'eos_step_cuda_calls', 'fp_deposit_dT_wide_i64', 'fp_deposit_dT_wide_q16', 'fp_div_round', 'fp_div_trunc', 'fp_effort_step', 'fp_falloff_floor', 'fp_falloff_round', 'fp_fine_heat_shr', 'fp_floordiv', 'fp_half_up', 'fp_isqrt', 'fp_isqrt_ceil', 'fp_isqrt_u128', 'fp_isqrt_u64', 'fp_make_recip', 'fp_mul_q16_round', 'fp_muldiv_floor', 'fp_quantize', 'fp_quantize_trace', 'fp_recip_mul', 'fp_reciprocal_q16', 'fp_shr_round0', 'fp_shr_round0_i64', 'fp_shr_round0_signed_i64', 'fp_shr_trunc', 'fp_sqrt_q16', 'fp_trace_add_sat', 'fp_trace_density_shr', 'fp_trace_from_bulk', 'get_bulk_flux_backend', 'get_combustion_backend', 'get_eos_step_backend', 'get_fire_backend', 'get_kick_compression_backend', 'get_mg_solve_backend', 'get_radiation_backend', 'get_sl_advection_backend', 'get_swarm_backend', 'get_temperature_backend', 'get_water_backend', 'horde_flood_probe', 'host_sync_log_begin', 'host_sync_log_end', 'object_tables_layout', 'obs_block', 'obs_lof_pairs', 'obs_picture', 'obs_picture_damage_sums', 'obs_picture_layout', 'obs_picture_vector', 'obs_probe_f32', 'obs_probe_half', 'obs_probe_muladd', 'obs_probe_squash', 'obs_rays', 'obs_vector', 'obs_vision', 'obs_windows', 'philox32_4x32_10', 'philox32_4x32_10_np', 'philox32_angle_q16', 'philox32_below', 'philox32_uniform_q16', 'radiation_sweep_cuda_calls', 'resident_burn_list', 'resident_capture_abort', 'resident_capture_begin', 'resident_capture_end', 'resident_ignition_probe', 'resident_stage_counters', 'resident_tail_defer', 'resident_tail_finish', 'resident_tail_pending', 'set_bulk_flux_backend', 'set_combustion_backend', 'set_fire_backend', 'set_kick_compression_backend', 'set_mg_solve_backend', 'set_radiation_backend', 'set_sl_advection_backend', 'set_swarm_backend', 'set_temperature_backend', 'set_water_backend', 'sin_q16', 'sky_exchange_step', 'swarm_branch_tally', 'swarm_cpu_calls', 'swarm_cuda_calls', 'swarm_larva_felt_T', 'swarm_species_step', 'swarm_wrap_heading_q16', 'tick_end_clears', 'tick_stream_ptr', 'topology_probe_seam', 'topology_probe_tile_changed', 'unit_apply_orders', 'unit_burn_sort', 'unit_burst_walls', 'unit_charges_tick', 'unit_convert_zombies', 'unit_damage_probe', 'unit_door_uses', 'unit_draws_layout', 'unit_events_layout', 'unit_expire_orders', 'unit_exposure_decay', 'unit_flight_plane', 'unit_gas_rows', 'unit_grenades', 'unit_heat_damage', 'unit_ignition', 'unit_integrate_turn', 'unit_kit_draws_probe', 'unit_kit_falloff_probe', 'unit_kit_sight_probe', 'unit_lib_probe', 'unit_match_done', 'unit_melee', 'unit_movement', 'unit_movement_probe', 'unit_requests_layout', 'unit_rounds', 'unit_shooting', 'unit_spray_cone_probe', 'unit_sprays', 'unit_stamp', 'unit_status_tick', 'unit_store_layout', 'unit_table_appends', 'unit_verbs', 'unit_verbs_probe', 'unit_verbs_tables', 'unit_wind_impulse', 'water_substeps_resident']
 class AtmosphereSolver:
     def __init__(self) -> None:
         ...
@@ -229,7 +229,11 @@ class CombustionSolver:
     def t_max_phys_hits(self) -> int:
         ...
 class EOSSolver:
+    cap_heat: bool
+    dbg_record_subtick_umax: bool
     debug_pstar_from_prev: bool
+    subtick_ceiling: bool
+    subtick_loop: bool
     use_multigrid: bool
     def __init__(self) -> None:
         ...
@@ -270,6 +274,12 @@ class EOSSolver:
         ...
     @CFL_ADV.setter
     def CFL_ADV(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def K_MAX(self) -> int:
+        ...
+    @K_MAX.setter
+    def K_MAX(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
     def N_FLOOR_SOLVER(self) -> float:
@@ -356,6 +366,12 @@ class EOSSolver:
     def dbg_last_c_local_q(self) -> int:
         ...
     @property
+    def dbg_last_k(self) -> int:
+        ...
+    @property
+    def dbg_last_kset(self) -> tuple[int, int, int]:
+        ...
+    @property
     def dbg_last_n_sub(self) -> int:
         ...
     @property
@@ -363,6 +379,12 @@ class EOSSolver:
         ...
     @dbg_probe_idx.setter
     def dbg_probe_idx(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def dbg_solves_last_step(self) -> int:
+        ...
+    @property
+    def dbg_subtick_umax(self) -> list[int]:
         ...
     @property
     def digest_advect(self) -> int:
@@ -390,6 +412,9 @@ class EOSSolver:
         ...
     @property
     def e_absorb_export_sum(self) -> int:
+        ...
+    @property
+    def e_cap_heat_sum(self) -> int:
         ...
     @property
     def e_clamp_destroyed_sum(self) -> int:
@@ -806,6 +831,10 @@ class ObjectTableBuffer(UnitRecordListBuffer):
     def compact(self) -> None:
         """
         The stable compaction of every env (rows whose live column is 0 dropped).
+        """
+    def set_side(self, side: typing.SupportsInt | typing.SupportsIndex, side_stride: typing.SupportsInt | typing.SupportsIndex, known: typing.SupportsInt | typing.SupportsIndex, known_stride: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        #29 P8.3: a device side array (int64 words, env e's row i at side + 8 * (e * side_stride + i)) the compaction carries with the rows, and its known count (the device team picture's object serials); 0, 0: none.
         """
     def upload(self, rows: typing.Annotated[numpy.typing.ArrayLike, numpy.int64], counts: typing.Annotated[numpy.typing.ArrayLike, numpy.int64]) -> None:
         """
@@ -1344,6 +1373,14 @@ def conductor_label(label: str) -> None:
     """
     #29 P7e.4: the conductor's current call line.
     """
+def conductor_profile_begin() -> None:
+    ...
+def conductor_profile_end() -> list:
+    """
+    #29 P7e.5: [(label, gpu ms, host ms)] between consecutive marks.
+    """
+def conductor_profile_mark(label: str) -> None:
+    ...
 def cos_q16(a: typing.SupportsInt | typing.SupportsIndex) -> int:
     """
     Q2-LIFT: pure-integer cos on Q16.16 radians (output Q16.16 in [-65536, 65536]; accuracy pinned for |a| <= 4*pi, any int32 defined).
@@ -1440,7 +1477,7 @@ def eos_energy_books_sum(gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int
     """
     P-M4b: S = sum(n_bulk * T) over the energy books' accountable set (!solid, !thermal_solid, !vacuum, !ambient ring), raw Q16.16^2. THE SAME C++ routine EOSSolver::step's energy brackets use. arc #54: pass gas_energy + t_amb_raw to read the SAME quantity off the conserved field instead, as sum(E - N*T_AMB_raw).
     """
-def eos_kick_compression_ref(wind_x: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_y: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], p_new: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas_conservative: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], dyn_wave_absorb: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], dt: typing.SupportsFloat | typing.SupportsIndex, cap2_plane: typing.Annotated[numpy.typing.ArrayLike, numpy.int64], c_max: typing.SupportsFloat | typing.SupportsIndex, dx: typing.SupportsFloat | typing.SupportsIndex, adiabatic_index: typing.SupportsFloat | typing.SupportsIndex, absorb_strength: typing.SupportsFloat | typing.SupportsIndex, n_floor_solver: typing.SupportsFloat | typing.SupportsIndex, t_min: typing.SupportsFloat | typing.SupportsIndex, t_max_phys: typing.SupportsFloat | typing.SupportsIndex, u_max: typing.SupportsFloat | typing.SupportsIndex, k_drag: typing.SupportsFloat | typing.SupportsIndex = 0.0, k_drag2: typing.SupportsFloat | typing.SupportsIndex = 0.0, c_v: typing.SupportsFloat | typing.SupportsIndex = 1.0, t_amb_k: typing.SupportsFloat | typing.SupportsIndex = 290.0, gas_energy: typing.Any = None, thermal_solid: typing.Any = None, is_ambient: typing.Any = None, sponge_udamp: typing.Any = None) -> tuple:
+def eos_kick_compression_ref(wind_x: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_y: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], p_new: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas_conservative: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], dyn_wave_absorb: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], dt: typing.SupportsFloat | typing.SupportsIndex, cap2_plane: typing.Annotated[numpy.typing.ArrayLike, numpy.int64], c_max: typing.SupportsFloat | typing.SupportsIndex, dx: typing.SupportsFloat | typing.SupportsIndex, adiabatic_index: typing.SupportsFloat | typing.SupportsIndex, absorb_strength: typing.SupportsFloat | typing.SupportsIndex, n_floor_solver: typing.SupportsFloat | typing.SupportsIndex, t_min: typing.SupportsFloat | typing.SupportsIndex, t_max_phys: typing.SupportsFloat | typing.SupportsIndex, u_max: typing.SupportsFloat | typing.SupportsIndex, k_drag: typing.SupportsFloat | typing.SupportsIndex = 0.0, k_drag2: typing.SupportsFloat | typing.SupportsIndex = 0.0, c_v: typing.SupportsFloat | typing.SupportsIndex = 1.0, t_amb_k: typing.SupportsFloat | typing.SupportsIndex = 290.0, gas_energy: typing.Any = None, thermal_solid: typing.Any = None, is_ambient: typing.Any = None, sponge_udamp: typing.Any = None, cap_heat: bool = True) -> tuple:
     """
     P6.4 CPU reference: replay EOSSolver::step's kick tail in place on wind_x/wind_y (+ gas_energy, if given: the arc #54 KE brackets); cap2_plane is the per-cell (h,w) int64 velocity-cap-squared plane (Q32.32 raw) — MUST be >= 0 everywhere (a negative entry makes rad=0 > cap2 reachable, i.e. a divide by zero inside the clamp). arc #54 P-G1a: step 4c is DELETED, so `temperature` is no longer written here and slots 2/3/4/7/8 of the counter tuple are retired-and-zero (D10 keeps the layout). Returns (digest_velocity, digest_compression, u_clamp_hits, u_max_hits, 0, 0, 0, ke_drag_removed, e_drag_heat_sum, 0, 0) for this call.
     """
@@ -1642,6 +1679,62 @@ def object_tables_layout() -> dict:
     """
     #29 P7.0b: the compiled object tables layout (object_tables_layout.h): {fingerprint}.
     """
+def obs_block(n_env: typing.SupportsInt | typing.SupportsIndex, store: typing.SupportsInt | typing.SupportsIndex, n_units: typing.SupportsInt | typing.SupportsIndex, store_w: typing.SupportsInt | typing.SupportsIndex, rowmap: typing.SupportsInt | typing.SupportsIndex, n_rows: typing.SupportsInt | typing.SupportsIndex, n_slots: typing.SupportsInt | typing.SupportsIndex, solid: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, doors: ..., door_tiles: ..., door_plane: typing.SupportsInt | typing.SupportsIndex, tick_row: typing.SupportsInt | typing.SupportsIndex, params: typing.SupportsInt | typing.SupportsIndex, ended: typing.SupportsInt | typing.SupportsIndex, near_u: typing.SupportsInt | typing.SupportsIndex, far_f: typing.SupportsInt | typing.SupportsIndex, far_u: typing.SupportsInt | typing.SupportsIndex, valid: typing.SupportsInt | typing.SupportsIndex, in_match: typing.SupportsInt | typing.SupportsIndex) -> None:
+    """
+    #29 P8.0: the device observation's first block on the tick stream (no sync): valid / in_match and the near wall / door, far wall share / door planes of every env on its decision tick (cpp/src/cuda_obs.cu).
+    """
+def obs_lof_pairs(n_env: typing.SupportsInt | typing.SupportsIndex, store: typing.SupportsInt | typing.SupportsIndex, n_units: typing.SupportsInt | typing.SupportsIndex, store_w: typing.SupportsInt | typing.SupportsIndex, solid: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, covers: typing.SupportsInt | typing.SupportsIndex, cover_cap: typing.SupportsInt | typing.SupportsIndex, cover_w: typing.SupportsInt | typing.SupportsIndex, cover_count: typing.SupportsInt | typing.SupportsIndex, out: typing.SupportsInt | typing.SupportsIndex, faults: typing.SupportsInt | typing.SupportsIndex) -> None:
+    """
+    #29 P8.2: line_of_fire.solid_in_way over every (row, row) pair of the store, over the observation's cover table.
+    """
+def obs_picture(n_env: typing.SupportsInt | typing.SupportsIndex, store: typing.SupportsInt | typing.SupportsIndex, n_units: typing.SupportsInt | typing.SupportsIndex, store_w: typing.SupportsInt | typing.SupportsIndex, ring: ..., grenades: ..., charges: ..., solid: typing.SupportsInt | typing.SupportsIndex, screen: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, tick_row: typing.SupportsInt | typing.SupportsIndex, visible: typing.SupportsInt | typing.SupportsIndex, n_teams: typing.SupportsInt | typing.SupportsIndex, state: typing.SupportsInt | typing.SupportsIndex, state_w: typing.SupportsInt | typing.SupportsIndex, faults: typing.SupportsInt | typing.SupportsIndex, first: bool, brk: typing.SupportsInt | typing.SupportsIndex) -> bool:
+    """
+    #29 P8.3: TeamPicture.update for every env on the card; returns whether the fault bits were deferred into the conductor's books read.
+    """
+def obs_picture_damage_sums(n_env: typing.SupportsInt | typing.SupportsIndex, store: typing.SupportsInt | typing.SupportsIndex, n_units: typing.SupportsInt | typing.SupportsIndex, store_w: typing.SupportsInt | typing.SupportsIndex, n_teams: typing.SupportsInt | typing.SupportsIndex, state: typing.SupportsInt | typing.SupportsIndex, state_w: typing.SupportsInt | typing.SupportsIndex, out: typing.SupportsInt | typing.SupportsIndex, reverse: bool) -> None:
+    """
+    #29 P8.3: TeamPicture.damage_last_s for every (env, team, store row).
+    """
+def obs_picture_layout(n_teams: typing.SupportsInt | typing.SupportsIndex, n_units: typing.SupportsInt | typing.SupportsIndex) -> dict:
+    """
+    #29 P8.3: the compiled picture block's section offsets (int64 words).
+    """
+def obs_picture_vector(n_env: typing.SupportsInt | typing.SupportsIndex, store: typing.SupportsInt | typing.SupportsIndex, n_units: typing.SupportsInt | typing.SupportsIndex, store_w: typing.SupportsInt | typing.SupportsIndex, rowmap: typing.SupportsInt | typing.SupportsIndex, n_rows: typing.SupportsInt | typing.SupportsIndex, n_slots: typing.SupportsInt | typing.SupportsIndex, n_teams: typing.SupportsInt | typing.SupportsIndex, obs_table: typing.SupportsInt | typing.SupportsIndex, table_w: typing.SupportsInt | typing.SupportsIndex, teams: typing.SupportsInt | typing.SupportsIndex, tick_row: typing.SupportsInt | typing.SupportsIndex, params: typing.SupportsInt | typing.SupportsIndex, ended: typing.SupportsInt | typing.SupportsIndex, visible: typing.SupportsInt | typing.SupportsIndex, state: typing.SupportsInt | typing.SupportsIndex, state_w: typing.SupportsInt | typing.SupportsIndex, vector: typing.SupportsInt | typing.SupportsIndex) -> None:
+    """
+    #29 P8.3: the vector columns of the team picture, every env on its decision tick.
+    """
+def obs_probe_f32(x: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> numpy.typing.NDArray[numpy.float32]:
+    """
+    #29 P8.1 TEST-ONLY: the observation kit's double -> float32 cast.
+    """
+def obs_probe_half(x: typing.Annotated[numpy.typing.ArrayLike, numpy.float64], via_f32: bool = False) -> numpy.typing.NDArray[numpy.uint16]:
+    """
+    #29 P8.1 TEST-ONLY: the observation kit's double -> float16 bits on the card (via_f32: THE BREAK, double rounding through float32).
+    """
+def obs_probe_muladd(a: typing.Annotated[numpy.typing.ArrayLike, numpy.float64], b: typing.Annotated[numpy.typing.ArrayLike, numpy.float64], c: typing.Annotated[numpy.typing.ArrayLike, numpy.float64], fused: bool = False) -> numpy.typing.NDArray[numpy.float64]:
+    """
+    #29 P8.1 TEST-ONLY: the observation kit's a*b + c, never fused (fused: THE BREAK, an explicit fma).
+    """
+def obs_probe_squash(x: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float32]]:
+    """
+    #29 P8.1 TEST-ONLY: the observation kit's squash (CUDA's log), float64 and its float32.
+    """
+def obs_rays(n_env: typing.SupportsInt | typing.SupportsIndex, solid: typing.SupportsInt | typing.SupportsIndex, screen: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, physical: bool, pairs: typing.SupportsInt | typing.SupportsIndex, n_pairs: typing.SupportsInt | typing.SupportsIndex, out: typing.SupportsInt | typing.SupportsIndex, faults: typing.SupportsInt | typing.SupportsIndex) -> None:
+    """
+    #29 P8.2: vision.rays_clear in bulk on the card, every env in one launch.
+    """
+def obs_vector(n_env: typing.SupportsInt | typing.SupportsIndex, store: typing.SupportsInt | typing.SupportsIndex, n_units: typing.SupportsInt | typing.SupportsIndex, store_w: typing.SupportsInt | typing.SupportsIndex, tables: ..., rowmap: typing.SupportsInt | typing.SupportsIndex, n_rows: typing.SupportsInt | typing.SupportsIndex, n_slots: typing.SupportsInt | typing.SupportsIndex, n_teams: typing.SupportsInt | typing.SupportsIndex, obs_table: typing.SupportsInt | typing.SupportsIndex, table_w: typing.SupportsInt | typing.SupportsIndex, teams: typing.SupportsInt | typing.SupportsIndex, tick_row: typing.SupportsInt | typing.SupportsIndex, params: typing.SupportsInt | typing.SupportsIndex, ended: typing.SupportsInt | typing.SupportsIndex, vector: typing.SupportsInt | typing.SupportsIndex) -> None:
+    """
+    #29 P8.1: the device observation's vector columns of the store and the tables (device_obs.BUILT['vector']) on the tick stream (no sync), every env on its decision tick (cpp/src/cuda_obs.cu).
+    """
+def obs_vision(n_env: typing.SupportsInt | typing.SupportsIndex, store: typing.SupportsInt | typing.SupportsIndex, n_units: typing.SupportsInt | typing.SupportsIndex, store_w: typing.SupportsInt | typing.SupportsIndex, solid: typing.SupportsInt | typing.SupportsIndex, screen: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, obs_table: typing.SupportsInt | typing.SupportsIndex, table_w: typing.SupportsInt | typing.SupportsIndex, n_teams: typing.SupportsInt | typing.SupportsIndex, sees: typing.SupportsInt | typing.SupportsIndex, visible: typing.SupportsInt | typing.SupportsIndex, faults: typing.SupportsInt | typing.SupportsIndex) -> None:
+    """
+    #29 P8.2: who sees whom (vision.compute's VisionState) for every env, under the match's sight rule from the obs table.
+    """
+def obs_windows(n_env: typing.SupportsInt | typing.SupportsIndex, solid: typing.SupportsInt | typing.SupportsIndex, screen: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, physical: bool, to_window: bool, queries: typing.SupportsInt | typing.SupportsIndex, n_q: typing.SupportsInt | typing.SupportsIndex, wh: typing.SupportsInt | typing.SupportsIndex, ww: typing.SupportsInt | typing.SupportsIndex, out: typing.SupportsInt | typing.SupportsIndex, faults: typing.SupportsInt | typing.SupportsIndex) -> None:
+    """
+    #29 P8.2: vision.window_clear in bulk on the card, every env in one launch.
+    """
 def philox32_4x32_10(ctr0: typing.SupportsInt | typing.SupportsIndex, ctr1: typing.SupportsInt | typing.SupportsIndex, ctr2: typing.SupportsInt | typing.SupportsIndex, ctr3: typing.SupportsInt | typing.SupportsIndex, key0: typing.SupportsInt | typing.SupportsIndex, key1: typing.SupportsInt | typing.SupportsIndex) -> tuple[int, int, int, int]:
     """
     philox32 (arc #63 P1): the vendored Philox-4x32-10 block function -- out = F(ctr[4], key[2]), 10 rounds, integer-only (cpp/src/philox32.h).
@@ -1690,6 +1783,16 @@ def resident_stage_counters() -> dict:
     """
     #29 P4a: how many times each resident tail stage ran (and did work) in this process.
     """
+def resident_tail_defer(on: bool) -> None:
+    """
+    #29 P7e.5 (Class T): defer the resident tail's fold (no 'books' sync); resident_tail_finish folds after the conductor's one books read.
+    """
+def resident_tail_finish() -> list:
+    """
+    #29 P7e.5: the deferred fold (every env's books into its engine); returns each env's swarm death rows.
+    """
+def resident_tail_pending() -> bool:
+    ...
 def set_bulk_flux_backend(use_cuda: bool) -> None:
     """
     Switch the bulk donor-cell flux to the GPU (True) or CPU (False). P6.1: flag only — the engine dispatch lands in P6.5.
@@ -1950,6 +2053,7 @@ HAS_CUDA: bool = True
 L_CHANNELS: int = 3
 L_FINE_BITS: int = 37
 L_TABLE_TOP_MAX: int = 17592186044416
+OBS_LAYOUT_FINGERPRINT: str = '5ecd8bb9d8426ecc01b3e0786e82048428bd6b3d096e5d7cddb64785c9280efb'
 PHILOX32_TWO_PI_Q16: int = 411775
 RADIATION_SWEEP_CNT_SLOTS: int = 20
 RS_BAD_HEAT_ABSORB: int = 4
