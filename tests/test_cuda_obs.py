@@ -53,7 +53,27 @@ def test_the_device_observation_equals_the_host_one_on_the_corpus():
     before the conversion (OBS_BREAK=early_picture), a record lives one tick
     longer (OBS_BREAK=lifetime), the damage window takes the tick's hits in
     reverse order (OBS_BREAK=dmg_order) or the object serial is the row
-    index (OBS_BREAK=serial_row)."""
+    index (OBS_BREAK=serial_row). From P8.4a the lanes plane is raw-bit
+    equal, and the intermediates the list reads (every team's fire lanes,
+    every own lane, every aim_of answer, every (soldier, seen enemy)'s
+    solid_in_way / mate_in_way / ticks_to_within) equal the reference's own
+    values at every decision tick, every coverage case reached (lanes
+    crossing a mate, a cell of several owners, a line of fire blocked by a
+    wall / a cover crate / a mate, aim_of finding nobody / a mate / another
+    side, ticks 0 / between / at the cap); BREAKS IF the lane walk or the
+    rasteriser truncates where Python floors (OBS_BREAK=lane_trunc) or the
+    lane walk runs one tile wide of its line (OBS_BREAK=lane_wide). From
+    P8.4b the list (every entry column but the decoder's and the order's),
+    its mask and its uids are raw-bit equal, every coverage case reached (an
+    entry of every block, a grenade and a charge, a door in reach and out of
+    reach, a block overflowing its capacity); BREAKS IF a block's sort ties
+    by the higher id (OBS_BREAK=list_tie) or the door block holds one entry
+    fewer than its capacity (OBS_BREAK=list_cap). From P8.4c the four masks
+    are raw-bit equal to action_spec_v1.build_masks, every mask bit the spec
+    does not fix both set and clear over the corpus, the wind-up's KEEP-only
+    aim, an aimable entry, a door in use reach and a default row reached;
+    BREAKS IF two hand bits' gates are swapped (OBS_BREAK=mask_swap) or the
+    use mask's door reach is one tile wider (OBS_BREAK=mask_reach)."""
     _run(["gate"], timeout=7200)
 
 
@@ -121,8 +141,12 @@ def test_who_a_team_sees_depends_only_on_the_enemies_in_view():
     store row of an enemy no member of a team sees leaves that team's
     visible set unchanged, the same perturbation of a seen enemy leaves it
     unchanged, and killing the seen enemy removes it; under both sight rules.
-    BREAKS IF the visible table is indexed by the wrong row or team, or a
-    target's own facing / hp decides whether it is seen."""
+    From P8.4a the same perturbation of the unseen enemy (its trigger flipped
+    too) moves none of the team's fire lanes, lanes plane, aim_of answers,
+    lines of fire or turns, from P8.4b no entry, mask or uid of its
+    list, and from P8.4c none of its four masks. BREAKS IF the visible table is indexed by the
+    wrong row or team, a target's own facing / hp decides whether it is
+    seen, or an answer of the team reads a unit it does not see."""
     _run(["wall"])
 
 

@@ -174,5 +174,94 @@ __device__ __forceinline__ bool can_see(const int64_t* o, const int64_t* t, int6
     return line_clear(solid, screen, h, w, false, oy, ox, ty, tx, bad);
 }
 
+// ---------------------------------------------------------------------------
+// #29 P8.4a: THE FIRE LANES (team_picture.fire_lanes_of / draw_lanes), the
+// MATE ON THE LINE (line_of_fire.mate_in_way) and the order of aim_of's
+// candidates. Python's flooring `//` on negative operands is floordiv above
+// (`trunc`: THE BREAK, C's truncation in its place, never a real run).
+// ---------------------------------------------------------------------------
+__device__ __forceinline__ int64_t lane_div(int64_t a, int64_t b, bool trunc) {
+    return trunc ? a / b : floordiv(a, b);
+}
+
+// fire_lanes_of's segment of one unit: from its centre tile S along its
+// facing to E = S + range (dx = shr_trunc(range * cos_q16(f), 16), dy the
+// negated sine's), cut at the last tile before the first solid or off-map
+// tile of the per-tile walk S + (d * i) // n, i = 1 .. n = max(|dx|, |dy|).
+// Returns the end (ex, ey); `shift`: THE BREAK (the walk one tile wide of
+// its line), 0 in every real run.
+__device__ inline void lane_segment(const uint8_t* solid, int h, int w, int64_t sx, int64_t sy,
+                                    int64_t facing_q, int64_t rng, bool trunc, int64_t shift,
+                                    int64_t* ex_out, int64_t* ey_out) {
+    const int64_t dx = fixedpoint::shr_trunc_q(rng * (int64_t)fixedpoint::cos_q16((int32_t)facing_q), 16);
+    const int64_t dy = -fixedpoint::shr_trunc_q(rng * (int64_t)fixedpoint::sin_q16((int32_t)facing_q), 16);
+    const int64_t adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
+    const int64_t n = adx > ady ? adx : ady;
+    int64_t ex = sx, ey = sy;
+    for (int64_t i = 1; i <= n; ++i) {
+        const int64_t px = sx + shift + lane_div(dx * i, n, trunc);
+        const int64_t py = sy + lane_div(dy * i, n, trunc);
+        if (!(0 <= px && px < w && 0 <= py && py < h) || solid[py * w + px]) break;
+        ex = px;
+        ey = py;
+    }
+    *ex_out = ex;
+    *ey_out = ey;
+}
+
+// draw_lanes' steps of one segment: n = max(|ex - sx|, |ey - sy|) // max(1,
+// k // 2) + 1 steps, step i's coarse cell (gx, gy) = ((s + (e - s) * i // n)
+// // k); the caller widens each by the half-width, clipped to the grid.
+__device__ __forceinline__ int64_t lane_steps(int64_t sx, int64_t sy, int64_t ex, int64_t ey,
+                                              int64_t k) {
+    const int64_t adx = ex > sx ? ex - sx : sx - ex, ady = ey > sy ? ey - sy : sy - ey;
+    const int64_t half = k / 2 > 1 ? k / 2 : 1;
+    return (adx > ady ? adx : ady) / half + 1;      // non-negative: floor
+}
+__device__ __forceinline__ void lane_cell(int64_t sx, int64_t sy, int64_t ex, int64_t ey,
+                                          int64_t n, int64_t i, int64_t k, bool trunc,
+                                          int64_t* gx, int64_t* gy) {
+    *gx = lane_div(sx + lane_div((ex - sx) * i, n, trunc), k, trunc);
+    *gy = lane_div(sy + lane_div((ey - sy) * i, n, trunc), k, trunc);
+}
+
+// draw_lanes' cell rule as an atomic: -1 nobody -> the owner; another owner
+// -> -2 (several); the owner or -2 stay. Order-free (the reference's own
+// docstring), so the parallel draw is exact.
+__device__ __forceinline__ void lane_claim(int32_t* cell, int32_t uid) {
+    int32_t old = *cell;
+    while (old != uid && old != -2) {
+        const int32_t want = old == -1 ? uid : -2;
+        const int32_t prev = atomicCAS(cell, old, want);
+        if (prev == old) break;
+        old = prev;
+    }
+}
+
+// line_of_fire.mate_in_way for ONE other mate at (mx, my): the projection on
+// the segment S -> T ahead of S and not past T, the perpendicular distance
+// within cr (= footprint // 2 + clear_tiles). Integer; dd = |T - S|^2 > 0.
+__device__ __forceinline__ bool mate_near_segment(int64_t sx, int64_t sy, int64_t dx, int64_t dy,
+                                                  int64_t dd, int64_t cr, int64_t mx,
+                                                  int64_t my) {
+    const int64_t vx = mx - sx, vy = my - sy;
+    const int64_t along = vx * dx + vy * dy;
+    if (along <= 0 || along > dd) return false;
+    const int64_t cross = vx * dy - vy * dx;
+    return cross * cross <= cr * cr * dd;
+}
+
+// aim_of's candidate order: the tuple (squared distance, uid, cx, cy),
+// compared as Python compares tuples.
+struct AimKey {
+    int64_t d2, uid, cx, cy;
+};
+__device__ __forceinline__ bool aim_less(const AimKey& a, const AimKey& b) {
+    if (a.d2 != b.d2) return a.d2 < b.d2;
+    if (a.uid != b.uid) return a.uid < b.uid;
+    if (a.cx != b.cx) return a.cx < b.cx;
+    return a.cy < b.cy;
+}
+
 }  // namespace obs_sight
 }  // namespace breach_cuda

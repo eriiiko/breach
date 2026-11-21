@@ -382,6 +382,20 @@ __device__ __forceinline__ int64_t tile_of(int64_t q) {
     return fixedpoint::shr_trunc_q(q, 16);
 }
 
+// verb_gates._reach_key for ONE span tile (ty, tx): its row-major index over
+// the unit's footprint plus its one-tile ring (side footprint + 2, anchored at
+// (tile_x - 1, tile_y - 1)), or -1 when the tile lies outside it. THE device
+// statement of "in reach" (#29 P8.4c, lifted out of cuda_unit_verbs.cu's
+// use_door): slot 1b's use_door orders the doors by it, the observation's
+// door entries (in_reach) and its use mask (can_use) test it; never a copy.
+__device__ __forceinline__ int64_t reach_key(const int64_t* row, int64_t ty, int64_t tx) {
+    const int64_t side = row[UNIT_COL_FOOTPRINT] + 2;
+    const int64_t ry = ty - (tile_of(row[UNIT_COL_Y_Q]) - 1);
+    const int64_t rx = tx - (tile_of(row[UNIT_COL_X_Q]) - 1);
+    if (ry < 0 || ry >= side || rx < 0 || rx >= side) return -1;
+    return ry * side + rx;
+}
+
 // unit_impulse.walk_allowed: no walk while the reaction delay runs.
 __device__ __forceinline__ bool walk_allowed(const int64_t* row) {
     return row[UNIT_COL_REACT_TICKS] == 0;

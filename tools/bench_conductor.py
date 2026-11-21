@@ -48,6 +48,12 @@ Per (level, N):
   unit from every unit's centre: ``window_shape`` = [windows per env,
   cells per window]). #29 P8.3: ``picture_ms`` the GPU time of one team
   picture update for all N envs (a tick's; the state put back after).
+  #29 P8.4c: ``list_ms`` the GPU time of one decision's list and four masks
+  (``build_list`` + ``build_masks``) for all N envs. Every timed block runs
+  with each env DUE (the parameter row's decimation set to 1 for the timing
+  and put back): the kernels skip an env off its decision tick, so a timing
+  taken on such a tick measures early exits (``obs_due`` says whether the
+  tick the bench stopped on was one).
 
 Levels: ``ship_demo`` and a training room (``tools/gen_training_rooms.py``
 writes it into ``<--levels-dir>``, a scratch folder, the default a temp dir).
@@ -142,11 +148,16 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         wall.append(time.perf_counter() - ts)
         syncs.append(list(bp.host_sync_log_end()))
     used1 = _device_used()
-    obs_ms = vision_ms = window_ms = window_shape = picture_ms = None
+    obs_ms = vision_ms = window_ms = window_shape = picture_ms = list_ms = None
+    obs_due = None
     if dev_obs is not None:
         import cupy as cp
+        from simulation.device_obs import PARAM_DECIMATION
         st = cp.cuda.ExternalStream(int(bp.tick_stream_ptr()))
         a, b = cp.cuda.Event(), cp.cuda.Event()
+        obs_due = bool(dev_obs.due())
+        saved_dec = dev_obs.params[:, PARAM_DECIMATION].copy()
+        dev_obs.params[:, PARAM_DECIMATION] = 1     # every env due for the timing
         dev_obs.build()                             # warm
         a.record(st)
         for _ in range(obs_builds):
@@ -154,6 +165,15 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         b.record(st)
         b.synchronize()
         obs_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
+        # P8.4c: the list and the four masks (one decision's, every env)
+        a.record(st)
+        for _ in range(obs_builds):
+            dev_obs.build_list()
+            dev_obs.build_masks()
+        b.record(st)
+        b.synchronize()
+        list_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
+        dev_obs.params[:, PARAM_DECIMATION] = saved_dec
         # P8.2: who sees whom (one launch, every env: the per-tick cost) and a
         # representative window call per decision (the `watched` shape: per
         # env, per roster row, one 25 x 25 window around the row's unit from
@@ -235,6 +255,8 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         "obs_build_ms": None if obs_ms is None else round(float(obs_ms), 4),
         "vision_ms": None if vision_ms is None else round(float(vision_ms), 4),
         "picture_ms": None if picture_ms is None else round(float(picture_ms), 4),
+        "list_ms": None if list_ms is None else round(float(list_ms), 4),
+        "obs_due": obs_due,
         "window_ms": None if window_ms is None else round(float(window_ms), 4),
         "window_shape": window_shape,
         "segments": [{"label": k, "gpu_ms": round(float(np.mean(seg_gpu[k])), 4),
@@ -281,7 +303,9 @@ def format_rows(rows) -> str:
                       else f", vision {r['vision_ms']:.3f} ms per tick, window call "
                            f"{r['window_ms']:.3f} ms ({r['window_shape'][0]} windows/env)")
                    + ("" if r.get("picture_ms") is None
-                      else f", team picture {r['picture_ms']:.3f} ms per tick"))
+                      else f", team picture {r['picture_ms']:.3f} ms per tick")
+                   + ("" if r.get("list_ms") is None
+                      else f", list + masks {r['list_ms']:.3f} ms per decision"))
     return "\n".join(out)
 
 

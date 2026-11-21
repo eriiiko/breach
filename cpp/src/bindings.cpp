@@ -847,6 +847,43 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("store"), py::arg("n_units"), py::arg("store_w"), py::arg("n_teams"),
           py::arg("state"), py::arg("state_w"), py::arg("out"), py::arg("reverse"),
           "#29 P8.3: TeamPicture.damage_last_s for every (env, team, store row).");
+    // #29 P8.4a: the lanes, aim_of, the line of fire, ticks_to_within
+    // (cpp/src/cuda_obs.cu), on the tick stream, no sync.
+    m.def("obs_aims", &breach_cuda::obs_aims, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("tables"), py::arg("rowmap"),
+          py::arg("n_rows"), py::arg("n_slots"), py::arg("n_teams"), py::arg("obs_table"),
+          py::arg("table_w"), py::arg("tick_row"), py::arg("params"), py::arg("ended"),
+          py::arg("solid"), py::arg("screen"), py::arg("h"), py::arg("w"), py::arg("covers"),
+          py::arg("cover_cap"), py::arg("cover_w"), py::arg("cover_count"), py::arg("visible"),
+          py::arg("state"), py::arg("state_w"), py::arg("lane_grid"), py::arg("lane_own"),
+          py::arg("gh"), py::arg("gw"), py::arg("aim"), py::arg("lof"), py::arg("ttw"),
+          py::arg("near_u"), py::arg("faults"), py::arg("brk"),
+          "#29 P8.4a: the fire lanes and the lanes plane, aim_of, the line of fire and "
+          "ticks_to_within for every env on its decision tick.");
+    // #29 P8.4b: the list (cpp/src/cuda_obs_list.cu), on the tick stream, no sync.
+    m.def("obs_list", &breach_cuda::obs_list, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("tables"), py::arg("rowmap"),
+          py::arg("n_rows"), py::arg("n_slots"), py::arg("n_teams"), py::arg("obs_table"),
+          py::arg("table_w"), py::arg("teams"), py::arg("tick_row"), py::arg("params"),
+          py::arg("ended"), py::arg("visible"), py::arg("sees"), py::arg("state"),
+          py::arg("state_w"), py::arg("aim"), py::arg("lof"), py::arg("ttw"),
+          py::arg("lane_own"), py::arg("gh"), py::arg("gw"), py::arg("grenades"),
+          py::arg("charges"), py::arg("doors"), py::arg("door_tiles"), py::arg("is_vacuum"),
+          py::arg("is_ambient"), py::arg("h"), py::arg("w"), py::arg("wired"),
+          py::arg("wired_cap"), py::arg("n_entries"), py::arg("list"), py::arg("list_mask"),
+          py::arg("list_uid"), py::arg("faults"), py::arg("brk"),
+          "#29 P8.4b: obs_spec_v1.build_list (the list, its mask and its uids) for every "
+          "env on its decision tick.");
+    // #29 P8.4c: the four masks (cpp/src/cuda_obs_list.cu), on the tick stream, no sync.
+    m.def("obs_masks", &breach_cuda::obs_masks, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("tables"), py::arg("rowmap"),
+          py::arg("n_rows"), py::arg("n_slots"), py::arg("tick_row"), py::arg("params"),
+          py::arg("ended"), py::arg("list"), py::arg("list_mask"), py::arg("n_entries"),
+          py::arg("doors"), py::arg("door_tiles"), py::arg("n_kinds"), py::arg("mask_feet"),
+          py::arg("mask_aim"), py::arg("mask_trigger"), py::arg("mask_hand"),
+          py::arg("faults"), py::arg("brk"),
+          "#29 P8.4c: action_spec_v1.build_masks (the four masks) for every env on its "
+          "decision tick.");
     m.def("obs_picture_layout", [](int n_teams, int n_units) {
               py::dict d;
               for (const auto& kv : breach_cuda::obs_picture_layout(n_teams, n_units))
