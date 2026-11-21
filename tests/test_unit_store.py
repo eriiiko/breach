@@ -41,14 +41,20 @@ from simulation import unit_schema, unit_store  # noqa: E402
 from simulation.unit_schema import COLUMNS, column_width  # noqa: E402
 
 SHIP_TICKS = 700       # ship_demo's bots match for this many ticks
-SHIP_SEED = 2          # a seed whose first 700 ticks hold a conversion (unit 0
-                       # turns at tick 502) besides shots, hits, throws and
-                       # kills (#215, measured 2026-11-18 over seeds 1-12: only
-                       # seed 2 converts within 700 ticks since every doorway
-                       # is a closed door and the body's heat protection;
-                       # seed 1 converts none). The scene's coverage counters
-                       # below are its precondition: a seed that stops
-                       # converting fails them, never passes vacuously.
+SHIP_SEED = 57         # a seed whose first 700 ticks hold a conversion besides
+                       # shots, hits, throws and kills. The scene's coverage
+                       # counters below are its precondition: a seed that
+                       # stops converting fails them, never passes vacuously.
+# History of the staging. #215 (2026-11-18, seeds 1-12): only seed 2 converted
+# within 700 ticks (unit 0 at tick 502) once every doorway was a closed door
+# with the body's heat protection. #217 §8 (2026-11-21): seed 2 no longer
+# converts under §8 plus lever (a). Conversions on ship_demo bots are rare
+# chance events on both builds (main 1 of 30 seeds, §8 3 of 90; equal rates),
+# so the seed is a coverage staging, not a pin, and the property is unchanged.
+# Re-staged on seed 57: unit 4 turns at tick 465, 235 ticks before SHIP_TICKS,
+# and the match is still running at tick 1000, so ``run.ticks`` is the full
+# 700. Diagnosis: docs/eos_checkerboard_design_2026-11-20.md §8.17, "The
+# zombie diagnosis".
 
 
 # ---------------------------------------------------------------------------

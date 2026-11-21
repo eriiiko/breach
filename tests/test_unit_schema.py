@@ -135,7 +135,15 @@ _MIN_CONVERSIONS = {"bots_v1": 0, "bots": 1, "box": 2}
 #: closed door and the body's heat protection, the pinned seed-1 play converts
 #: no one), at a seed whose first 700 ticks convert a unit (unit 0 turns at
 #: tick 502; measured 2026-11-18 over seeds 1-12, only seed 2 does).
-_BOTS_SEED, _BOTS_TICKS = 2, 700
+#: #217 §8 (2026-11-21): seed 2 no longer converts under §8 plus lever (a).
+#: Conversions here are rare chance events on both builds (main 1 of 30 seeds,
+#: §8 3 of 90 within 700 ticks; equal rates), so a seed is a coverage staging,
+#: not a pin; the property is unchanged. Re-staged on seed 57: unit 4 turns at
+#: tick 465 (235 ticks before the window ends), the match still running at
+#: tick 1000. Diagnosis: docs/eos_checkerboard_design_2026-11-20.md §8.17,
+#: "The zombie diagnosis". A seed that stops converting fails the count below,
+#: never passes vacuously.
+_BOTS_SEED, _BOTS_TICKS = 57, 700
 
 
 def _play_bots(tick):
