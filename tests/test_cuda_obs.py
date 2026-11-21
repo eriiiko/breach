@@ -68,7 +68,12 @@ def test_the_device_observation_equals_the_host_one_on_the_corpus():
     entry of every block, a grenade and a charge, a door in reach and out of
     reach, a block overflowing its capacity); BREAKS IF a block's sort ties
     by the higher id (OBS_BREAK=list_tie) or the door block holds one entry
-    fewer than its capacity (OBS_BREAK=list_cap)."""
+    fewer than its capacity (OBS_BREAK=list_cap). From P8.4c the four masks
+    are raw-bit equal to action_spec_v1.build_masks, every mask bit the spec
+    does not fix both set and clear over the corpus, the wind-up's KEEP-only
+    aim, an aimable entry, a door in use reach and a default row reached;
+    BREAKS IF two hand bits' gates are swapped (OBS_BREAK=mask_swap) or the
+    use mask's door reach is one tile wider (OBS_BREAK=mask_reach)."""
     _run(["gate"], timeout=7200)
 
 
@@ -138,8 +143,8 @@ def test_who_a_team_sees_depends_only_on_the_enemies_in_view():
     unchanged, and killing the seen enemy removes it; under both sight rules.
     From P8.4a the same perturbation of the unseen enemy (its trigger flipped
     too) moves none of the team's fire lanes, lanes plane, aim_of answers,
-    lines of fire or turns, and from P8.4b no entry, mask or uid of its
-    list. BREAKS IF the visible table is indexed by the
+    lines of fire or turns, from P8.4b no entry, mask or uid of its
+    list, and from P8.4c none of its four masks. BREAKS IF the visible table is indexed by the
     wrong row or team, a target's own facing / hp decides whether it is
     seen, or an answer of the team reads a unit it does not see."""
     _run(["wall"])
