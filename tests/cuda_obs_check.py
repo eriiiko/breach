@@ -571,6 +571,7 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None,
         count_list(p.list_cov, host, len(ctx.hand_rows))
         count_masks(p.mask_cov, host)
         count_full(p, s, host)
+        count_orders(p, s, host)              # P8.6b
         p.aims[int(s.sim.tick)] = at.rec
         p.lof[int(s.sim.tick)], p.lof_cover[int(s.sim.tick)] = host_lof(s.sim)
         t_obs += time.perf_counter() - ts
@@ -749,6 +750,10 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
         obs.win_brk = dobs.WIN_BREAK_CODES[BREAK]
     if BREAK in dobs.FULL_BREAK_CODES:             # P8.8: the visible set, the tie, the cap
         obs.full_brk = dobs.FULL_BREAK_CODES[BREAK]
+    if BREAK in dobs.ORDER_BREAK_CODES:            # P8.6b: the previous openings, the tie, the place row
+        obs.order_brk = dobs.ORDER_BREAK_CODES[BREAK]
+    if BREAK == "ord_expiry":                     # P8.6b: an expired order still shown
+        obs.expiry_brk = True
     import cupy as cp
     n_cmp = 0
     end = max(p.end for p in played)
@@ -787,6 +792,10 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
             ff = obs.full_faults.get()
             if ff.any():
                 fail(f"{label}: tick {tick}: full view fault bits {ff.tolist()}")
+                return False
+            of = obs.order_faults.get()
+            if of.any():
+                fail(f"{label}: tick {tick}: order fault bits {of.tolist()}")
                 return False
         if tick % DECIMATION == 0:
             got = obs.host(own)
@@ -2413,6 +2422,277 @@ def corpus_fire():
     return [play("fire_hand", lv, spec, FIRE_SEED, setup=fire_setup, max_ticks=FIRE_TICKS)]
 
 
+#: P8.6b's ORDER HAND MATCH: ship_demo, both teams idle (only the hand intents
+#: move anything), cut at :data:`ORDER_TICKS`. At tick 0 (the reference and the
+#: twin alike): a closed door D with a wall beside its span is made a HULL door
+#: (the wall tile marked vacuum, as the list hand match does), so the route
+#: cannot use it while it is shut (``opening_states``: not openable); soldier A
+#: (team 0) stands beside it on the near side, soldier C a step further; every
+#: door of a room nobody stands in is WIRED (a level wire; the drive table was
+#: built at load, so the play is unchanged), so that room is unreachable. The
+#: orders, every one through ``Simulation.order_intent`` (the tap carries them
+#: to the twin): A go to the room beyond D; B hold the room it stands in with a
+#: priority target; C clear D's opening for :data:`ORDER_C_TICKS`; E fall back
+#: to A's room, a time limit ending off the cadence; F (team 1) go to the
+#: unreachable room; G hold its room, a short limit; I go to another opening,
+#: REPLACED at tick 60, cleared at tick 100; B cleared at 70 and given a hold
+#: again at 90; H never. At :data:`ORDER_USE_TICK` A opens D: the route through
+#: it opens (the field changes between two decisions with the orders held).
+ORDER_SEED = 81
+ORDER_TICKS = 160
+ORDER_USE_TICK = 41
+ORDER_C_TICKS = 70
+#: The coverage of the order's rows (counted off the reference, each > 0 over
+#: the corpora with orders: the order hand match, the list hand match and
+#: corpus (c)), per valid row at every decision tick.
+ORDER_CASES = ("no_order", "what_go_to", "what_hold", "what_clear", "what_fall_back_to",
+               "place_room", "place_opening", "limit", "no_limit", "target", "no_target",
+               "inside", "route_0", "route_1", "route_more", "unreachable", "route_changed",
+               "expired", "replaced", "with_and_without")
+
+
+def _order_free_block(sim, y, x, fp) -> bool:
+    from simulation import horde
+    h, w = sim.gmap.material.shape
+    if not (0 <= y and 0 <= x and y + fp <= h and x + fp <= w):
+        return False
+    walk = horde.walkable_tiles(sim.gmap)
+    return bool(walk[y:y + fp, x:x + fp].all())
+
+
+def _order_scene(sim):
+    """The order hand match's scene, a pure read of the level (the same for
+    the reference and the twin): ``(door, wall tile, A's anchor, C's anchor,
+    near room, far room, D's opening id, the unreachable room, its doors)``."""
+    from simulation import room_graph
+    from simulation.entities.door import DOOR_CLOSED
+    from simulation.unit_orders import graph_of
+    g = graph_of(sim)
+    gm = sim.gmap
+    h, w = gm.material.shape
+    marines = _marines(sim)
+    fp = int(marines[0].footprint)
+    half = fp // 2
+    for d in sim._doors:
+        if not d.alive or d.state != DOOR_CLOSED:
+            continue
+        span = {(int(ty), int(tx)) for ty, tx in d.span}
+        ring = sorted({(ty + dy, tx + dx) for ty, tx in span
+                       for dy, dx in ((0, -1), (0, 1), (-1, 0), (1, 0))} - span)
+        wall = [(y, x) for y, x in ring if 0 <= y < h and 0 <= x < w and gm.solid[y, x]]
+        rooms = {}
+        for y, x in ring:
+            r = room_graph.place_at(g, y, x)
+            if 0 <= r < (1 << 16):
+                rooms.setdefault(r, []).append((y, x))
+        if not wall or len(rooms) != 2:
+            continue
+        ra, rb = sorted(rooms)
+        op = [o for o in g.openings
+              if any(o.x <= tx < o.x + o.w and o.y <= ty < o.y + o.h for ty, tx in span)]
+        if len(op) != 1:
+            continue
+        # A's and C's anchors: blocks on the near side whose centre is beside the span
+        spots = []
+        for cy, cx in rooms[ra]:
+            for k in range(0, 3):
+                ay, ax = cy - half, cx - half
+                # step away from the span along the ring tile's outward direction
+                oy = [dy for (sy, sx) in span for dy, dx in ((cy - sy, cx - sx),)
+                      if abs(dy) + abs(dx) == 1]
+                ox = [dx for (sy, sx) in span for dy, dx in ((cy - sy, cx - sx),)
+                      if abs(dy) + abs(dx) == 1]
+                if not oy:
+                    break
+                ay += oy[0] * k
+                ax += ox[0] * k
+                if _order_free_block(sim, ay, ax, fp):
+                    spots.append((ay, ax))
+        spots = sorted(set(spots))
+        if len(spots) < 2:
+            continue
+        a_spot = spots[0]
+        c_spot = next((s for s in spots if abs(s[0] - a_spot[0]) + abs(s[1] - a_spot[1]) >= fp),
+                      None)
+        if c_spot is None:
+            continue
+        # the room to make unreachable: every opening of it a closed door's span
+        # (no unit inside, not ra / rb), its doors wired
+        occupied = {room_graph.place_at(g, u.center_tile_y(), u.center_tile_x())
+                    for u in sim.units}
+        door_of = {}
+        for dd in sim._doors:
+            if dd.alive and dd.state == DOOR_CLOSED:
+                for ty, tx in dd.span:
+                    door_of[(int(ty), int(tx))] = dd
+        for room in g.rooms:
+            r = int(room.id)
+            if r in (ra, rb) or r in occupied:
+                continue
+            ops = [o for o in g.openings if int(o.a) == r or int(o.b) == r]
+            if not ops:
+                continue
+            doors = set()
+            ok = True
+            for o in ops:
+                for t in o.tiles:
+                    if t in door_of:
+                        doors.add(door_of[t])
+                    elif gm.materials.mobility[gm.material[t]] > 0:
+                        ok = False
+            if ok and doors and d not in doors:
+                return (d, wall[0], a_spot, c_spot, ra, rb, int(op[0].id), r,
+                        sorted(doors, key=lambda x: int(x.ordinal)))
+    raise AssertionError("order hand match: no scene (hull-able door + sealable room) found")
+
+
+def order_setup(session):
+    from dataclasses import replace as dc_replace
+    from types import SimpleNamespace as NS
+    from simulation import horde, unit_fixed
+    sim = session.sim
+    one = unit_fixed.FP_ONE
+    d, wall, a_spot, c_spot, ra, rb, op_id, r_u, doors = _order_scene(sim)
+    sim.gmap.is_vacuum[wall[0], wall[1]] = True
+    assert horde.is_hull_door(sim.gmap, d.span)
+    m = _marines(sim)
+    t0 = [u for u in m if int(u.team) == 0]
+    t0[0].set_pos_q(a_spot[1] * one, a_spot[0] * one)          # A
+    t0[2].set_pos_q(c_spot[1] * one, c_spot[0] * one)          # C
+    wires = tuple(NS(input="open", target_ordinal=int(x.ordinal)) for x in doors)
+    sim.level = dc_replace(sim.level, wires=tuple(getattr(sim.level, "wires", ()) or ()) + wires)
+    sim._vision_cache = None
+    sim.start_team_picture(range(len(session.spec.teams)))
+
+
+def order_script(sim):
+    from simulation import room_graph
+    from simulation.unit_orders import ORDER_OPENING_BASE as B, graph_of
+    g = graph_of(sim)
+    t = int(sim.tick)
+    m = _marines(sim)
+    t0 = [u for u in m if int(u.team) == 0]
+    t1 = [u for u in m if int(u.team) == 1]
+    A, Bu, C, E = t0[:4]
+    F, G, H, I = t1[:4]
+    if t == 0:
+        _d, _w, _a, _c, ra, rb, op_id, r_u, _doors = _order_scene_cache(sim)
+        here = lambda u: int(room_graph.place_at(g, u.center_tile_y(), u.center_tile_x()))  # noqa: E731
+        other_op = next(int(o.id) for o in g.openings if int(o.id) != op_id)
+        _ORDER_PLAN.update(ra=ra, rb=rb, op=op_id, ru=r_u, other_op=other_op,
+                           b_room=here(Bu), g_room=here(G))
+    p = _ORDER_PLAN
+    alive = lambda u: u.alive and not u.is_zombie  # noqa: E731
+    plan = {0: [(A, 1, p["rb"], 0, -1), (Bu, 2, p["b_room"], 0, int(F.id)),
+                (C, 3, B + p["op"], ORDER_C_TICKS, -1), (F, 1, p["ru"], 0, -1),
+                (G, 2, p["g_room"], 22, int(A.id)), (I, 1, B + p["other_op"], 0, -1)],
+            5: [(E, 4, p["ra"], 50, -1)],
+            60: [(I, 1, p["rb"], 0, int(Bu.id))],
+            70: [(Bu, 0, -1, 0, -1)],
+            90: [(Bu, 2, p["b_room"], 0, -1)],
+            100: [(I, 0, -1, 0, -1)]}
+    for u, what, where, ticks, target in plan.get(t, ()):
+        if alive(u):
+            sim.order_intent(int(u.id), what, where, ticks, target)
+    if t == ORDER_USE_TICK and alive(A):
+        sim.use_intent(int(A.id))
+
+
+_ORDER_PLAN: dict = {}
+_ORDER_SCENES: dict = {}
+
+
+def _order_scene_cache(sim):
+    """The scene as found at the play's tick 0 (the doors move later)."""
+    key = id(sim)
+    if key not in _ORDER_SCENES:
+        _ORDER_SCENES[key] = _order_scene(sim)
+    return _ORDER_SCENES[key]
+
+
+def order_setup_cached(session):
+    _ORDER_SCENES[id(session.sim)] = _order_scene(session.sim)
+    order_setup(session)
+
+
+def corpus_orders():
+    from dataclasses import replace
+    lv = ship_level()
+    spec = replace(lv.match, teams=tuple(replace(t, controller="idle") for t in lv.match.teams))
+    return [play("order_hand", lv, spec, ORDER_SEED, setup=order_setup_cached,
+                 script=order_script, max_ticks=ORDER_TICKS)]
+
+
+def count_orders(p, session, host) -> None:
+    """P8.6b's coverage off the reference at a decision: per valid row its
+    order's kind, place kind, clock and target, whether it stands inside the
+    place, its route's length at its anchor (0, 1, more, unreachable: the
+    host's own ``obs_spec_v1.route``), a route that CHANGED since the row's
+    previous decision while its order stayed (the map or a door moved), an
+    order that expired or was replaced since, a team holding rows with and
+    without an order."""
+    import rl_env
+    from simulation import horde
+    from simulation import obs_spec_v1 as o
+    from simulation.unit_orders import NO_LIMIT, NO_TARGET, ORDER_OPENING_BASE, graph_of
+    cov = p.__dict__.setdefault("order_cov", {k: 0 for k in ORDER_CASES})
+    prev = p.__dict__.setdefault("_order_prev", {})
+    sim = session.sim
+    tick = int(sim.tick)
+    me = SimpleNamespace(session=session, layout=SimpleNamespace(n_slots=p.S, n_rows=p.T * p.S))
+    units = rl_env.EnvRunner.row_units(me)
+    graph = graph_of(sim)
+    world = o.ObsWorld(sim)
+    vec = host["vector"]
+    names = {1: "what_go_to", 2: "what_hold", 3: "what_clear", 4: "what_fall_back_to"}
+    per_team = {}
+    for i, u in enumerate(units):
+        if u is None:
+            continue
+        t = i // p.S
+        what, where = int(u.order_what), int(u.order_where)
+        until, target = int(u.order_until), int(u.order_target)
+        last = prev.get(int(u.id))
+        if what == 0:
+            cov["no_order"] += 1
+            per_team.setdefault(t, [0, 0])[0] += 1
+            if last is not None and last[0] and last[2] != NO_LIMIT and last[2] <= tick:
+                cov["expired"] += 1
+            prev[int(u.id)] = (0, -1, NO_LIMIT, None)
+            continue
+        per_team.setdefault(t, [0, 0])[1] += 1
+        cov[names[what]] += 1
+        cov["place_room" if where < ORDER_OPENING_BASE else "place_opening"] += 1
+        cov["limit" if until != NO_LIMIT else "no_limit"] += 1
+        cov["target" if target != NO_TARGET else "no_target"] += 1
+        if float(vec[i, 87]) == 1.0:
+            cov["inside"] += 1
+        field = None
+        if graph is not None:
+            field = np.array(o.route(world, graph, where, int(u.footprint)), copy=True)
+            here = horde.field_at(field, int(u.tile_y), int(u.tile_x))
+            cov["unreachable" if here == horde.UNREACHED else "route_0" if here == 0
+                else "route_1" if here == 1 else "route_more"] += 1
+        if last is not None and last[0]:
+            if (last[0], last[1], last[2]) != (what, where, until):
+                cov["replaced"] += 1
+            elif field is not None and last[3] is not None and not np.array_equal(field, last[3]):
+                cov["route_changed"] += 1
+        prev[int(u.id)] = (what, where, until, field)
+    cov["with_and_without"] += sum(1 for a, b in per_team.values() if a and b)
+
+
+def judge_orders(played) -> None:
+    tot = {k: 0 for k in ORDER_CASES}
+    for p in played:
+        for k, v in getattr(p, "order_cov", {}).items():
+            tot[k] += v
+    print(f"    order coverage (rows at decisions): {tot}")
+    for k, v in tot.items():
+        if v == 0:
+            fail(f"order coverage: case {k!r} never reached (the gate on it would be vacuous)")
+
+
 def part_gate():
     ca, cb, cdn = Census(), Census(), Census()
     bc = BOOK_CENSUS
@@ -2436,6 +2716,8 @@ def part_gate():
         gate(f"(d fire) {p.name}", [p], cdn, books_census=bc)
     for p in corpus_clock():
         gate(f"(d clock) {p.name}", [p], cdn, books_census=bc)
+    for p in corpus_orders():                       # P8.6b: every order kind by hand
+        gate(f"(d orders) {p.name}", [p], cdn, books_census=bc)
     ccn = Census()                                  # P8.6a: corpus (c), decoder-driven
     for p in corpus_c():
         gate(f"(c) {p.name}", [p], ccn, books_census=bc)
@@ -2464,6 +2746,7 @@ def part_gate():
     judge_full(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                + corpus_door() + corpus_turn() + corpus_list() + corpus_fire()
                + corpus_clock() + corpus_c())
+    judge_orders(corpus_list() + corpus_orders() + corpus_c())
     judge_terminal()
     judge_books(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                 + corpus_door() + corpus_turn() + corpus_list() + corpus_fire()
@@ -2476,6 +2759,25 @@ def part_gate():
         else:
             print(f"    cover {p.name}@{p.seed}: {len(a0)} cover entities, alive unchanged "
                   f"over {p.end} ticks")
+
+
+def part_orders():
+    """P8.6b on its own (part GATE runs the same with every corpus): the order
+    hand match and the list hand match at N = 1, every owned column raw-bit
+    equal at every decision, the order's rows non-constant over the two, the
+    order coverage judged over them (part GATE judges it with corpus (c))."""
+    cen = Census()
+    for p in corpus_orders() + corpus_list():
+        gate(f"(orders) {p.name}", [p], cen)
+    own = {k for k in cen.nondefault if (k[0] == "vector" and k[1] in dobs.ORDER_VECTOR)
+           or (k[0] == "list" and k[1] in dobs.ORDER_LIST) or k in (("far_f", "route"),
+                                                                    ("far_u", "place"))}
+    sub = Census()
+    for k in own:
+        sub.nondefault[k] = cen.nondefault[k]
+        sub.values[k] = cen.values[k]
+    sub.judge("census orders")
+    judge_orders(corpus_orders() + corpus_list())
 
 
 def part_batch(n_list=(2, 4)):
@@ -4120,7 +4422,8 @@ PARTS = {"gate": part_gate, "batch": part_batch, "handover": part_handover,
          "syncs": part_syncs, "ended": part_ended, "floatkit": part_floatkit,
          "sight": part_sight, "wall": part_wall, "restage": part_restage,
          "books": part_books, "decoder": part_decoder, "dec_gate": part_dec_gate,
-         "range_scenes": part_range_scenes, "reset": part_reset, "reset_cost": part_reset_cost}
+         "range_scenes": part_range_scenes, "reset": part_reset, "reset_cost": part_reset_cost,
+         "orders": part_orders}
 
 
 def main(parts=None) -> int:
