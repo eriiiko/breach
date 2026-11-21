@@ -3520,6 +3520,95 @@ the team picture 0.020 / 0.021 / 0.021 ms per tick; 2.0 syncs per tick at
 every N. No golden re-baseline; no host value moved; no table column
 added.
 
+**P8.5a AS-BUILT (2026-11-21, branch `29-p85a-obs-windows`, stacked on
+P8.4's head `39024b43` while P8.4's card gate ran).** THE WINDOWS: the 31
+rows the column-to-patch table gives P8.5a, no row moved to another patch.
+`DeviceObservation.build_windows` over `bp.obs_planes`
+(`cpp/src/cuda_obs_windows.cu`, four launches on the tick stream, after the
+list and masks of the same tick, every env on its decision tick with its
+ended latch clear, no sync): `k_far_raw` (one thread per (env, block):
+FieldPlanes.far_raw into `far_raw (N, 8, hb, wb)` float64 -- the block MAX of
+the first six planes, the wind pair of the block's FIRST largest load, tiles
+row-major, the pad 0.0), `k_planes` (one thread per (env, row, cell): the
+eight near planes at the tile and the eight far planes at the cell's block),
+`k_sight_units` (the same grid: `watched`, `sees_target`, far `mates` /
+`enemies` / `records`) and `k_air` (one thread per (env, row): the vector's
+`air[0..7]` and `felt_temp`). THE SOURCES: every plane the windows read is
+RESIDENT (`temperature`, `fire`, `gas`, `atmosphere`, `wind_x` / `wind_y`,
+`heat`, `rad_flux_sweep`, `solid`, `sight_screen`: `device_obs.WINDOW_PLANES`,
+dtype checked at the build); none had to be made resident or derived. The raw
+values are the host's dequantizes (a float64 divide by the `*_fixed` module's
+own currency, generated as `OBS_Q16_ONE` / `OBS_TRACE_ONE` / `OBS_FIRE_ONE` /
+`OBS_ATM_ONE`), the wind `wind_load_plane`'s W (the square in int64 `>> 16`,
+the product float64, 0 on solid), `floor(floor(W / 65536) * wind_k / 65536)`,
+the direction `vx / sqrt(vx*vx + vy*vy)` with `__dsqrt_rn`, all through the
+kit unfused; then `physics_value` per soldier (its environment profile row,
+`[env_profiles.*]` else its species', its `resist_mult[POISON]`, the three
+densities, `float(mass_g) * float(cap_q)`; `_div`'s zero rule), the squash
+(CUDA's `log`) and ONE cast (the hand double -> float16 for the planes, float32
+for the air block). THE OBS TABLE gained what P8.1 left: `ZOMBIE_RESIST_POISON_BITS`,
+`WIND_K_Q` (the sim's impulse table's) and a `SPECIES_RESIST_POISON` block
+(each species' mitigation's `resist_mult[POISON]` bits). THE FELT TEMPERATURE
+is the unit library's `felt_temperature_q` over the device tables (the heat
+row's own law, already on the card); the build refuses a batch whose device
+tables' `heat_gain_q` / `heat_ambient_q` are not `exchange.heat_dials_q` of the
+episode's `ObsContext` dials (`check_window_sources`), so no Q16 dial is
+carried twice. THE REDUCTIONS: no float sum or mean over a block exists in
+P8.5a's planes (the max and the argmax are order-free comparisons; the counts
+integer; `wall_share`'s count / 16 is P8.0's), so numpy's summation order
+never arises; the argmax's FIRST maximum is load-bearing (ties at W = 0 on
+solid / still tiles carry different directions: `win_argmax` goes red at tick
+4). SEES_TARGET needs the decoder's aim: `DeviceObservation.aimed (N, rows)`
+int32 (-1 none), read through the list just built exactly as `build_list`'s
+1h tail finds the entry (the first unit-block place with that uid, a place
+past the mates' block, the team's record of it); P8.6a's decoder will write
+that buffer. Until then the check's `aim_rule` (row i aims at choice
+`(tick // 4 + i) % n` of its team's record uids plus one mate, from the second
+decision) is handed to the reference's `observe_rows` and written into
+`aimed` before the tick that builds. `watched` is `obs_sight::window_cell`
+FROM each present record's centre (the same call P8.8's `full_watched` makes
+over its own sources). Choices where the design was silent: the aim stand-in
+above (the row stays P8.5a's); a fault word `win_faults` (sight range, the
+felt range, a profile row past its block), read by the gate, not on the books
+read; the full view's reuse is the device function, not a shared kernel.
+Gates (`tests/cuda_obs_check.py`, `PATCH = "P8.5a"`, raw bits at every
+decision tick, every earlier column still equal): part GATE N = 1 on bots 338,
+bots_v1 69, range_door 51, hand 81, range_hall 9, hall_cover 7, ship_all_round
+121, door_grenade 38, slow_turn 11, list_hand 7 and the new FIRE HAND MATCH 16
+env-decisions (`fire_hand`: range_door, both teams idle, a fire started under
+unit 0 at tick 0 through `debug_keys.debug_ignite` -- no played match lights a
+fire near a soldier, so `fire` and `air[1]` were constant without it), every
+window plane equal on its first build; batches ship_demo N = 2 / 4 and the room
+N = 2 / 4 all equal; 2 syncs per steady tick at N = 1 and 2. Census over
+(a)+(b)+(d): every owned plane and column non-constant. Coverage: watched tiles
+186 146, tiles seeing the aimed target 115 337, near windows over the left /
+right / top / bottom edge 1 099 / 690 / 133 / 114, far cells on a block
+straddling the map's edge 65 192, far cells off the block grid 1 471 031, an
+aimed entry found 806 / not found 3 320. Cells served past the squash's knee
+(the log path): near temperature 250 964, poison 9 453, pressure 22 871,
+teargas 1 791, wind_x 6 390, wind_y 6 087; far temperature 155 876, poison
+2 136, pressure 2 888, teargas 556, wind_x 1 908, wind_y 1 479; fire (at most
+1) and smoke never pass it. `log` moved 0 served values; no reduction ever
+differed. THE WALL extended: the unseen enemy's row perturbed moves none of the
+team's window planes, air block or felt temperature. Breaks, each red at its
+first decision: `win_anchor` (bots tick 4, far temperature), `win_half` (bots
+tick 72, far pressure: 56 cells, 0x3249 vs 0x324a), `win_divisor` (each gas
+plane over the neighbouring density row: bots tick 440, air[4]), `win_argmax`
+(bots tick 4, far wind_x); `win_profile` (the profile one row further) CANNOT
+go red: today's config holds one env profile (`default`) and one species
+(`human`) with the same three floats, so every neighbouring row a soldier can
+read is equal -- `win_divisor` carries the "wrong divisor row" property on
+rows that differ. Cost (`tools/bench_conductor.py --obs`, ship_demo, every env
+due, GPU time for all envs, the card shared with another run): the windows
+0.234 / 2.157 / 7.207 ms per decision at N = 1 / 64 / 256; all the decision's
+blocks 0.706 / 3.031 / 8.354 ms; vision 0.021 / 0.021 / 0.040 and the team
+picture 0.034 / 0.045 / 0.065 ms per tick; the whole observation 0.927 / 3.295
+/ 8.774 ms per decision (blocks + 4 ticks of vision and picture), i.e. 0.034 ms
+per env per decision at N = 256 against 0.70 ms per env-tick of the
+conductor's tick; the windows dominate the observation (86 % at N = 256),
+most likely `watched`'s walk per (record, cell), not yet split per kernel.
+No golden re-baseline; no host value moved.
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:
