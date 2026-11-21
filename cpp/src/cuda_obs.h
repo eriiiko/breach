@@ -63,6 +63,44 @@ void obs_probe_muladd(const double* a, const double* b, const double* c, double*
                       bool fused);
 void obs_probe_squash(const double* x, double* out64, float* out32, int n);
 
+// ---------------------------------------------------------------------------
+// #29 P8.2: THE OBSERVATION'S SIGHT (cpp/src/cuda_obs_sight.cu over the device
+// functions of cuda_obs_sight.cuh, which every later block that asks a line,
+// who sees whom or a round's way calls). Every env in ONE launch, on the tick
+// stream, no sync. `solid` / `screen`: the (N, h, w) uint8 solid and sight
+// screen planes; `faults`: (N,) int32, a bit set per env on a bad operand
+// (1: a line end past the device sight's range; 2: a team value that is
+// neither a marine team < n_teams nor the zombie team). Each refuses
+// (std::invalid_argument) a null pointer, a size or a width not the compiled
+// layout's.
+//
+// WHO SEES WHOM (vision.compute's VisionState), under the match's sight rule
+// read from the obs table (N, OBS_TAB_W): sees (N, U, U) uint8, sees[e][o][t]
+// = 1 iff store row o is among seen_by[row t] (both living, teams differ,
+// vision.can_see); visible (N, n_teams + 1, U) uint8, visible[e][s][t] = 1 iff
+// row t is in visible_by_team[team of slot s] (slot n_teams: the zombie team).
+void obs_vision(int n_env, std::uintptr_t store, int n_units, int store_w, std::uintptr_t solid,
+                std::uintptr_t screen, int h, int w, std::uintptr_t obs_table, int table_w,
+                int n_teams, std::uintptr_t sees, std::uintptr_t visible,
+                std::uintptr_t faults);
+// vision.rays_clear in bulk: pairs (N, P, 4) int32 (y0, x0, y1, x1), out
+// (N, P) uint8 (1 = clear), the sight form or physical.
+void obs_rays(int n_env, std::uintptr_t solid, std::uintptr_t screen, int h, int w,
+              bool physical, std::uintptr_t pairs, int n_pairs, std::uintptr_t out,
+              std::uintptr_t faults);
+// vision.window_clear in bulk: queries (N, Q, 4) int32 (y, x, wy, wx), out
+// (N, Q, wh, ww) uint8; FROM (y, x) to each cell, or to_window FROM each cell.
+void obs_windows(int n_env, std::uintptr_t solid, std::uintptr_t screen, int h, int w,
+                 bool physical, bool to_window, std::uintptr_t queries, int n_q, int wh, int ww,
+                 std::uintptr_t out, std::uintptr_t faults);
+// line_of_fire.solid_in_way between the centre tiles of every (row a, row b)
+// of the store: out (N, U, U) uint8 (1 = something solid in the way), over
+// the cover table (N, cover_cap, OBS_COVER_W) int64 with (N,) int32 counts.
+void obs_lof_pairs(int n_env, std::uintptr_t store, int n_units, int store_w,
+                   std::uintptr_t solid, int h, int w, std::uintptr_t covers, int cover_cap,
+                   int cover_w, std::uintptr_t cover_count, std::uintptr_t out,
+                   std::uintptr_t faults);
+
 // The compiled layout's fingerprint (obs_layout.h): what device_obs checks.
 const char* obs_layout_fingerprint();
 

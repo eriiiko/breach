@@ -28,6 +28,7 @@
 
 #include "cuda_batch.cuh"          // tstream(): THE tick stream (blocking)
 #include "cuda_obs_float.cuh"      // #29 P8.1: the observation's float kit
+#include "cuda_obs_sight.cuh"      // #29 P8.2: the observation's sight (floordiv, tile_of)
 #include "cuda_unit_events.h"      // UnitRecordList (the door tables' buffers)
 #include "cuda_unit_lib.cuh"       // #29 P8.1: the unit library's integer reads (used, never added to)
 #include "cuda_unit_store.h"       // UnitTablesDevice
@@ -60,16 +61,10 @@ __constant__ uint16_t c_share_half[OBS_BLOCK * OBS_BLOCK + 1] = OBS_WALL_SHARE_H
 
 constexpr int CELLS = OBS_WIN * OBS_WIN;
 
-// Python's floor division by a positive divisor.
-__device__ __forceinline__ int64_t floordiv(int64_t a, int64_t b) {
-    const int64_t q = a / b;
-    return (a % b != 0 && a < 0) ? q - 1 : q;
-}
-
-// Unit.tile_x / tile_y: the Q16 position truncated toward zero.
-__device__ __forceinline__ int64_t tile_of(int64_t q) {
-    return q >= 0 ? (q >> 16) : -((-q) >> 16);
-}
+// Python's floor division, Unit.tile_x / tile_y: the observation's one copy
+// (cuda_obs_sight.cuh, #29 P8.2).
+using obs_sight::floordiv;
+using obs_sight::tile_of;
 
 // The env's decision tick: (tick - episode start) a multiple of the
 // decimation, and its ended latch clear.

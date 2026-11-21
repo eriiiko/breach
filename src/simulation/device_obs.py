@@ -50,6 +50,17 @@ reference's order, never fused, one cast per value into the served dtype:
 :data:`FLOAT16_KEYS` through the hand double -> float16, :data:`FLOAT32_KEYS`
 through the plain cast).
 
+P8.2 (no served column; what every later block reads): WHO SEES WHOM every
+tick for every env (:meth:`DeviceObservation.vision`: ``vision.compute``'s
+``VisionState`` as a ``(N, U, U)`` seen-by table and a ``(N, T + 1, U)``
+per-team visible table, both sight rules, the rule and its dials rows of
+the obs table), run at the walk's ``11'`` line before the blocks
+(:meth:`DeviceObservation.stage`); SIGHT IN BULK (:func:`rays_clear_device`,
+:func:`window_clear_device`); THE COVER TABLE (:func:`cover_values`, staged
+once: nothing changes a cover on the continuous path) and the line of fire
+over it (:meth:`DeviceObservation.lof_pairs`). The device functions are
+``cpp/src/cuda_obs_sight.cuh``; a cover that blocks sight is refused.
+
 THE CADENCE: an env's block is built on its decision ticks -- its episode
 start (the tick it held when the observation was built) and every
 ``decimation`` ticks after (the run's ``[run] decimation``, the value the
@@ -141,7 +152,23 @@ TABLE_SCALARS = (
     "FRAG_RADIUS", "MAX_THROW_RANGE", "N_TEAMS", "ZOMBIES", "HAND_WINDUP_TICKS",
     "PLANT_TICKS", "POISON_MIN_DENSITY_BITS", "TEARGAS_BLIND_DENSITY_BITS",
     "SMOKE_DENSE_BITS",
+    # P8.2: who sees whom -- the match's sight rule (match.SIGHT_RULES' index of
+    # Simulation.sight), the cone's cosine threshold (vision.cos_threshold of
+    # [onephase] vision_cone_half_deg) and the awareness radius
+    # (float([onephase] awareness_radius_tiles)), floats as their bits
+    "SIGHT_RULE", "CONE_COS_BITS", "AWARENESS_R_BITS",
 )
+
+# ---------------------------------------------------------------------------
+# THE COVER TABLE (P8.2; critique finding 7): per env one row per cover
+# entity of ``sim.cover`` (ordinal order, the order ``line_of_fire`` walks),
+# its rectangle as the CoverRuntime's own float64 bit patterns and its
+# ``alive`` / ``blocks_los``. Staged ONCE at the build: on the continuous path
+# nothing changes a cover's ``alive`` (the only writer is
+# ``CoverRuntime.chew``, reached only through a round marched with ``cover``,
+# which only OnePhaseWEGO's ``timeline._fire_at`` passes; the conductor
+# refuses that ruleset), so the table is the game's for the whole episode.
+COVER_FIELDS = ("X0_BITS", "Y0_BITS", "X1_BITS", "Y1_BITS", "ALIVE", "BLOCKS_LOS")
 
 
 def _f64_bits(x) -> int:
@@ -209,6 +236,9 @@ def _table_constants() -> list:
     for i, f in enumerate(TEAM_FIELDS):
         out.append((f"OBS_TEAM_{f}", i))
     out.append(("OBS_TEAM_W", len(TEAM_FIELDS)))
+    for i, f in enumerate(COVER_FIELDS):
+        out.append((f"OBS_COVER_{f}", i))
+    out.append(("OBS_COVER_W", len(COVER_FIELDS)))
     return out
 
 
@@ -244,6 +274,7 @@ def table_values(sim, ctx) -> np.ndarray:
         "POISON_MIN_DENSITY_BITS": _f64_bits(ctx.poison_min_density),
         "TEARGAS_BLIND_DENSITY_BITS": _f64_bits(ctx.teargas_blind_density),
         "SMOKE_DENSE_BITS": _f64_bits(ctx.smoke_dense),
+        **sight_values(sim),
     }
     out = np.zeros(table_width(), dtype=np.int64)
     off = {name: o for name, o, _ in table_layout()}
@@ -288,6 +319,56 @@ def table_values(sim, ctx) -> np.ndarray:
             out[b + 1] = _f64_bits(p.pressure_min)
             out[b + 2] = _f64_bits(p.pressure_max)
     return out
+
+
+def sight_values(sim) -> dict:
+    """The obs table's who-sees-whom rows (P8.2), read from what
+    ``vision.can_see`` reads: the match's rule (``Simulation.sight``), the
+    cone threshold through ``vision.cos_threshold`` and the awareness radius
+    as ``float()`` of the live ``[onephase]`` values, floats as their bits."""
+    from config import CFG
+    from simulation import match, vision
+    rule = getattr(sim, "sight", "cone")
+    if rule not in match.SIGHT_RULES:
+        raise DeviceObsRefused(f"device observation: sight rule {rule!r} is not one of "
+                               f"{match.SIGHT_RULES}")
+    return {"SIGHT_RULE": match.SIGHT_RULES.index(rule),
+            "CONE_COS_BITS": _f64_bits(vision.cos_threshold(CFG.onephase.vision_cone_half_deg)),
+            "AWARENESS_R_BITS": _f64_bits(float(CFG.onephase.awareness_radius_tiles))}
+
+
+def cover_values(sim) -> np.ndarray:
+    """ONE env's cover table (``(C, COVER_W)`` int64, C = len(sim.cover)):
+    each ``CoverRuntime`` of ``sim.cover`` in its order, the rectangle as its
+    own float64 bit patterns, ``alive``, ``blocks_los``. A cover that blocks
+    SIGHT is refused by name: the host applies it inside every
+    ``vision.ray_clear`` / ``rays_clear`` / ``window_clear`` (so in who sees
+    whom and in every window), which the device's lines do not; no level
+    places one (``gen_training_rooms``' crates are ``blocks_los = false``),
+    and its port lands with the first level that does."""
+    covers = list(getattr(sim, "cover", ()) or ())
+    out = np.zeros((len(covers), len(COVER_FIELDS)), dtype=np.int64)
+    for i, c in enumerate(covers):
+        if bool(c.blocks_los):
+            raise DeviceObsRefused(
+                f"device observation: cover {c.id!r} blocks line of sight (blocks_los = "
+                f"true): its device form is not built (the host applies it in "
+                f"vision.ray_clear / rays_clear / window_clear)")
+        out[i] = (_f64_bits(c.x0), _f64_bits(c.y0), _f64_bits(c.x1), _f64_bits(c.y1),
+                  int(bool(c.alive)), int(bool(c.blocks_los)))
+    return out
+
+
+def check_teams(sim, n_teams: int, where: str = "") -> None:
+    """Refuse a sim holding a unit whose team is neither a marine team of
+    the layout (``0 <= team < n_teams``) nor the zombie team: the visible
+    table has a slot per marine team and one for the zombies."""
+    from simulation.factions import ZOMBIE_TEAM
+    for u in sim.units:
+        t = int(u.team)
+        if not (0 <= t < int(n_teams) or t == ZOMBIE_TEAM):
+            raise DeviceObsRefused(f"device observation{where}: unit {u.id} is on team {t}, "
+                                   f"neither a marine team < {n_teams} nor the zombie team")
 
 
 def team_values(spec, n_teams: int) -> np.ndarray:
@@ -351,6 +432,13 @@ def _constants() -> list:
             ("OBS_N_STATUS_KINDS", status.N_STATUS_KINDS),
             ("OBS_HAND_GRENADE_SLOTS", o.HAND_GRENADE_SLOTS),
             ("OBS_NO_ROW", us.NO_ROW)]
+    # -- P8.2: the sight rules' codes, the zombie team (the visible table's
+    # last slot)
+    from simulation import match
+    from simulation.factions import ZOMBIE_TEAM
+    out += [("OBS_SIGHT_CONE", match.SIGHT_RULES.index("cone")),
+            ("OBS_SIGHT_ALL_ROUND", match.SIGHT_RULES.index("all_round")),
+            ("OBS_ZOMBIE_TEAM", int(ZOMBIE_TEAM))]
     out += _table_constants()
     return out
 
@@ -387,7 +475,7 @@ def header_text() -> str:
         "#pragma once",
         "// ==========================================================================",
         "// GENERATED by tools/gen_obs_layout.py from src/simulation/device_obs.py",
-        "// (#29 P8.0, P8.1) -- NEVER EDIT BY HAND. The device observation's",
+        "// (#29 P8.0, P8.1, P8.2) -- NEVER EDIT BY HAND. The device observation's",
         "// constants, each read from observation spec v1's own tables (obs_spec_v1),",
         "// the door entity and the unit schema, and the obs table's offsets",
         "// (device_obs.table_layout: its block widths are config table sizes). A",
@@ -467,6 +555,77 @@ def stream_ordering(bp) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# P8.2: sight in bulk on the card (vision.rays_clear / window_clear's twins)
+# ---------------------------------------------------------------------------
+def _plane_ptrs(solid, screen):
+    """``(N, h, w)`` one-byte CuPy planes (bool or uint8) -> (N, h, w, ptrs)."""
+    if solid.shape != screen.shape or solid.ndim != 3:
+        raise ValueError(f"sight planes: solid {solid.shape} / screen {screen.shape} are not "
+                         f"one (N, h, w) shape")
+    if solid.dtype.itemsize != 1 or screen.dtype.itemsize != 1:
+        raise ValueError("sight planes: solid / screen must be one byte per tile")
+    n, h, w = (int(x) for x in solid.shape)
+    return n, h, w, int(solid.data.ptr), int(screen.data.ptr)
+
+
+def rays_clear_device(bp, solid, screen, pairs, physical=False):
+    """``vision.rays_clear`` for every env in ONE launch, on the tick stream:
+    ``pairs`` ``(N, P, 4)`` int32 CuPy (y0, x0, y1, x1) over env e's planes
+    ``solid[e]`` / ``screen[e]`` -> ``(N, P)`` uint8 (1 = clear) and the
+    ``(N,)`` int32 fault bits. Equal to ``rays_clear`` on every level the
+    device serves (no cover that blocks sight: :func:`cover_values`)."""
+    import cupy as cp
+    n, h, w, ps, pc = _plane_ptrs(solid, screen)
+    pairs = cp.ascontiguousarray(pairs, dtype=cp.int32)
+    if pairs.ndim != 3 or pairs.shape[0] != n or pairs.shape[2] != 4:
+        raise ValueError(f"rays_clear_device: pairs {pairs.shape} is not (N={n}, P, 4)")
+    out = cp.zeros(pairs.shape[:2], dtype=cp.uint8)
+    faults = cp.zeros((n,), dtype=cp.int32)
+    bp.obs_rays(n, ps, pc, h, w, bool(physical), int(pairs.data.ptr), int(pairs.shape[1]),
+                int(out.data.ptr), int(faults.data.ptr))
+    return out, faults
+
+
+def window_clear_device(bp, solid, screen, queries, wh, ww, to_window=False, physical=False):
+    """``vision.window_clear`` for every env in ONE launch, on the tick
+    stream: ``queries`` ``(N, Q, 4)`` int32 CuPy (y, x, wy, wx) -> ``(N, Q,
+    wh, ww)`` uint8 (FROM (y, x) to each cell of the window whose top-left is
+    (wy, wx), or ``to_window`` FROM each cell) and the ``(N,)`` fault bits."""
+    import cupy as cp
+    n, h, w, ps, pc = _plane_ptrs(solid, screen)
+    queries = cp.ascontiguousarray(queries, dtype=cp.int32)
+    if queries.ndim != 3 or queries.shape[0] != n or queries.shape[2] != 4:
+        raise ValueError(f"window_clear_device: queries {queries.shape} is not (N={n}, Q, 4)")
+    out = cp.zeros((n, int(queries.shape[1]), int(wh), int(ww)), dtype=cp.uint8)
+    faults = cp.zeros((n,), dtype=cp.int32)
+    bp.obs_windows(n, ps, pc, h, w, bool(physical), bool(to_window), int(queries.data.ptr),
+                   int(queries.shape[1]), int(wh), int(ww), int(out.data.ptr),
+                   int(faults.data.ptr))
+    return out, faults
+
+
+def vision_state(sees, visible, uids, teams_of_slot) -> tuple:
+    """One env's device tables as ``VisionState``'s two dicts (the gate's
+    reading): ``sees`` ``(U, U)``, ``visible`` ``(T + 1, U)`` numpy, ``uids``
+    the store rows' unit ids (row order), ``teams_of_slot`` the team value of
+    each visible slot. ``seen_by``: target id -> sorted observer ids;
+    ``visible_by_team``: team -> sorted target ids (only non-empty, as the
+    reference builds them)."""
+    seen_by = {}
+    n = len(uids)
+    for t in range(n):
+        obs = [int(uids[o]) for o in np.flatnonzero(sees[:n, t])]
+        if obs:
+            seen_by[int(uids[t])] = tuple(sorted(obs))
+    by_team = {}
+    for s, team in enumerate(teams_of_slot):
+        ids = [int(uids[t]) for t in np.flatnonzero(visible[s, :n])]
+        if ids:
+            by_team[int(team)] = tuple(sorted(ids))
+    return seen_by, by_team
+
+
+# ---------------------------------------------------------------------------
 # The device observation
 # ---------------------------------------------------------------------------
 class DeviceObservation:
@@ -543,11 +702,77 @@ class DeviceObservation:
         self.params = cp.asarray(params)
         self.ended = cp.zeros((N,), dtype=cp.uint8)
         self.door_plane = cp.zeros((N, c.h, c.w), dtype=cp.int32)
+        # -- P8.2: who sees whom (every tick) and the cover table --------------
+        for e, sim in enumerate(c.sims):
+            check_teams(sim, self.T, f" (env {e})")
+        covers = [cover_values(sim) for sim in c.sims]
+        self.cover_cap = max(1, max(len(x) for x in covers))
+        cov = np.zeros((N, self.cover_cap, len(COVER_FIELDS)), dtype=np.int64)
+        for e, x in enumerate(covers):
+            cov[e, :len(x)] = x
+        self.cover_host = cov
+        self.cover_count_host = np.array([len(x) for x in covers], dtype=np.int32)
+        self.cover = cp.asarray(cov)
+        self.cover_count = cp.asarray(self.cover_count_host)
+        U = int(c.U)
+        self.sees = cp.zeros((N, U, U), dtype=cp.uint8)           # [observer row, target row]
+        self.visible = cp.zeros((N, self.T + 1, U), dtype=cp.uint8)  # [team slot, target row]
+        self.vision_faults = cp.zeros((N,), dtype=cp.int32)
+        self.visions = 0                      # vision launches (one per tick)
+        self.early_vision = False             # THE BREAK hook: vision one slot early (conductor)
         self.builds = 0                       # block launches (a decision tick of some env)
         self.skip_build = False               # THE BREAK hook: a stale buffer (the check's)
         self._torch = None
         c.attach_observation(self)
-        self.build_if_due()                   # the episode's first decision (tick 0)
+        self.stage()                          # tick 0: who sees whom, the first decision
+
+    # -- the walk's call line ------------------------------------------------
+    def stage(self) -> None:
+        """The conductor's ``11'`` call line (and the build's tick 0): who sees
+        whom for every env (EVERY tick: the team picture reads it every
+        tick), then the blocks of every env due this tick. It runs where the
+        reference's slot 11 asks ``vision.state_for`` first: after the tick
+        advance, order expiry and the ruleset's tick end (the conversion), so
+        positions, facings, deaths and conversions are the tick's own."""
+        if not self.early_vision:
+            self.vision()
+        self.build_if_due()
+
+    # -- P8.2: who sees whom ---------------------------------------------------
+    def vision(self, store_ptr=None) -> None:
+        """``vision.compute`` for every env on the card into :attr:`sees`
+        ``(N, U, U)`` (``sees[e, o, t]``: store row o is among
+        ``seen_by[row t]``) and :attr:`visible` ``(N, T + 1, U)`` (slot s < T:
+        marine team s; slot T: the zombie team), under each env's sight rule
+        (its obs table row). One launch, on the tick stream, no sync.
+        ``store_ptr``: the store it reads (default the conductor's; the WALL
+        gate hands a perturbed copy)."""
+        c = self.c
+        store = int(c.store.device_ptr) if store_ptr is None else int(store_ptr)
+        self.bp.obs_vision(int(self.N), store, int(c.U), int(c.store.shape[2]),
+                           int(c.fields["solid"].data.ptr),
+                           int(c.fields["sight_screen"].data.ptr), int(c.h), int(c.w),
+                           int(self.table.data.ptr), int(self.table.shape[1]), int(self.T),
+                           int(self.sees.data.ptr), int(self.visible.data.ptr),
+                           int(self.vision_faults.data.ptr))
+        self.visions += 1
+
+    def lof_pairs(self, out=None, faults=None):
+        """``line_of_fire.solid_in_way`` between the centre tiles of every
+        (row a, row b) of every env's store, over the cover table: ``(N, U,
+        U)`` uint8 CuPy (1 = solid in the way) and the ``(N,)`` fault bits.
+        One launch on the tick stream (the gate's; P8.4a's line of fire is
+        its own kernel over the same device function)."""
+        cp, c = self.cp, self.c
+        U = int(c.U)
+        out = cp.zeros((self.N, U, U), dtype=cp.uint8) if out is None else out
+        faults = cp.zeros((self.N,), dtype=cp.int32) if faults is None else faults
+        self.bp.obs_lof_pairs(int(self.N), int(c.store.device_ptr), U, int(c.store.shape[2]),
+                              int(c.fields["solid"].data.ptr), int(c.h), int(c.w),
+                              int(self.cover.data.ptr), int(self.cover_cap),
+                              int(self.cover.shape[2]), int(self.cover_count.data.ptr),
+                              int(out.data.ptr), int(faults.data.ptr))
+        return out, faults
 
     # -- the cadence ---------------------------------------------------------
     def due(self) -> bool:
@@ -618,4 +843,5 @@ __all__ = ["HEADER_REL", "GENERATOR", "BUILT", "DeviceObsRefused", "DeviceObserv
            "check_compiled", "PARAM_EPISODE_TICK", "PARAM_DECIMATION", "PARAM_W",
            "FLOAT16_KEYS", "FLOAT32_KEYS", "table_layout", "table_width", "table_values",
            "team_values", "LOADOUT_FIELDS", "WEAPON_FIELDS", "PROFILE_FIELDS",
-           "TEAM_FIELDS", "TABLE_SCALARS"]
+           "TEAM_FIELDS", "TABLE_SCALARS", "COVER_FIELDS", "sight_values", "cover_values",
+           "check_teams", "rays_clear_device", "window_clear_device", "vision_state"]

@@ -653,15 +653,18 @@ class DeviceConductor:
         # 10'. orders expire; the ruleset's tick end (conversion, the prune)
         L("10' order expiry")
         uk.expire_orders(st, tr)
+        if self.obs is not None and self.obs.early_vision:
+            self.obs.vision()                # THE BREAK (P8.2's check): one slot too early
         L("10 tick end (ruleset)")
         uk.convert_zombies(st)
         uk.prune_grenades(self.grenades)
         # 11. the team picture: host, a match only, in no digest (not run)
-        # 11'. the device observation (P8.0): its blocks on a decision tick,
-        # on the tick stream before the books read; no sync, no synced write
+        # 11'. the device observation: who sees whom every tick (P8.2), then
+        # its blocks on a decision tick (P8.0), on the tick stream before the
+        # books read; no sync, no synced write
         if self.obs is not None:
             L("11' observation")
-            self.obs.build_if_due()
+            self.obs.stage()
 
     # ------------------------------------------------------------------
     # THE ONE BOOKS READ
