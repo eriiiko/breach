@@ -231,6 +231,9 @@ def _parse(argv):
     ap.add_argument("--profile-steps", type=int, default=0,
                     help="device: profile the conductor's GPU time over the last "
                          "this many of --max-steps steps (default 0)")
+    ap.add_argument("--no-prebuild", action="store_true",
+                    help="device: build each next episode at its reset only (the "
+                         "synchronous form), not in the ticks' idle host time")
     return ap.parse_args(argv)
 
 
@@ -244,6 +247,8 @@ def main(argv=None) -> int:
     else:
         kw["n_workers"] = args.workers
     with rl_env.BatchedEnv(args.run, args.backend, **kw) as env:
+        if args.backend == "device" and args.no_prebuild:
+            env._dev.prebuild = False
         res = drive(env, episodes=args.episodes, seed=args.seed,
                     warmup_steps=args.warmup_steps, max_steps=args.max_steps,
                     profile_steps=args.profile_steps)

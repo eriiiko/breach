@@ -232,6 +232,13 @@ class DeviceEnv:
         self._pending_reset = np.zeros(N, dtype=bool)     # the reset_late break only
         self.started = np.zeros(N, dtype=bool)
         self.cov = rl_env.coverage_init(cp, layout)
+        # the pre-build (decision 4): next episodes built in the ticks' idle host time
+        self.prebuild = True
+        self.prebuild_cap = N
+        self._next = {}
+        self._rr = 0
+        self._ended_step = np.zeros(N, dtype=bool)
+        self._stream = cp.cuda.ExternalStream(int(self.bp.tick_stream_ptr()))
 
     # -- episodes -------------------------------------------------------------
     def _policy_spec(self, lv):
@@ -245,7 +252,7 @@ class DeviceEnv:
         return MatchSession(level, spec, seed=seed, breach_physics=self.bp,
                             commander=self.run.commander)
 
-    def _build(self, e: int) -> tuple:
+    def _build(self, e: int, key: str = "reset: host build") -> tuple:
         """Env ``e``'s NEXT episode on the host: ``(k, seed, level index,
         session, tick-0 checkpoints)`` (the farm's ``EnvRunner.reset``)."""
         t0 = time.perf_counter()
@@ -254,7 +261,7 @@ class DeviceEnv:
         seed, li, level, spec = rl_env.episode_match(self.run, self.levels, draw_env, k)
         s = self._session(level, seed, spec)
         cps = [(k, 0, *s.digests())] if self.every else []
-        self._time("reset: host build", t0)
+        self._time(key, t0)
         return k, seed, li, s, cps
 
     def _take(self, e: int, built) -> list:
@@ -263,11 +270,40 @@ class DeviceEnv:
         return cps
 
     def _reset_one(self, e: int) -> list:
-        built = self._build(e)
+        built = self._next.pop(e, None)
+        if built is None or built[0] != self.k[e] + 1:
+            built = self._build(e)
         t0 = time.perf_counter()
         self.c.reset_env(e, built[3].sim, built[3].spec)
         self._time("reset: restage (reset_env)", t0)
         return self._take(e, built)
+
+    def _idle(self) -> None:
+        """THE PRE-BUILD (design decision 4): host builds of envs' NEXT
+        episodes while the card works -- called by the conductor once a
+        tick's walk is enqueued, before its books read waits (no thread).
+        Builds while the tick stream is still busy (``cudaStreamQuery``, no
+        sync), at least one: the envs that ended in this step first (their
+        reset comes at its end), then the others in turn, up to
+        :attr:`prebuild_cap` held at once. A pre-built episode is exactly
+        :meth:`_build`'s (the same draw), taken by the next reset of its env."""
+        if not self.prebuild:
+            return
+        first = True
+        while first or not self._stream.done:
+            first = False
+            want = [e for e in np.flatnonzero(self._ended_step) if e not in self._next]
+            if not want and len(self._next) < self.prebuild_cap:
+                for j in range(self.N):
+                    e = (self._rr + j) % self.N
+                    if e not in self._next:
+                        want = [e]
+                        self._rr = (e + 1) % self.N
+                        break
+            if not want:
+                return
+            e = int(want[0])
+            self._next[e] = self._build(e, "reset: host build (pre-built, overlapped)")
 
     def _time(self, key: str, t0: float) -> None:
         self.timing[key] = self.timing.get(key, 0.0) + (time.perf_counter() - t0)
@@ -346,7 +382,8 @@ class DeviceEnv:
         cps = [[] for _ in range(N)]
         for i in range(self.run.decimation):
             t0 = time.perf_counter()
-            c.tick(profile=self.profile)
+            self._ended_step = ended
+            c.tick(profile=self.profile, idle=self._idle)
             self._time("conductor ticks", t0)
             if self.profile:
                 for label, g, _h in c.last_profile:

@@ -590,7 +590,7 @@ class DeviceConductor:
     def _planes(self, names):
         return {n: self.fields[n] for n in names}
 
-    def tick(self, profile: bool = False) -> None:
+    def tick(self, profile: bool = False, idle=None) -> None:
         """ONE reference tick of every env on the device (``Simulation.step()``'s
         slots in order, one call line each, every face launched once for the
         N envs), its every count deferred to THE ONE BOOKS READ at its end
@@ -598,7 +598,11 @@ class DeviceConductor:
         a refused tick refuses the BATCH (the state is partly written in
         every env; the caller stops). ``profile``: the sub-slot profile of
         this tick lands in :attr:`last_profile` (``(label, gpu ms, host ms)``
-        per call line, GPU ms between CUDA events on the tick stream)."""
+        per call line, GPU ms between CUDA events on the tick stream).
+        ``idle`` (#29 P8.10a): a host callable run once the walk is ENQUEUED
+        and before the books read waits for it -- host work that overlaps
+        the card's (the env's pre-build of the next episodes); it must not
+        touch this conductor's state or the device."""
         from simulation import physics_runner as pr
         bp = self.bp
         self._scatter()
@@ -609,6 +613,8 @@ class DeviceConductor:
         bp.resident_tail_defer(True)
         try:
             self._walk(bp.conductor_label)
+            if idle is not None:
+                idle()
             if profile:
                 bp.conductor_profile_mark("books read")
         except BaseException:
