@@ -1825,3 +1825,45 @@ session's (source data); reported, not re-pinned.
 k2 = 0.25 / 0.5 / 1.0 and for the k_drag = 10 negative control alike: the
 breach outflow is now ceiling-bound and drag no longer moves it, so the
 gate's premise (drag can throttle venting) is gone. For the drag session.
+
+#### cuda_green at the mark-level commit `16ff92cf`: REFUSED (12 red / 82 passed, 2 h 18 min)
+
+The CUDA gates found one cause §8 introduces and two scene guards it moves.
+None is fixed in this patch; the branch does NOT carry a stamp.
+
+1. **The Class-T device vent stage refuses states §8 now reaches** (9 of 12):
+   `test_cuda_conductor` ×4 (the hazard scenes hazards0 / hazards2 at ticks
+   50 / 62 on both parts, the pinned bots_v1 at tick 200 of 274, and the
+   syncs part, which crashed on hazards0 after reading 2.00 syncs per tick),
+   `test_cuda_conductor_batch` (hand scenes; the same hazards), `test_cuda_
+   unit_hazards` (chained, hazard scene v0), `test_cuda_obs` ×2 (its corpus
+   replays bots_v1 to tick 200). Every run is EQUAL to its CPU reference up
+   to the refusal: the device applier's VENTS stage faults (`ApplierFault ...
+   slot '9e(d) vents'`), never a value difference.
+   - **Cause, PROVED by bisection** (the hazards chained part with one §8
+     mechanism switched off at a time): with `subtick_loop` off it passes;
+     with `cap_heat` off or `subtick_ceiling` off it still faults. On the
+     merged base it passes.
+   - **The refusal:** the device vent stage proves its int64 range under the
+     extraction's pre-check |T_abs| < 2^28 raw, 4096 game degrees
+     (`cuda_unit_vents.cuh`, "THE PROVED RANGE"); the host's Python ints carry
+     on. With sub-ticks the hazard scene's hot air reaches a RETURN vent's
+     aperture at T_abs 4907 (tick 51) where the base reached 1396 (tick 159):
+     the heat now spreads at the speed of the air instead of being parked by a
+     once-per-tick solve. T_MAX_PHYS (16000) is legal everywhere else, so the
+     twin's range is narrower than the game's.
+   - **Category: a finding for the device-units twin's owner (#29),** not a
+     §8 defect: widening the vent twin's proved range (or a vent rule for air
+     above 4096 K) is a device-units design change outside this patch. It
+     blocks `cuda_green`, so it blocks this merge.
+2. **Scene guards moved by ruling 2** (2 of 12): `test_cuda_unit_kernels`
+   (the doorway scene no longer knocks a unit down and pushes it with the
+   wind: "vacuous" at N = 1, 2, 8) and `test_cuda_unit_payloads` (six
+   (call site, row) pairs never detonate in its scene, among them the studio
+   rows). The ceiling holds blast winds at 64 m/s (the knockdown and the
+   chained detonations move with it, §8.8, like `test_wave_push`). The
+   guards' scenes need re-staging by their owner; not bent here.
+3. `test_cuda_mg_solve` PART 2 replayed one tick's single solve: at k > 1 the
+   input caches hold the last sub-tick's inputs. Fixed like
+   `cuda_kick_check` PART 2 (`subtick_loop` off in the replay; the ceiling and
+   the cap heat on): green after the fix.

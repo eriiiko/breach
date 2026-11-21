@@ -264,6 +264,13 @@ def part2_trajectory() -> bool:
     runner.eos.k_drag2 = 0.0
     runner.eos.dx = float(g.tile_size_m)
     eos = runner.engine.eos
+    # #217 §8 (2026-11-21): this part REPLAYS one tick's single solve from the
+    # solver's input caches and the tick's dt, which holds only at k = 1 (the
+    # caches hold the LAST sub-tick's inputs, solved at dt_k). The sub-tick
+    # loop is switched off (a test seam, §8.6.6); the ceiling and the cap heat
+    # stay on. The k > 1 chain's CPU == GPU is cuda_eos_step_check /
+    # cuda_s8a_check PART 1h.
+    eos.subtick_loop = False
     inert_n2_idx = int(g.gases.name_to_id["inert_n2"])
     dt = 1.0 / float(CFG.clock.ticks_per_second)
 
