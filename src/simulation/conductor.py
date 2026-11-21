@@ -310,6 +310,8 @@ class DeviceConductor:
         self.last_profile = None
         self.swarm_death_rows = [None] * N
         self.obs = None                      # the device observation (P8.0), when attached
+        self.decoder = None                  # the device decoder (P8.6a), when attached
+        self._dec_uids = [frozenset() for _ in sims]   # P8.6a: the decoder-driven units
         self.ended_now = np.zeros(len(self.sims), dtype=bool)   # P8.7: the envs that ended this tick
 
     def attach_observation(self, obs) -> None:
@@ -319,6 +321,26 @@ class DeviceConductor:
         if self.obs is not None and self.obs is not obs:
             raise ConductorRefused("device conductor: an observation is already attached")
         self.obs = obs
+
+    def attach_decoder(self, dec) -> None:
+        """#29 P8.6a: the device decoder (``simulation.device_decoder``): it
+        decodes every decoder-driven row at the walk's head (call line 0),
+        writing the latch columns straight into the store, and serves the
+        horde's latch from the card at slot 5. THE TWO WAYS OF DRIVING: a team
+        is the decoder's or the tap's (:meth:`latch`), never both -- a tap
+        column intent for a decoder-driven unit, or ``drive_zombies`` for a
+        horde the card serves, is refused by name; the commander's
+        ``order_intent`` stays the tap's (the order table). One per conductor."""
+        if self.decoder is not None and self.decoder is not dec:
+            raise ConductorRefused("device conductor: a decoder is already attached")
+        if self.obs is None or dec.obs is not self.obs:
+            raise ConductorRefused("device conductor: the decoder's observation is not the "
+                                   "attached one")
+        self.decoder = dec
+        drive = dec.drive.get()
+        self._dec_uids = [frozenset(int(u.id) for t in range(drive.shape[1]) if drive[e, t]
+                                    for u in s.roster(t) if u is not None)
+                          for e, s in enumerate(self.sims)]
 
     # ------------------------------------------------------------------
     # The build's refusals
@@ -369,6 +391,10 @@ class DeviceConductor:
             args = tuple(args)
             if kind in LATCH_COLUMNS:
                 col, val = LATCH_COLUMNS[kind]
+                if int(args[0]) in self._dec_uids[e]:
+                    raise ConductorRefused(f"device conductor (env {e}): {kind} for unit "
+                                           f"{int(args[0])}, a decoder-driven unit (its "
+                                           "columns are the device decoder's)")
                 r = self.row_of[e].get(int(args[0]))
                 if r is None:
                     continue
@@ -378,6 +404,9 @@ class DeviceConductor:
                 until = unit_orders.NO_LIMIT if ticks == 0 else sim.tick + ticks
                 self._orders[e][uid] = (what, where, until, target)
             elif kind == "drive_zombies":
+                if self.decoder is not None and e in self.decoder.horde_envs:
+                    raise ConductorRefused(f"device conductor (env {e}): drive_zombies on a "
+                                           "horde the device decoder serves from the card")
                 if self._zreqs[e] is None:
                     raise ConductorRefused(f"device conductor (env {e}): drive_zombies on "
                                            "a sim whose horde the conductor drives")
@@ -499,6 +528,11 @@ class DeviceConductor:
         self.ticks += 1
         try:
             self._books_read(words, entries)
+            # #29 P8.8b: the terminal observation of the envs whose match ended
+            # THIS tick (the books read's flags: no sync of its own), built on
+            # the tick's final state before any later tick enqueues
+            if self.obs is not None:
+                self.obs.terminal(self.ended_now)
         finally:
             if profile:
                 self.last_profile.append(("books fold (host)", None,
@@ -509,6 +543,13 @@ class DeviceConductor:
         from simulation import edit_door as _ed  # noqa: F401
         st, f, tr = self.store, self.fields, self.trow
         lists = self.walk
+        dec = self.decoder
+        # 0. the device decoder (P8.6a): the reference decodes in handle_frame
+        # before sim.step -- every decoder-driven row's latch columns, then the
+        # zombie controller's latch, at the tick's start; no sync
+        if dec is not None and not dec.late:
+            L("0 decode")
+            dec.decode()
         # 1. the event ring begun; the trace books are host books (reset)
         L("1 tick head")
         self.ring.begin()
@@ -564,8 +605,15 @@ class DeviceConductor:
         uk.resolve(st, self.eff, f, self.ring, lists, tick_row=tr)
         # 5. the horde (drains the noise list)
         L("5 zombie AI")
+        hl = self._horde_latch()
+        if dec is not None and dec.horde_envs:
+            # P8.6a: the card's latch rows (no host list), device to device
+            if not dec.horde_all:
+                self.cache.set_latch(hl)
+            dec.horde_latch_into(self.cache)
+            hl = None
         uk.horde(st, self.aux, f, self.ring, self.noise, self.doors, self.door_tiles,
-                 self.cache, self._horde_latch(), tr)
+                 self.cache, hl, tr)
         # 6. the stamp from the store
         L("6 stamp_units")
         _r, self.stamp_scratch = uk.stamp(st, self._planes(n for n, _d in uk.STAMP_FIELDS),
@@ -658,6 +706,8 @@ class DeviceConductor:
             self.obs.vision()                # THE BREAK (P8.2's check): one slot too early
             if self.obs.early_picture:       # THE BREAK (P8.3's check): before the conversion
                 self.obs.picture.update()
+        if dec is not None and dec.horde_late:
+            dec.horde_head()                 # THE BREAK (P8.6a's check): before the conversion
         L("10 tick end (ruleset)")
         uk.convert_zombies(st)
         uk.prune_grenades(self.grenades)
@@ -669,6 +719,8 @@ class DeviceConductor:
         if self.obs is not None:
             L("11' observation")
             self.obs.stage()
+        if dec is not None and dec.late:
+            dec.decode()                     # THE BREAK (P8.6a's check): after the walk
 
     # ------------------------------------------------------------------
     # THE ONE BOOKS READ
@@ -743,6 +795,13 @@ class DeviceConductor:
                     try:
                         self.obs.books.check_words(wv)
                     except Exception as ex:          # the env and the slot named
+                        ex.args = (f"device conductor ({where}): {ex.args[0]}",) + ex.args[1:]
+                        raise
+            elif kind == "decoder_faults":             # #29 P8.6a: (N, FAULT_W) words
+                if self.decoder is not None:
+                    try:
+                        self.decoder.check_words(v)
+                    except ValueError as ex:          # check_actions' refusal, by name
                         ex.args = (f"device conductor ({where}): {ex.args[0]}",) + ex.args[1:]
                         raise
             elif kind in ("door_counts", "object_counts"):

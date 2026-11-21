@@ -247,52 +247,23 @@ __global__ void k_obs_vector(const int64_t* store, int n_units, const int64_t* t
     put_v(v, OBS_V_CAN_MOVE, fl.can_move ? 1.0 : 0.0);
     put_v(v, OBS_V_CAN_ACT, fl.can_act ? 1.0 : 0.0);
     put_v(v, OBS_V_CAN_AIM, fl.can_aim ? 1.0 : 0.0);
-    {   // _status_left: per kind the longest remaining_ticks of the list
-        int64_t best[OBS_N_STATUS_KINDS];
-        for (int k = 0; k < OBS_N_STATUS_KINDS; ++k) best[k] = 0;
-        const int64_t* s = u + UNIT_COL_STATUSES;
-        for (int i = 0; i < unit_lib::STATUS_ROWS; ++i) {
-            const int64_t kind = s[4 * i];
-            if (kind < 0) break;
-            if (kind < OBS_N_STATUS_KINDS && s[4 * i + 2] > best[kind]) best[kind] = s[4 * i + 2];
-        }
-        for (int k = 0; k < OBS_N_STATUS_KINDS; ++k)
-            put_v(v, OBS_V_STATUS_LEFT_0 + k,
-                  squash(ratio(best[k], ot[OBS_TAB_STATUS_SCALE + k]), cap));
-    }
+    for (int k = 0; k < OBS_N_STATUS_KINDS; ++k)       // _status_left (the one copy)
+        put_v(v, OBS_V_STATUS_LEFT_0 + k,
+              squash(ratio(obs_rows::status_left(u, k), ot[OBS_TAB_STATUS_SCALE + k]), cap));
     // -- 1.2 weapon and kit (_kit_values) --
     const int64_t w = u[UNIT_COL_WEAPON_ID];                 // NO_ROW: no weapon
     const int64_t lo = u[UNIT_COL_LOADOUT_NAME];             // NO_ROW: no loadout
     const int64_t* L = lo >= 0 ? ot + OBS_TAB_LOADOUT + lo * OBS_LOADOUT_W : nullptr;
     const int64_t* W = w >= 0 ? ot + OBS_TAB_WEAPON + w * OBS_WEAPON_W : nullptr;
-    {
-        const int64_t mags_total = L ? L[OBS_LOADOUT_MAGAZINES] : 0;
-        double rounds = 1.0, mags = 1.0, untracked = 1.0, reloading = 0.0, reload_left = 0.0;
-        const unit_lib::MagStatus m = W ? unit_lib::mag_status(u, tab, tick, &bad)
-                                        : unit_lib::MagStatus{false, 0, -1, false};
-        if (m.tracked) {
-            rounds = ratio(m.rounds, W[OBS_WEAPON_MAG_SIZE]);
-            if (m.spares < 0) {
-                mags = untracked = 1.0;
-            } else {
-                mags = squash(ratio(m.spares, mags_total > 1 ? mags_total : 1), cap);
-                untracked = 0.0;
-            }
-            reloading = m.reloading ? 1.0 : 0.0;
-            if (m.reloading)
-                reload_left = ratio(u[UNIT_COL_RELOAD_DONE_TICK] - tick,
-                                    unit_lib::handling_ticks(u, W[OBS_WEAPON_RELOAD_TICKS]));
-        }
-        put_v(v, OBS_V_ROUNDS, rounds);
-        put_v(v, OBS_V_MAGS, mags);
-        put_v(v, OBS_V_AMMO_UNTRACKED, untracked);
-        put_v(v, OBS_V_RELOADING, reloading);
-        put_v(v, OBS_V_RELOAD_LEFT, reload_left);
-    }
+    const obs_rows::Kit kit = obs_rows::kit_of(u, ot, tab, tick, cap, &bad);   // the one reader
+    put_v(v, OBS_V_ROUNDS, kit.rounds);
+    put_v(v, OBS_V_MAGS, kit.mags);
+    put_v(v, OBS_V_AMMO_UNTRACKED, kit.untracked);
+    put_v(v, OBS_V_RELOADING, kit.reloading);
+    put_v(v, OBS_V_RELOAD_LEFT, kit.reload_left);
     for (int k = 0; k < OBS_HAND_GRENADE_SLOTS; ++k) {
-        const int64_t have = L ? L[OBS_LOADOUT_GRENADES + k] : 0;
-        if (have > 0) {
-            put_v(v, OBS_V_GRENADE_0 + 2 * k, ratio(u[UNIT_COL_GRENADE_COUNTS + k], have));
+        if ((L ? L[OBS_LOADOUT_GRENADES + k] : 0) > 0) {
+            put_v(v, OBS_V_GRENADE_0 + 2 * k, kit.grenades[k]);
             put_v(v, OBS_V_GRENADE_KIND_OK_0 + 2 * k, 1.0);
         }
     }
@@ -305,7 +276,7 @@ __global__ void k_obs_vector(const int64_t* store, int n_units, const int64_t* t
     } else {
         put_v(v, OBS_V_THROW_KIND, -1.0);
     }
-    put_v(v, OBS_V_CHARGES, ratio(u[UNIT_COL_HAS_EXPLOSIVE], L ? L[OBS_LOADOUT_EXPLOSIVES] : 0));
+    put_v(v, OBS_V_CHARGES, kit.charges);
     put_v(v, OBS_V_HAS_CHARGE_KIND, (L && L[OBS_LOADOUT_CHARGE]) ? 1.0 : 0.0);
     const int64_t pdone = u[UNIT_COL_PLANT_DONE_TICK];
     if (pdone >= 0) {
@@ -316,17 +287,9 @@ __global__ void k_obs_vector(const int64_t* store, int n_units, const int64_t* t
               ratio(u[UNIT_COL_PLANT_FUSE_TICKS], ot[OBS_TAB_C4_FUSE_MAX_TICKS]));
     }
     const int64_t mr = u[UNIT_COL_MELEE_ID];
-    if (mr >= 0 && u[UNIT_COL_LAST_BLOW_TICK] >= 0) {
-        const int64_t rof = ot[OBS_TAB_WEAPON + mr * OBS_WEAPON_W + OBS_WEAPON_ROF_TICKS];
-        const int64_t left = u[UNIT_COL_LAST_BLOW_TICK] + rof - tick;
-        put_v(v, OBS_V_MELEE_COOL, ratio(left > 0 ? left : 0, rof));
-    }
+    put_v(v, OBS_V_MELEE_COOL, kit.melee_cool);
     put_v(v, OBS_V_HAS_MELEE, mr != OBS_NO_ROW ? 1.0 : 0.0);
-    if (u[UNIT_COL_LAST_SHOVE_TICK] >= 0) {
-        const int64_t cd = ot[OBS_TAB_SHOVE_COOLDOWN_TICKS];
-        const int64_t left = u[UNIT_COL_LAST_SHOVE_TICK] + cd - tick;
-        put_v(v, OBS_V_SHOVE_COOL, ratio(left > 0 ? left : 0, cd));
-    }
+    put_v(v, OBS_V_SHOVE_COOL, kit.shove_cool);
     put_v(v, OBS_V_CLASS, (double)lo);
     put_v(v, OBS_V_WEAPON, (double)w);
     if (W) {
@@ -399,53 +362,11 @@ using obs_pic::pic_layout;
 using obs_rows::is_mate;
 using obs_rows::is_seen;
 
-// _cone_of: a zombie the reference kit's melee arc; a ranged weapon (range >
-// 0) its shot cone (the SPREAD hook over the cone door of spread_deg); else
-// its melee row's arc; else the reference kit's melee arc.
-__device__ __forceinline__ int64_t aim_cone(const int64_t* u, const int64_t* ot,
-                                            const int64_t* tab) {
-    using namespace unit_store;
-    if (u[UNIT_COL_IS_ZOMBIE]) return ot[OBS_TAB_REF_MELEE_ARC_Q];
-    const int64_t wr = u[UNIT_COL_WEAPON_ID];
-    if (wr >= 0) {
-        const int64_t* W = ot + OBS_TAB_WEAPON + wr * OBS_WEAPON_W;
-        if (W[OBS_WEAPON_RANGE_TILES] > 0)
-            return unit_lib::scaled(u, unit_tables::UNIT_HOOK_SPREAD, W[OBS_WEAPON_CONE_AIM_Q]);
-    }
-    const int64_t mr = u[UNIT_COL_MELEE_ID];
-    if (mr >= 0) return tab[unit_tables::UNIT_TAB_WEAPON_MELEE_ARC_HALF_Q + mr];
-    return ot[OBS_TAB_REF_MELEE_ARC_Q];
-}
-
-// The kit's atan2_q16(-dy << 16, dx << 16) (the bearing of an integer tile
-// offset); *bad when an argument leaves the kit's int32 (pybind would refuse).
-__device__ __forceinline__ int64_t bearing_q16(int64_t dx, int64_t dy, bool* bad) {
-    const int64_t y = -dy * 65536, x = dx * 65536;
-    if (!unit_lib::fits_i32(y) || !unit_lib::fits_i32(x)) {
-        *bad = true;
-        return 0;
-    }
-    return fixedpoint::atan2_q16((int32_t)y, (int32_t)x);
-}
-
-// turning.ticks_to_within: the ticks until |wrap(target - facing)| <= tol for
-// the unit turning under its own a / w from its facing and omega + dw, by
-// ITERATING the unit library's law (never a copy); cap when not reached.
-__device__ inline int64_t ticks_to_within(int64_t facing, int64_t omega, int64_t target,
-                                          int64_t a, int64_t w, int64_t tol, int64_t cap,
-                                          bool* bad) {
-    int64_t n = 0;
-    while (n < cap) {
-        const int64_t d = unit_lib::wrap_q16(target - facing);
-        if ((d < 0 ? -d : d) <= tol) return n;
-        int64_t f2, o2;
-        unit_lib::turn_law_q16(facing, omega, target, a, w, &f2, &o2, bad);
-        facing = f2;
-        omega = o2;
-        ++n;
-    }
-    return cap;
-}
+// _cone_of, the bearing, ticks_to_within: the observation's one copy
+// (cuda_obs_rows.cuh, lifted there by #29 P8.8 for the full view).
+using obs_rows::aim_cone;
+using obs_rows::bearing_q16;
+using obs_rows::ticks_to_within;
 
 __device__ __forceinline__ bool lanes_trunc(int brk) { return brk == OBS_AIM_BREAK_LANE_TRUNC; }
 
@@ -682,23 +603,8 @@ __global__ void k_lof(const int64_t* store, int U, const int32_t* rowmap, int n_
     }
     // -- col 27's ticks: the soldier's own turn toward the record's centre
     const int64_t* tab = tables + (size_t)e * unit_tables::UNIT_TABLES_W;
-    const int64_t want = bearing_q16(ex - cx, ey - cy, &bad);
-    const int64_t a = unit_lib::scaled(me, unit_tables::UNIT_HOOK_TURN,
-                                       tab[unit_tables::UNIT_TAB_TURN_ACCEL_CLASS_Q16]);
-    const int64_t wq = unit_lib::scaled(me, unit_tables::UNIT_HOOK_TURN,
-                                        tab[unit_tables::UNIT_TAB_TURN_RATE_CLASS_Q16]);
-    const int64_t l = me[UNIT_COL_IMP_L];
-    const int64_t dw = l ? l / tab[unit_tables::UNIT_TAB_IMPULSE_INERTIA_G] : 0;  // div_trunc
-    const int64_t wr = me[UNIT_COL_WEAPON_ID];
-    const int64_t spread = wr >= 0 ? unit_lib::scaled(me, unit_tables::UNIT_HOOK_SPREAD,
-                                                      ot[OBS_TAB_WEAPON + wr * OBS_WEAPON_W +
-                                                         OBS_WEAPON_CONE_AIM_Q])
-                                   : 0;
     bool law_bad = false;
-    const int64_t ticks = bad ? 0 : ticks_to_within(me[UNIT_COL_FACING_Q],
-                                                    me[UNIT_COL_OMEGA_Q] + dw, want, a, wq,
-                                                    spread, 4 * ot[OBS_TAB_HALF_TURN_TICKS],
-                                                    &law_bad);
+    const int64_t ticks = obs_rows::ticks_toward(me, ot, tab, ex - cx, ey - cy, &bad, &law_bad);
     if (bad) atomicOr(faults + e, OBS_AIM_FAULT_RANGE);
     if (law_bad) atomicOr(faults + e, OBS_AIM_FAULT_LAW);
     lof[o] = (uint8_t)(OBS_LOF_ASKED | (solid_way ? OBS_LOF_SOLID : 0) |

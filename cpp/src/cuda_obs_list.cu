@@ -36,6 +36,9 @@
 //
 // #29 P8.4c: THE FOUR MASKS (obs_masks, k_masks below) live in this TU too,
 // one launch after the list's.
+//
+// #29 P8.8: THE FULL VIEW (obs_full: k_full_aim, k_full_list, k_full_watched,
+// k_full_match below) lives here too, beside the entry builders it calls.
 // ==========================================================================
 #include "cuda_obs.h"
 
@@ -185,7 +188,10 @@ __device__ void unit_columns(float* E, const int64_t* it, const View& v) {
 }
 
 // Type 0: the team-mate of store row k (cols 0-23, 39-46, 52-53).
-__device__ void mate_entry(float* E, int k, const View& v, const int32_t* aim,
+// `aim_is_unit`: the caller's aim answer for it (the list's aim_of, the full
+// view's every-unit aim); `lanes`: the lane pair is written (the full view's
+// own entry, the soldier itself, marks nothing: a CHOICE of the reference).
+__device__ void mate_entry(float* E, int k, const View& v, bool aim_is_unit, bool lanes,
                            const uint8_t* lane_own, int gh, int gw) {
     const int64_t* m = v.rows + (size_t)k * UNIT_STORE_W;
     const int64_t mx = obs_sight::centre_x(m), my = obs_sight::centre_y(m);
@@ -203,7 +209,7 @@ __device__ void mate_entry(float* E, int k, const View& v, const int32_t* aim,
     // -- _mate_tail: its facing target, its aim, its feet, where its throw lands
     const int64_t ft = m[UNIT_COL_FACING_TARGET_Q];
     put_angle(E, OBS_L_AIM_COS, OBS_L_AIM_SIN, ft);
-    put(E, OBS_L_AIM_IS_UNIT, aim[(size_t)v.t * v.U + k] != OBS_AIM_NONE ? 1.0 : 0.0);
+    put(E, OBS_L_AIM_IS_UNIT, aim_is_unit ? 1.0 : 0.0);
     const int64_t* mv = m + UNIT_COL_LIVE_MOVE_DIR;            // (set, dx_q, dy_q, throttle_q)
     if (mv[0]) {
         put(E, OBS_L_FEET_DX, div((double)mv[1], (double)OBS_FP_ONE));
@@ -221,6 +227,7 @@ __device__ void mate_entry(float* E, int k, const View& v, const int32_t* aim,
         put(E, OBS_L_LAND_DY, squash(fratio(ly, (double)v.lref), v.cap));
     }
     // -- the lane pair: each owner's OWN rasterised lane (P8.4a's lane_own)
+    if (!lanes) return;
     const int64_t cell = v.ot[OBS_TAB_LANE_CELL];
     const size_t cells = (size_t)gh * gw;
     const int64_t gy0 = floordiv(v.cy, cell), gx0 = floordiv(v.cx, cell);
@@ -233,33 +240,19 @@ __device__ void mate_entry(float* E, int k, const View& v, const int32_t* aim,
     put(E, OBS_L_IT_IN_MY_LANE, in1 && own_me[gy1 * gw + gx1] ? 1.0 : 0.0);
 }
 
-// Type 1: the enemy of store row q the team sees now (cols 0-27, 29-38): its
-// RECORDED centre, live facing and body, recorded velocity, team, class, the
-// P8.4a answers. `aim_e` (T, U), `sees_me` (U: who the soldier sees),
-// `lof_r` / `ttw_r` (U: the soldier's row).
-__device__ void seen_entry(float* E, int q, const View& v, const int32_t* aim_e,
-                           const uint8_t* sees_me, const uint8_t* lof_r, const int32_t* ttw_r) {
-    const int64_t* it = v.rows + (size_t)q * UNIT_STORE_W;
-    const int64_t* rc = obs_pic::rec_of(v.blk, v.L, v.U, v.t, q);
-    const int64_t ex = rc[OBS_PIC_REC_CENTRE_X], ey = rc[OBS_PIC_REC_CENTRE_Y];
-    const int64_t euid = rc[OBS_PIC_REC_UID];
-    const int64_t dx = ex - v.cx, dy = ey - v.cy;
-    entry_common(E, OBS_TYPE_SEEN, dx, dy, v);
-    put_angle(E, OBS_L_COS, OBS_L_SIN, it[UNIT_COL_FACING_Q]);
-    put(E, OBS_L_VEL_X, squash(ratio(rc[OBS_PIC_REC_VEL_X], v.ot[OBS_TAB_V_REF_Q]), v.cap));
-    put(E, OBS_L_VEL_Y, squash(ratio(rc[OBS_PIC_REC_VEL_Y], v.ot[OBS_TAB_V_REF_Q]), v.cap));
-    put(E, OBS_L_SIDE, (double)rc[OBS_PIC_REC_TEAM]);
-    put(E, OBS_L_CLASS, rc[OBS_PIC_REC_ZOMBIE] ? (double)v.ot[OBS_TAB_ZOMBIE_CLASS]
-                                                : (double)rc[OBS_PIC_REC_LOADOUT]);
-    const int64_t* tr = obs_pic::unit_of(v.blk, v.L, q);
-    put(E, OBS_L_HP, obs_pic::hp_over_bar(it[UNIT_COL_CURRENT_HP], tr, v.cap));
-    unit_columns(E, it, v);
-    put(E, OBS_L_SEEN_BY_ME, sees_me[q] ? 1.0 : 0.0);
-    const uint8_t lf = lof_r[q];
-    put(E, OBS_L_LOF_SOLID, (lf & OBS_LOF_SOLID) ? 1.0 : 0.0);
-    put(E, OBS_L_LOF_MATE, (lf & OBS_LOF_MATE) ? 1.0 : 0.0);
+// The enemy columns both views share (cols 27, 29-38) of a unit at (ex, ey),
+// offset (dx, dy) from the soldier: the ticks to bring its aim on (`ticks`,
+// turning.ticks_to_within's answer), the reach flags, the aim category of the
+// unit's own aim answer `hit` (0 nobody, 1 me, 2 a living mate, 3 another),
+// the zombie state, the other mates aiming at it and firing (`mate_aim(k)`:
+// mate row k's aim answer), its damage over its bar (`tr` its trackers), the
+// priority flag, the mates in the frag radius.
+template <class MateAim>
+__device__ void enemy_tail(float* E, const View& v, const int64_t* it, const int64_t* tr,
+                           int64_t dx, int64_t dy, int64_t ex, int64_t ey, int64_t euid,
+                           int64_t ticks, int32_t hit, MateAim mate_aim) {
     // -- _enemy_geometry: the ticks over the half turn, the reach flags
-    put(E, OBS_L_TICKS_TO_ON, squash(ratio(ttw_r[q], v.ot[OBS_TAB_HALF_TURN_TICKS]), v.cap));
+    put(E, OBS_L_TICKS_TO_ON, squash(ratio(ticks, v.ot[OBS_TAB_HALF_TURN_TICKS]), v.cap));
     const int64_t d2 = dx * dx + dy * dy;
     const int64_t wr = v.me[UNIT_COL_WEAPON_ID];
     int64_t range2 = -1;
@@ -271,7 +264,6 @@ __device__ void seen_entry(float* E, int q, const View& v, const int32_t* aim_e,
     put(E, OBS_L_IN_RANGE, d2 <= range2 ? 1.0 : 0.0);
     put(E, OBS_L_IN_THROW_RANGE, d2 <= thr * thr ? 1.0 : 0.0);
     // -- aim_of's category: 0 nobody, 1 me, 2 a living mate, 3 another
-    const int32_t hit = aim_e[(size_t)v.t * v.U + q];
     int cat = 0;
     if (hit >= 0) {
         if ((int64_t)hit == v.me_id) {
@@ -301,7 +293,7 @@ __device__ void seen_entry(float* E, int q, const View& v, const int32_t* aim_e,
         const int64_t fx = obs_sight::centre_x(m) - ex, fy = obs_sight::centre_y(m) - ey;
         if (fx * fx + fy * fy <= fr * fr) ++catch_n;
         if (m[UNIT_COL_ID] == v.me_id) continue;
-        if ((int64_t)aim_e[(size_t)v.t * v.U + k] == euid) {
+        if ((int64_t)mate_aim(k) == euid) {
             ++aiming;
             if (m[UNIT_COL_LIVE_TRIGGER]) ++firing;
         }
@@ -313,6 +305,35 @@ __device__ void seen_entry(float* E, int q, const View& v, const int32_t* aim_e,
                v.cap));
     put(E, OBS_L_PRIORITY, v.me[UNIT_COL_ORDER_TARGET] == euid ? 1.0 : 0.0);
     put(E, OBS_L_FRAG_CATCH, ratio(catch_n, v.n_t));
+}
+
+// Type 1: the enemy of store row q the team sees now (cols 0-27, 29-38): its
+// RECORDED centre, live facing and body, recorded velocity, team, class, the
+// P8.4a answers. `aim_e` (T, U), `sees_me` (U: who the soldier sees),
+// `lof_r` / `ttw_r` (U: the soldier's row).
+__device__ void seen_entry(float* E, int q, const View& v, const int32_t* aim_e,
+                           const uint8_t* sees_me, const uint8_t* lof_r, const int32_t* ttw_r) {
+    const int64_t* it = v.rows + (size_t)q * UNIT_STORE_W;
+    const int64_t* rc = obs_pic::rec_of(v.blk, v.L, v.U, v.t, q);
+    const int64_t ex = rc[OBS_PIC_REC_CENTRE_X], ey = rc[OBS_PIC_REC_CENTRE_Y];
+    const int64_t euid = rc[OBS_PIC_REC_UID];
+    const int64_t dx = ex - v.cx, dy = ey - v.cy;
+    entry_common(E, OBS_TYPE_SEEN, dx, dy, v);
+    put_angle(E, OBS_L_COS, OBS_L_SIN, it[UNIT_COL_FACING_Q]);
+    put(E, OBS_L_VEL_X, squash(ratio(rc[OBS_PIC_REC_VEL_X], v.ot[OBS_TAB_V_REF_Q]), v.cap));
+    put(E, OBS_L_VEL_Y, squash(ratio(rc[OBS_PIC_REC_VEL_Y], v.ot[OBS_TAB_V_REF_Q]), v.cap));
+    put(E, OBS_L_SIDE, (double)rc[OBS_PIC_REC_TEAM]);
+    put(E, OBS_L_CLASS, rc[OBS_PIC_REC_ZOMBIE] ? (double)v.ot[OBS_TAB_ZOMBIE_CLASS]
+                                                : (double)rc[OBS_PIC_REC_LOADOUT]);
+    const int64_t* tr = obs_pic::unit_of(v.blk, v.L, q);
+    put(E, OBS_L_HP, obs_pic::hp_over_bar(it[UNIT_COL_CURRENT_HP], tr, v.cap));
+    unit_columns(E, it, v);
+    put(E, OBS_L_SEEN_BY_ME, sees_me[q] ? 1.0 : 0.0);
+    const uint8_t lf = lof_r[q];
+    put(E, OBS_L_LOF_SOLID, (lf & OBS_LOF_SOLID) ? 1.0 : 0.0);
+    put(E, OBS_L_LOF_MATE, (lf & OBS_LOF_MATE) ? 1.0 : 0.0);
+    enemy_tail(E, v, it, tr, dx, dy, ex, ey, euid, ttw_r[q], aim_e[(size_t)v.t * v.U + q],
+               [&](int k) { return aim_e[(size_t)v.t * v.U + k]; });
 }
 
 // Type 2: the team's record of store row q, not seen now (cols 0-9, 54).
@@ -597,7 +618,7 @@ __global__ void k_list(const int64_t* store, int U, const int64_t* tables, const
                 return true;
             }, have, prev, rev, &k);
             if (c < 0) break;
-            mate_entry(E, c, v, aim_e, lane_own, gh, gw);
+            mate_entry(E, c, v, aim_e[(size_t)t * U + c] != OBS_AIM_NONE, true, lane_own, gh, gw);
             uid = k.id;
         } else if (b == 1 || b == 2) {                         // seen enemies / records
             const bool want_seen = b == 1;
@@ -787,6 +808,546 @@ __global__ void k_masks(const int64_t* store, int U, const int64_t* tables, cons
         hand[OBS_MASK_HAND_THROW0 + k] = unit_lib::can_throw(me, tab, k, &bad) ? 1 : 0;
     if (bad) atomicOr(faults + e, OBS_MASK_FAULT_GATE);
 }
+
+
+// ==========================================================================
+// #29 P8.8: THE FULL VIEW (obs_spec_v1.FullView / build_full_list /
+// build_full_watched / FullView.match, spec 5), the value network's view, the
+// OTHER SIDE OF THE WALL: every living unit where it truly is. Every env on
+// its decision tick with its ended latch clear, on THE tick stream, no sync.
+// The entry builders are the list's own (entry_common, unit_columns,
+// mate_entry, enemy_tail, object_entry, door_entry: called, never copied);
+// the full view's differences are its own: which units (EVERY living unit,
+// never the team's visible set), their LIVE centres and motion, the order
+// (the marines by (team, slot, id), the zombies, objects and doors nearest
+// first by (d2, id)), the capacities (FULL_ENTRIES, the farthest doors, then
+// zombies, then objects dropped, never a marine), the every-unit aim
+// (FullView.aim over every living unit, its own buffer `full_aim`), the
+// extra columns (knowledge, kit, four statuses, order) and the order block of
+// a mate entry (cols 47-51, the place table).
+//   full_aim (N, 2, U) int32: FullView.aim of store row q along its facing
+//     (0) / its facing TARGET (1): the nearest other living unit within q's
+//     cone of that ray, by (d2, uid, cx, cy), to which the sight line is
+//     clear; -1 nobody (and every row that is not a living unit).
+// ==========================================================================
+
+// FullView.aim for (env, ray kind, store row q).
+__global__ void k_full_aim(const int64_t* store, int U, const int64_t* otab, const int64_t* tables,
+                           const uint8_t* solid, const uint8_t* screen, int h, int w,
+                           const int64_t* trow, const int64_t* params, const uint8_t* ended,
+                           int32_t* full_aim, int32_t* faults) {
+    const int e = blockIdx.y;
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= 2 * U || !env_due(e, trow, params, ended)) return;
+    const int kind = idx / U, q = idx % U;
+    int32_t* out = full_aim + ((size_t)e * 2 + kind) * U + q;
+    const int64_t* rows = store + (size_t)e * U * UNIT_STORE_W;
+    const int64_t* u = rows + (size_t)q * UNIT_STORE_W;
+    *out = OBS_AIM_NONE;
+    if (!u[UNIT_COL_VALID] || u[UNIT_COL_LIFE_STATE] != OBS_LIFE_ALIVE) return;
+    const int64_t* ot = otab + (size_t)e * OBS_TAB_W;
+    const int64_t* tab = tables + (size_t)e * unit_tables::UNIT_TABLES_W;
+    const int64_t ray = kind ? u[UNIT_COL_FACING_TARGET_Q] : u[UNIT_COL_FACING_Q];
+    const int64_t cone = obs_rows::aim_cone(u, ot, tab);
+    const int64_t ux = obs_sight::centre_x(u), uy = obs_sight::centre_y(u);
+    const int64_t uid_u = u[UNIT_COL_ID];
+    const uint8_t* so = solid + (size_t)e * h * w;
+    const uint8_t* sc = screen + (size_t)e * h * w;
+    bool bad = false;
+    obs_sight::AimKey prev{};
+    bool have_prev = false;
+    int32_t hit = OBS_AIM_NONE;
+    for (;;) {
+        obs_sight::AimKey best{};
+        bool have_best = false;
+        for (int c = 0; c < U; ++c) {                     // every living unit, live centres
+            const int64_t* m = rows + (size_t)c * UNIT_STORE_W;
+            if (!m[UNIT_COL_VALID] || m[UNIT_COL_LIFE_STATE] != OBS_LIFE_ALIVE ||
+                m[UNIT_COL_ID] == uid_u)
+                continue;
+            obs_sight::AimKey key;
+            key.cx = obs_sight::centre_x(m);
+            key.cy = obs_sight::centre_y(m);
+            key.uid = m[UNIT_COL_ID];
+            const int64_t dx = key.cx - ux, dy = key.cy - uy;
+            key.d2 = dx * dx + dy * dy;
+            if (have_prev && !obs_sight::aim_less(prev, key)) continue;   // tried already
+            if (have_best && !obs_sight::aim_less(key, best)) continue;
+            const int64_t b = obs_rows::bearing_q16(dx, dy, &bad);
+            const int64_t off = unit_lib::wrap_q16(b - ray);
+            if ((off < 0 ? -off : off) > cone) continue;
+            best = key;
+            have_best = true;
+        }
+        if (!have_best || bad) break;
+        if (obs_sight::line_clear(so, sc, h, w, false, uy, ux, best.cy, best.cx, &bad)) {
+            hit = (int32_t)best.uid;
+            break;
+        }
+        prev = best;
+        have_prev = true;
+    }
+    if (bad) atomicOr(faults + e, OBS_FULL_FAULT_RANGE);
+    *out = hit;
+}
+
+// The full view's extra columns of a UNIT entry (spec 5.3 cols F+1 .. F+17,
+// _full_extra): its kit (the vector's own reader, obs_rows::kit_of), four
+// statuses, its order's kind. Col F (the team's knowledge of it) is the row's.
+__device__ void full_extra(float* E, const int64_t* it, const View& v, bool* bad) {
+    const obs_rows::Kit k = obs_rows::kit_of(it, v.ot, v.tab, v.tick, v.cap, bad);
+    put(E, OBS_FX_ROUNDS, k.rounds);
+    put(E, OBS_FX_MAGS, k.mags);
+    put(E, OBS_FX_AMMO_UNTRACKED, k.untracked);
+    for (int g = 0; g < OBS_HAND_GRENADE_SLOTS; ++g) put(E, OBS_FX_GRENADE0 + g, k.grenades[g]);
+    put(E, OBS_FX_CHARGES, k.charges);
+    put(E, OBS_FX_MELEE_COOL, k.melee_cool);
+    put(E, OBS_FX_SHOVE_COOL, k.shove_cool);
+    const int kinds[OBS_FULL_N_STATUS] = {OBS_FULL_STATUS_KIND_0, OBS_FULL_STATUS_KIND_1,
+                                          OBS_FULL_STATUS_KIND_2, OBS_FULL_STATUS_KIND_3};
+    for (int j = 0; j < OBS_FULL_N_STATUS; ++j)
+        put(E, OBS_FX_STATUS0 + j,
+            squash(ratio(obs_rows::status_left(it, kinds[j]),
+                         v.ot[OBS_TAB_STATUS_SCALE + kinds[j]]), v.cap));
+    put(E, OBS_FX_ORDER_WHAT, (double)it[UNIT_COL_ORDER_WHAT]);
+}
+
+// _mate_tail's order block (cols 47-51) of team-mate store row m: its order's
+// kind, the place's centre from me (_place_centre over the env's place table:
+// rooms by id, openings by ORDER_OPENING_BASE + id), the same place as my
+// order's, the order's clock.
+__device__ void order_tail(float* E, const int64_t* m, const View& v, const int64_t* places,
+                           int n_places) {
+    const int64_t what = m[UNIT_COL_ORDER_WHAT];
+    put(E, OBS_L_ORDER_WHAT, (double)what);
+    if (!what) return;
+    const int64_t where = m[UNIT_COL_ORDER_WHERE];
+    for (int p = 0; p < n_places; ++p) {
+        const int64_t* pl = places + (size_t)p * OBS_PLACE_W;
+        if (pl[OBS_PLACE_WHERE] != where) continue;
+        put(E, OBS_L_ORDER_PLACE_DX, squash(ratio(pl[OBS_PLACE_X] - v.cx, v.lref), v.cap));
+        put(E, OBS_L_ORDER_PLACE_DY, squash(ratio(pl[OBS_PLACE_Y] - v.cy, v.lref), v.cap));
+        break;
+    }
+    const int64_t my_where = v.me[UNIT_COL_ORDER_WHAT] ? v.me[UNIT_COL_ORDER_WHERE] : OBS_NO_PLACE;
+    put(E, OBS_L_ORDER_SAME_PLACE, (my_where != OBS_NO_PLACE && where == my_where) ? 1.0 : 0.0);
+    const int64_t until = m[UNIT_COL_ORDER_UNTIL];
+    if (until != OBS_NO_LIMIT)
+        put(E, OBS_L_ORDER_LEFT, ratio(until - v.tick, v.ot[OBS_TAB_LIMIT_TICKS]));
+}
+
+// What the full view's rows read beside the list's View.
+struct Full {
+    const int32_t* aim;        // (2, U) of the env: [0] facing ray, [1] facing target
+    const uint8_t* sees_me;    // (U,) the soldier's sees row
+    const uint8_t* solid;      // the env's (h, w)
+    int h, w;
+    const int64_t* covers;     // the env's cover rows
+    int n_cover;
+    const int64_t* places;     // the env's place table
+    int n_places;
+    const uint8_t* lane_own;
+    int gh, gw;
+};
+
+// A team-mate's full entry (type 0; the soldier itself when `k == sr`): the
+// list's mate entry with the every-unit aim along its facing target, the
+// order block, the extra columns, knowledge SEEN.
+__device__ void full_mate(float* E, int k, const View& v, const Full& F, bool* bad) {
+    const int64_t* m = v.rows + (size_t)k * UNIT_STORE_W;
+    mate_entry(E, k, v, F.aim[v.U + k] >= 0, k != v.sr, F.lane_own, F.gh, F.gw);
+    order_tail(E, m, v, F.places, F.n_places);
+    full_extra(E, m, v, bad);
+    put(E, OBS_FX_KNOWLEDGE, (double)OBS_KNOW_SEEN);
+}
+
+// Any other living unit's full entry (type 1, enemy_entry): its LIVE centre,
+// facing, motion, team and class, the line of fire to its live centre
+// (obs_sight::solid_in_way over the cover table), a mate on the line, the
+// ticks, the every-unit aim along its facing, the shared enemy tail, the
+// extra columns, the team's knowledge of it (seen / record / unknown).
+__device__ void full_enemy(float* E, int q, const View& v, const Full& F, bool* bad,
+                           bool* law_bad) {
+    const int64_t* it = v.rows + (size_t)q * UNIT_STORE_W;
+    const int64_t ex = obs_sight::centre_x(it), ey = obs_sight::centre_y(it);
+    const int64_t euid = it[UNIT_COL_ID];
+    const int64_t dx = ex - v.cx, dy = ey - v.cy;
+    entry_common(E, OBS_TYPE_SEEN, dx, dy, v);
+    put_angle(E, OBS_L_COS, OBS_L_SIN, it[UNIT_COL_FACING_Q]);
+    const int64_t* tr = obs_pic::unit_of(v.blk, v.L, q);
+    int64_t vx, vy;
+    obs_pic::motion_of(tr, &vx, &vy);                  // the full view knows every unit's truth
+    put(E, OBS_L_VEL_X, squash(ratio(vx, v.ot[OBS_TAB_V_REF_Q]), v.cap));
+    put(E, OBS_L_VEL_Y, squash(ratio(vy, v.ot[OBS_TAB_V_REF_Q]), v.cap));
+    put(E, OBS_L_SIDE, (double)it[UNIT_COL_TEAM]);
+    put(E, OBS_L_CLASS, it[UNIT_COL_IS_ZOMBIE] ? (double)v.ot[OBS_TAB_ZOMBIE_CLASS]
+                                               : (double)it[UNIT_COL_LOADOUT_NAME]);
+    put(E, OBS_L_HP, obs_pic::hp_over_bar(it[UNIT_COL_CURRENT_HP], tr, v.cap));
+    unit_columns(E, it, v);
+    put(E, OBS_L_SEEN_BY_ME, F.sees_me[q] ? 1.0 : 0.0);
+    put(E, OBS_L_LOF_SOLID, obs_sight::solid_in_way(F.solid, F.h, F.w, F.covers, F.n_cover, v.cx,
+                                                    v.cy, ex, ey, bad) ? 1.0 : 0.0);
+    bool mate_way = false;
+    {
+        const int64_t dd = dx * dx + dy * dy;
+        if (dd != 0) {
+            const int64_t cr = floordiv(v.me[UNIT_COL_FOOTPRINT], 2) + v.ot[OBS_TAB_LINE_CLEAR_TILES];
+            for (int k = 0; k < v.U && !mate_way; ++k) {
+                const int64_t* m = v.rows + (size_t)k * UNIT_STORE_W;
+                if (!is_mate(m, v.t) || m[UNIT_COL_ID] == v.me_id) continue;
+                mate_way = obs_sight::mate_near_segment(v.cx, v.cy, dx, dy, dd, cr,
+                                                        obs_sight::centre_x(m),
+                                                        obs_sight::centre_y(m));
+            }
+        }
+    }
+    put(E, OBS_L_LOF_MATE, mate_way ? 1.0 : 0.0);
+    const int64_t ticks = obs_rows::ticks_toward(v.me, v.ot, v.tab, dx, dy, bad, law_bad);
+    const int32_t* aim_t = F.aim + v.U;                // the mates' aims: along the facing target
+    enemy_tail(E, v, it, tr, dx, dy, ex, ey, euid, ticks, F.aim[q],
+               [&](int k) { return aim_t[k]; });
+    full_extra(E, it, v, bad);
+    const int know = v.vis_t[q] ? OBS_KNOW_SEEN
+                   : obs_pic::rec_of(v.blk, v.L, v.U, v.t, q)[OBS_PIC_REC_PRESENT] ? OBS_KNOW_RECORD
+                                                                                  : OBS_KNOW_UNKNOWN;
+    put(E, OBS_FX_KNOWLEDGE, (double)know);
+}
+
+// The candidates of the full list's blocks (spec 5.3, _full_entries): a
+// living non-zombie unit other than the soldier (`brk_vis`, THE BREAK
+// full_vis: only those the team sees or its own), a living zombie, a live
+// object (grenade rows then charge rows: live_objects' order; c < gc a
+// grenade row), a living door with a span.
+__device__ __forceinline__ bool full_marine(const int64_t* m, const View& v, bool brk_vis, int q) {
+    if (!m[UNIT_COL_VALID] || m[UNIT_COL_LIFE_STATE] != OBS_LIFE_ALIVE || m[UNIT_COL_IS_ZOMBIE] ||
+        m[UNIT_COL_ID] == v.me_id)
+        return false;
+    return !brk_vis || m[UNIT_COL_TEAM] == (int64_t)v.t || v.vis_t[q];
+}
+__device__ __forceinline__ bool full_zombie(const int64_t* m, const View& v, bool brk_vis, int q) {
+    if (!m[UNIT_COL_VALID] || m[UNIT_COL_LIFE_STATE] != OBS_LIFE_ALIVE || !m[UNIT_COL_IS_ZOMBIE])
+        return false;
+    return !brk_vis || v.vis_t[q];
+}
+
+// One thread per (env, row r, block b): b = 0 the soldier itself, 1 the other
+// living marines, 2 the zombies, 3 the objects, 4 the doors. Each block's
+// place follows from the counts (the entry order stays marines, zombies,
+// objects, doors; the room is cut objects first, then zombies, then doors);
+// each thread zeroes its own places (observe_full_rows' out[...] = 0, mask 0,
+// uid -1; the doors' thread to the end of the row), then fills them.
+__global__ void k_full_list(const int64_t* store, int U, const int64_t* tables,
+                            const int32_t* rowmap, int n_rows, int S, int T, const int64_t* otab,
+                            const int64_t* teams, const int64_t* trow, const int64_t* params,
+                            const uint8_t* ended, const uint8_t* visible, const uint8_t* sees,
+                            const int64_t* state, int W, const int32_t* full_aim,
+                            const uint8_t* lane_own, int gh, int gw, const int64_t* grenades,
+                            const int64_t* g_count, const int64_t* charges,
+                            const int64_t* c_count, const int64_t* doors,
+                            const int64_t* door_count, int door_cap, const int64_t* door_tiles,
+                            int tile_cap, const bool* vac, const bool* amb, int h, int w,
+                            const uint8_t* wired, int wired_cap, const uint8_t* solid,
+                            const int64_t* covers, int cover_cap, const int32_t* cover_count,
+                            const int64_t* places, int place_cap, const int32_t* place_count,
+                            float* full_list, uint8_t* full_mask, int32_t* full_uid,
+                            int32_t* faults, int brk) {
+    using namespace object_tables;
+    const int e = blockIdx.y;
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_rows * 5 || !env_due(e, trow, params, ended)) return;
+    const int r = idx / 5, b = idx % 5;
+    const size_t er = (size_t)e * n_rows + r;
+    float* LST = full_list + er * OBS_FULL_ENTRIES * OBS_FULL_F;
+    uint8_t* MSK = full_mask + er * OBS_FULL_ENTRIES;
+    int32_t* UID = full_uid + er * OBS_FULL_ENTRIES;
+    auto clear = [&](int a, int z) {
+        for (int i = a; i < z; ++i) {
+            for (int f = 0; f < OBS_FULL_F; ++f) LST[(size_t)i * OBS_FULL_F + f] = 0.0f;
+            MSK[i] = 0;
+            UID[i] = -1;
+        }
+    };
+    const int t = r / S;
+    const int sr = rowmap[er];
+    const int64_t* rows = store + (size_t)e * U * UNIT_STORE_W;
+    if (sr < 0 || sr >= U) {                          // an empty roster place: zeros
+        if (b == 0) clear(0, OBS_FULL_ENTRIES);
+        return;
+    }
+    const int64_t* me = rows + (size_t)sr * UNIT_STORE_W;
+    const bool alive = me[UNIT_COL_LIFE_STATE] == OBS_LIFE_ALIVE && me[UNIT_COL_TEAM] == (int64_t)t;
+    View v;
+    v.rows = rows;
+    v.U = U;
+    v.T = T;
+    v.t = t;
+    v.n_rows = n_rows;
+    v.r = r;
+    v.e = e;
+    v.me = me;
+    v.sr = sr;
+    v.me_id = me[UNIT_COL_ID];
+    v.cx = obs_sight::centre_x(me);
+    v.cy = obs_sight::centre_y(me);
+    v.tick = trow[(size_t)e * unit_draws::TICK_ROW_W + unit_draws::TICK_ROW_TICK];
+    v.ot = otab + (size_t)e * OBS_TAB_W;
+    v.lref = v.ot[OBS_TAB_L_REF];
+    v.n_t = teams[((size_t)e * T + t) * OBS_TEAM_W + OBS_TEAM_N];
+    v.tab = tables + (size_t)e * unit_tables::UNIT_TABLES_W;
+    v.blk = state + (size_t)e * W;
+    v.L = pic_layout(T, U);
+    v.vis_t = visible + ((size_t)e * (T + 1) + t) * U;
+    v.cap = of_bits(OBS_SQUASH_CAP_BITS);
+    const bool brk_vis = brk == OBS_FULL_BREAK_FULL_VIS;
+    const bool rev = brk == OBS_FULL_BREAK_FULL_TIE;
+    Objs o{grenades + (size_t)e * OBJ_GRENADE_CAP * OBJ_GRENADE_W, g_count[e],
+           charges + (size_t)e * OBJ_CHARGE_CAP * OBJ_CHARGE_W, c_count[e]};
+    Doors D{doors + (size_t)e * door_cap * OBJ_DOOR_W, door_count[e],
+            door_tiles + (size_t)e * tile_cap * OBJ_DOOR_TILE_W, tile_cap,
+            vac + (size_t)e * h * w, amb + (size_t)e * h * w, h, w,
+            wired + (size_t)e * wired_cap, wired_cap};
+    const int n_doors = (int)(D.n < door_cap ? D.n : door_cap);
+    auto door_ok = [&](int q) {
+        const int64_t* row = D.d + (size_t)q * OBJ_DOOR_W;
+        int64_t x, y;
+        return row[OBJ_DOOR_COL_ALIVE] && door_centre(D, row, &x, &y);
+    };
+    auto obj_live = [&](int c) {
+        return c < o.gc ? o.g[(size_t)c * OBJ_GRENADE_W + OBJ_GRENADE_LIVE] != 0
+                        : o.c[(size_t)(c - o.gc) * OBJ_CHARGE_W + OBJ_CHARGE_LIVE] != 0;
+    };
+    // -- the counts and the places (_full_entries' cut) --
+    int M = 0, Z = 0, O = 0, DN = 0;
+    for (int q = 0; q < U; ++q) {
+        const int64_t* m = rows + (size_t)q * UNIT_STORE_W;
+        if (full_marine(m, v, brk_vis, q)) ++M;
+        if (full_zombie(m, v, brk_vis, q)) ++Z;
+    }
+    const int n_obj = (int)(o.gc + o.cc);
+    for (int c = 0; c < n_obj; ++c) O += obj_live(c) ? 1 : 0;
+    for (int q = 0; q < n_doors; ++q) DN += door_ok(q) ? 1 : 0;
+    if (1 + M > OBS_FULL_ENTRIES) {                     // never a marine dropped: refused
+        atomicOr(faults + e, OBS_FULL_FAULT_OVERFLOW);
+        M = OBS_FULL_ENTRIES - 1;
+    }
+    int room = OBS_FULL_ENTRIES - 1 - M - (brk == OBS_FULL_BREAK_FULL_CAP ? 1 : 0);
+    room = room > 0 ? room : 0;
+    const int Ok = O < room ? O : room;                 // the units' room first ...
+    room -= Ok;
+    const int Zk = Z < room ? Z : room;
+    room -= Zk;
+    const int Dk = DN < room ? DN : room;               // ... the doors fill what is left
+    const int s1 = 1, s2 = s1 + M, s3 = s2 + Zk, s4 = s3 + Ok;
+    const int starts[5] = {0, s1, s2, s3, s4};
+    const int ends[5] = {1, s2, s3, s4, OBS_FULL_ENTRIES};
+    const int caps[5] = {1, M, Zk, Ok, Dk};
+    clear(starts[b], ends[b]);
+    Full F{full_aim + (size_t)e * 2 * U, sees + ((size_t)e * U + sr) * U, solid + (size_t)e * h * w,
+           h, w, covers + (size_t)e * cover_cap * OBS_COVER_W, cover_count[e],
+           places + (size_t)e * place_cap * OBS_PLACE_W, place_count[e], lane_own, gh, gw};
+    bool bad = false, law_bad = false;
+    auto d2_of = [&](int64_t x, int64_t y) {
+        const int64_t dx = x - v.cx, dy = y - v.cy;
+        return dx * dx + dy * dy;
+    };
+    if (b == 0) {                                       // -- the soldier itself (5.3; 5.6)
+        float* E = LST;
+        if (alive) {
+            full_mate(E, sr, v, F, &bad);
+        } else {                                        // the corpse: type 0, hp 0, age
+            entry_common(E, OBS_TYPE_MATE, 0, 0, v);
+            put_angle(E, OBS_L_COS, OBS_L_SIN, me[UNIT_COL_FACING_Q]);
+            put(E, OBS_L_SIDE, (double)t);
+            put(E, OBS_L_CLASS, (double)me[UNIT_COL_LOADOUT_NAME]);
+            const int64_t* tr = obs_pic::unit_of(v.blk, v.L, sr);
+            const int64_t died = tr[OBS_PIC_UNIT_DEATH_SET] ? tr[OBS_PIC_UNIT_DEATH_TICK] : v.tick;
+            put(E, OBS_L_AGE, ratio(v.tick - died, v.ot[OBS_TAB_LIMIT_TICKS]));
+        }
+        MSK[0] = 1;
+        UID[0] = (int32_t)v.me_id;
+    } else {
+        Key prev{0, 0}, k{0, 0};
+        bool have = false;
+        for (int i = 0; i < caps[b]; ++i) {
+            float* E = LST + (size_t)(starts[b] + i) * OBS_FULL_F;
+            int c = -1;
+            int64_t uid = -1;
+            if (b == 1) {                               // the marines: (team, slot, id)
+                c = next_min(U, [&](int q, Key* out) {
+                    const int64_t* m = rows + (size_t)q * UNIT_STORE_W;
+                    if (!full_marine(m, v, brk_vis, q)) return false;
+                    *out = Key{(m[UNIT_COL_TEAM] << 20) + m[UNIT_COL_SLOT], m[UNIT_COL_ID]};
+                    return true;
+                }, have, prev, rev, &k);
+                if (c < 0) break;
+                if (rows[(size_t)c * UNIT_STORE_W + UNIT_COL_TEAM] == (int64_t)t)
+                    full_mate(E, c, v, F, &bad);
+                else
+                    full_enemy(E, c, v, F, &bad, &law_bad);
+                uid = k.id;
+            } else if (b == 2) {                        // the zombies, nearest first
+                c = next_min(U, [&](int q, Key* out) {
+                    const int64_t* m = rows + (size_t)q * UNIT_STORE_W;
+                    if (!full_zombie(m, v, brk_vis, q)) return false;
+                    *out = Key{d2_of(obs_sight::centre_x(m), obs_sight::centre_y(m)),
+                               m[UNIT_COL_ID]};
+                    return true;
+                }, have, prev, rev, &k);
+                if (c < 0) break;
+                full_enemy(E, c, v, F, &bad, &law_bad);
+                uid = k.id;
+            } else if (b == 3) {                        // the objects, nearest first
+                c = next_min(n_obj, [&](int q, Key* out) {
+                    if (!obj_live(q)) return false;
+                    int64_t ox, oy;
+                    object_tile(o, q < o.gc ? 0 : 1, q < o.gc ? q : q - o.gc, &ox, &oy);
+                    *out = Key{d2_of(ox, oy), q};       // q: live_objects' order
+                    return true;
+                }, have, prev, rev, &k);
+                if (c < 0) break;
+                const int kind = c < o.gc ? 0 : 1;
+                const int64_t row = c < o.gc ? c : c - o.gc;
+                object_entry(E, o, kind, row, v, rowmap + (size_t)e * n_rows + (size_t)t * S, S,
+                             rows);
+                // the team's knowledge: seen now, ever seen (the tracker), unknown
+                const int64_t serial = kind == 0 ? v.blk[v.L.side_g + row] : v.blk[v.L.side_c + row];
+                int know = OBS_KNOW_UNKNOWN;
+                const int64_t* seen = v.blk + v.L.seen + (int64_t)t * OBS_PIC_OBJ_CAP * 2;
+                for (int64_t s = 0; s < v.blk[v.L.seen_n + t]; ++s)
+                    if (seen[2 * s] == serial) know = OBS_KNOW_SEEN;
+                if (know != OBS_KNOW_SEEN) {
+                    const int64_t* ob = v.blk + v.L.obj + (int64_t)t * OBS_PIC_OBJ_CAP * 2;
+                    for (int64_t s = 0; s < v.blk[v.L.obj_n + t]; ++s)
+                        if (ob[2 * s] == serial) know = OBS_KNOW_RECORD;
+                }
+                put(E, OBS_FX_KNOWLEDGE, (double)know);
+                uid = (int64_t)OBS_OBJECT_UID_BASE + i;  // its place in the kept block
+            } else {                                    // the doors, nearest first
+                c = next_min(n_doors, [&](int q, Key* out) {
+                    if (!door_ok(q)) return false;
+                    const int64_t* row = D.d + (size_t)q * OBJ_DOOR_W;
+                    int64_t x, y;
+                    door_centre(D, row, &x, &y);
+                    *out = Key{d2_of(x, y), row[OBJ_DOOR_COL_ORDINAL]};
+                    return true;
+                }, have, prev, rev, &k);
+                if (c < 0) break;
+                door_entry(E, c, D, v);
+                uid = (int64_t)OBS_DOOR_UID_BASE + k.id;
+            }
+            MSK[starts[b] + i] = 1;
+            UID[starts[b] + i] = (int32_t)uid;
+            prev = k;
+            have = true;
+        }
+    }
+    if (bad) atomicOr(faults + e, OBS_FULL_FAULT_RANGE);
+    if (law_bad) atomicOr(faults + e, OBS_FULL_FAULT_LAW);
+}
+
+// One thread per (env, row, window cell): full_watched (spec 5.5) -- the
+// window cell seen FROM any living enemy's LIVE centre (every living unit but
+// the row team's own living marines; zombies included, dormant or not), the
+// one device window_cell, OR-ed. 0 on an empty roster place.
+__global__ void k_full_watched(const int64_t* store, int U, const int32_t* rowmap, int n_rows,
+                               int S, const uint8_t* solid, const uint8_t* screen, int h, int w,
+                               const int64_t* trow, const int64_t* params, const uint8_t* ended,
+                               uint8_t* full_watched, int32_t* faults) {
+    constexpr int CELLS = OBS_WIN * OBS_WIN;
+    const int e = blockIdx.y;
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_rows * CELLS || !env_due(e, trow, params, ended)) return;
+    const int r = idx / CELLS, cell = idx % CELLS;
+    const size_t er = (size_t)e * n_rows + r;
+    uint8_t* out = full_watched + er * CELLS + cell;
+    const int sr = rowmap[er];
+    if (sr < 0 || sr >= U) {
+        *out = 0;
+        return;
+    }
+    const int64_t t = r / S;
+    const int64_t* rows = store + (size_t)e * U * UNIT_STORE_W;
+    const int64_t* me = rows + (size_t)sr * UNIT_STORE_W;
+    const int64_t y0 = obs_sight::centre_y(me) - OBS_HALF, x0 = obs_sight::centre_x(me) - OBS_HALF;
+    const uint8_t* so = solid + (size_t)e * h * w;
+    const uint8_t* sc = screen + (size_t)e * h * w;
+    bool bad = false, watched = false;
+    for (int q = 0; q < U && !watched; ++q) {
+        const int64_t* m = rows + (size_t)q * UNIT_STORE_W;
+        if (!m[UNIT_COL_VALID] || m[UNIT_COL_LIFE_STATE] != OBS_LIFE_ALIVE) continue;
+        if (m[UNIT_COL_TEAM] == t && !m[UNIT_COL_IS_ZOMBIE]) continue;
+        watched = obs_sight::window_cell(so, sc, h, w, false, false, obs_sight::centre_y(m),
+                                         obs_sight::centre_x(m), y0, x0, OBS_WIN, cell, &bad);
+    }
+    *out = watched ? 1 : 0;
+    if (bad) atomicOr(faults + e, OBS_FULL_FAULT_RANGE);
+}
+
+// One thread per (env, row): full_match (spec 5.4, FullView.match) -- per team
+// t its living count over n_t and its standing H(t) over n_t squashed
+// (reward_v1.standing over the full view's marines: per team the bars of its
+// living units summed IN (slot, id) ORDER, the full view's marine order, from
+// 0.0 through the kit's unfused add), the horde awake / dormant over the
+// match's zombies squashed, time_left. 0 on an empty roster place.
+__global__ void k_full_match(const int64_t* store, int U, const int32_t* rowmap, int n_rows, int S,
+                             int T, const int64_t* otab, const int64_t* teams, const int64_t* trow,
+                             const int64_t* params, const uint8_t* ended, const int64_t* state,
+                             int W, float* full_match) {
+    const int e = blockIdx.y;
+    const int r = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r >= n_rows || !env_due(e, trow, params, ended)) return;
+    const size_t er = (size_t)e * n_rows + r;
+    const int M = 2 * T + 3;
+    float* out = full_match + er * M;
+    for (int i = 0; i < M; ++i) out[i] = 0.0f;
+    if (rowmap[er] < 0 || rowmap[er] >= U) return;
+    const int64_t* rows = store + (size_t)e * U * UNIT_STORE_W;
+    const int64_t* ot = otab + (size_t)e * OBS_TAB_W;
+    const int64_t* blk = state + (size_t)e * W;
+    const PicLayout L = pic_layout(T, U);
+    const double cap = of_bits(OBS_SQUASH_CAP_BITS);
+    const int64_t tick = trow[(size_t)e * unit_draws::TICK_ROW_W + unit_draws::TICK_ROW_TICK];
+    for (int t = 0; t < T; ++t) {
+        const int64_t n_t = teams[((size_t)e * T + t) * OBS_TEAM_W + OBS_TEAM_N];
+        int64_t count = 0;
+        double hsum = 0.0;
+        Key prev{0, 0}, k{0, 0};
+        bool have = false;
+        for (;;) {                                      // (slot, id) order: successive minima
+            const int c = next_min(U, [&](int q, Key* o) {
+                const int64_t* m = rows + (size_t)q * UNIT_STORE_W;
+                if (!is_mate(m, t)) return false;
+                *o = Key{m[UNIT_COL_SLOT], m[UNIT_COL_ID]};
+                return true;
+            }, have, prev, false, &k);
+            if (c < 0) break;
+            const int64_t* tr = obs_pic::unit_of(blk, L, c);
+            const int64_t bar = tr[OBS_PIC_UNIT_BAR_SET] ? tr[OBS_PIC_UNIT_BAR_Q] : 0;
+            hsum = add(hsum, obs_pic::bar_ratio(rows[(size_t)c * UNIT_STORE_W + UNIT_COL_CURRENT_HP],
+                                                bar));
+            ++count;
+            prev = k;
+            have = true;
+        }
+        out[2 * t] = to_f32(ratio(count, n_t));
+        out[2 * t + 1] = to_f32(squash(fratio(hsum, (double)n_t), cap));
+    }
+    int64_t awake = 0, nz_live = 0;
+    for (int q = 0; q < U; ++q) {
+        const int64_t* m = rows + (size_t)q * UNIT_STORE_W;
+        if (!m[UNIT_COL_VALID] || m[UNIT_COL_LIFE_STATE] != OBS_LIFE_ALIVE || !m[UNIT_COL_IS_ZOMBIE])
+            continue;
+        ++nz_live;
+        if (m[UNIT_COL_ZOMBIE_ACTIVATED]) ++awake;
+    }
+    const int64_t nz = ot[OBS_TAB_ZOMBIES];
+    const int kk = 2 * T;
+    out[kk] = to_f32(squash(ratio(awake, nz), cap));
+    out[kk + 1] = to_f32(squash(ratio(nz_live - awake, nz), cap));
+    const int64_t limit = ot[OBS_TAB_LIMIT_TICKS];
+    out[kk + 2] = to_f32(ratio(limit - tick, limit));
+}
+
 }  // namespace
 
 void obs_list(int n_env, std::uintptr_t store, int n_units, int store_w,
@@ -886,6 +1447,88 @@ void obs_masks(int n_env, std::uintptr_t store, int n_units, int store_w,
     if (err != cudaSuccess)
         throw std::runtime_error(std::string("obs_masks: launch failed: ") +
                                  cudaGetErrorString(err));
+}
+
+void obs_full(int n_env, std::uintptr_t store, int n_units, int store_w,
+              const UnitTablesDevice& tables, std::uintptr_t rowmap, int n_rows, int n_slots,
+              int n_teams, std::uintptr_t obs_table, int table_w, std::uintptr_t teams,
+              std::uintptr_t tick_row, std::uintptr_t params, std::uintptr_t ended,
+              std::uintptr_t visible, std::uintptr_t sees, std::uintptr_t state, int state_w,
+              std::uintptr_t lane_own, int gh, int gw, ObjectTable& grenades,
+              ObjectTable& charges, UnitRecordList& doors, UnitRecordList& door_tiles,
+              std::uintptr_t is_vacuum, std::uintptr_t is_ambient, std::uintptr_t solid,
+              std::uintptr_t screen, int h, int w, std::uintptr_t wired, int wired_cap,
+              std::uintptr_t covers, int cover_cap, int cover_w, std::uintptr_t cover_count,
+              std::uintptr_t places, int place_cap, int place_w, std::uintptr_t place_count,
+              std::uintptr_t full_aim, std::uintptr_t full_list, std::uintptr_t full_mask,
+              std::uintptr_t full_uid, std::uintptr_t full_match, std::uintptr_t full_watched,
+              std::uintptr_t faults, int brk) {
+    auto need = [](bool ok, const char* what) {
+        if (!ok) throw std::invalid_argument(std::string("obs_full: ") + what);
+    };
+    need(n_env >= 1 && n_units >= 1 && n_rows >= 1 && n_slots >= 1 && n_teams >= 1 && h >= 1 &&
+         w >= 1 && gh >= 1 && gw >= 1 && wired_cap >= 1 && cover_cap >= 1 && place_cap >= 1,
+         "a non-positive size");
+    need(n_rows == n_teams * n_slots, "n_rows is not n_teams x n_slots");
+    need(store_w == UNIT_STORE_W, "the store's width is not UNIT_STORE_W");
+    need(table_w == OBS_TAB_W, "the obs table's width is not OBS_TAB_W (regenerate obs_layout.h)");
+    need(cover_w == OBS_COVER_W, "the cover table's width is not OBS_COVER_W");
+    need(place_w == OBS_PLACE_W, "the place table's width is not OBS_PLACE_W");
+    need(state_w == pic_layout(n_teams, n_units).w, "the picture block's width");
+    need(tables.n_env() == n_env && tables.width() == unit_tables::UNIT_TABLES_W,
+         "the device tables' shape");
+    need(grenades.n_env() == n_env && charges.n_env() == n_env && doors.n_env() == n_env &&
+         door_tiles.n_env() == n_env, "the object / door tables' env count");
+    need(grenades.cap() == object_tables::OBJ_GRENADE_CAP &&
+         grenades.width() == object_tables::OBJ_GRENADE_W &&
+         charges.cap() == object_tables::OBJ_CHARGE_CAP &&
+         charges.width() == object_tables::OBJ_CHARGE_W, "the object tables' layout");
+    need(doors.width() == object_tables::OBJ_DOOR_W &&
+         door_tiles.width() == object_tables::OBJ_DOOR_TILE_W, "the door tables' widths");
+    need(store && rowmap && obs_table && teams && tick_row && params && ended && visible &&
+         sees && state && lane_own && is_vacuum && is_ambient && solid && screen && wired &&
+         covers && cover_count && places && place_count && full_aim && full_list &&
+         full_mask && full_uid && full_match && full_watched && faults,
+         "a null device pointer");
+    cudaStream_t s = tstream();
+    const int64_t* st = reinterpret_cast<const int64_t*>(store);
+    const int32_t* rm = reinterpret_cast<const int32_t*>(rowmap);
+    const int64_t* ot = reinterpret_cast<const int64_t*>(obs_table);
+    const int64_t* trow = reinterpret_cast<const int64_t*>(tick_row);
+    const int64_t* prm = reinterpret_cast<const int64_t*>(params);
+    const uint8_t* end = reinterpret_cast<const uint8_t*>(ended);
+    const uint8_t* so = reinterpret_cast<const uint8_t*>(solid);
+    const uint8_t* sc = reinterpret_cast<const uint8_t*>(screen);
+    const int64_t* pic = reinterpret_cast<const int64_t*>(state);
+    int32_t* aim = reinterpret_cast<int32_t*>(full_aim);
+    int32_t* flt = reinterpret_cast<int32_t*>(faults);
+    k_full_aim<<<dim3((2 * n_units + 63) / 64, n_env), 64, 0, s>>>(
+        st, n_units, ot, tables.values(), so, sc, h, w, trow, prm, end, aim, flt);
+    const int n = n_rows * 5;
+    k_full_list<<<dim3((n + 63) / 64, n_env), 64, 0, s>>>(
+        st, n_units, tables.values(), rm, n_rows, n_slots, n_teams, ot,
+        reinterpret_cast<const int64_t*>(teams), trow, prm, end,
+        reinterpret_cast<const uint8_t*>(visible), reinterpret_cast<const uint8_t*>(sees), pic,
+        state_w, aim, reinterpret_cast<const uint8_t*>(lane_own), gh, gw, grenades.records_dev(),
+        grenades.count_dev(), charges.records_dev(), charges.count_dev(), doors.records_dev(),
+        doors.count_dev(), doors.cap(), door_tiles.records_dev(), door_tiles.cap(),
+        reinterpret_cast<const bool*>(is_vacuum), reinterpret_cast<const bool*>(is_ambient), h, w,
+        reinterpret_cast<const uint8_t*>(wired), wired_cap, so,
+        reinterpret_cast<const int64_t*>(covers), cover_cap,
+        reinterpret_cast<const int32_t*>(cover_count), reinterpret_cast<const int64_t*>(places),
+        place_cap, reinterpret_cast<const int32_t*>(place_count),
+        reinterpret_cast<float*>(full_list), reinterpret_cast<uint8_t*>(full_mask),
+        reinterpret_cast<int32_t*>(full_uid), flt, brk);
+    const int cells = n_rows * OBS_WIN * OBS_WIN;
+    k_full_watched<<<dim3((cells + 255) / 256, n_env), 256, 0, s>>>(
+        st, n_units, rm, n_rows, n_slots, so, sc, h, w, trow, prm, end,
+        reinterpret_cast<uint8_t*>(full_watched), flt);
+    k_full_match<<<dim3((n_rows + 63) / 64, n_env), 64, 0, s>>>(
+        st, n_units, rm, n_rows, n_slots, n_teams, ot, reinterpret_cast<const int64_t*>(teams),
+        trow, prm, end, pic, state_w, reinterpret_cast<float*>(full_match));
+    const cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess)
+        throw std::runtime_error(std::string("obs_full: launch failed: ") + cudaGetErrorString(err));
 }
 
 }  // namespace breach_cuda

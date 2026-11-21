@@ -14,7 +14,7 @@
 
 namespace obs_layout {
 
-constexpr const char* OBS_LAYOUT_FINGERPRINT = "9755d18f5192334147e0b27e502a274c2b019120dd2d838e61ac370c80ca27af";
+constexpr const char* OBS_LAYOUT_FINGERPRINT = "21e96ae3a551ac715fa43e176a1f70cb24c5596ebbedb31406861e5cdcf7c02f";
 
 constexpr int OBS_WIN = 25;
 constexpr int OBS_HALF = 12;
@@ -486,9 +486,120 @@ constexpr int OBS_BK_FAULT_TEAM = 2;
 constexpr int OBS_BK_BREAK_BK_ORDER = 1;
 constexpr int OBS_BK_BREAK_BK_FREEZE = 2;
 constexpr int OBS_BK_BREAK_BK_LATE = 3;
+constexpr int OBS_DEC_N_DIRS = 16;
+constexpr int OBS_DEC_N_SPEEDS = 3;
+constexpr int OBS_DEC_N_ARG = 5;
+constexpr int OBS_DEC_ARG_ONTO = 4;
+constexpr int OBS_DEC_N_FRACTIONS = 4;
+constexpr int OBS_DEC_N_HEADS = 5;
+constexpr int OBS_DEC_FAULT_W = 11;
+constexpr int OBS_DEC_TAB_THROTTLE0 = 0;
+constexpr int OBS_DEC_TAB_THROTTLE1 = 1;
+constexpr int OBS_DEC_TAB_THROTTLE2 = 2;
+constexpr int OBS_DEC_TAB_FUSE_TICKS = 3;
+constexpr int OBS_DEC_TAB_REACH0 = 4;
+constexpr int OBS_DEC_TAB_REACH1 = 5;
+constexpr int OBS_DEC_TAB_REACH2 = 6;
+constexpr int OBS_DEC_TAB_REACH3 = 7;
+constexpr int OBS_DEC_TAB_TIMER0 = 8;
+constexpr int OBS_DEC_TAB_TIMER1 = 9;
+constexpr int OBS_DEC_TAB_TIMER2 = 10;
+constexpr int OBS_DEC_TAB_TIMER3 = 11;
+constexpr int OBS_DEC_TAB_AIM_LO = 12;
+constexpr int OBS_DEC_TAB_AIM_HI = 13;
+constexpr int OBS_DEC_TAB_N_ENTRIES = 14;
+constexpr int OBS_DEC_TAB_PLANT_LO = 15;
+constexpr int OBS_DEC_TAB_PLANT_HI = 16;
+constexpr int OBS_DEC_TAB_N_KINDS = 17;
+constexpr int OBS_DEC_TAB_SIZE0 = 18;
+constexpr int OBS_DEC_TAB_SIZE1 = 19;
+constexpr int OBS_DEC_TAB_SIZE2 = 20;
+constexpr int OBS_DEC_TAB_SIZE3 = 21;
+constexpr int OBS_DEC_TAB_SIZE4 = 22;
+constexpr int OBS_DEC_TAB_W = 23;
+constexpr int OBS_DEC_S_HAVE = 0;
+constexpr int OBS_DEC_S_FIRST = 1;
+constexpr int OBS_DEC_S_D_FEET = 2;
+constexpr int OBS_DEC_S_D_KIND = 3;
+constexpr int OBS_DEC_S_D_VAL = 4;
+constexpr int OBS_DEC_S_D_LPV = 5;
+constexpr int OBS_DEC_S_D_LPX = 6;
+constexpr int OBS_DEC_S_D_LPY = 7;
+constexpr int OBS_DEC_S_D_IDX = 8;
+constexpr int OBS_DEC_S_D_TRIG = 9;
+constexpr int OBS_DEC_S_D_HAND = 10;
+constexpr int OBS_DEC_S_D_ARG = 11;
+constexpr int OBS_DEC_S_EXISTS = 12;
+constexpr int OBS_DEC_S_TA = 13;
+constexpr int OBS_DEC_S_TA_ALIAS = 14;
+constexpr int OBS_DEC_S_TA_KIND = 15;
+constexpr int OBS_DEC_S_TA_VAL = 16;
+constexpr int OBS_DEC_S_TA_LPV = 17;
+constexpr int OBS_DEC_S_TA_LPX = 18;
+constexpr int OBS_DEC_S_TA_LPY = 19;
+constexpr int OBS_DEC_S_LVX = 20;
+constexpr int OBS_DEC_S_LVY = 21;
+constexpr int OBS_DEC_S_AIMED = 22;
+constexpr int OBS_DEC_S_HAS_PREV = 23;
+constexpr int OBS_DEC_S_PREV0 = 24;
+constexpr int OBS_DEC_S_PREV1 = 25;
+constexpr int OBS_DEC_S_PREV2 = 26;
+constexpr int OBS_DEC_S_PREV3 = 27;
+constexpr int OBS_DEC_S_PREV4 = 28;
+constexpr int OBS_DEC_S_PREV5 = 29;
+constexpr int OBS_DEC_S_UID = 30;
+constexpr int OBS_DEC_S_BAD = 31;
+constexpr int OBS_DEC_S_W = 32;
+constexpr int OBS_DEC_AIM_TOK = 0;
+constexpr int OBS_DEC_AIM_WALK = 1;
+constexpr int OBS_DEC_AIM_KEEP = 2;
+constexpr int OBS_DEC_AIM_UNIT = 3;
+constexpr int OBS_DEC_BREAK_DEC_EVERY = 1;
+constexpr int OBS_DEC_BREAK_DEC_DIV = 2;
+constexpr int OBS_DEC_HORDE_BASE = 1;
+constexpr int OBS_DEC_HORDE_MODE = 0;
+constexpr int OBS_DEC_HORDE_SET = 1;
+constexpr int OBS_DEC_HORDE_EMPTY = 0;
+constexpr int OBS_DEC_HORDE_DEVICE = 1;
+constexpr int OBS_DEC_HORDE_IDLE = 2;
+constexpr int OBS_FULL_ENTRIES = 64;
+constexpr int OBS_FULL_F = 85;
+constexpr int OBS_FX_KNOWLEDGE = 67;
+constexpr int OBS_FX_ROUNDS = 68;
+constexpr int OBS_FX_MAGS = 69;
+constexpr int OBS_FX_AMMO_UNTRACKED = 70;
+constexpr int OBS_FX_GRENADE0 = 71;
+constexpr int OBS_FX_CHARGES = 77;
+constexpr int OBS_FX_MELEE_COOL = 78;
+constexpr int OBS_FX_SHOVE_COOL = 79;
+constexpr int OBS_FX_STATUS0 = 80;
+constexpr int OBS_FX_ORDER_WHAT = 84;
+constexpr int OBS_FULL_N_STATUS = 4;
+constexpr int OBS_FULL_STATUS_KIND_0 = 0;
+constexpr int OBS_FULL_STATUS_KIND_1 = 2;
+constexpr int OBS_FULL_STATUS_KIND_2 = 4;
+constexpr int OBS_FULL_STATUS_KIND_3 = 5;
+constexpr int OBS_KNOW_SEEN = 0;
+constexpr int OBS_KNOW_RECORD = 1;
+constexpr int OBS_KNOW_UNKNOWN = 2;
+constexpr int OBS_NO_PLACE = -1;
+constexpr int OBS_NO_LIMIT = -1;
+constexpr int OBS_PLACE_WHERE = 0;
+constexpr int OBS_PLACE_X = 1;
+constexpr int OBS_PLACE_Y = 2;
+constexpr int OBS_PLACE_W = 3;
+constexpr int OBS_FULL_FAULT_OVERFLOW = 1;
+constexpr int OBS_FULL_FAULT_RANGE = 2;
+constexpr int OBS_FULL_FAULT_LAW = 4;
+constexpr int OBS_FULL_BREAK_FULL_VIS = 1;
+constexpr int OBS_FULL_BREAK_FULL_TIE = 2;
+constexpr int OBS_FULL_BREAK_FULL_CAP = 3;
 
 // float16 bit patterns of k / (OBS_BLOCK * OBS_BLOCK), k = 0 .. OBS_BLOCK^2
 // (a __constant__ table's initialiser in the kernel's TU).
 #define OBS_WALL_SHARE_HALF_INIT {0x0000, 0x2c00, 0x3000, 0x3200, 0x3400, 0x3500, 0x3600, 0x3700, 0x3800, 0x3880, 0x3900, 0x3980, 0x3a00, 0x3a80, 0x3b00, 0x3b80, 0x3c00}
+
+// P8.6a: action_spec_v1.COMPASS_Q16 as (x, y) pairs, direction d at 2d.
+#define OBS_DEC_COMPASS_INIT {65536, 0, 60547, -25080, 46341, -46341, 25080, -60547, 0, -65536, -25080, -60547, -46341, -46341, -60547, -25080, -65536, 0, -60547, 25080, -46341, 46341, -25080, 60547, 0, 65536, 25080, 60547, 46341, 46341, 60547, 25080}
 
 }  // namespace obs_layout
