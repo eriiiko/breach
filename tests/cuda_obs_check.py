@@ -16,7 +16,9 @@ the rows' units, the team picture the session keeps). Kept: the tick's
 intents and the OWNED arrays of each decision. (a) the pinned ship_demo
 matches ``bots`` and ``bots_v1`` (``tests/_pinned_matches``); (b) a training
 room (``tools/gen_training_rooms.py``'s ``range_door``, written to a temp
-folder: a door, cover, ``all_round``); (d) the hand match (P8.1: a ship_demo
+folder: a door, ``all_round``; no cover: the crates are ``range_hall``'s,
+P8.2's :func:`corpus_cover` plays it as it is and with a crate moved onto
+the line of fire); (d) the hand match (P8.1: a ship_demo
 bots match cut at :data:`HAND_TICKS` with a hand state at tick 0 and hand
 intents, :func:`hand_setup` / :func:`hand_script`, for the owned columns (a)
 and (b) never move); and, for the batch, more seeds of (a) and (b).
@@ -55,7 +57,22 @@ numpy, double -> float32 equal to numpy, a*b + c never contracted, the
 squash's served float32 equal to the host's (CUDA's log; the float64
 difference count is printed).
 
-THE BREAKS (``OBS_BREAK``), each must turn a part red: ``anchor`` (the
+P8.2 (no served column: the sight every later block reads) --
+- inside every GATE / BATCH run: who sees whom (``DeviceObservation.vision``:
+  ``seen_by``, ``visible_by_team``) equal to the reference's VisionState
+  (``vision.state_for``, the team picture's) at EVERY tick, both sight rules,
+  the per-rule census (pair-ticks, pairs ever seen / not seen / both) judged
+  by part GATE; the line of fire (``lof_pairs``, ``line_of_fire.solid_in_way``
+  over the cover table) on every (unit, unit) pair at every decision tick,
+  the pairs a cover decided counted (> 0 over the corpus, else FAIL); a
+  cover's alive unchanged over every match (the table is staged once);
+- PART SIGHT: the bulk forms against ``rays_clear`` / ``window_clear``;
+- PART WALL: the wall's first device gate (critique finding 22).
+
+THE BREAKS (``OBS_BREAK``), each must turn a part red: ``cone`` / ``early``
+/ ``cover`` (P8.2, part GATE: the cone a degree wider, who sees whom before
+the conversion, every cover box one tile off), ``forms`` (P8.2, part SIGHT:
+the two has_los forms swapped); ``anchor`` (the
 blocks read the units one tile off: the window's anchor wrong), ``stale``
 (the blocks are not rebuilt after tick 0), ``constant`` (an owned column
 forced constant on both sides: the constancy guard), ``divisor`` (P8.1: the
@@ -718,6 +735,21 @@ def corpus_cover():
             play("hall_cover", lv, None, 51, setup=hall_setup)]
 
 
+#: P8.2: the all_round rule over many units (the training rooms are 1 v 1, so
+#: no team there ever has a seen AND an unseen enemy): a ship_demo bots match
+#: whose spec names ``sight = "all_round"``, cut at this many ticks.
+ROUND_TICKS = 480
+
+
+def corpus_round():
+    from dataclasses import replace
+
+    import _pinned_matches as pm
+    lv = ship_level()
+    spec = replace(pm.spec_of(lv, "bots"), sight="all_round")
+    return [play("ship_all_round", lv, spec, 61, max_ticks=ROUND_TICKS)]
+
+
 def part_gate():
     ca, cb, cdn = Census(), Census(), Census()
     for p in corpus_a():
@@ -728,6 +760,8 @@ def part_gate():
         gate(f"(d) {p.name}", [p], cdn)
     for p in corpus_cover():
         gate(f"(b/d cover) {p.name}", [p], cb)
+    for p in corpus_round():
+        gate(f"(d all_round) {p.name}", [p], cdn)
     ca.judge("census (a)", strict=False)
     cb.judge("census (b)", strict=False)
     cdn.judge("census (d)", strict=False)
@@ -738,7 +772,7 @@ def part_gate():
             both.values.setdefault(k, set()).update(src.values.get(k, set()))
     both.judge("census (a)+(b)+(d)")
     judge_vision()
-    for p in corpus_a() + corpus_b() + corpus_d() + corpus_cover():
+    for p in corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round():
         a0, a1 = p.cover_alive
         if a0 != a1:
             fail(f"cover: a cover's alive changed on the continuous path in {p.name} "
@@ -1159,16 +1193,17 @@ def part_wall():
     effort, exposure) of an enemy NO member of team t sees leaves t's
     visible set unchanged; the same perturbation of a SEEN enemy leaves it
     unchanged too, and killing the seen enemy removes it. Corpus (a) bots
-    (cone) and (b) (all_round), at decision ticks."""
+    (cone) and the all_round ship match, at decision ticks."""
     import cupy as cp
     from simulation import turning
     from simulation import unit_store
     lay = unit_store.layout()
-    col = {n: lay.column(n).offset for n in ("team", "life_state", "valid", "facing_q",
+    col = {n: lay.column(n).offset for n in ("team", "life_state", "facing_q",
                                             "current_hp", "omega_q", "effort", "exposure")}
+    col["valid"] = lay.valid
     dead = 1                                         # unit_schema._LIFE_CHOICES.index("dead")
     total = {}
-    for p in corpus_a()[:1] + corpus_b():
+    for p in corpus_a()[:1] + corpus_round():
         s = twin(p)
         c = cd.DeviceConductor(s.sim, bp=bp)
         obs = dobs.DeviceObservation(c, [s.spec], p.S, DECIMATION, n_teams=p.T)

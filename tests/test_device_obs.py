@@ -256,3 +256,82 @@ def test_the_float_dtype_lists_are_the_served_float_keys():
         set(device_obs.FLOAT16_KEYS)
     assert {k for k, (_, dt) in got.items() if np.dtype(dt) == np.float32} == \
         set(device_obs.FLOAT32_KEYS)
+
+
+# ---------------------------------------------------------------------------
+# #29 P8.2: who sees whom's table rows, the cover table, the team slots
+# ---------------------------------------------------------------------------
+def _room_session(name):
+    import tempfile
+
+    import breach_physics as bp
+    import level_loader
+    sys.path.insert(0, str(ROOT / "tools"))
+    import gen_training_rooms as TR
+    from simulation.match_session import MatchSession
+    d = tempfile.mkdtemp(prefix="p82_rooms_")
+    for dr in TR.drafts():
+        if dr.name == name:
+            TR.write(dr, d)
+    return MatchSession(level_loader.load(name, d), None, seed=1, breach_physics=bp)
+
+
+def test_the_sight_rows_are_what_can_see_reads():
+    """Property: the obs table's sight rows are what ``vision.can_see``
+    reads: the match's rule (``Simulation.sight``'s index in
+    ``match.SIGHT_RULES``: ship_demo's cone, a training room's all_round),
+    ``vision.cos_threshold`` of the live cone half-angle and
+    ``float(awareness_radius_tiles)``, as their own float64 bits. Breaks
+    when the rule is read from another place than the sim, the threshold is
+    re-derived (another cosine, a Q16 row), or a row lands at another
+    offset."""
+    import numpy as np
+    from config import CFG
+    from simulation import match, vision
+    bits = lambda x: int(np.array(float(x)).view(np.int64))  # noqa: E731
+    ses, ctx, _ = _ship_session()
+    t = device_obs.table_values(ses.sim, ctx)
+    assert ses.sim.sight == "cone"
+    assert int(t[_row("SIGHT_RULE")]) == match.SIGHT_RULES.index("cone")
+    assert int(t[_row("CONE_COS_BITS")]) == bits(
+        vision.cos_threshold(CFG.onephase.vision_cone_half_deg))
+    assert int(t[_row("AWARENESS_R_BITS")]) == bits(float(CFG.onephase.awareness_radius_tiles))
+    room = _room_session("range_door")
+    assert device_obs.sight_values(room.sim)["SIGHT_RULE"] == match.SIGHT_RULES.index("all_round")
+
+
+def test_the_cover_table_is_the_sims_cover_and_sight_blocking_cover_is_refused():
+    """Property: the cover table holds every ``sim.cover`` entity in its
+    order, its rectangle as the CoverRuntime's own float64 bits, its alive
+    and blocks_los; a cover that blocks SIGHT is refused by name (the
+    device's lines do not apply it). Breaks when a cover is dropped,
+    re-ordered or re-quantized, or a sight-blocking cover passes silently."""
+    import numpy as np
+    import pytest
+    bits = lambda x: int(np.array(float(x)).view(np.int64))  # noqa: E731
+    ses = _room_session("range_hall")
+    cov = list(ses.sim.cover)
+    assert len(cov) >= 1
+    t = device_obs.cover_values(ses.sim)
+    assert t.shape == (len(cov), len(device_obs.COVER_FIELDS))
+    for i, c in enumerate(cov):
+        assert [int(x) for x in t[i]] == [bits(c.x0), bits(c.y0), bits(c.x1), bits(c.y1),
+                                          int(c.alive), int(c.blocks_los)]
+    cov[0].blocks_los = True
+    with pytest.raises(device_obs.DeviceObsRefused, match="blocks line of sight"):
+        device_obs.cover_values(ses.sim)
+
+
+def test_a_team_without_a_visible_slot_is_refused():
+    """Property: a unit whose team is neither a marine team of the layout
+    nor the zombie team is refused by name (the visible table has a slot per
+    marine team and one for the zombies). Breaks when such a unit would be
+    folded into another team's slot."""
+    import pytest
+    from simulation.factions import ZOMBIE_TEAM
+    ses, _, T = _ship_session()
+    device_obs.check_teams(ses.sim, T)
+    assert any(int(u.team) == ZOMBIE_TEAM for u in ses.sim.units)
+    ses.sim.units[0].team = T + 3
+    with pytest.raises(device_obs.DeviceObsRefused, match="neither a marine team"):
+        device_obs.check_teams(ses.sim, T)

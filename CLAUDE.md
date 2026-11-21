@@ -300,6 +300,8 @@ amends the rule file, never this line's length.
 | Observation spec | `src/simulation/obs_spec_v1.py` + `EntityFieldAccessor.observe` | A named, versioned spec behind THE WALL; a new idea is a new spec |
 | Full view | `obs_spec_v1.FullView` | The value network's privileged view, never a key of `obs` |
 | Device observation | `src/simulation/device_obs.py` + `cpp/src/cuda_obs.*` + generated `cpp/src/obs_layout.h` | THE device form of observation spec v1 and the full view, built in the conductor tick into env-owned buffers; the host builders stay the reference; never a second observation |
+| Device vision | `cpp/src/cuda_obs_sight.{cuh,cu}` + `DeviceObservation.vision` | THE device form of who sees whom (both sight rules, every tick) and of `rays_clear` / `window_clear`, read by every device block that asks what a team sees or a line; never a second pair loop or line walk |
+| Cover table (device) | `device_obs.cover_values` + `obs_sight::solid_in_way` | THE device form of `sim.cover` and of `line_of_fire.solid_in_way`, staged once per episode; never a second cover list |
 | Action spec | `src/simulation/action_spec_v1.py` + the decoder in `src/control_policy.py` | THE one layer from a network's choices to verbs; masks from the game's own gates |
 | Reward profile | `src/simulation/reward_v1.py` + `[reward] profile` | A reward is a named table of term weights; the env returns groups, never their sum |
 | Bots through the door | `src/control_bots_door.py` | The layered bots driven through action spec v1 (the imitation teacher); never a second table |
