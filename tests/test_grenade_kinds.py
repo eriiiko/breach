@@ -735,8 +735,16 @@ _PRE_G3P_SHIP_DEMO = dict(
     # (was 6840efc104ff29770f92d77f73c4f9d5b3107a206005576c1752e8cce3f7381e)
     # #217 §8 re-pin (2026-11-21), the causes above.
     # (was d2493986729e308ee3e93d8041d63a46ae26e5e6df067c8d2718c33e19ea5f0a)
-    field_digest="afa3aa1327d71d333d456a19d8111719"
-                 "1e5685b2b821ba13c444df66b351a78d",
+    # #217 §8.17 re-pin (2026-11-21, a numerics method choice, Claude's per
+    # the physics-numerics-lead mandate): partial-permeability cells (a unit's
+    # footprint, a crate) left the EOS k-set (EOSSolver.kset_skip_partial):
+    # their collocated divergence moved ~1/55 of the mass the k-rule read, so
+    # k falls where only the bodies drove it and the match moves. SOLE CAUSE,
+    # verified on the same build: with kset_skip_partial off this pin's §8
+    # value comes back (design §8.17).
+    # (was afa3aa1327d71d333d456a19d81117191e5685b2b821ba13c444df66b351a78d)
+    field_digest="76f54837fe1e6ac86b2caf00ea9829e0"
+                 "fa17a7bfa20714915984fcbd86730419",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -782,8 +790,10 @@ _PRE_G3P_SHIP_DEMO = dict(
     # (was f05ce73d08ead792746f68896e53660f7c27e849a93bcb89b00b43e3f78272d8)
     # #217 §8 re-pin (2026-11-21), the causes above.
     # (was f1160ab9441b7ae28f7489525e446c24cdb0841cc83197a25f386f4feb3f4beb)
-    tick_digest="9340488422b539f0aebf88094e692aaf"
-                "7a8492c85eef5ea1ac70aa3b5b7e1ecf",
+    # #217 §8.17 re-pin (2026-11-21), the cause above.
+    # (was 9340488422b539f0aebf88094e692aaf7a8492c85eef5ea1ac70aa3b5b7e1ecf)
+    tick_digest="cdf05a742e6b0493296eb9f3a3dbd08f"
+                "3948b6e13d2162cbc25f8921b83a5ed6",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -829,8 +839,10 @@ _PRE_G3P_SHIP_DEMO = dict(
     # (was 6d3f0fb20cfdd2ed0d2eb5ee95bcead741015e083e9017c2c0c853c24cb025fb)
     # #217 §8 re-pin (2026-11-21), the causes above.
     # (was 7555e592b6f0622e1fb6cc453f0050481a2e8aeb764b4dd8d8458b0068fc3087)
-    unit_stream="560dfe283c1baa7d2653af7ab3f53b84"
-                "9d9e0de0bef55e743ac78ce466e46065")
+    # #217 §8.17 re-pin (2026-11-21), the cause above.
+    # (was 560dfe283c1baa7d2653af7ab3f53b849d9e0de0bef55e743ac78ce466e46065)
+    unit_stream="dc774416c15984877dcc5fd9e4e5b8e5"
+                "99c60fa01cf0c98e61a15b8ea1df7a73")
 
 
 def test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match(monkeypatch):

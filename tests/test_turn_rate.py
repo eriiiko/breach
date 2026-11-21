@@ -364,7 +364,15 @@ _PRE_G1P_SHIP_DEMO = dict(
     # GAME moved, by design (docs/eos_checkerboard_design_2026-11-20.md §8).
     # The 1.0 m box pins pass unchanged.
     # (was outcome="win", team=0, ticks=866)
-    outcome="win", team=0, ticks=333,
+    # #217 §8.17 re-pin (2026-11-21, a numerics method choice, Claude's per
+    # the physics-numerics-lead mandate): partial-permeability cells (a unit's
+    # footprint, a crate) left the EOS k-set (EOSSolver.kset_skip_partial):
+    # their collocated divergence moved ~1/55 of the mass the k-rule read, so
+    # k falls where only the bodies drove it and the match moves. SOLE CAUSE,
+    # verified on the same build: with kset_skip_partial off this pin's §8
+    # value comes back (design §8.17).
+    # (was outcome="win", team=0, ticks=333,)
+    outcome="win", team=0, ticks=252,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -386,8 +394,10 @@ _PRE_G1P_SHIP_DEMO = dict(
     # (was 5de0f68a2c7b3eae00b28d49c0fb086435b64d70621884390ec222eaed9a0e84)
     # #217 §8 re-pin (2026-11-21), the causes above.
     # (was 25adc84f0f5231361c98425eb49b85bd1f63ffd2b2701fe0a9cab304a1c1a68b)
-    field_digest="2cfbc63f208c126bfb5ad22d3713273f"
-                 "6d91676d43b139a052226fd8d36d16e7",
+    # #217 §8.17 re-pin (2026-11-21), the cause above.
+    # (was 2cfbc63f208c126bfb5ad22d3713273f6d91676d43b139a052226fd8d36d16e7)
+    field_digest="a647159d1adf56c128039ed4f3fae67f"
+                 "98e08785c4207a07a723f0525672ce2e",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -433,8 +443,10 @@ _PRE_G1P_SHIP_DEMO = dict(
     # (was dce8088ada0e51ca89a4c74c9534d33e080e31aba1c867b2ceec945df3baf59e)
     # #217 §8 re-pin (2026-11-21), the causes above.
     # (was 3c8fe031632dbcc78929e79590f46db07743b1c912065ada8067b6e1875e00d0)
-    tick_digest="0eccc54bce3d1e8367df19ce2cc839b9"
-                "f389f550dfc6ee47570e8969a2e2d7eb",
+    # #217 §8.17 re-pin (2026-11-21), the cause above.
+    # (was 0eccc54bce3d1e8367df19ce2cc839b9f389f550dfc6ee47570e8969a2e2d7eb)
+    tick_digest="98d5e172da332ed071be5e9be00ce85b"
+                "dad5dd6bc1c59ba627c6c7ca08969b07",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -480,8 +492,10 @@ _PRE_G1P_SHIP_DEMO = dict(
     # (was 5f261ffa1c9747162d867e355142e7822e9cda9fa2667db1d1d815b8fe760a60)
     # #217 §8 re-pin (2026-11-21), the causes above.
     # (was 226aa165cc713bee23740d0a1a5b2e83909aef4d01a334d3c123f0d975486c5b)
-    unit_stream="5dc4e79febd681bbdcba186f37725d87"
-                "92b60ed8b653d3da66dcc7dd94ea259d")
+    # #217 §8.17 re-pin (2026-11-21), the cause above.
+    # (was 5dc4e79febd681bbdcba186f37725d8792b60ed8b653d3da66dcc7dd94ea259d)
+    unit_stream="3c6431fba40e6f3bc074ecfb0b77cfb0"
+                "ee96449bbe70bf2820a4d2986b8dd359")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(

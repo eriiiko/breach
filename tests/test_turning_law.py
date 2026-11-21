@@ -609,7 +609,15 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # GAME moved, by design (docs/eos_checkerboard_design_2026-11-20.md §8).
     # The 1.0 m box pins pass unchanged.
     # (was outcome="win", team=0, ticks=415)
-    outcome="win", team=0, ticks=310,
+    # #217 §8.17 re-pin (2026-11-21, a numerics method choice, Claude's per
+    # the physics-numerics-lead mandate): partial-permeability cells (a unit's
+    # footprint, a crate) left the EOS k-set (EOSSolver.kset_skip_partial):
+    # their collocated divergence moved ~1/55 of the mass the k-rule read, so
+    # k falls where only the bodies drove it and the match moves. SOLE CAUSE,
+    # verified on the same build: with kset_skip_partial off this pin's §8
+    # value comes back (design §8.17).
+    # (was outcome="win", team=0, ticks=310,)
+    outcome="win", team=0, ticks=337,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -631,8 +639,10 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # (was 7d942b188b741f5d8b3baa1b6d917ee8576280c5d46d5f6a1230654e20353d1f)
     # #217 §8 re-pin (2026-11-21), the causes above.
     # (was fe176315be011c21acfa21c55b817d77796d96074b69eb1968015932458c3ac4)
-    field_digest="c5578448029780886df145c3928eadce"
-                 "03dc1e8e4a0d9e51d63e3db20f77c5a6",
+    # #217 §8.17 re-pin (2026-11-21), the cause above.
+    # (was c5578448029780886df145c3928eadce03dc1e8e4a0d9e51d63e3db20f77c5a6)
+    field_digest="b093b93a8fc375d5a4dbf2140ba9606d"
+                 "b6df8b0598f20782722cdf36f162caf0",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -678,8 +688,10 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # (was 56f51734ba130218c8fbd0b175d1c778f4bece711306da6c2f8b26d8a1af040f)
     # #217 §8 re-pin (2026-11-21), the causes above.
     # (was 9574d42ea302d2bc755f2717bb18102916fcb1dac00e3476c6e2048859d880a1)
-    tick_digest="26b7785b31f6f87feaa024cbaf32ed2f"
-                "0a82375d9c18f70c0850d62ede860ac8",
+    # #217 §8.17 re-pin (2026-11-21), the cause above.
+    # (was 26b7785b31f6f87feaa024cbaf32ed2f0a82375d9c18f70c0850d62ede860ac8)
+    tick_digest="16d5ea7c88ffa6a21d02cbe53c5ef134"
+                "d0c3a9bf91b9573eb1c88dfe63511e5d",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -725,8 +737,10 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # (was feeae05c5a1a3d7e419a501a9e5495b701fad28b4976a0c2a849d7acbad8ea7d)
     # #217 §8 re-pin (2026-11-21), the causes above.
     # (was 03cae5ed3684188efd40cf3b9e97fc1c51cb598fd37b2b9bb1482ab424438852)
-    unit_stream="e04be396f87d75be902f64b5bb801e00"
-                "b4f6db0fd2acee5c0f0e0b0d21ad7e58")
+    # #217 §8.17 re-pin (2026-11-21), the cause above.
+    # (was e04be396f87d75be902f64b5bb801e00b4f6db0fd2acee5c0f0e0b0d21ad7e58)
+    unit_stream="9fd7c4542ca204151481299788d9fc57"
+                "e4d6bc5b7d4e78d59ce90a2fe389337c")
 #: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
 #: residency P3d: the horde descends an integer BFS field, no A*; see
 #: tests/test_zombie_control.py's pins for the law and its proof). This

@@ -99,7 +99,15 @@ _STAGE1_SHIP_DEMO = dict(
     # GAME moved, by design (docs/eos_checkerboard_design_2026-11-20.md §8).
     # The 1.0 m box pins pass unchanged.
     # (was outcome="win", team=0, ticks=780)
-    outcome="win", team=0, ticks=315,
+    # #217 §8.17 re-pin (2026-11-21, a numerics method choice, Claude's per
+    # the physics-numerics-lead mandate): partial-permeability cells (a unit's
+    # footprint, a crate) left the EOS k-set (EOSSolver.kset_skip_partial):
+    # their collocated divergence moved ~1/55 of the mass the k-rule read, so
+    # k falls where only the bodies drove it and the match moves. SOLE CAUSE,
+    # verified on the same build: with kset_skip_partial off this pin's §8
+    # value comes back (design §8.17).
+    # (was outcome="win", team=0, ticks=315,)
+    outcome="win", team=1, ticks=321,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -121,8 +129,10 @@ _STAGE1_SHIP_DEMO = dict(
     # (was e71707b913095bb53c7ad9c7f38834664d19431033c9d7d95651ea7e65422e43)
     # #217 §8 re-pin (2026-11-21), the causes above.
     # (was bc931185696567f7eee7a4992827fa53eae129158cd015158d80f286384a1760)
-    field_digest="a5e6e8d8b2cfdc690b63596df50b407a"
-                 "45cdbc7928b9f38917f2cc3c7cac448f",
+    # #217 §8.17 re-pin (2026-11-21), the cause above.
+    # (was a5e6e8d8b2cfdc690b63596df50b407a45cdbc7928b9f38917f2cc3c7cac448f)
+    field_digest="f5d6b3511a84e052d433e9fc8f9432c1"
+                 "ff3b5fd91bcae6dbc23ff0c1c32fdb8d",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -168,8 +178,10 @@ _STAGE1_SHIP_DEMO = dict(
     # (was eb45f863f0da2c7d672c00773f5541f1fd0864f830902d935158d2c722ef241b)
     # #217 §8 re-pin (2026-11-21), the causes above.
     # (was c2c6a9f20f2a7e29ede92a04832072f4e775a72be02735a4eaa305d36b1d4495)
-    tick_digest="9923aed722e47b1c544ee6325ec5756e"
-                "883c40c6cb6a7db548de2390ed746096",
+    # #217 §8.17 re-pin (2026-11-21), the cause above.
+    # (was 9923aed722e47b1c544ee6325ec5756e883c40c6cb6a7db548de2390ed746096)
+    tick_digest="02479a6773453fccc43b01cc97d73170"
+                "fdd147b315961003145f2595b9322460",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -215,8 +227,10 @@ _STAGE1_SHIP_DEMO = dict(
     # (was 915a9b55c646a6b96094be1f68b6adf80212ec055a972f2139e2e8802e877ec9)
     # #217 §8 re-pin (2026-11-21), the causes above.
     # (was d1052700f45fd184f7d6b73a76d21e1c96a21cdb545783ec093268c727645499)
-    unit_stream="c7358f9b6f6b1e948b928be6b1e67910"
-                "415be1ee10f0c39708746ccd9fc1197a")
+    # #217 §8.17 re-pin (2026-11-21), the cause above.
+    # (was c7358f9b6f6b1e948b928be6b1e67910415be1ee10f0c39708746ccd9fc1197a)
+    unit_stream="361406bfcb401c43ef4f4ef861c80de3"
+                "77b85cd57d0cc81e2a35895a067cb492")
 _STAGE1_BOX = dict(
     # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
     # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
