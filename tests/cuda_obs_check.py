@@ -2761,8 +2761,7 @@ def part_gate():
     for p in corpus_orders():                       # P8.6b: every order kind by hand
         gate(f"(d orders) {p.name}", [p], cdn, books_census=bc)
     ccn = Census()                                  # P8.6a: corpus (c), decoder-driven
-    for p in corpus_c():
-        gate(f"(c) {p.name}", [p], ccn, books_census=bc)
+    gate_c(ccn, bc)
     ca.judge("census (a)", strict=False)
     cb.judge("census (b)", strict=False)
     cdn.judge("census (d)", strict=False)
@@ -4106,13 +4105,51 @@ def part_decoder():
              f"({bad} / {bad_r} / {host_bad})")
 
 
-def part_dec_gate():
-    """P8.6a's corpus (c) alone (part GATE runs it too, with the census)."""
+#: Part GATE's gate runs of corpus (c), for part DEC_GATE in the same process:
+#: label -> the failures its run recorded; and DECSTATS as those runs left it.
+_C_GATED: dict = {}
+_C_DECSTATS: dict = {}
+
+
+def gate_c(census=None, books_census=None) -> None:
+    """Corpus (c) gated at N = 1, each run alone: a refusal names its slot
+    and fails that run only, the next runs. Part GATE runs it with its census;
+    part DEC_GATE runs exactly this (without the census, which only counts
+    what passed) -- so without a break part GATE's runs ARE part DEC_GATE's,
+    and DEC_GATE reads them when part GATE ran first in this process
+    (:data:`_C_GATED`)."""
+    _C_GATED.clear()
     for p in corpus_c():
+        label = f"(c) {p.name}"
+        n0 = len(FAILS)
         try:
-            gate(f"(c) {p.name}", [p])
+            gate(label, [p], census, books_census=books_census)
         except Exception as ex:                    # a refusal names its slot: a finding
-            fail(f"(c) {p.name}: {type(ex).__name__}: {ex}")
+            fail(f"{label}: {type(ex).__name__}: {ex}")
+        _C_GATED[label] = list(FAILS[n0:])
+    _C_DECSTATS.clear()
+    _C_DECSTATS.update({k: dict(v) for k, v in DECSTATS.items()})
+
+
+def part_dec_gate():
+    """P8.6a's corpus (c) alone, every run gated and the decoder's coverage
+    judged. Part GATE gates the same runs with the same :func:`gate_c` (and
+    adds the census): when it ran earlier in this process with no break
+    switch set, this part reads its runs' verdicts instead of gating the
+    same runs a second time (the DEVICE CHECK PLAYS fold); by hand, alone or
+    under a break, it gates them itself."""
+    labels = [f"(c) {p.name}" for p in corpus_c()]
+    if not BREAK and labels and all(lb in _C_GATED for lb in labels):
+        print(f"  corpus (c): part GATE's {len(labels)} gate runs of this process read "
+              f"(the same gate_c, not run twice)")
+        for lb in labels:
+            for msg in _C_GATED[lb]:
+                fail(msg)
+            if not _C_GATED[lb]:
+                print(f"  {lb}: equal (part GATE's run)")
+        DECSTATS.update({k: dict(v) for k, v in _C_DECSTATS.items()})
+    else:
+        gate_c()
     judge_decoder(corpus_c())
 
 
