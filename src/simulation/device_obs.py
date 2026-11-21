@@ -40,7 +40,15 @@ window's ``wall_share`` / ``door`` planes, ``valid`` / ``in_match``): one
 launch for every env (``cpp/src/cuda_obs.cu``), the spec's constants from the
 GENERATED ``cpp/src/obs_layout.h`` (:func:`header_text`, ``tools/
 gen_obs_layout.py``), never typed into the kernel. A row that is not valid
-reads zeros (``observe_rows`` zeroes it).
+reads zeros (``observe_rows`` zeroes it). P8.1: the vector columns of the
+store and the tables (``BUILT["vector"]``), from the OBS TABLE
+(:func:`table_values`: per env every value ``ObsContext.build`` and
+``build_vector`` read that is not unit state, floats as their own float64
+bit patterns; :func:`team_values`: per team its n and loadout row) through
+the observation's float kit (``cpp/src/cuda_obs_float.cuh``: float64 in the
+reference's order, never fused, one cast per value into the served dtype:
+:data:`FLOAT16_KEYS` through the hand double -> float16, :data:`FLOAT32_KEYS`
+through the plain cast).
 
 THE CADENCE: an env's block is built on its decision ticks -- its episode
 start (the tick it held when the observation was built) and every
@@ -78,10 +86,223 @@ BUILT = {
     "far_u": ("door",),
     "valid": None,
     "in_match": None,
+    # P8.1: the vector columns that need only the unit store and the tables
+    "vector": (
+        "facing_cos", "facing_sin", "omega", "turn_left", "pushed_x", "pushed_y",
+        "effort", "react", "prone", "can_move", "can_act", "can_aim",
+        *(f"status_left[{k}]" for k in range(9)),
+        "rounds", "mags", "ammo_untracked", "reloading", "reload_left",
+        *(n for k in range(6) for n in (f"grenade[{k}]", f"grenade_kind_ok[{k}]")),
+        "throw_windup", "throw_left", "throw_kind", "charges", "has_charge_kind",
+        "planting", "plant_left", "plant_timer", "melee_cool", "has_melee",
+        "shove_cool", "class", "weapon", "range", "rof", "spread", "trigger",
+        "time_left", "mates_alive", "team_ammo"),
 }
+
+#: The served dtypes of the observation's float keys (P8.1, said once): the
+#: float16 keys go through the kit's hand conversion, the float32 ones through
+#: the plain cast, the float64 ones (``final_`` books) are written as they are.
+FLOAT16_KEYS = ("near_f", "far_f")
+FLOAT32_KEYS = ("vector", "list", "full_list", "full_match")
 
 #: The per-env parameter row (int64): the episode's first tick, the decimation.
 PARAM_EPISODE_TICK, PARAM_DECIMATION, PARAM_W = 0, 1, 2
+
+
+# ---------------------------------------------------------------------------
+# THE OBS TABLE (P8.1; inventory A.6, K4)
+# ---------------------------------------------------------------------------
+# Per env ONE int64 vector of every value ``ObsContext.build`` and
+# ``build_vector`` read that is not unit state, each read from the
+# reference's OWN object (the episode's ``ObsContext``, the sim's weapon rows,
+# the loadout and env-profile tables, the species registry): the "Device
+# tables" rule, the observation's side. A float the host reads as a float is
+# carried as ITS OWN float64 bit pattern (``*_BITS``), never a Q16 row. The
+# per-team rows (``n_t``, the team's loadout) are a second ``(N, T, TEAM_W)``
+# buffer, T being the run's layout size. Offsets are generated into
+# ``obs_layout.h`` (``OBS_TAB_*``), in the fingerprint.
+#: A loadout row's fields (``[loadouts.*]``; GRENADES: the count per
+#: hand-grenade row of the weapon table's family, in its order).
+LOADOUT_FIELDS = ("MAGAZINES", "EXPLOSIVES", "CHARGE", "WEAPON", "GRENADES")
+#: A weapon row's fields the observation divides by (``[weapons.*]``;
+#: CONE_AIM_Q = ``combat.cone_q16_of_deg(spread_deg)``, the cone door).
+WEAPON_FIELDS = ("MAG_SIZE", "RANGE_TILES", "ROF_TICKS", "RELOAD_TICKS", "CONE_AIM_Q")
+#: An environment profile's floats (``[env_profiles.*]`` and the species'
+#: own profiles), as float64 bit patterns.
+PROFILE_FIELDS = ("TEMPERATURE_MAX_BITS", "PRESSURE_MIN_BITS", "PRESSURE_MAX_BITS")
+#: A team's row: its ``n`` and its loadout's row (-1: none).
+TEAM_FIELDS = ("N", "LOADOUT")
+#: The scalars, in order: (name, the ObsContext attribute or a reader key).
+TABLE_SCALARS = (
+    "L_REF", "REF_ROF_TICKS", "REF_CONE_Q", "REF_MELEE_ARC_Q", "V_REF_Q", "V_FALL_Q",
+    "REACT_TICKS", "SHOVE_COOLDOWN_TICKS", "LIMIT_TICKS", "MEMORY_TICKS", "TPS",
+    "C4_FUSE_MAX_TICKS", "HAND_FUSE_MAX_TICKS", "TURN_RATE_CLASS_Q", "HALF_TURN_TICKS",
+    "LINE_CLEAR_TILES", "ZOMBIE_NEAR_TILES", "X_MAX_Q", "ZOMBIE_CLASS", "CAP_Q",
+    "FRAG_RADIUS", "MAX_THROW_RANGE", "N_TEAMS", "ZOMBIES", "HAND_WINDUP_TICKS",
+    "PLANT_TICKS", "POISON_MIN_DENSITY_BITS", "TEARGAS_BLIND_DENSITY_BITS",
+    "SMOKE_DENSE_BITS",
+)
+
+
+def _f64_bits(x) -> int:
+    """A float's own float64 bit pattern as a signed int64."""
+    return int(np.array(float(x), dtype=np.float64).view(np.int64))
+
+
+def _bits_f64(b: int) -> float:
+    return float(np.array(int(b), dtype=np.int64).view(np.float64))
+
+
+def _table_counts() -> dict:
+    """The widths the table's blocks take from the config tables (the
+    unit schema's own row indexing: a column's row IS its position)."""
+    from simulation import unit_schema as us
+    from simulation.species import SPECIES_REGISTRY
+    from simulation.weapons import get_tables as weapon_tables
+    return {"loadouts": len(us.TABLES["loadouts"]()),
+            "weapons": len(us.TABLES["weapons"]()),
+            "profiles": len(us.TABLES["env_profiles"]()),
+            "species": len(SPECIES_REGISTRY),
+            "grenades": len(weapon_tables().hand_grenade_rows)}
+
+
+def table_layout() -> list:
+    """``[(name, offset, width)]`` of the obs table's rows, and the record
+    widths: THE layout ``obs_layout.h`` carries."""
+    n = _table_counts()
+    loadout_w = len(LOADOUT_FIELDS) - 1 + n["grenades"]
+    rows = [(s, 1) for s in TABLE_SCALARS]
+    from simulation.status import N_STATUS_KINDS
+    rows.append(("STATUS_SCALE", N_STATUS_KINDS))
+    rows.append(("LOADOUT", n["loadouts"] * loadout_w))
+    rows.append(("WEAPON", n["weapons"] * len(WEAPON_FIELDS)))
+    rows.append(("PROFILE", n["profiles"] * len(PROFILE_FIELDS)))
+    rows.append(("SPECIES_PROFILE", n["species"] * len(PROFILE_FIELDS)))
+    out, off = [], 0
+    for name, w in rows:
+        out.append((name, off, w))
+        off += w
+    return out
+
+
+def table_width() -> int:
+    name, off, w = table_layout()[-1]
+    return off + w
+
+
+def _table_constants() -> list:
+    n = _table_counts()
+    out = [(f"OBS_TAB_{name}", off) for name, off, _ in table_layout()]
+    out.append(("OBS_TAB_W", table_width()))
+    out += [("OBS_TAB_N_LOADOUTS", n["loadouts"]), ("OBS_TAB_N_WEAPONS", n["weapons"]),
+            ("OBS_TAB_N_PROFILES", n["profiles"]), ("OBS_TAB_N_SPECIES", n["species"]),
+            ("OBS_TAB_N_GRENADES", n["grenades"])]
+    for i, f in enumerate(LOADOUT_FIELDS):
+        out.append((f"OBS_LOADOUT_{f}", i))
+    out.append(("OBS_LOADOUT_W", len(LOADOUT_FIELDS) - 1 + n["grenades"]))
+    for i, f in enumerate(WEAPON_FIELDS):
+        out.append((f"OBS_WEAPON_{f}", i))
+    out.append(("OBS_WEAPON_W", len(WEAPON_FIELDS)))
+    for i, f in enumerate(PROFILE_FIELDS):
+        out.append((f"OBS_PROFILE_{f}", i))
+    out.append(("OBS_PROFILE_W", len(PROFILE_FIELDS)))
+    for i, f in enumerate(TEAM_FIELDS):
+        out.append((f"OBS_TEAM_{f}", i))
+    out.append(("OBS_TEAM_W", len(TEAM_FIELDS)))
+    return out
+
+
+def table_values(sim, ctx) -> np.ndarray:
+    """ONE env's obs table (``(OBS_TAB_W,)`` int64) from the reference's own
+    objects: ``ctx`` (the episode's ``ObsContext``), ``sim.weapons_tables``
+    (the rows ``build_vector`` reads), the loadout / env-profile tables and
+    the species registry. A float is its own bit pattern."""
+    from simulation import combat
+    from simulation import unit_schema as us
+    from simulation.loadouts import get_tables as loadout_tables
+    from simulation.species import SPECIES_REGISTRY
+    from simulation.weapons import PLANT_WEAPON
+    rows = sim.weapons_tables.weapons.by_name
+    scal = {
+        "L_REF": ctx.l_ref, "REF_ROF_TICKS": ctx.ref_rof_ticks,
+        "REF_CONE_Q": ctx.ref_cone_q, "REF_MELEE_ARC_Q": ctx.ref_melee_arc_q,
+        "V_REF_Q": ctx.v_ref_q, "V_FALL_Q": ctx.v_fall_q, "REACT_TICKS": ctx.react_ticks,
+        "SHOVE_COOLDOWN_TICKS": ctx.shove_cooldown_ticks, "LIMIT_TICKS": ctx.limit_ticks,
+        "MEMORY_TICKS": ctx.memory_ticks, "TPS": ctx.tps,
+        "C4_FUSE_MAX_TICKS": ctx.c4_fuse_max_ticks,
+        "HAND_FUSE_MAX_TICKS": ctx.hand_fuse_max_ticks,
+        # what build_vector's omega divides by: Simulation.unit_turn_rate_q16's
+        # class value (the TURN hook's base)
+        "TURN_RATE_CLASS_Q": sim._marine_turn_rate_q16,  # traits-class: the class value; the kernel applies the TURN hook (unit_lib::scaled)
+        "HALF_TURN_TICKS": ctx.half_turn_ticks, "LINE_CLEAR_TILES": ctx.line_clear_tiles,
+        "ZOMBIE_NEAR_TILES": ctx.zombie_near_tiles, "X_MAX_Q": ctx.x_max_q,
+        "ZOMBIE_CLASS": ctx.zombie_class, "CAP_Q": ctx.cap_q,
+        "FRAG_RADIUS": ctx.frag_radius, "MAX_THROW_RANGE": ctx.max_throw_range,
+        "N_TEAMS": ctx.n_teams, "ZOMBIES": int(ctx.spec.zombies),
+        "HAND_WINDUP_TICKS": rows["hand_grenade"].throw_windup_ticks,  # traits-class: the kernel applies HANDLING (unit_lib::handling_ticks)
+        "PLANT_TICKS": rows[PLANT_WEAPON].plant_ticks,  # traits-class: the kernel applies HANDLING
+        "POISON_MIN_DENSITY_BITS": _f64_bits(ctx.poison_min_density),
+        "TEARGAS_BLIND_DENSITY_BITS": _f64_bits(ctx.teargas_blind_density),
+        "SMOKE_DENSE_BITS": _f64_bits(ctx.smoke_dense),
+    }
+    out = np.zeros(table_width(), dtype=np.int64)
+    off = {name: o for name, o, _ in table_layout()}
+    for s in TABLE_SCALARS:
+        out[off[s]] = int(scal[s])
+    out[off["STATUS_SCALE"]:off["STATUS_SCALE"] + len(ctx.status_scale)] = ctx.status_scale
+    # loadouts, in the unit schema's row order
+    lt = loadout_tables()
+    hand = tuple(ctx.hand_rows)
+    lw = len(LOADOUT_FIELDS) - 1 + len(hand)
+    for i, name in enumerate(us.TABLES["loadouts"]()):
+        lo = lt.loadouts.by_name[name]
+        b = off["LOADOUT"] + i * lw
+        out[b + 0] = int(lo.magazines)
+        out[b + 1] = int(lo.explosives)
+        out[b + 2] = int(bool(lo.charge))
+        out[b + 3] = (us.table_row("weapons", lo.weapon)
+                      if lo.weapon in us.TABLES["weapons"]() else us.NO_ROW)
+        for k, row in enumerate(hand):
+            out[b + 4 + k] = int(lo.grenades.get(row, 0))
+    # weapons: the schema's row order, the values from the SIM's rows
+    ww = len(WEAPON_FIELDS)
+    for i, name in enumerate(us.TABLES["weapons"]()):
+        w = rows.get(name)
+        if w is None:
+            raise DeviceObsRefused(f"device observation: weapon row {name!r} of the "
+                                   f"process table is not in the sim's weapon tables")
+        b = off["WEAPON"] + i * ww
+        out[b + 0] = int(w.mag_size)
+        out[b + 1] = int(w.range_tiles)
+        out[b + 2] = int(w.rof_interval_ticks)
+        out[b + 3] = int(w.reload_ticks)  # traits-class: the kernel applies HANDLING
+        out[b + 4] = int(combat.cone_q16_of_deg(w.spread_deg))  # traits-class: the kernel applies SPREAD (unit_lib::scaled)
+    # environment profiles: [env_profiles.*] rows, then every species' own
+    pw = len(PROFILE_FIELDS)
+    profs = [("PROFILE", list(us.TABLES["env_profiles"]().values())),
+             ("SPECIES_PROFILE", [s.environment for s in SPECIES_REGISTRY.values()])]
+    for block, objs in profs:
+        for i, p in enumerate(objs):
+            b = off[block] + i * pw
+            out[b + 0] = _f64_bits(p.temperature_max)
+            out[b + 1] = _f64_bits(p.pressure_min)
+            out[b + 2] = _f64_bits(p.pressure_max)
+    return out
+
+
+def team_values(spec, n_teams: int) -> np.ndarray:
+    """ONE env's team rows (``(T, TEAM_W)`` int64): per marine team of the
+    run its ``n`` and its loadout's row, ``(0, -1)`` past the match's teams
+    (``build_vector``'s ``n_t = teams[team].n if team < len(teams) else 0``)."""
+    from simulation import unit_schema as us
+    out = np.zeros((int(n_teams), len(TEAM_FIELDS)), dtype=np.int64)
+    out[:, 1] = us.NO_ROW
+    names = us.TABLES["loadouts"]()
+    for t, team in enumerate(spec.teams[:int(n_teams)]):
+        out[t, 0] = int(team.n)
+        out[t, 1] = us.table_row("loadouts", team.loadout) if team.loadout in names \
+            else us.NO_ROW
+    return out
 
 
 class DeviceObsRefused(RuntimeError):
@@ -121,7 +342,23 @@ def _constants() -> list:
         ("OBS_PARAM_DECIMATION", PARAM_DECIMATION),
         ("OBS_PARAM_W", PARAM_W),
     ]
+    # -- P8.1: the vector's layout, the arithmetic's spec constants, the table
+    from simulation import status, turning, unit_fixed
+    out.append(("OBS_V", o.V))
+    out += [(f"OBS_V_{_cname(f.name)}", f.pos) for f in o.VECTOR_COLUMNS]
+    out += [("OBS_SQUASH_CAP_BITS", _f64_bits(o.SQUASH_CAP)),
+            ("OBS_FP_ONE", unit_fixed.FP_ONE), ("OBS_PI_Q16", turning.PI_Q16),
+            ("OBS_N_STATUS_KINDS", status.N_STATUS_KINDS),
+            ("OBS_HAND_GRENADE_SLOTS", o.HAND_GRENADE_SLOTS),
+            ("OBS_NO_ROW", us.NO_ROW)]
+    out += _table_constants()
     return out
+
+
+def _cname(name: str) -> str:
+    """A column name as a C identifier tail (``status_left[3]`` ->
+    ``STATUS_LEFT_3``)."""
+    return name.upper().replace("[", "_").replace("]", "")
 
 
 def _share_halves() -> list:
@@ -150,9 +387,11 @@ def header_text() -> str:
         "#pragma once",
         "// ==========================================================================",
         "// GENERATED by tools/gen_obs_layout.py from src/simulation/device_obs.py",
-        "// (#29 P8.0) -- NEVER EDIT BY HAND. The device observation's constants,",
-        "// each read from observation spec v1's own tables (obs_spec_v1), the door",
-        "// entity and the unit schema. A new constant an observation kernel reads",
+        "// (#29 P8.0, P8.1) -- NEVER EDIT BY HAND. The device observation's",
+        "// constants, each read from observation spec v1's own tables (obs_spec_v1),",
+        "// the door entity and the unit schema, and the obs table's offsets",
+        "// (device_obs.table_layout: its block widths are config table sizes). A",
+        "// new constant an observation kernel reads",
         f"// is a row of device_obs._constants, then `{GENERATOR}`, commit,",
         "// rebuild cpp/build_cuda; tests/test_device_obs.py refuses a stale copy",
         "// and DeviceObservation a module whose fingerprint differs.",
@@ -165,7 +404,11 @@ def header_text() -> str:
         "",
     ]
     for k, v in _constants():
-        lines.append(f"constexpr int {k} = {int(v)};")
+        v = int(v)
+        if -(1 << 31) <= v < (1 << 31):
+            lines.append(f"constexpr int {k} = {v};")
+        else:                                 # a float64 bit pattern
+            lines.append(f"constexpr int64_t {k} = {v}LL;")
     halves = ", ".join(f"0x{x:04x}" for x in _share_halves())
     lines += [
         "",
@@ -282,6 +525,16 @@ class DeviceObservation:
                             f"slot {u.slot}) is not the store's row {r}")
                     rowmap[e, t * self.S + int(u.slot)] = r
         self.rowmap = cp.asarray(rowmap)
+        # -- the obs table and the team rows (P8.1): from each env's own
+        # ObsContext, the reference's object for the episode -------------------
+        from simulation.obs_spec_v1 import ObsContext
+        self.ctx = [ObsContext.build(sim, spec, self.S, n_teams=self.T)
+                    for sim, spec in zip(c.sims, specs)]
+        self.table_host = np.stack([table_values(sim, ctx)
+                                    for sim, ctx in zip(c.sims, self.ctx)])
+        self.teams_host = np.stack([team_values(spec, self.T) for spec in specs])
+        self.table = cp.asarray(self.table_host)
+        self.teams = cp.asarray(self.teams_host)
         # -- the cadence and the ended latch -----------------------------------
         self.episode_tick = [int(s.tick) for s in c.sims]
         params = np.zeros((N, PARAM_W), dtype=np.int64)
@@ -327,6 +580,13 @@ class DeviceObservation:
             int(c.trow.ptr), int(self.params.data.ptr), int(self.ended.data.ptr),
             int(b["near_u"].data.ptr), int(b["far_f"].data.ptr), int(b["far_u"].data.ptr),
             int(b["valid"].data.ptr), int(b["in_match"].data.ptr))
+        # P8.1: the vector columns of the store and the tables
+        self.bp.obs_vector(
+            int(self.N), store, int(c.U), int(c.store.shape[2]), c.store.tables,
+            int(self.rowmap.data.ptr), int(self.n_rows), int(self.S), int(self.T),
+            int(self.table.data.ptr), int(self.table.shape[1]), int(self.teams.data.ptr),
+            int(c.trow.ptr), int(self.params.data.ptr), int(self.ended.data.ptr),
+            int(b["vector"].data.ptr))
         self.builds += 1
 
     # -- the hand-over -------------------------------------------------------
@@ -355,4 +615,7 @@ class DeviceObservation:
 
 __all__ = ["HEADER_REL", "GENERATOR", "BUILT", "DeviceObsRefused", "DeviceObservation",
            "served_shapes", "stream_ordering", "header_text", "fingerprint",
-           "check_compiled", "PARAM_EPISODE_TICK", "PARAM_DECIMATION", "PARAM_W"]
+           "check_compiled", "PARAM_EPISODE_TICK", "PARAM_DECIMATION", "PARAM_W",
+           "FLOAT16_KEYS", "FLOAT32_KEYS", "table_layout", "table_width", "table_values",
+           "team_values", "LOADOUT_FIELDS", "WEAPON_FIELDS", "PROFILE_FIELDS",
+           "TEAM_FIELDS", "TABLE_SCALARS"]

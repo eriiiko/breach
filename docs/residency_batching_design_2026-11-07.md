@@ -3133,6 +3133,65 @@ new one, each decision observed new / old / new, the new pair the control):
 columns) over bots (338 decisions), bots_v1 (69) and range_door (51). The
 order column `vector[91]` is not exercised by that corpus (no orders).
 
+**P8.1 AS-BUILT (2026-11-21, branch `29-p81-obs-vector`).** The 58 vector
+columns the column-to-patch table gives P8.1 (body, the nine status
+clocks, kit and grenades, throw / plant / melee / shove, class, weapon and
+its three ratios, trigger, the clock, `mates_alive`, `team_ammo`) are
+built by `bp.obs_vector` (`cpp/src/cuda_obs.cu`, one thread per (env, row),
+the same cadence and ended latch as P8.0's block, launched beside it from
+`DeviceObservation.build`); no row moved to another patch (every one needs
+only the store and the tables). THE OBS TABLE is `device_obs.table_values`
+(per env, `(OBS_TAB_W,)` int64, 149 wide on today's config: the
+`ObsContext` scalars, the sim's turn-rate class value, the hand wind-up and
+plant ticks, the nine status scales, the three plane densities as float64
+bits; per loadout row magazines / explosives / charge / weapon row / the six
+grenade counts; per weapon row mag size / range / rof / reload / the cone
+door of `spread_deg`; per `[env_profiles.*]` row and per species profile
+`temperature_max` / `pressure_min` / `pressure_max` as float64 bits) and
+`team_values` (`(T, 2)`: n, loadout row), offsets generated into
+`obs_layout.h` (in the fingerprint; the block widths are config table
+sizes). Choices where the design is silent: the integer reads the vector
+shares with the unit kernels (`mag_status`, `composed_flags`,
+`handling_ticks`, `scaled`, `wrap_q16`, the kit's `cos_q16` / `sin_q16`)
+are the unit library's, called with the device tables, the divisors the
+obs table's (the weapon rows sit in both, each read from the sim's own row
+object; a CPU test holds the obs table to those objects); the species'
+own environment profiles are carried too (a unit without `env_profile`
+reads its species'); the mitigation `resist_mult[POISON]` and
+`heat_dials` are left to P8.5a, which reads them. THE FLOAT KIT is
+`cpp/src/cuda_obs_float.cuh`: `__dadd_rn` / `__dmul_rn` / `__ddiv_rn`
+(never fused, whatever `--fmad`), `ratio`, `squash` with CUDA's `log`, the
+cast to float32 (`__double2float_rn`, a NaN given numpy's quieted pattern)
+and the hand double -> float16 (integer bits, nearest even once,
+subnormals, overflow, signed zero, numpy's NaN rule). The vector is
+float32; the float16 keys (`near_f`, `far_f`) take the hand conversion
+from P8.5a on (`device_obs.FLOAT16_KEYS` / `FLOAT32_KEYS`). Gates
+(`tests/cuda_obs_check.py`, `PATCH = "P8.1"`): raw-bit equal at every
+decision tick on bots (338 decisions), bots_v1 (69), range_door (51) and
+corpus (d) (81: a ship_demo bots match, seed 31, cut at 320 ticks, with a
+hand state at tick 0 for the reference and the twin alike -- the
+`[marine]` loadout row in the live tables replaced by one carrying all six
+hand-grenade kinds, a marine without loadout or melee row, two marines with
+other weapons, a blow just struck, status kinds 1..8 -- and hand intents
+through the tap: a plant, throws of kinds 1..5, a reload, a shove); batches
+N = 2 / 4 of ship_demo (493 / 805 env-decisions) and of range_door (112 /
+220); every owned column non-constant over (a)+(b)+(d) (31 were constant
+over (a)+(b) alone: the other grenade kinds, statuses 1..8, class, weapon
+and its ratios, the plant, the melee cooldown, `ammo_untracked`,
+`charges`, `can_aim`, `has_melee`, `has_charge_kind`); `log` moved 0 served
+values on the corpus. Part FLOATKIT: double -> float16 equal to numpy on
+446 538 values (every half, every midpoint and its two float64 neighbours,
+the edges, NaN payloads), double -> float32 on 1 246 538, a*b + c never
+fused on 100 000 triples where the fused form differs on all, the squash's
+served float32 equal to the host's on 414 101 values (its float64 differs
+on 92: CUDA's log is not correctly rounded, the cast hides it). Breaks, each
+red: `divisor` (the weapon block shifted one row), `half_f32`, `fused`,
+and P8.0's `anchor`, `stale`, `constant`. 2.00 syncs per steady tick at
+N = 1 and 2. Cost (`tools/bench_conductor.py --obs`, ship_demo, GPU time
+of one decision's blocks for all envs, P8.0's block and the vector
+together): 0.018 ms at N = 1, 0.018 ms at N = 64, 0.055 ms at N = 256 (P8.0's
+block alone measured 0.014 / 0.017 / 0.039).
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:

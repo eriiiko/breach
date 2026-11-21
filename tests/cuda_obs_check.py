@@ -16,7 +16,10 @@ the rows' units, the team picture the session keeps). Kept: the tick's
 intents and the OWNED arrays of each decision. (a) the pinned ship_demo
 matches ``bots`` and ``bots_v1`` (``tests/_pinned_matches``); (b) a training
 room (``tools/gen_training_rooms.py``'s ``range_door``, written to a temp
-folder: a door, cover, ``all_round``); and, for the batch, more seeds of both.
+folder: a door, cover, ``all_round``); (d) the hand match (P8.1: a ship_demo
+bots match cut at :data:`HAND_TICKS` with a hand state at tick 0 and hand
+intents, :func:`hand_setup` / :func:`hand_script`, for the owned columns (a)
+and (b) never move); and, for the batch, more seeds of (a) and (b).
 
 OWNERSHIP (``tests/obs_column_owners.toml``, the column-to-patch table): a
 gate compares exactly the columns / planes owned by :data:`PATCH` and every
@@ -31,7 +34,7 @@ decision tick of every env its owned device arrays compared with the
 reference's, raw bits (``view`` as unsigned ints: -0.0 and NaN count); the
 first difference printed (tick, env, key, plane, index) and FAILS.
 
-PART GATE (P8.0) -- corpus (a) and (b) at N = 1.
+PART GATE (P8.0) -- corpus (a), (b) and (d) at N = 1.
 PART BATCH (P8.0) -- N = 2 and 4 of ship_demo and of the training room,
 different seeds per env (envs end apart): every env equal to ITS reference
 at every one of its decision ticks (so equal to itself alone).
@@ -46,10 +49,19 @@ count at N = 1 and 2, and the blocks were built during the count.
 PART ENDED (P8.0) -- an env whose ended latch is set keeps its buffers (the
 blocks skip it) while its neighbour is rebuilt.
 
+PART FLOATKIT (P8.1) -- the observation's float kit on the card
+(``cpp/src/cuda_obs_float.cuh``): double -> float16 exhaustively equal to
+numpy, double -> float32 equal to numpy, a*b + c never contracted, the
+squash's served float32 equal to the host's (CUDA's log; the float64
+difference count is printed).
+
 THE BREAKS (``OBS_BREAK``), each must turn a part red: ``anchor`` (the
 blocks read the units one tile off: the window's anchor wrong), ``stale``
 (the blocks are not rebuilt after tick 0), ``constant`` (an owned column
-forced constant on both sides: the constancy guard).
+forced constant on both sides: the constancy guard), ``divisor`` (P8.1: the
+obs table's weapon block shifted one row, so ``rounds`` / ``range`` / ...
+divide by the neighbouring row), ``half_f32`` (P8.1: double -> float16 via
+float32, double rounding), ``fused`` (P8.1: the kit's a*b + c as an fma).
 
 PROPERTY: the device observation IS the host observation, value for value,
 on every owned column, at every decision tick, in a batch as alone; the
@@ -84,7 +96,7 @@ FAILS: list = []
 BREAK = os.environ.get("OBS_BREAK", "")
 #: The patch this script's gates are at: every column owned by it or an
 #: earlier patch of the version-2 table is compared.
-PATCH = "P8.0"
+PATCH = "P8.1"
 #: The decision cadence of the corpus (design 13.1's decimation, a run file's
 #: ``[run] decimation``; the device observation takes it as its argument).
 DECIMATION = 4
@@ -159,9 +171,10 @@ class Played:
     """One reference match: its level, spec, seed, (T, S), per tick its
     intents, per decision tick the owned arrays of the host observation."""
 
-    def __init__(self, name, level, spec, seed, T, S):
+    def __init__(self, name, level, spec, seed, T, S, setup=None):
         self.name, self.level, self.spec, self.seed = name, level, spec, seed
         self.T, self.S = T, S
+        self.setup = setup                    # corpus (d): the hand state at tick 0
         self.intents = []                     # per tick k: [(kind, args)]
         self.obs = {}                         # tick -> {(key, name): array}
         self.end = 0
@@ -204,9 +217,13 @@ def host_observation(session, ctx, T, S) -> dict:
     return out
 
 
-def play(name, level, spec, seed) -> Played:
+def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Played:
     """Play the match on the host once (cached): its intents per tick, the
-    owned host observation at every decision tick."""
+    owned host observation at every decision tick. Corpus (d): ``setup``
+    (session) puts the hand state in at tick 0 (the twin gets the same);
+    ``script`` (sim) issues hand intents before each tick (the tap records
+    them with the controllers', so the twin is fed them); ``max_ticks`` ends
+    the play early."""
     key = (name, seed)
     if key in _PLAYED:
         return _PLAYED[key]
@@ -215,9 +232,11 @@ def play(name, level, spec, seed) -> Played:
     from simulation.obs_spec_v1 import ObsContext
     t0 = time.perf_counter()
     s = MatchSession(level, spec, seed=seed, breach_physics=bp)
+    if setup is not None:
+        setup(s)
     sp = s.spec
     T, S = len(sp.teams), max(rl_env._team_slots(level))
-    p = Played(name, level, spec, seed, T, S)
+    p = Played(name, level, spec, seed, T, S, setup=setup)
     ctx = ObsContext.build(s.sim, sp, S, n_teams=T)
     own = owned()
     tap = cc.Tap()
@@ -231,7 +250,10 @@ def play(name, level, spec, seed) -> Played:
         t_obs += time.perf_counter() - ts
 
     observe()
-    while not s.is_terminal():
+    tap.take()                                # the setup's own calls are no intents
+    while not s.is_terminal() and (max_ticks is None or int(s.sim.tick) < max_ticks):
+        if script is not None:
+            script(s.sim)
         s.tick()
         p.intents.append(tap.take())
         if int(s.sim.tick) % DECIMATION == 0:
@@ -247,7 +269,10 @@ def play(name, level, spec, seed) -> Played:
 
 def twin(p: Played):
     from simulation.match_session import MatchSession
-    return MatchSession(p.level, p.spec, seed=p.seed, breach_physics=bp)
+    s = MatchSession(p.level, p.spec, seed=p.seed, breach_physics=bp)
+    if p.setup is not None:
+        p.setup(s)
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +321,25 @@ def _anchor_break(obs):
     obs.build = broken
 
 
+def _divisor_break(obs):
+    """THE BREAK ``divisor`` (P8.1): the obs table's weapon block shifted one
+    row, so a column's divisor (``rounds`` / ``mag_size``, ``range``, ...)
+    is read from the NEIGHBOURING weapon row; must turn the gate red."""
+    import cupy as cp
+    off = {n: o for n, o, _ in dobs.table_layout()}
+    ww = len(dobs.WEAPON_FIELDS)
+    nw = int(bp_layout("OBS_TAB_N_WEAPONS"))
+    t = obs.table_host.copy()
+    blk = t[:, off["WEAPON"]:off["WEAPON"] + nw * ww].reshape(len(t), nw, ww)
+    blk[:] = np.roll(blk, -1, axis=1)
+    obs.table = cp.asarray(t)
+
+
+def bp_layout(name: str) -> int:
+    """A generated constant of the observation's layout (device_obs's own list)."""
+    return dict(dobs._constants())[name]
+
+
 def gate(label, played: list, census: Census | None = None) -> bool:
     """The conductor over twins of ``played`` (one level), each env fed its
     tapped intents; every env's owned device arrays equal to its reference
@@ -310,6 +354,8 @@ def gate(label, played: list, census: Census | None = None) -> bool:
         _anchor_break(obs)
     if BREAK == "stale":                           # nothing rebuilt after tick 0
         obs.skip_build = True
+    if BREAK == "divisor":                         # rounds over the NEXT weapon row's magazine
+        _divisor_break(obs)
     n_cmp = 0
     end = max(p.end for p in played)
     t0 = time.perf_counter()
@@ -335,10 +381,16 @@ def gate(label, played: list, census: Census | None = None) -> bool:
                         idx = np.argwhere(raw(w) != raw(g)) if w.shape == g.shape else []
                         at = tuple(int(x) for x in idx[0]) if len(idx) else "shape"
                         fail(f"{label}: tick {tick}, env {e} ({p.name}@{p.seed}), {kk[0]}"
-                             f"{'' if kk[1] is None else ' plane ' + kk[1]}: {len(idx)} value(s) "
-                             f"differ, first at (row, ...) {at}: reference "
+                             f"{'' if kk[1] is None else ' column/plane ' + kk[1]}: {len(idx)} "
+                             f"value(s) differ, first at (row, ...) {at}: reference "
                              f"{w[tuple(idx[0])] if len(idx) else w.shape} device "
-                             f"{g[tuple(idx[0])] if len(idx) else g.shape}")
+                             f"{g[tuple(idx[0])] if len(idx) else g.shape}"
+                             + (f" (bits 0x{int(raw(w)[tuple(idx[0])]):x} vs "
+                                f"0x{int(raw(g)[tuple(idx[0])]):x})" if len(idx) else ""))
+                        if np.issubdtype(w.dtype, np.floating):
+                            nan_w, nan_g = int(np.isnan(w).sum()), int(np.isnan(g).sum())
+                            if nan_w or nan_g:
+                                print(f"    NaNs: reference {nan_w}, device {nan_g}")
                         return False
                 if census is not None:
                     census.add(want, want[("valid", None)] if ("valid", None) in want
@@ -366,20 +418,107 @@ def corpus_b():
     return [play(ROOM, lv, None, None)]
 
 
+# -- corpus (d): the smallest hand match for the owned columns (a) and (b)
+# never move (P8.1: a second weapon, no loadout, no melee row, every status
+# kind, the hand-grenade kinds the shipped loadout lacks, a plant, a blow's
+# cooldown). A ship_demo bots match, cut short, with a hand state at tick 0
+# (both the reference and the twin get it) and hand intents (tapped, so the
+# twin is fed them).
+HAND_SEED = 31
+HAND_TICKS = 320
+#: The hand loadout: the [marine] loadout row with every hand-grenade kind of
+#: the weapon table's family (these counts, in the family's order).
+HAND_GRENADES = (2, 1, 2, 1, 1, 3)
+
+
+def hand_kit():
+    """Corpus (d)'s loadout: the reference loadout row replaced IN THE LIVE
+    TABLES by one carrying every hand-grenade kind (a frozen row: a
+    ``dataclasses.replace``). ``Simulation`` construction rebuilds the
+    loadout tables from the config (``loadouts.rebuild_tables``), so the
+    row is put in after each build (the reference's and the twin's) and is
+    gone at the next one: the host builders and the obs table read it while
+    the session plays."""
+    from dataclasses import replace
+    from config import CFG
+    from simulation.loadouts import get_tables
+    from simulation.weapons import get_tables as wt
+    by_name = get_tables().loadouts.by_name
+    name = str(CFG.marine.loadout)
+    rows = wt().hand_grenade_rows
+    by_name[name] = replace(by_name[name],
+                            grenades={r: HAND_GRENADES[k] for k, r in enumerate(rows)})
+
+
+def _marines(sim):
+    return sorted((u for u in sim.units if not u.is_zombie), key=lambda u: int(u.id))
+
+
+def hand_setup(session):
+    """Corpus (d)'s state at tick 0: the hand loadout (:func:`hand_kit`) and
+    its grenades in every marine's hands; marine 0 without a loadout or a
+    melee row (class -1, no charge kind, no grenade kinds, no melee); marine
+    1 with a second weapon (its magazines belong to the loadout's weapon:
+    spares untracked) and a blow just struck (the melee cooldown); marine 4
+    with a third; every status kind 1..8 on a marine of its own, durations
+    apart (DoTs gentle)."""
+    from simulation import status as stt
+    hand_kit()
+    m = _marines(session.sim)
+    for u in m:
+        u.grenade_counts = list(HAND_GRENADES)
+    m[0].loadout_name = None
+    m[0].melee_id = ""
+    m[1].weapon_id = "mp11_pdw"
+    m[1].last_blow_tick = 0
+    m[4].weapon_id = "lr50"
+    for k in range(1, stt.N_STATUS_KINDS):
+        stt.apply_status(m[k % len(m)], k, 0.05, 40 + 30 * k)
+
+
+def hand_script(sim):
+    """Corpus (d)'s hand intents: a plant, throws of every kind but the frag,
+    a reload, a shove."""
+    from simulation import unit_fixed
+    m = _marines(sim)
+    t = int(sim.tick)
+    one = unit_fixed.FP_ONE
+    alive = lambda u: u.alive and not u.is_zombie  # noqa: E731
+    if t == 2 and alive(m[6]):
+        sim.plant_charge_intent(int(m[6].id), 10 ** 6)
+    for tk, who, kind in ((6, 7, 2), (10, 5, 3), (14, 4, 5), (30, 7, 1), (44, 5, 4)):
+        if t == tk and alive(m[who]):
+            sim.throw_grenade_intent(int(m[who].id), one, 0, 60, kind=kind)
+    if t == 20 and alive(m[5]):
+        sim.reload_intent(int(m[5].id))
+    if t == 24 and alive(m[7]):
+        sim.shove_intent(int(m[7].id))
+
+
+def corpus_d():
+    lv = ship_level()
+    import _pinned_matches as pm
+    return [play("hand", lv, pm.spec_of(lv, "bots"), HAND_SEED, setup=hand_setup,
+                 script=hand_script, max_ticks=HAND_TICKS)]
+
+
 def part_gate():
-    ca, cb = Census(), Census()
+    ca, cb, cdn = Census(), Census(), Census()
     for p in corpus_a():
         gate(f"(a) {p.name}", [p], ca)
     for p in corpus_b():
         gate(f"(b) {p.name}", [p], cb)
+    for p in corpus_d():
+        gate(f"(d) {p.name}", [p], cdn)
     ca.judge("census (a)", strict=False)
     cb.judge("census (b)", strict=False)
+    cdn.judge("census (d)", strict=False)
     both = Census()
-    for src in (ca, cb):
+    for src in (ca, cb, cdn):
         for k, n in src.nondefault.items():
             both.nondefault[k] = both.nondefault.get(k, 0) + n
             both.values.setdefault(k, set()).update(src.values.get(k, set()))
-    both.judge("census (a)+(b)")
+    both.judge("census (a)+(b)+(d)")
 
 
 def part_batch(n_list=(2, 4)):
@@ -513,8 +652,101 @@ def part_ended():
         print("  NOTE: the reference planes did not move over the match")
 
 
+def half_corpus() -> np.ndarray:
+    """EVERY float16 rounding case as float64: every float16 value (all 2^16
+    bit patterns, inf and NaN included), every midpoint of two neighbouring
+    finite halves and its two float64 neighbours, the overflow boundary
+    (65520 and its neighbours), values past it, the underflow boundary
+    (2^-25 and its neighbours, 2^-26, float64 subnormals), signed zeros,
+    NaN payloads; both signs."""
+    h = np.arange(0x7c00, dtype=np.uint16).view(np.float16).astype(np.float64)
+    mids = (h[:-1] + h[1:]) / 2.0                         # exact in float64
+    edge = np.array([65504.0, 65520.0, 65536.0, 1e5, 1e300, np.inf, 2.0 ** -24,
+                     2.0 ** -25, 2.0 ** -26, 3 * 2.0 ** -26, 5e-324, 2.2e-308, 0.0])
+    pos = np.concatenate([h, mids, edge])
+    pos = np.concatenate([pos, np.nextafter(pos, np.inf), np.nextafter(pos, -np.inf)])
+    pos = pos[pos >= 0.0]
+    allh = np.arange(1 << 16, dtype=np.uint32).astype(np.uint16).view(np.float16).astype(
+        np.float64)
+    nans = np.array([0x7ff8000000000000, 0x7ff0000000000001, 0x7ff4000000000000,
+                     0x7ff00400_00000000, 0xfff8000000000000, 0x7fffffffffffffff],
+                    dtype=np.uint64).view(np.float64)
+    return np.concatenate([pos, -pos, allh, nans])
+
+
+def part_floatkit():
+    """The observation's float kit on the card (``cpp/src/cuda_obs_float.cuh``):
+    the hand double -> float16 conversion EXHAUSTIVELY equal to numpy's direct
+    conversion; the double -> float32 cast equal to numpy's; a*b + c never
+    contracted (numpy rounds twice); the squash's served float32 equal to the
+    host's ``obs_spec_v1.squash`` on a dense sweep (CUDA's log against the
+    host's libm: the count is reported). Breaks: ``half_f32`` (the conversion
+    through float32, double rounding), ``fused`` (an explicit fma, what
+    contraction would build)."""
+    from simulation import obs_spec_v1 as o
+    rng = np.random.default_rng(81)
+    # -- float16 --
+    xs = half_corpus()
+    with np.errstate(over="ignore", invalid="ignore"):
+        want = xs.astype(np.float16).view(np.uint16)
+    got = np.asarray(bp.obs_probe_half(xs, via_f32=(BREAK == "half_f32")))
+    bad = np.flatnonzero(got != want)
+    print(f"  float16: {len(xs)} values (every half, every midpoint +- 1 ulp, the edges, "
+          f"NaNs): {len(bad)} differ from numpy")
+    if len(bad):
+        i = bad[0]
+        fail(f"floatkit: double -> float16 differs on {len(bad)} of {len(xs)}: first "
+             f"{xs[i]!r} (0x{int(np.float64(xs[i]).view(np.uint64)):016x}) numpy "
+             f"0x{int(want[i]):04x} device 0x{int(got[i]):04x}")
+    # -- float32 --
+    rnd = np.concatenate([rng.uniform(-70000, 70000, 200000),
+                          np.exp(rng.uniform(-750, 700, 200000)) * rng.choice([-1, 1], 200000)])
+    xf = np.concatenate([xs, rnd, np.nextafter(rnd, np.inf)])
+    with np.errstate(over="ignore", invalid="ignore"):
+        wf = xf.astype(np.float32).view(np.uint32)
+    gf = np.asarray(bp.obs_probe_f32(xf)).view(np.uint32)
+    badf = np.flatnonzero(gf != wf)
+    print(f"  float32: {len(xf)} values: {len(badf)} differ from numpy")
+    if len(badf):
+        i = badf[0]
+        fail(f"floatkit: double -> float32 differs on {len(badf)}: first {xf[i]!r} numpy "
+             f"0x{int(wf[i]):08x} device 0x{int(gf[i]):08x}")
+    # -- no contraction: c = -(a*b rounded), so a*b + c is 0 unrounded-twice and
+    # the product's rounding error when fused --
+    a = rng.uniform(0.5, 2.0, 100000)
+    b = rng.uniform(0.5, 2.0, 100000)
+    c = -(a * b)
+    wm = (a * b) + c                                       # numpy: two roundings
+    gm = np.asarray(bp.obs_probe_muladd(a, b, c, fused=(BREAK == "fused")))
+    fused = np.asarray(bp.obs_probe_muladd(a, b, c, fused=True))
+    badm = int(np.count_nonzero(gm.view(np.uint64) != wm.view(np.uint64)))
+    disc = int(np.count_nonzero(fused.view(np.uint64) != wm.view(np.uint64)))
+    print(f"  a*b + c: {len(a)} triples, {badm} differ from numpy's two roundings; the "
+          f"fused form differs on {disc} (the inputs discriminate)")
+    if badm:
+        fail(f"floatkit: a*b + c is contracted on {badm} of {len(a)} triples")
+    if disc < len(a) // 2:
+        fail(f"floatkit: the contraction probe's inputs do not discriminate ({disc})")
+    # -- the squash: CUDA's log against the host's (the served float32) --
+    sx = np.concatenate([np.exp(rng.uniform(0.0, 3.2, 300000)),
+                         -np.exp(rng.uniform(0.0, 3.2, 100000)),
+                         rng.uniform(-1.0, 1.0, 10000),
+                         np.array([1.0, -1.0, np.e ** 3, np.nextafter(np.e ** 3, 0), 1e9]),
+                         np.arange(1, 4097, dtype=np.float64) / 16.0])
+    g64, g32 = bp.obs_probe_squash(sx)
+    w64 = np.array([o.squash(x) for x in sx], dtype=np.float64)
+    w32 = w64.astype(np.float32)
+    d64 = int(np.count_nonzero(np.asarray(g64).view(np.uint64) != w64.view(np.uint64)))
+    d32 = int(np.count_nonzero(np.asarray(g32).view(np.uint32) != w32.view(np.uint32)))
+    print(f"  squash: {len(sx)} values: float64 differs from the host's on {d64}, the "
+          f"served float32 on {d32}")
+    if d32:
+        fail(f"floatkit: the squash's served float32 differs from the host's on {d32} of "
+             f"{len(sx)} values (CUDA's log vs the host's: the shared-module trigger)")
+
+
 PARTS = {"gate": part_gate, "batch": part_batch, "handover": part_handover,
-         "syncs": part_syncs, "ended": part_ended}
+         "syncs": part_syncs, "ended": part_ended, "floatkit": part_floatkit}
 
 
 def main(parts=None) -> int:
