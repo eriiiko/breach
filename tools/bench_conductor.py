@@ -37,6 +37,12 @@ Per (level, N):
   conductor is built and after the timed ticks (CuPy's pool not freed),
   divided by N.
 
+- ``--orders`` (#29 P8.6b, with ``--obs``): every marine holds an order to
+  a room of its own (each soldier its own flood: the route's worst case),
+  latched every tick; ``orders_ms`` is one decision's order build for all N
+  envs (part of ``obs_build_ms``), ``orders_held`` the rows holding an order
+  when it was timed.
+
 - ``--obs`` (#29 P8.0): the device observation attached
   (``simulation.device_obs``, ``--decimation`` ticks per decision): its
   blocks are the walk's ``11' observation`` segment, and ``obs_build_ms`` is
@@ -108,6 +114,26 @@ def _load_level(name: str, levels_dir: str):
     return level_loader.load(name, str(ROOT / "levels"))
 
 
+def _bench_orders(sim) -> list:
+    """#29 P8.6b's worst case for the route: an order intent (as the tap
+    records it) for every marine, each to a DIFFERENT room (room k * 7 mod
+    the room count for the k-th marine), so each soldier is its own flood;
+    latched every tick after the recording's intents (the last order of a
+    tick wins), so every soldier holds one when the order is timed."""
+    from simulation.unit_orders import graph_of
+    g = graph_of(sim)
+    if g is None or not g.rooms:
+        return []
+    rooms = sorted(int(r.id) for r in g.rooms)
+    marines = sorted((u for u in sim.units if not u.is_zombie), key=lambda u: int(u.id))
+    out = []
+    for k, u in enumerate(marines):
+        other = next((v for v in marines if int(v.team) != int(u.team)), None)
+        out.append(("order_intent", (int(u.id), 1, rooms[(k * 7) % len(rooms)], 0,
+                                     -1 if other is None else int(other.id))))
+    return out
+
+
 def _device_used() -> int:
     import cupy as cp
     free, total = cp.cuda.runtime.memGetInfo()
@@ -116,7 +142,7 @@ def _device_used() -> int:
 
 def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
             profile_ticks: int, obs: bool = False, decimation: int = 4,
-            obs_builds: int = 50) -> dict:
+            obs_builds: int = 50, orders: bool = False) -> dict:
     """One (level, N) in THIS process; returns the result row."""
     import numpy as np
     import breach_physics as bp
@@ -145,9 +171,11 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         dev_obs = DeviceObservation(c, [rec.spec] * n, max(rl_env._team_slots(level)),
                                     decimation)
 
+    held = [_bench_orders(s) if orders else [] for s in sims]
+
     def latch():
         for e, s in enumerate(sims):
-            c.latch(rec.intents.get(int(s.tick) % end, ()), env=e)
+            c.latch(list(rec.intents.get(int(s.tick) % end, ())) + held[e], env=e)
 
     for _ in range(warmup):
         latch()
@@ -165,6 +193,8 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
     obs_ms = vision_ms = window_ms = window_shape = picture_ms = list_ms = windows_ms = None
     books_ms = books_due_ms = None
     full_ms = terminal_ms = None
+    orders_ms = orders_held = None
+    from simulation import unit_store
     obs_due = None
     if dev_obs is not None:
         import cupy as cp
@@ -203,6 +233,17 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         b.record(st)
         b.synchronize()
         full_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
+        # P8.6b: the order (the route's floods, the order block, the route /
+        # place planes; one decision's, every env)
+        if hasattr(dev_obs, "build_orders"):
+            a.record(st)
+            for _ in range(obs_builds):
+                dev_obs.build_orders()
+            b.record(st)
+            b.synchronize()
+            orders_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
+            ow = unit_store.layout().column("order_what").offset
+            orders_held = int((c._rows[..., ow] != 0).sum())   # rows holding an order
         dev_obs.params[:, PARAM_DECIMATION] = saved_dec
         # P8.8b: a terminal build (every env ending on one tick: the worst
         # case; its two small uploads included), its buffers zeroed after
@@ -370,6 +411,8 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         "decision_ms": None if dec_set_ms is None else round(float(dec_set_ms), 4),
         "decoder_obs_ms": None if dec_obs_ms is None else round(float(dec_obs_ms), 4),
         "full_ms": None if full_ms is None else round(float(full_ms), 4),
+        "orders_ms": None if orders_ms is None else round(float(orders_ms), 4),
+        "orders": bool(orders), "orders_held": orders_held,
         "terminal_ms": None if terminal_ms is None else round(float(terminal_ms), 4),
         "window_ms": None if window_ms is None else round(float(window_ms), 4),
         "window_shape": window_shape,
@@ -436,6 +479,9 @@ def format_rows(rows) -> str:
                       else f", full view {r['full_ms']:.3f} ms per decision (in the blocks)"
                            + ("" if r.get("terminal_ms") is None
                               else f", a terminal build of every env {r['terminal_ms']:.3f} ms")
+                           + ("" if r.get("orders_ms") is None
+                              else f", the order {r['orders_ms']:.3f} ms per decision (in the "
+                                   f"blocks; orders on every soldier: {r.get('orders')})")
                            + ("" if r.get("decode_ms") is None or r.get("books_ms") is None
                               else f"; THE WHOLE per decision (observation + full view + "
                                    f"books + decoder) {whole_ms(r):.3f} ms")))
@@ -464,6 +510,8 @@ def sweep(args) -> int:
                    "--build", args.build, "--decimation", str(args.decimation)]
             if args.obs:
                 cmd.append("--obs")
+            if args.orders:
+                cmd.append("--orders")
             t0 = time.perf_counter()
             p = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT),
                                env=dict(os.environ, PYTHONPATH=os.environ.get("PYTHONPATH", "")))
@@ -498,6 +546,9 @@ def main(argv=None) -> int:
     ap.add_argument("--n", type=int, default=1)
     ap.add_argument("--obs", action="store_true",
                     help="attach the device observation (#29 P8.0) and time its blocks")
+    ap.add_argument("--orders", action="store_true",
+                    help="#29 P8.6b: every marine holds an order to its own room (the route's "
+                         "worst case) while the observation is timed")
     ap.add_argument("--decimation", type=int, default=4,
                     help="the device observation's ticks per decision (with --obs)")
     ap.add_argument("--build", default=str(ROOT / "cpp" / "build_cuda"),
@@ -513,7 +564,8 @@ def main(argv=None) -> int:
         import_build(Path(args.build))
         try:
             row = run_one(args.level, args.levels_dir, args.n, args.warmup, args.ticks,
-                          args.profile_ticks, obs=args.obs, decimation=args.decimation)
+                          args.profile_ticks, obs=args.obs, decimation=args.decimation,
+                          orders=args.orders)
         except Exception as ex:   # an out-of-memory N is a row of the table, by name
             row = {"level": args.level, "n": args.n, "error": f"{type(ex).__name__}: {ex}"[:400]}
         print("CONDUCTOR_BENCH_JSON " + json.dumps(row), flush=True)
