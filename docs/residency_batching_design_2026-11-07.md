@@ -3710,6 +3710,329 @@ decision of 4 ticks against the whole observation's 0.698 / 2.835 / 8.527 ms;
 the serial walk per env dominates at small N. No golden re-baseline; no host
 value moved; no table column, ring record or unit kernel added.
 
+**P8.6a AS-BUILT (2026-11-21, branch `29-p86-obs-decoder`, stacked on P8.7's
+head `ec380021` while P8.5a / P8.7's card gates ran).** THE DEVICE DECODER is
+`simulation.device_decoder.DeviceDecoder(obs, specs)` over
+`cpp/src/cuda_obs_decoder.cu`, attached to the conductor
+(`DeviceConductor.attach_decoder`). THE DECISION: `set_decisions(actions,
+envs=None, list_uid=None)` -- the trainer's ONE device write per decision
+(CuPy, a torch tensor by DLPack, or numpy) copied into the decoder's `(N,
+rows, 5)` int32 buffer, then `bp.obs_dec_check` (one thread per env, the
+rows serially): `check_actions` as per-env fault words (the count, per head
+the first row and its value), `masked_choices` into `DeviceDecoder.masked`
+`(N, rows)` uint8 against the mask buffers AS THEY ARE AT THE CALL (the
+served masks of the observation the decision answers), the pointer to a
+game id against `list_uid` at the call, `set_decisions`' fallbacks
+(flashlight -> nothing, a throw onto a non-unit aim -> nothing, a plant
+"onto" -> nothing). The pointer is resolved BEFORE any tick, so the next
+observation (built at the decision's last tick) cannot overwrite what it
+reads: no copy of `list_uid` is kept (the `list_uid=` argument is P8.10a's
+double buffer's door and the check's break). An out-of-range decision is
+raised at the next tick's ONE books read (kind `decoder_faults`) as the
+host's `ValueError` with `check_actions`' own message (the conductor's slot
+prefix in front), `.env` set. THE DECODE: `bp.obs_decode`, one thread per
+(env, row) of a decoder-driven team, at the walk's HEAD (call line `0
+decode`, inside the books deferral, before slot 1; the reference decodes in
+`handle_frame` before `sim.step`): `AgentPolicy._decode` line for line over
+a per-(env, row) int64 STATE RECORD (`device_decoder.STATE_FIELDS`: the
+decision -- feet, the aim as kind / value / index with its `last_point`,
+trigger, hand after the fallbacks, arg, HAVE, FIRST -- and the slot -- the
+held throw aim, which may ALIAS the decision's aim object (the host's
+`st.throw_aim = d.aim` shares one `_Aim`, so a `last_point` refreshed
+through either is the other's; the check un-aliases it, copying the
+decision aim's fields, when the next decision replaces the object),
+`last_vec`, `aimed_uid`, `prev`, the uid). The aimed unit's point is the
+DEVICE team picture's record of it (live while seen, last seen otherwise),
+`aim_vector` and `onto_reach_q` in float64 through the kit (`__dsqrt_rn`, the
+reciprocal, two products, `quantize_scalar`'s half-away rounding). Each
+issued intent is written straight into its `LATCH_COLUMNS` column in the
+store's encoding (`live_move_dir` (set, dx, dy, throttle) with the
+throttle clamped as `set_move_dir` clamps, `live_aim` (1, dx, dy) every
+tick, `live_trigger`, `flashlight_on` = 1 every tick (the OFF sense of a zero
+column), and on the decision's FIRST decoded tick only the latch kinds:
+`pending_reload` / `melee` / `shove` / `use`, `pending_plant` (the nonzero
+gate, then the plant row's clamp), `pending_throw` (1, the facing vector,
+the fuse, the reach, the kind) behind the vector gate); the FIRST flag is
+consumed on the policy's next decoded tick whichever of its units live, as
+the host's `_first`. `DeviceObservation.aimed` is written every decoded
+tick. No verb lacked a device path: every `VERB_RULES` kind is a column
+write (the commander's `order_intent` is not the decoder's: P8.6b).
+`device_decoder.constants` refuses a `VERB_RULES` the kernel does not issue.
+THE OBSERVATION'S COLUMNS: `bp.obs_dec_obs` after the windows on a decision
+tick (`DeviceObservation.build_decoder_obs`): the vector's `prev[0..5]` (-1
+before a slot's first decision) and, on the first unit-block entry holding
+`aimed`, `prev_aim` and `on_next_tick` (the record's centre, `aim_vector`,
+`turning.predict` through `unit_lib::turn_law_q16` with the soldier's own a
+/ w / pending spin -- one copy, `obs_rows::turn_dials`, now also P8.4a's
+`ticks_to_within`'s -- within its shot cone); with no decoder attached a zero
+state (`NullDecoderView`) and the check's stand-in `aimed`. The owners table
+gives P8.6a eight rows (prev[0..5], on_next_tick, prev_aim), not nine. THE
+HORDE: `bp.obs_dec_horde` at the same tick head writes the zombie
+CONTROLLER's latch (SET with a flag per living zombie row, EMPTY when none
+lives; an `idle` horde EMPTY) into `DeviceDecoder.horde_rows`, handed to slot
+5 device to device (`unit_kernels.horde(latch=None)`: no host list, no
+upload). K8 ANSWERED: the controller's latch is NOT the conductor's own
+CONDUCTOR call on a tick with no living zombie (EMPTY returns before
+`HordeState.begin_tick`; the conductor's call still drops the field cache at
+a refresh tick or a topology change), so a horde emptied and refilled by a
+rise off a refresh tick can walk a field the conductor's call would have
+dropped; `Simulation.drive_zombies`' docstring ("reproduces the conductor's
+call exactly") holds only while some zombie lives. The card serves the
+controller's latch (the reference the training path plays), gated equal to
+`horde_cache.latch_of` taken after the controllers' `handle_frame` every
+tick; corpus (c) holds 455 such empty-horde ticks. THE TWO WAYS OF DRIVING:
+with a decoder attached every marine team must be `policy` (`DecoderRefused`
+by name at the build) and the horde `zombies` / `idle`;
+`DeviceConductor.latch` refuses a `LATCH_COLUMNS` intent naming a
+decoder-driven unit and `drive_zombies` for a card-served horde by name; the
+tap still carries the commander's orders (the order table). Without a
+decoder the conductor is as before (the tap-driven corpora). THE RECORD (old
+P8c): the decisions buffer and the state record are what a device episode's
+record keeps (`DeviceDecoder.decisions`, `.state`). CORPUS (c), GENERATED
+LIVE in the CUDA subprocess (`tests/cuda_obs_check.py` `PolicyDriver`): an
+in-process `rl_env.EnvRunner` (run file parsed from a dict: every team
+`policy`, v1 observation and actions, "fireteam", the commander on), reset
+once, its session played tick by tick as `EnvRunner.step` drives it (each
+policy handed the masked-random decisions with the `list_uid` they were
+drawn on; the controllers' `handle_frame`, the reference's latch columns /
+slot states / horde latch taken, `sim.step`, the digests); decisions are
+`tools/rl_smoke.py`'s drawer (each head uniform among its legal options) plus,
+per row with p 0.04, one head forced to a random in-range index and the
+three fallbacks forced now and then (masked choices: 253 counted). A hand
+kit at tick 0 (every marine with 3 of each of the six hand-grenade kinds,
+the loadout row to match) and, on five ship_demo runs, a CROWD (every unit,
+both teams and the horde, placed two tiles apart around team 0's first
+marine, vision and picture retaken), so enemies are seen and aimed at and
+zombies bite, die and rise from the first decisions. Gates (`PATCH =
+"P8.6a"`; part GATE runs corpus (c) with every earlier corpus, part DEC_GATE
+it alone): the store's latch columns after the decode, every slot state, the
+horde latch and `(field_digest, tick_digest)` equal to the reference at
+EVERY tick, `masked_choices` equal at every decision, every owned
+observation column raw-bit equal at every decision (the earlier patches'
+too, now under real decisions): crowd 102 / 104 / 105 / 110 / 116 (97 / 145
+/ 105 / 109 / 78 ticks), ship_demo 133 (308), range_door 83 / 87 (209 /
+246): 1297 ticks, 330 env-decisions, 7 462 slot-ticks. Coverage (each > 0):
+all 49 feet options; aims at a seen enemy 119, a record 33, a token 899,
+walk 55, keep 251; trigger 697 / 663; reload 63, melee 53, shove 179, use 85;
+every throw kind with every reach (arg 4 "onto" 1 to 3 per kind); plants of
+each timer 6 to 10; the fallbacks (flashlight 26, onto without a unit aim 29,
+plant onto 37); a throw aim held through the wind-up 1 523 slot-ticks; an
+aimed unit lost 9 / dead 50 slot-ticks; zombies dying in a tick 7, rising 4.
+Part DECODER: a bots team refused at the build; an out-of-range hand
+raised at the books read with the host's message; a tap `set_aim` for a
+decoder unit refused; 2.00 syncs per steady tick at N = 1 and 2 with the
+decoder (`max_n_sub`, the books read) and NO host-to-device upload from
+Python in a steady tick (the decisions are one write per decision; the
+horde latch's per-tick upload is gone for a card-served horde); the card's
+`aim_vector` / `onto_reach_q` equal the host's on every offset |dx|, |dy| <=
+400. Breaks, each red but one: `dec_every` (the hand latch on every tick of a
+decision: tick 1 of every run, `pending_throw` of row 0 after the decode),
+`dec_late` (the decode after the walk: tick 1, the digests), `dec_horde_late`
+(the horde latch at the previous tick's end, before the conversion: red
+exactly at the rises, crowd 104 tick 9 and crowd 116 tick 56, a risen zombie
+not driven), `dec_next_uid` (the pointer against the NEXT observation's
+`list_uid`: tick 0 of the crowd runs, `live_aim` of row 3); `dec_div`
+(`dx / mag` in place of `dx * (1 / mag)`) CANNOT turn red: on every offset
+|dx|, |dy| <= 400 (641 601) the two forms quantize alike (the sweep is part
+DECODER's), and the fused form of the squares is exact (integers below
+2^26), so no input in reach orders the arithmetic differently in the
+result. FINDING (pre-existing, not the decoder's): the
+device DOORS stage (`cpp/src/cuda_unit_doors.cuh` over the topology seam)
+REFUSES (ApplierFault at '9e(d) doors') a door opened or closed beside gas a
+blast heated past the seam's proved range |T_abs| < 2^28 (e.g. ship_demo,
+run seed 81, tick 32: door 33 opened by a use, its neighbour (17, 7) at T_abs
+324 247 500 after five explosions the tick before), on the TAP path as on
+the decoder's: 11 of 30 crowd / ship_demo seeds scanned hit it (the corpus's
+seeds are chosen clear of it); a policy run will meet it. Choices where the
+design was silent: the pointer resolved at the call (no `list_uid` copy);
+the decoder's columns read `aimed` and the state, so the tap-driven corpora
+keep the stand-in; one thread per env for the check (rows are few); the
+fault words on the books read (no new sync); the decoder rides the
+observation twin row (its decode at the walk's head, its columns with the
+blocks). Cost (`tools/bench_conductor.py --obs`, ship_demo, GPU time for all
+envs, the card shared with another run): the decode at the tick head (every row,
+with the horde latch) 0.017 / 0.013 / 0.015 ms per tick at N = 1 / 64 / 256,
+a decision's hand-over (the copy, the check, the pointers) 0.134 / 0.155 /
+0.157 ms, the decoder's columns 0.008 / 0.007 / 0.007 ms per decision --
+against the whole observation's 0.698 / 3.099 / 8.626 ms per decision and the
+conductor's 13.2 / 52.1 / 180.8 ms per tick; 2.0 syncs per tick at every N. No golden re-baseline; no
+host value moved; no table column, ring record or unit kernel added
+(`unit_kernels.horde` takes `latch=None`).
+
+**P8.8 AS-BUILT (2026-11-21, branch `29-p88-obs-fullview`, stacked on P8.6a's
+head `f5a8531f`, unmerged).** THE FULL VIEW (`full_list`, `full_mask`,
+`full_uid`, `full_match`, `full_watched`, the table's five whole keys) is
+`DeviceObservation.build_full` over `bp.obs_full` (`cpp/src/cuda_obs_list.cu`,
+beside the entry builders it calls; four launches on the tick stream at the end
+of every decision build, no sync): `k_full_aim` (one thread per (env, ray, store
+row): `FullView.aim` -- every other living unit at its live centre as a
+candidate, (d2, uid, cx, cy) order, the cone of `_cone_of`, the first clear sight
+line -- along the facing (0) and the facing target (1) into `full_aim (N, 2,
+U)`), `k_full_list` (one thread per (env, row, block): the soldier itself (alive:
+its mate entry; dead or turned: the corpse of 5.6, `age` from the picture's death
+tick), the other living marines by (team, slot, id), the zombies, the live
+objects (grenade rows then charge rows: `live_objects`' order; the uid the
+object's place in the KEPT block) and the living doors by (d2, id); each block's
+place follows from the counts, the room cut objects first, then zombies, then
+doors, never a marine (a marine overflow is a fault)), `k_full_watched` (one
+thread per (env, row, cell): `obs_sight::window_cell` FROM every living enemy's
+live centre, zombies included, OR-ed) and `k_full_match` (one thread per (env,
+row): the living counts, the standing H(t) summed in the full view's marine order
+(slot, id) through `obs_pic::bar_ratio`, the horde awake / dormant, the clock).
+WHAT IS SHARED, by calling: the list's `entry_common`, `put_angle`,
+`unit_columns`, `mate_entry` (now taking the caller's aim answer and whether the
+lane pair is written), `enemy_tail` (cols 27, 29-38, split out of `seen_entry`
+with the mates' aims as a functor: the list passes `aim_of`, the full view its
+every-unit aim), `object_entry`, `door_entry`, `next_min` / `key_less`; lifted
+into `cpp/src/cuda_obs_rows.cuh` from `cuda_obs.cu` (one copy, the list and the
+vector now call them): `aim_cone`, `bearing_q16`, `ticks_to_within`,
+`ticks_toward` (`_enemy_geometry`'s ticks), `status_left`, `kit_of`
+(`_kit_values`: the vector's kit columns and the full view's extra columns read
+ONE function); `bar_ratio` lifted from the books' TU into
+`cpp/src/cuda_obs_picture.cuh`. The full view's own: its every-unit aim, live
+centres and motion, the line of fire to the live centre and `mate_in_way` per
+entry, the extra columns (`full_extra`: knowledge, kit, the four statuses of
+`FULL_STATUS_KINDS`, the order's kind) and the mate entries' order block (cols
+47-51, `order_tail` over a static PLACE TABLE, `device_obs.place_values`: the room
+graph's rooms by id and openings by `ORDER_OPENING_BASE + id` with their centres,
+`_place_centre`'s first match). `DeviceObservation.team_rows` (the policy feed)
+hands no full key. Choices where the design was silent: the full view lives in
+the list's TU (its builders are that TU's); the order block of a full-view mate
+entry is built here (the full list is one whole key the table gives P8.8), the
+place table rides `DeviceObservation`; `tests/obs_column_owners.toml`'s patch
+order is the LANDING order, so P8.8 / P8.8b now precede P8.6b (whose columns stay
+unowned); a fault word `full_faults` read by the gate. Gates (`tests/
+cuda_obs_check.py`, `PATCH = "P8.8"`, raw bits at every decision tick, every
+earlier column still equal): part GATE N = 1 on bots 338, bots_v1 69, range_door
+51, hand 81, range_hall 9, hall_cover 7, ship_all_round 121, door_grenade 38,
+slow_turn 11, list_hand 7, fire_hand 16, clock_hand 13 and corpus (c) 330
+env-decisions, equal on the first run; batches ship_demo N = 2 / 4 (493 / 805)
+and the room N = 2 / 4 (112 / 220) equal; coverage: mate entries 15 894, enemies
+the team sees 7 530 / holds a record of 2 154 / does not know of 31 210, zombie
+entries 19 184, objects seen 10 871 / known 377 / unknown 3 200, door entries
+349 580, corpse rows 1 352, rows past the cap 6 110, watched cells 728 703, order
+blocks 4 582, mate aims on a unit 4 461; every `full_match` column moved (5 to 35
+distinct values). THE WALL the other way round (part WALL): the unseen enemy's row
+perturbed moves the team's full list in every case (cone 7, all_round 6) while it
+moves no policy value. Breaks, each red at bots tick 4: `full_vis` (the full view
+from the team's visible set: 2 586 values), `full_tie` (ties by the higher id:
+door entry 53), `full_cap` (the room one short: entry 63). Cost: see P8.8b.
+
+**P8.8b AS-BUILT (2026-11-21, the same branch).** THE TERMINAL OBSERVATION. The
+reference (`rl_env._worker_main` "step"): when `EnvRunner.step` ends the match
+(its tick loop breaks at the ending tick, on or off the decimation's phase), the
+worker calls `r.observe` into the shared `final_` arrays of that env -- every
+observation key, the masks, `valid` / `in_match` and the full view -- on the
+session's state right after the ending tick, before the reset; the shared arrays
+keep the last ending's values, and `BatchedEnv._final` serves them for the envs
+that ended in the step, zeros on every other row. THE DEVICE FORM:
+`DeviceObservation.terminal(ended_now)`, ONE call line in `DeviceConductor.tick`
+right after THE ONE BOOKS READ (whose words already carry the books' ended-now
+flags: no sync of its own), calls `build_terminal(envs)`: the very blocks of a
+decision (`build`) over the `final_` buffers, with a parameter row whose episode
+tick is each env's own tick (the cadence test passes off the phase; the
+decimation kept, the masks read it) and a skip row clear for exactly the ending
+envs (the latch the books just set is not read), both uploaded only on such a
+tick; the live buffers untouched (the reference fills them with the next
+episode's tick 0: P8.9's). An env's `final_` buffers hold zeros before its first
+ending and its last terminal observation after it (the shared arrays' semantics;
+the per-step zeroing of the other rows is `BatchedEnv`'s, P8.10a). The tick the
+device serves is the reference's: the books end at the walk's end of tick k with
+the tick row at k, `sim.tick` = k when the worker observes. Gates (`PATCH =
+"P8.8b"`, at every decision tick and every ending tick of every GATE / BATCH run):
+every ended env's owned `final_` columns raw-bit equal to its terminal reference
+(the check's `host_observation` right after the ending tick; a tap-driven match
+takes the aims the twin holds then, the stand-in of the last decision) and
+unchanged at every later check, every env not ended all zeros, and at an ending
+off the cadence every live buffer of every env unchanged by the tick. Endings
+compared: part GATE 14 (5 on the cadence, 9 off; 13 by elimination, 1 by the
+clock: clock_hand), zero checks 1 086, live buffers held 2; batches 12 endings (5
+on, 7 off: ship_demo ends 1664 / 300 / 970 / 275, the room 222 / 222 / 218 /
+208), frozen checks 1 213, zero checks 1 631, live held 5. Breaks, each red:
+`term_early` (every tick's state built for the envs not ended: the final_ set
+written before the ending, clock_hand / bots tick 4), `term_next` (built at the
+next decision tick instead: clock_hand tick 48, bots tick 1349, `final_valid`
+zeros against the reference), `term_other` (written for the next env too: batch
+ship_demo N = 2 tick 300, env 0's final_ set not zeros). Unchanged: every earlier
+part; 2.00 syncs per steady tick at N = 1 and 2 (parts SYNCS and DECODER).
+Finding (the check's, fixed): the sync counts could pick up the DESTRUCTORS of
+earlier parts' dead conductors (`cuda_unit_store.cu` / `cuda_applier.cu` /
+... stream syncs) when Python's cycle collector happened to run inside a counted
+tick -- the observation's extra allocations moved that moment into one (part
+DECODER at N = 1, 3.77 per tick); both counting loops now collect first and
+hold the collector off while they count. Cost (`tools/bench_conductor.py --obs`,
+ship_demo, GPU time for all envs, every env due, the card shared with another
+agent): the full view 1.956 / 2.434 / 6.010 ms per decision at N = 1 / 64 / 256
+(inside the decision's blocks: 2.535 / 5.117 / 14.362 ms); a terminal build of
+every env at once 2.630 / 5.220 / 14.475 ms (an ending tick only); THE WHOLE per
+decision (blocks with the full view, 4 ticks of vision and picture, the books,
+the decoder) 3.176 / 6.196 / 15.606 ms against the conductor's 11.4 / 49.9 /
+173.3 ms per tick; the full list's serial blocks (one thread per (row, block),
+60 doors by successive minima, a sight walk per enemy entry) dominate it, not yet
+profiled further. No golden re-baseline; no host value moved; no table column,
+ring record or unit kernel added.
+**TOPOLOGY RANGE AS-BUILT (2026-11-21, branch `29-topology-range`, stacked on
+P8.6a's).** P8.6a's finding closed: the device topology seam
+(`cpp/src/cuda_topology.cuh`) refused a seal or an unseal beside gas past a
+moving cell's |T_abs| < 2^28 (about 4096 game degrees), where the host's
+Python ints carry on; blast-heated gas is legally hotter (reproduced at the
+pre-patch build: corpus (c)'s crowd 100 at tick 112 and ship_demo 100 at
+tick 48, ApplierFault at '9e(d) doors'; ship_demo 81 as named in the finding
+did not reproduce on this stack). THE BOUND: the refusal moved from the
+temperature to the product a moved parcel is priced with: a moving cell (a
+sealed tile; an unseal's donor) must have N * (|T_abs| + 1) < 2^60
+(`TERM_BOUND`), computed exactly in uint64 (N < 2^32, two non-negative
+int32 planes; |T_abs| + 1 <= 2^31 + 2^28). Temperature itself is not
+bounded at all: T is whatever the int32 plane holds (a seam write refreshes
+the mirror without the rails, so between recoveries a mirror can sit above
+T_MAX_PHYS; only the dtype's range holds unconditionally), |T_AMB| < 2^28
+as before. Where the physics sits: after the recovery's rails |T_abs| <=
+(T_MAX_PHYS + T_AMB_K) raw = (16000 + 290) * 2^16 < 2^30, and the engine's
+own per-cell range is n_bulk < 2^30 (`bulk_transport.h`), so a cell at the
+ceiling with the largest bulk is inside the bound (`T_ABS_PHYS_MAX`, a
+static_assert at the current, PROVISIONAL dial); a mirror past the ceiling
+up to the int32 top passes with N < 2^28.8 (hundreds of times the ambient
+bulk). THE PROOF'S SHAPE: every term a cell gives in the call is < 2^60, a
+cell takes at most four terms in and its own out, |E| < 2^61 (pre-checked
+as before), a born-at-ambient E is < 2^60, so every store and sum fits
+int64 and is the same integer as Python's. NOTHING WAS RESTATED: no
+expression needed a 128-bit intermediate or a reordering; only the
+pre-pass's admission test changed. THE RE-READ DONOR (a hole of the old
+proof, found while re-deriving it): unseal reads a donor's T_abs live at
+each span tile it borders and refreshes its mirror after each drain, which
+can RAISE it (by the remainder of E / N over the smaller N); when the
+donor's mirror is its energy (the iron rule's state) every later term is <
+N0 * (|T_abs0| + 1), so the one product covers it; an accountable donor that
+borders two or more span tiles and is NOT a mirror of its energy is bounded
+by the plane's range, N0 * (2^31 + |T_AMB| + 1) < 2^60 (the old check let
+such a donor through with any N < 2^32, where a later read could overflow:
+red at the pre-patch build, the device wrote where it must refuse). The
+gas-N primitives (inject / extract / transfer) keep `T_BOUND` = 2^28 on
+T_abs: the vents' proof (`cuda_unit_vents.cuh`, the sibling branch's) leans
+on the extraction's; destroy_wall and on_tile_changed never had a
+temperature bound (no T_abs product; the solid books' product is checked in
+128 bits). The host is pure Python (`GameMap`): no C++ CPU twin carries the
+bound. GATE: `tests/cuda_unit_doors_check.py` part RANGE (both door scenes,
+every door): seal and unseal with the moving cells heated through the energy
+field at the old edge, just past it, T_MAX_PHYS, twice it, the int32 top
+and bottom and six random draws over the plane's range, each op and its way
+back equal to the host on every plane and book; bulk at its maximum on the
+term edge (hot and cold) equal, just past it refused by name with nothing
+written while the host carries on; the L span's re-read donor (a mirror
+with the largest remainder at the plane's top and bottom and at max bulk:
+equal; not a mirror: small bulk equal, bulk 2^30 refused); destroy_wall +
+on_tile_changed beside cells at the extremes equal. Red at the pre-patch
+build (the old admission test: dozens of refusals the host does not make,
+and the re-read donor's write). `tests/cuda_obs_check.py` part RANGE_SCENES
+(its own pytest test) plays crowd 100 and ship_demo 100 through the gate
+(decisions and digests equal every tick). They are NOT in `DEC_RUNS`:
+appending runs there moved part DECODER's sync count at N = 1 (64 syncs on
+one steady tick, allocation sites; red with the two runs, green without, the
+seam's build unchanged): that measurement depends on what the process played
+before it, a fragility of the check, reported, not fixed here. No golden
+re-baselined; no host value moved;
+`.claude/rules/device-units.md` never stated the bound (unchanged).
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:

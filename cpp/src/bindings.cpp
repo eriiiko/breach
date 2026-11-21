@@ -884,6 +884,22 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("faults"), py::arg("brk"),
           "#29 P8.4c: action_spec_v1.build_masks (the four masks) for every env on its "
           "decision tick.");
+    // #29 P8.8: the full view (cpp/src/cuda_obs_list.cu), on the tick stream, no sync.
+    m.def("obs_full", &breach_cuda::obs_full, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("tables"), py::arg("rowmap"),
+          py::arg("n_rows"), py::arg("n_slots"), py::arg("n_teams"), py::arg("obs_table"),
+          py::arg("table_w"), py::arg("teams"), py::arg("tick_row"), py::arg("params"),
+          py::arg("ended"), py::arg("visible"), py::arg("sees"), py::arg("state"),
+          py::arg("state_w"), py::arg("lane_own"), py::arg("gh"), py::arg("gw"),
+          py::arg("grenades"), py::arg("charges"), py::arg("doors"), py::arg("door_tiles"),
+          py::arg("is_vacuum"), py::arg("is_ambient"), py::arg("solid"), py::arg("screen"),
+          py::arg("h"), py::arg("w"), py::arg("wired"), py::arg("wired_cap"), py::arg("covers"),
+          py::arg("cover_cap"), py::arg("cover_w"), py::arg("cover_count"), py::arg("places"),
+          py::arg("place_cap"), py::arg("place_w"), py::arg("place_count"), py::arg("full_aim"),
+          py::arg("full_list"), py::arg("full_mask"), py::arg("full_uid"),
+          py::arg("full_match"), py::arg("full_watched"), py::arg("faults"), py::arg("brk"),
+          "#29 P8.8: obs_spec_v1.observe_full_rows (the full view) for every env on its "
+          "decision tick.");
     // #29 P8.5a: the windows (cpp/src/cuda_obs_windows.cu), on the tick stream, no sync.
     m.def("obs_planes", &breach_cuda::obs_planes, py::arg("n_env"), py::arg("store"),
           py::arg("n_units"), py::arg("store_w"), py::arg("tables"), py::arg("rowmap"),
@@ -913,6 +929,36 @@ PYBIND11_MODULE(breach_physics, m) {
           "#29 P8.7: the reward books, the served reward groups, termination and the "
           "ended latch for every env; returns whether the words were deferred into the "
           "conductor's books read.");
+    // #29 P8.6a: THE DEVICE DECODER (cpp/src/cuda_obs_decoder.cu), on the tick
+    // stream, no sync.
+    m.def("obs_dec_check", &breach_cuda::obs_dec_check, py::arg("n_env"), py::arg("n_rows"),
+          py::arg("n_slots"), py::arg("decisions"), py::arg("due"), py::arg("list_uid"),
+          py::arg("n_entries"), py::arg("mask_feet"), py::arg("mask_aim"),
+          py::arg("mask_trigger"), py::arg("mask_hand"), py::arg("n_kinds"),
+          py::arg("dec_table"), py::arg("state"), py::arg("masked"), py::arg("faults"),
+          "#29 P8.6a: a decision's range check, masked count, pointer -> uid and fallbacks.");
+    m.def("obs_decode", &breach_cuda::obs_decode, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("tables"), py::arg("rowmap"),
+          py::arg("n_rows"), py::arg("n_slots"), py::arg("n_teams"), py::arg("obs_table"),
+          py::arg("table_w"), py::arg("tick_row"), py::arg("ended"), py::arg("pic_state"),
+          py::arg("pic_w"), py::arg("dec_table"), py::arg("drive"), py::arg("state"),
+          py::arg("aimed"), py::arg("faults"), py::arg("brk"),
+          "#29 P8.6a: the per-tick decode into the store's latch columns; returns whether "
+          "the fault words were deferred into the conductor's books read.");
+    m.def("obs_dec_horde", &breach_cuda::obs_dec_horde, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("mode"), py::arg("rows"),
+          py::arg("row_w"), "#29 P8.6a: the zombie controller's latch on the card.");
+    m.def("obs_dec_obs", &breach_cuda::obs_dec_obs, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("tables"), py::arg("rowmap"),
+          py::arg("n_rows"), py::arg("n_slots"), py::arg("n_teams"), py::arg("obs_table"),
+          py::arg("table_w"), py::arg("tick_row"), py::arg("params"), py::arg("ended"),
+          py::arg("pic_state"), py::arg("pic_w"), py::arg("state"), py::arg("aimed"),
+          py::arg("list_mask"), py::arg("list_uid"), py::arg("n_entries"), py::arg("list"),
+          py::arg("vector"), "#29 P8.6a: the vector's prev block, the list's prev_aim / "
+          "on_next_tick.");
+    m.def("obs_dec_probe", &breach_cuda::obs_dec_probe, py::arg("n"), py::arg("dx"),
+          py::arg("dy"), py::arg("out"), py::arg("div_brk"),
+          "#29 P8.6a TEST-ONLY: aim_vector and onto_reach_q over offsets on the card.");
     m.def("obs_books_layout", [](int n_teams, int n_units, int n_rows) {
               py::dict d;
               for (const auto& kv : breach_cuda::obs_books_layout(n_teams, n_units, n_rows))

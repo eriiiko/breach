@@ -112,13 +112,9 @@ __device__ __forceinline__ bool alive(const int64_t* u) {
     return u[UNIT_COL_LIFE_STATE] == OBS_LIFE_ALIVE;
 }
 
-// reward_v1.bar_ratio: min(max(hp_q, 0), bar_q) / float(bar_q), 0 without a bar
-__device__ __forceinline__ double bar_ratio(int64_t hp, int64_t bar) {
-    if (bar <= 0) return 0.0;
-    int64_t m = hp > 0 ? hp : 0;
-    m = m < bar ? m : bar;
-    return obs_f64::div((double)m, (double)bar);
-}
+// reward_v1.bar_ratio: the observation's one copy (cuda_obs_picture.cuh, lifted
+// there by #29 P8.8: the full view's balance column reads it too)
+using obs_pic::bar_ratio;
 
 __device__ __forceinline__ double health(int64_t hp, bool al, int64_t bar) {
     return al ? bar_ratio(hp, bar) : 0.0;

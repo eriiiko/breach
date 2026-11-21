@@ -39,7 +39,7 @@
 // < 2^32, a trace slice < 2^31) and the tile's relative T an int32 plane
 // (|T| <= 2^31: the STORE's bound, so every T the extraction accepts --
 // its moved-energy pre-check n * (|T_abs| + 1) < 2^60, cuda_topology.cuh's
-// MOVE_TERM_BOUND, which takes every legal gas temperature to T_MAX_PHYS --
+// TERM_BOUND, which takes every legal gas temperature to T_MAX_PHYS --
 // is inside it, with no reliance on the rail; #217 §8.17),
 // ONE return vent of quantum q can add at most min(q, 2^32) to the bulk pair,
 // < 2^31 to a trace slot and to its sink, and min(q, 2^32) * 2^31 in

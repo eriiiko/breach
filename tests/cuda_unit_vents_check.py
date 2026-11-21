@@ -836,7 +836,7 @@ def _probe_hot_extract(name, sim, seen, rng):
     aperture at the speed of the air (4907 game degrees absolute on the
     hazard scene, past the old proved |T_abs| < 2^28 = 4096), so the device's
     extract_gas_n_vec and transfer_gas_n refuse on the MOVED ENERGY,
-    n * (|T_abs| + 1) >= 2^60 (cuda_topology.cuh MOVE_TERM_BOUND; twins
+    n * (|T_abs| + 1) >= 2^60 (cuda_topology.cuh TERM_BOUND; twins
     GameMap.extract_gas_n_vec / transfer_gas_n). PROPERTY: (a) the config's
     hottest railed gas moves for a donor of 2^30 raw; (b) each primitive at
     T_MAX_PHYS (a heavy donor, 2^29) and past T_abs 2^30 (a light donor,
@@ -852,7 +852,7 @@ def _probe_hot_extract(name, sim, seen, rng):
     two30, two60 = 1 << 30, 1 << 60
     if not two30 * (hi + t_amb + 1) < two60:
         fail(f"probe {name}: T_MAX_PHYS + T_AMB = {hi + t_amb} raw: a 2^30 donor's moved energy "
-             f"passes cuda_topology.cuh MOVE_TERM_BOUND (2^60): widen it")
+             f"passes cuda_topology.cuh TERM_BOUND (2^60): widen it")
     P = Probe(name + " (hot gas-N)", sim, seen)
     open_ = ~g.solid & ~g.thermal_solid & ~g.is_vacuum & ~g.is_ambient
     acct = [tuple(int(v) for v in t) for t in np.argwhere(open_)]

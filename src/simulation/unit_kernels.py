@@ -2577,7 +2577,8 @@ def horde(store, dev_applier, fields: dict, ring, noise, doors, tiles, cache,
     door tables (the bashable mask); ``cache`` a
     :class:`simulation.horde_cache.DeviceHordeCache` (its planes allocated
     for the map on first use); ``latch`` the per-env LATCH rows the host
-    writes (``horde_cache.latch_of``: the zombie request set); ``tick_row``
+    writes (``horde_cache.latch_of``: the zombie request set; None: the latch
+    buffer already holds this tick's rows, the device decoder's); ``tick_row``
     the device ``unit_draws.TickRow`` (#29 P7e.1: the tick, and the topology
     serial the cache's refresh rule reads, which a bash's tile change bumps
     in place). Returns ``(coverage, books)``. Refuses by name a fault
@@ -2597,7 +2598,8 @@ def horde(store, dev_applier, fields: dict, ring, noise, doors, tiles, cache,
     _check_tables(name, store, doors, tiles, noise)
     ptrs, n_gases, h, w = _plane_ptrs(name, n, fields)
     cache.ensure(h, w)
-    cache.set_latch(latch)
+    if latch is not None:                 # #29 P8.6a: None = already on the card
+        cache.set_latch(latch)
     b, cov, rdrop = store.bp.applier_run(
         dev_applier.buffer, store.buffer, store.tables, ptrs, n_gases, h, w,
         int(applier.STAGE_HORDE), ring.buffer, noise=noise.buffer,

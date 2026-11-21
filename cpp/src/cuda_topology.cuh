@@ -410,18 +410,59 @@ __device__ inline int chew_wall(const TopoEnv& E, const int64_t* tab, int64_t y,
 // operand past the proved range, where Python's ints would carry on -- is
 // found in a pre-pass and also writes nothing. Proved range (pre-checked on
 // every tile the call reads or writes): gas planes >= 0 (a negative trace
-// would raise mid-mutation in Python), |gas_energy| < 2^61, a donor's |T_abs|
-// < 2^28, T_AMB < 2^28, a solid book within int64; then every product and sum
-// below fits int64 (a bulk count < 2^32 times a T_abs < 2^28 is < 2^60, and a
-// cell takes at most four such terms).
+// would raise mid-mutation in Python), |gas_energy| < 2^61, T_AMB < 2^28, a
+// solid book within int64, and for seal_tiles / unseal_tiles THE TERM BOUND
+// below on every cell whose gas moves (a sealed tile, an unseal's donor). The
+// gas-N primitives (extract / transfer, and inject's non-accountable T-mix)
+// refuse on the same term (THE MOVED-ENERGY BOUND below, #217 §8.17); the
+// vents' proof (cuda_unit_vents.cuh) leans on the extraction's.
+//
+// THE TERM BOUND (#29 TOPOLOGY RANGE; it replaced a donor's |T_abs| < 2^28,
+// which refused blast-heated gas the physics holds: ship_demo, run seed 81,
+// tick 32, T_abs 324 247 500 beside a door opened by a use). A moved parcel's
+// energy is dN * T_abs with dN <= the moving cell's bulk N. TEMPERATURE IS
+// NOT BOUNDED: T is whatever the int32 plane holds, [-2^31, 2^31) (a seam
+// write refreshes the mirror without the rails, so between recoveries a
+// mirror may sit above T_MAX_PHYS: only the dtype's range holds always), and
+// |T_AMB| < 2^28, so |T_abs| < 2^31 + 2^28. The refusal is on the PRODUCT:
+// a moving cell must have
+//     N * (|T_abs| + 1) < TERM_BOUND = 2^60,
+// computed exactly in uint64 (N < 2^32 -- two int32 planes, >= 0 -- times
+// |T_abs| + 1 <= 2^31 + 2^28 is < 2^63.2 < 2^64). Every term a cell gives in
+// the call is then < 2^60 (the unseal's re-read donor: see below), a cell
+// takes at most four terms in and its own out, and so every store and sum
+// fits int64: |E| < 2^61 plus four terms < 2^60 is < 2^63; a born-at-ambient
+// E is N * T_AMB < 2^32 * 2^28 = 2^60. No expression is restated: inside the
+// range each is the same int64 arithmetic, exact against Python's ints.
+// WHERE THE PHYSICS SITS: after the recovery's rails |T_abs| <= (T_MAX_PHYS +
+// T_AMB_K) raw = (16000 + 293) * 2^16 < 2^30, and the engine's own per-cell
+// range is n_bulk < 2^30 (bulk_transport.h, design 2.1.2), so N * (|T_abs| +
+// 1) < 2^60 there (T_ABS_PHYS_MAX below, asserted); a mirror transiently past
+// the ceiling, up to the int32 top, still passes with N < 2^28.8 (about 450 x
+// the ambient bulk at 1/3 m tiles).
+// THE RE-READ DONOR: unseal reads a donor's T_abs live at each span tile it
+// borders, and refreshes its mirror after each drain, which can RAISE it (by
+// floor(r / N') of the remainder r of E / N). When the donor's mirror IS its
+// energy (T == mirror_sat(E, N), the iron rule's state), each later term is
+// < N0 * |T_abs0| + r0 < N0 * (|T_abs0| + 1), N0 / T_abs0 / r0 its pre-call
+// values (the remainder only shrinks; a saturated mirror stays saturated), so
+// the one product bounds every read. A donor that borders two or more span
+// tiles, is accountable and is NOT a mirror of its energy is bounded by the
+// plane's own range instead: N0 * (2^31 + |T_AMB| + 1) < 2^60. (The old proof
+// let such a donor through with any N < 2^32: a later read could overflow.)
+// Each book's running sum over many calls stays the books' own int64
+// contract, as before.
 // THE MOVED-ENERGY BOUND OF THE GAS-N PRIMITIVES (#217 §8.17, 2026-11-21;
 // the energy form #29 gives seal / unseal). extract_gas_n_vec and
 // transfer_gas_n move ONE energy term out of ONE donor cell: de = want *
 // T_abs with 0 <= want <= the donor's bulk n. Their pre-check refuses when
-// n * (|T_abs| + 1) >= MOVE_TERM_BOUND = 2^60 (term_ok: n < 2^32 and
-// |T_abs| < 2^32 -- an int32 mirror plus T_AMB < 2^28 -- so the product is
-// exact in uint64). Then |de| < 2^60 and every cell it lands on stays
-// |E +- de| < 2^61 + 2^60 < 2^63. inject_gas_n_vec's non-accountable T-mix
+// n * (|T_abs| + 1) >= TERM_BOUND = 2^60 (the ONE term_ok of seal / unseal:
+// n < 2^32 -- the positive bulk, two int32 slices -- and |T_abs| < 2^31 +
+// 2^28 -- an int32 mirror plus T_AMB, t_ok-checked first -- so the product is
+// exact in uint64). The #217 side named the same 2^60 MOVE_TERM_BOUND; the
+// merge with #29's TOPOLOGY RANGE unified both on TERM_BOUND, one value.
+// Then |de| < 2^60 and every cell it lands on stays |E +- de| < 2^61 + 2^60
+// < 2^63. inject_gas_n_vec's non-accountable T-mix
 // takes the same form on (n_old, T_old): n_old*T_old + d_bulk*t_dep <
 // 2^60 + 2^32*2^30 < 2^63. No clamp: past the bound the call FAULTS and
 // writes nothing, whatever wrote the mirror.
@@ -448,7 +489,7 @@ __device__ inline int chew_wall(const TopoEnv& E, const int64_t* tab, int64_t y,
 // at 2^24.2, not a gas temperature); inject_gas_n_vec's t_dep, t_min and
 // t_max at 2^30 (the rails are config, T_MAX_PHYS < 2^30, and t_dep is the
 // plenum's mass-weighted mean of the air it drew); seal / unseal are #29's
-// (29-topology-range).
+// (THE TERM BOUND above).
 //
 // FLOATS: the ripple pair is written as the bit pattern of 0.0f (0u); the
 // seal's `permeability > 0.0` compare is the seal_mat_ok table row (made once
@@ -463,9 +504,20 @@ __device__ inline int chew_wall(const TopoEnv& E, const int64_t* tab, int64_t y,
 //: The longest span a seal / unseal takes (the door tile side table's capacity).
 constexpr int SPAN_MAX = object_tables::OBJ_DOOR_TILE_CAP;
 constexpr int64_t E_BOUND = (int64_t)1 << 61;
-constexpr int64_t T_BOUND = (int64_t)1 << 28;
-constexpr uint64_t MOVE_TERM_BOUND = (uint64_t)1 << 60;  // the gas-N primitives' moved energy (above)
+constexpr int64_t T_BOUND = (int64_t)1 << 28;    // T_AMB
 constexpr int64_t I32_LIMIT = (int64_t)1 << 31;   // int32 stores
+//: THE TERM BOUND of seal / unseal: a moving cell's N * (|T_abs| + 1) below it.
+constexpr uint64_t TERM_BOUND = (uint64_t)1 << 60;
+//: The physics' ceiling in the seam's currency, (T_MAX_PHYS + T_AMB_K) raw at
+//: the current dials (config.toml [physics.thermal] T_MAX_PHYS = 16000,
+//: PROVISIONAL; T_AMB_K = [physics.temperature_scale] eos_t_amb_k = 293
+//: since G12 -- the merge with #217 corrected the 290 it carried): used only
+//: for the assertion that a cell at the ceiling with the engine's largest
+//: bulk (2^30) is inside the term bound. If the dial moves, this assertion is
+//: where the margin is re-read.
+constexpr uint64_t T_ABS_PHYS_MAX = (uint64_t)(16000 + 293) << 16;
+static_assert(((uint64_t)1 << 30) * (T_ABS_PHYS_MAX + 1) < TERM_BOUND,
+              "a cell at the physics' ceiling with n_bulk 2^30 is inside the term bound");
 
 static_assert(APPLIER_BOOK_TRACE_CLIP_1 == APPLIER_BOOK_TRACE_CLIP_0 + 1,
               "the trace clip books are one run, a slice each");
@@ -646,18 +698,24 @@ __device__ __forceinline__ bool e_ok(const TopoEnv& E, int i) {
     return E.gas_energy[i] > -E_BOUND && E.gas_energy[i] < E_BOUND;
 }
 __device__ __forceinline__ bool t_ok(int64_t t_abs) { return t_abs > -T_BOUND && t_abs < T_BOUND; }
-// The moved-energy pre-check (above): n * (|t| + 1) < 2^60, exact in uint64
-// for 0 <= n < 2^32 and |t| < 2^32.
-__device__ __forceinline__ bool term_ok(int64_t n, int64_t t) {
-    if (n < 0 || n >= ((int64_t)1 << 32)) return false;
-    const int64_t a = t < 0 ? -t : t;
-    if (a >= ((int64_t)1 << 32)) return false;
-    return (uint64_t)n * (uint64_t)(a + 1) < MOVE_TERM_BOUND;
+// THE TERM BOUND on a moving cell of bulk n (>= 0, < 2^32) whose |T_abs| is
+// at most `t_mag` (< 2^31 + 2^28): n * (t_mag + 1) < 2^60, exact in uint64.
+__device__ __forceinline__ bool term_ok(int64_t n, uint64_t t_mag) {
+    return (uint64_t)n * (t_mag + 1) < TERM_BOUND;
+}
+__device__ __forceinline__ uint64_t mag64(int64_t v) {
+    return v < 0 ? (uint64_t)0 - (uint64_t)v : (uint64_t)v;
 }
 // A cell's bulk as the withdrawal prices it (negative slices read as 0).
 __device__ __forceinline__ int64_t bulk_pos(const TopoEnv& E, int i) {
     const int64_t o = E.g(E.o2, i), m = E.g(E.n2, i);
     return (o > 0 ? o : 0) + (m > 0 ? m : 0);
+}
+// Is cell i's mirror its energy (what gas_energy_refresh_cell would write)?
+__device__ inline bool is_mirror(const TopoEnv& E, int i, int64_t t_amb) {
+    const int64_t n = E.bulk(i);
+    if (n < gas_energy::N_EPS_RAW) return E.temperature[i] == 0;
+    return E.temperature[i] == gas_energy::mirror_sat_q(E.gas_energy[i], n, t_amb);
 }
 __device__ inline bool gas_nonneg(const TopoEnv& E, int i) {
     for (int g = 0; g < E.n_gases; ++g)
@@ -694,7 +752,10 @@ __device__ inline int64_t seal_tiles(const TopoEnv& E, const int64_t* tab, const
         }
         has_close[i] = cnt > 0;
         close_t[i] = cnt > 0 ? fixedpoint::floordiv_q(sum, (int64_t)cnt) : 0;
-        if (!gas_nonneg(E, c) || !e_ok(E, c) || !t_ok(t_abs_at(E, tab, c)))
+        // the term bound (a sealed tile is read once: its gas and T do not
+        // change before its turn; the shares sum to at most its bulk)
+        if (!gas_nonneg(E, c) || !e_ok(E, c) ||
+            !term_ok(E.bulk(c), mag64(t_abs_at(E, tab, c))))
             return APPLIER_SEAM_FAULT;
         int64_t sb = 0;
         if (!solid_books_cell(E, c, &sb)) return APPLIER_SEAM_FAULT;
@@ -778,7 +839,17 @@ __device__ inline int64_t unseal_tiles(const TopoEnv& E, const int64_t* tab, con
             if (!in_grid(E, ny, nx) || in_span(t, stride, n, ny, nx)) continue;
             const int j = ny * E.w + nx;
             if (E.solid[j]) continue;
-            if (!gas_nonneg(E, j) || !e_ok(E, j) || !t_ok(t_abs_at(E, tab, j)))
+            // the term bound on a donor (THE RE-READ DONOR in the header)
+            if (!gas_nonneg(E, j) || !e_ok(E, j) ||
+                !term_ok(E.bulk(j), mag64(t_abs_at(E, tab, j))))
+                return APPLIER_SEAM_FAULT;
+            int reads = 0;                                 // the span tiles j borders
+            for (int e = 0; e < 4; ++e)
+                if (in_grid(E, ny + face_dy(e), nx + face_dx(e)) &&
+                    in_span(t, stride, n, ny + face_dy(e), nx + face_dx(e)))
+                    ++reads;
+            if (reads >= 2 && accountable(E, j) && !is_mirror(E, j, t_amb) &&
+                !term_ok(E.bulk(j), ((uint64_t)1 << 31) + mag64(t_amb)))
                 return APPLIER_SEAM_FAULT;
         }
     }
@@ -966,7 +1037,7 @@ __device__ inline int64_t extract_gas_n_vec(const TopoEnv& E, const int64_t* tab
     const int i = (int)fy * E.w + (int)fx;
     const int64_t t_amb = tab[UNIT_TAB_TOPO_T_AMB_Q];
     if (dn >= ((int64_t)1 << 40) || !t_ok(t_amb) || !e_ok(E, i) ||
-        !term_ok(bulk_pos(E, i), t_abs_at(E, tab, i)))   // §8.17: the moved energy
+        !term_ok(bulk_pos(E, i), mag64(t_abs_at(E, tab, i))))   // §8.17: the moved energy
         return APPLIER_SEAM_FAULT;
     const int64_t want = air_withdrawal(E, tab, i, dn, remove);
     if (want == 0) return 0;
@@ -999,7 +1070,7 @@ __device__ inline int64_t transfer_gas_n(const TopoEnv& E, const int64_t* tab, i
     const int s = (int)sy * E.w + (int)sx, d = (int)dy * E.w + (int)dx;
     const int64_t t_amb = tab[UNIT_TAB_TOPO_T_AMB_Q];
     if (dn >= ((int64_t)1 << 40) || !t_ok(t_amb) || !e_ok(E, s) || !e_ok(E, d) ||
-        !term_ok(bulk_pos(E, s), t_abs_at(E, tab, s)) || !gas_nonneg(E, d))   // §8.17
+        !term_ok(bulk_pos(E, s), mag64(t_abs_at(E, tab, s))) || !gas_nonneg(E, d))   // §8.17
         return APPLIER_SEAM_FAULT;
     int64_t remove[GAS_MAX];
     const int64_t want = air_withdrawal(E, tab, s, dn, remove);
@@ -1078,7 +1149,7 @@ __device__ inline int64_t inject_gas_n_vec(const TopoEnv& E, const int64_t* tab,
         t_dep <= -INJECT_T_BOUND || t_dep >= INJECT_T_BOUND ||
         t_min <= -INJECT_T_BOUND || t_min >= INJECT_T_BOUND ||
         t_max <= -INJECT_T_BOUND || t_max >= INJECT_T_BOUND ||
-        (!acct && !term_ok(E.bulk(i), t_old)))          // §8.17: the T-mix's energy
+        (!acct && !term_ok(E.bulk(i), mag64(t_old))))          // §8.17: the T-mix's energy
         return APPLIER_SEAM_FAULT;
     if (!inject_core_fits(E, tab, i, add)) return APPLIER_SEAM_OVERFLOW;
     const int64_t n_old = E.bulk(i);

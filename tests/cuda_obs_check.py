@@ -135,7 +135,61 @@ P8.5a (the windows: ``DeviceObservation.build_windows``) --
 - PART WALL extended: the unseen enemy's row perturbed moves no window plane
   of the team, nor its air block or felt temperature.
 
-THE BREAKS (``OBS_BREAK``), each must turn a part red: ``win_divisor``,
+P8.6a (the device decoder: ``simulation.device_decoder``) --
+- CORPUS (c), GENERATED LIVE (:class:`PolicyDriver`, :data:`DEC_RUNS`): an
+  in-process ``rl_env.EnvRunner`` per run, every team a v1 ``policy``, its
+  session played as ``EnvRunner.step`` plays it on seeded masked-random
+  decisions (forced masked choices and fallbacks now and then), a hand kit
+  and, on the crowd runs, every unit put together at tick 0
+  (:func:`dec_crowd`); the reference's latch columns, slot states and horde
+  latch taken after the controllers' ``handle_frame``, its digests after the
+  step. Inside part GATE / DEC_GATE (:func:`decoder_tick`): the decisions
+  handed to the device decoder before the decision's first tick, then at
+  EVERY tick the store's latch columns after the decode, every slot state,
+  the horde latch and the digests equal; ``masked_choices`` at every
+  decision; the owned observation (the decoder's ``prev``, ``prev_aim``,
+  ``on_next_tick`` and every earlier column) raw-bit equal at every
+  decision; the coverage (:data:`DEC_CASES`, every feet option), each > 0;
+- PART DECODER: the refusals, an out-of-range decision raised at the books
+  read with the host's message, the syncs and uploads per steady tick at N =
+  1 and 2, the aim arithmetic over a square of offsets.
+
+P8.8 (the full view: ``DeviceObservation.build_full``) --
+- inside every GATE / BATCH run: ``full_list``, ``full_mask``, ``full_uid``,
+  ``full_match``, ``full_watched`` raw-bit equal to ``obs_spec_v1.
+  observe_full_rows`` over the rows' ROSTER units (dead and turned rows
+  included) at every decision tick, no full-view fault; the coverage
+  (:data:`FULL_CASES`: mates, enemies the team sees / holds a record of /
+  does not know of, zombies, objects seen / known / unknown, doors, a corpse
+  row, a row whose candidates pass the cap, watched cells, the order block,
+  an aim on a unit), each > 0, and every ``full_match`` column moved;
+- PART WALL extended: the unseen enemy's row perturbed MOVES the team's full
+  view while it moves no policy value; PART HANDOVER: ``team_rows`` (the
+  policy feed) hands no full key.
+
+P8.8b (the terminal observation: ``DeviceObservation.terminal``) -- inside
+every GATE / BATCH run, at every decision tick and every ending tick: an env
+whose match ended has its owned ``final_`` columns raw-bit equal to ITS
+terminal reference (``Played.final``: ``host_observation`` of the session
+right after the ending tick, as ``EnvRunner``'s worker observes before the
+reset) at its ending tick and unchanged at every later check; an env that has
+not ended holds zeros; at an ending OFF the cadence every live buffer of every
+env is unchanged by the tick; the coverage (:data:`TERMSTATS`: endings on and
+off the cadence, by elimination and by the clock, zero and frozen checks, live
+buffers held), each > 0.
+
+THE BREAKS (``OBS_BREAK``), each must turn a part red: ``term_early``,
+``term_next``, ``term_other`` (P8.8b, parts GATE / BATCH: the terminal
+observation taken one tick early, at the next decision tick, written for the
+next env too); ``full_vis``, ``full_tie``, ``full_cap`` (P8.8, part GATE: the
+full view from the team's visible set, the sort's tie by the higher id, the
+room one short); ``dec_every``,
+``dec_late``, ``dec_horde_late``, ``dec_next_uid`` (P8.6a, part DEC_GATE: the
+hand latch on every tick of a decision; the decode after the walk; the horde
+latch at the previous tick's end, before the conversion; the pointer against
+the next observation's list_uid) and ``dec_div`` (P8.6a, part DECODER: the
+aim vector as dx / mag -- it moves no quantized value on the square, so it
+CANNOT turn red; run to show it); ``win_divisor``,
 ``win_anchor``, ``win_half``, ``win_argmax`` (P8.5a, part GATE: each gas plane
 divided by the neighbouring density row; the far window's block anchor one
 block off; the float16 cast through float32; the far wind's argmax taking the
@@ -199,7 +253,7 @@ FAILS: list = []
 BREAK = os.environ.get("OBS_BREAK", "")
 #: The patch this script's gates are at: every column owned by it or an
 #: earlier patch of the version-2 table is compared.
-PATCH = "P8.7"
+PATCH = "P8.8b"
 #: The decision cadence of the corpus (design 13.1's decimation, a run file's
 #: ``[run] decimation``; the device observation takes it as its argument).
 DECIMATION = 4
@@ -324,6 +378,26 @@ class Played:
         self.terminal = False
         self.result = None                    # (outcome, team, ticks) when terminal
         self.book_cov = {}                    # profile -> case -> count
+        # P8.6a (corpus (c), a policy run): the driver, per decision tick the
+        # decisions, per tick the reference's latch columns / slot states /
+        # horde latch after the controllers' handle_frame and its digests after
+        # the step, the decoder's coverage
+        self.driver = None
+        self.decisions = {}                   # tick -> (rows, 5) int32
+        self.dec_obs = {}                     # tick -> {key: array} (list_uid, masks)
+        self.ref_latch = {}                   # tick -> (U, LW) int64
+        self.ref_slots = {}                   # tick -> {row: host_state_form}
+        self.ref_horde = {}                   # tick -> latch row
+        self.digests = {}                     # tick (after the step) -> digests
+        self.dec_cov = {}
+        # P8.8: the full view's coverage, counted off the reference, and the
+        # distinct values of each full_match column (raw bits, capped)
+        self.full_cov = {k: 0 for k in FULL_CASES}
+        self.full_match_vals = {}
+        # P8.8b: the terminal observation (every served key, the reference's
+        # observe of the ended session before its reset), when the match ended
+        self.final = None
+        self.limit = 0                        # the match's time limit in ticks (the clock)
 
 
 _PLAYED: dict = {}
@@ -377,19 +451,21 @@ def aim_rule(sim, units, tick: int) -> tuple:
     return aims, aimed
 
 
-def host_observation(session, ctx, T, S, aimed_out=None) -> dict:
+def host_observation(session, ctx, T, S, aimed_out=None, aims_of=None) -> dict:
     """The env's served observation of ``session`` now, built by THE
     reference (``EnvRunner.row_units`` / ``row_flags`` over the session,
     ``obs_spec_v1.observe_rows`` with :func:`aim_rule`'s aims), one env's
     ``(U, ...)`` arrays; ``aimed_out`` (a list) receives the rows' aimed
-    uids."""
+    uids. ``aims_of`` (P8.6a, corpus (c)): ``(sim, units) -> (aims, aimed)``
+    in place of :func:`aim_rule` (the policies' own ``aim_view``)."""
     import rl_env
     from simulation import obs_spec_v1 as o
     me = SimpleNamespace(session=session, layout=SimpleNamespace(n_slots=S, n_rows=T * S))
     shapes = o.shapes(1, T * S, S)
     out = {k: np.zeros(sh[1:], dtype=dt) for k, (sh, dt) in shapes.items()}
     units = rl_env.EnvRunner.row_units(me)
-    aims, aimed = aim_rule(session.sim, units, int(session.sim.tick))
+    aims, aimed = (aim_rule(session.sim, units, int(session.sim.tick)) if aims_of is None
+                   else aims_of(session.sim, units))
     if aimed_out is not None:
         aimed_out.append(aimed)
     o.observe_rows(session.sim, ctx, units, out, aims=aims)
@@ -404,7 +480,29 @@ def host_observation(session, ctx, T, S, aimed_out=None) -> dict:
     valid, in_match = rl_env.EnvRunner.row_flags(me)
     out["valid"][...] = valid
     out["in_match"][...] = in_match
+    # P8.8: the full view for the rows' ROSTER units (EnvRunner.observe's own
+    # call through the accessor's door: observe_full_rows, after the
+    # observation; its own caches, so the order cannot move a value)
+    for k, (sh, dt) in o.full_shapes(1, T * S, T).items():
+        out[k] = np.zeros(sh[1:], dtype=dt)
+    o.observe_full_rows(session.sim, ctx, rl_env.EnvRunner.roster_units(me), out)
     return out
+
+
+def terminal_aims(p, tick: int):
+    """P8.8b: the aims ``host_observation`` takes for the terminal observation
+    of a tap-driven match: what the twin's ``DeviceObservation.aimed`` holds at
+    ``tick`` -- the stand-in fed for the last decision tick at or before it
+    (:func:`aim_rule`'s answer there, per row)."""
+    d = tick - tick % DECIMATION
+
+    def aims_of(sim, units):
+        aimed = np.asarray(p.aimed.get(d, np.full(len(units), -1, dtype=np.int32)),
+                           dtype=np.int32)
+        aims = {int(u.id): (int(aimed[i]), None) for i, u in enumerate(units)
+                if u is not None and int(aimed[i]) >= 0}
+        return aims, aimed
+    return aims_of
 
 
 def host_lof(sim):
@@ -425,13 +523,16 @@ def host_lof(sim):
     return out, cover
 
 
-def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Played:
+def play(name, level, spec, seed, setup=None, script=None, max_ticks=None,
+         driver=None) -> Played:
     """Play the match on the host once (cached): its intents per tick, the
     owned host observation at every decision tick. Corpus (d): ``setup``
     (session) puts the hand state in at tick 0 (the twin gets the same);
     ``script`` (sim) issues hand intents before each tick (the tap records
     them with the controllers', so the twin is fed them); ``max_ticks`` ends
-    the play early."""
+    the play early. ``driver`` (P8.6a, corpus (c)): a :class:`PolicyDriver`
+    whose ``EnvRunner`` session is played (its ``policy`` teams decoding the
+    driver's decisions; ``spec`` / ``seed`` are the session's)."""
     key = (name, seed)
     if key in _PLAYED:
         return _PLAYED[key]
@@ -439,13 +540,16 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Pl
     from simulation.match_session import MatchSession
     from simulation.obs_spec_v1 import ObsContext
     t0 = time.perf_counter()
-    s = MatchSession(level, spec, seed=seed, breach_physics=bp)
+    s = (MatchSession(level, spec, seed=seed, breach_physics=bp) if driver is None
+         else driver.session)
     if setup is not None:
         setup(s)
     sp = s.spec
     T, S = len(sp.teams), max(rl_env._team_slots(level))
-    p = Played(name, level, spec, seed, T, S, setup=setup)
+    p = Played(name, level, sp if driver is not None else spec, seed, T, S, setup=setup)
+    p.driver = driver
     ctx = ObsContext.build(s.sim, sp, S, n_teams=T)
+    p.limit = int(ctx.limit_ticks)
     own = owned_obs()
     ref = RefBooks(s, T, S)                   # P8.7: the env's books, per named profile
     tap = cc.Tap()
@@ -457,12 +561,16 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Pl
         ts = time.perf_counter()
         aimed = []
         with AimTap(p.aim_cov) as at, ListTap(p.list_cov, ctx.caps):
-            host = host_observation(s, ctx, T, S, aimed)
+            host = host_observation(s, ctx, T, S, aimed,
+                                    None if driver is None else driver.aims_of)
         p.aimed[int(s.sim.tick)] = aimed[0]
+        if driver is not None:
+            driver.observed(p, s, host)
         count_windows(p, s, host)
         p.obs[int(s.sim.tick)] = owned_parts(host, own, False)
         count_list(p.list_cov, host, len(ctx.hand_rows))
         count_masks(p.mask_cov, host)
+        count_full(p, s, host)
         p.aims[int(s.sim.tick)] = at.rec
         p.lof[int(s.sim.tick)], p.lof_cover[int(s.sim.tick)] = host_lof(s.sim)
         t_obs += time.perf_counter() - ts
@@ -485,15 +593,32 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Pl
     while not s.is_terminal() and (max_ticks is None or int(s.sim.tick) < max_ticks):
         if script is not None:
             script(s.sim)
+        if driver is not None:
+            driver.decide(p, s)
         ref.before(s)
-        s.tick()
+        if driver is None:
+            s.tick()
+        else:
+            driver.tick(p, s)
         ref.after(s)
         ref.record(p, s, s.is_terminal())
-        p.intents.append(tap.take())
+        p.intents.append(tap.take() if driver is None else driver.feed(tap.take()))
         see()
         if int(s.sim.tick) % DECIMATION == 0:
             observe()
+        if s.is_terminal():
+            # P8.8b: the terminal observation, as EnvRunner's worker takes it at
+            # the end of the step in which the match ended (r.observe into the
+            # final_ arrays, before the reset): the session's state after the
+            # ending tick, on or off the decision cadence; the aims are the
+            # ones the twin holds then (the policies' own view, or the stand-in
+            # fed at the last decision)
+            p.final = host_observation(s, ctx, T, S, None,
+                                       driver.aims_of if driver is not None
+                                       else terminal_aims(p, int(s.sim.tick)))
     s.sim.attach_intent_log(None)
+    if driver is not None:
+        driver.finish(p, s)
     p.coverage = dict(cov.counts)
     p.dmg_peak = cov.dmg_peak
     p.cover_alive = (alive0, [bool(c.alive) for c in (s.sim.cover or ())])
@@ -602,6 +727,11 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
                                  reward_profile=profile)
     _books_breaks(obs)
     _picture_breaks(obs)
+    dec = None
+    if any(p.driver is not None for p in played):    # P8.6a: corpus (c), decoder-driven
+        if not all(p.driver is not None for p in played):
+            raise ValueError("gate: a batch mixes policy runs and tap-driven matches")
+        dec = decoder_for(obs, sessions)
     if BREAK == "anchor":                          # from the first decision after tick 0
         _anchor_break(obs)
     if BREAK == "stale":                           # nothing rebuilt after tick 0
@@ -617,9 +747,15 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
         obs.masks_brk = dobs.MASK_BREAK_CODES[BREAK]
     if BREAK in dobs.WIN_BREAK_CODES:              # P8.5a: profile row, anchor, half, argmax
         obs.win_brk = dobs.WIN_BREAK_CODES[BREAK]
+    if BREAK in dobs.FULL_BREAK_CODES:             # P8.8: the visible set, the tie, the cap
+        obs.full_brk = dobs.FULL_BREAK_CODES[BREAK]
     import cupy as cp
     n_cmp = 0
     end = max(p.end for p in played)
+    if BREAK in dobs.TERM_BREAKS:                  # P8.8b: one tick early, the next decision, another env
+        obs.term_brk = BREAK
+    endings = {p.end for p in played if p.terminal}
+    kept = {}                                      # env -> its final_ arrays at its ending
     t0 = time.perf_counter()
     for k in range(end + 1):
         tick = int(c.sims[0].tick)
@@ -647,6 +783,10 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
             wf = obs.win_faults.get()
             if wf.any():
                 fail(f"{label}: tick {tick}: window fault bits {wf.tolist()}")
+                return False
+            ff = obs.full_faults.get()
+            if ff.any():
+                fail(f"{label}: tick {tick}: full view fault bits {ff.tolist()}")
                 return False
         if tick % DECIMATION == 0:
             got = obs.host(own)
@@ -685,10 +825,26 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
                     census.add(want, want[("valid", None)] if ("valid", None) in want
                                else np.ones(p.T * p.S, bool))
                 n_cmp += 1
+        # P8.8b: the final_ buffers at every decision tick and every ending
+        # tick: an env that ended equals ITS terminal reference at its ending
+        # tick and keeps it after; an env that has not ended holds zeros
+        if tick % DECIMATION == 0 or tick in endings:
+            if not finals_equal(label, obs, played, tick, kept):
+                return False
         if k == end:
             break
+        live_before = None
+        if (tick + 1) in endings and (tick + 1) % DECIMATION:
+            # an ending OFF the cadence: no live block runs, so the terminal
+            # build must leave every live buffer of every env as it was
+            live_before = {kk: v.copy() for kk, v in obs.buffers.items()}
         for e, p in enumerate(played):
             c.latch(p.intents[k] if k < len(p.intents) else (), env=e)
+        if dec is not None:
+            # P8.6a: the decisions handed over before the decision's first tick
+            if not decoder_tick(label, c, obs, dec, played, tick, k):
+                return False
+            continue
         if (tick + 1) % DECIMATION == 0:
             # P8.5a: the decoder's stand-in -- each env's rows aimed as its
             # reference was at that decision (aim_rule), before the tick builds
@@ -701,10 +857,94 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
                         feed[e, t_ * S + s_] = uid
             obs.aimed[...] = cp.asarray(feed)
         c.tick()
+        if live_before is not None and not live_untouched(label, obs, live_before, tick + 1):
+            return False
     print(f"  {label}: {n_cmp} env-decisions equal (N = {len(played)}, {end} ticks, "
           f"{obs.builds} block launches, {1000 * (time.perf_counter() - t0) / max(1, end):.1f} "
           f"ms per tick incl. the gate's downloads)")
     return True
+
+
+# ---------------------------------------------------------------------------
+# P8.8b: the terminal observation (the final_ buffers)
+# ---------------------------------------------------------------------------
+#: Per gate label: endings compared (on / off the decision cadence, by
+#: elimination / by the clock), env-ticks a final_ set was held at zeros or
+#: frozen after its ending, off-cadence endings whose live buffers were held.
+TERMSTATS: dict = {}
+
+
+def finals_equal(label, obs, played, tick, kept) -> bool:
+    """P8.8b at ``tick``: every env's owned ``final_`` columns -- ITS terminal
+    reference (``Played.final``) at its ending tick, the same arrays at every
+    later check (an ended env's terminal observation never moves), zeros
+    before (an env that has not ended was never written)."""
+    own = owned_obs()
+    st = TERMSTATS.setdefault(label, {"on_cadence": 0, "off_cadence": 0, "elimination": 0,
+                                      "clock": 0, "zero_checks": 0, "frozen_checks": 0,
+                                      "live_held": 0})
+    got = {kk: v.get() for kk, v in obs.final.items() if kk in own}
+    for e, p in enumerate(played):
+        mine = owned_parts({kk: v[e] for kk, v in got.items()}, own, False)
+        if p.terminal and tick == p.end:
+            want = owned_parts(p.final, own, False)
+            what = "its terminal reference"
+        elif p.terminal and tick > p.end:
+            want = kept[e]
+            what = "its terminal observation kept since tick %d" % p.end
+        else:
+            want = {kk: np.zeros_like(v) for kk, v in mine.items()}
+            what = "zeros (not ended)"
+        for kk, w in want.items():
+            g = mine[kk]
+            if w.shape != g.shape or not np.array_equal(raw(w), raw(g)):
+                idx = np.argwhere(raw(w) != raw(g)) if w.shape == g.shape else []
+                at = tuple(int(x) for x in idx[0]) if len(idx) else "shape"
+                fail(f"{label}: tick {tick}, env {e} ({p.name}@{p.seed}), final_{kk[0]}"
+                     f"{'' if kk[1] is None else ' column/plane ' + kk[1]}: {len(idx)} value(s) "
+                     f"differ from {what}, first at {at}: want "
+                     f"{w[tuple(idx[0])] if len(idx) else w.shape} device "
+                     f"{g[tuple(idx[0])] if len(idx) else g.shape}")
+                return False
+        if p.terminal and tick == p.end:
+            kept[e] = mine
+            st["off_cadence" if tick % DECIMATION else "on_cadence"] += 1
+            st["clock" if tick >= p.limit else "elimination"] += 1
+        elif p.terminal and tick > p.end:
+            st["frozen_checks"] += 1
+        else:
+            st["zero_checks"] += 1
+    return True
+
+
+def live_untouched(label, obs, before, tick) -> bool:
+    """P8.8b: an ending off the decision cadence builds the terminal
+    observation and nothing else: every live buffer of every env is as it was
+    before the tick."""
+    for kk, v in obs.buffers.items():
+        if not bool(obs.cp.array_equal(v, before[kk])):
+            fail(f"{label}: tick {tick}: the terminal build moved the LIVE buffer {kk!r}")
+            return False
+    TERMSTATS.setdefault(label, {})
+    TERMSTATS[label]["live_held"] = TERMSTATS[label].get("live_held", 0) + 1
+    return True
+
+
+def judge_terminal(labels_prefix=("(", "batch")) -> None:
+    """P8.8b's coverage over every gate run: an ending on a decision tick and
+    one off it, by elimination and by the clock, envs held at zeros, ended
+    envs held frozen, off-cadence endings whose live buffers were held."""
+    tot = {}
+    for label, st in TERMSTATS.items():
+        for kk, n in st.items():
+            tot[kk] = tot.get(kk, 0) + n
+    print(f"    terminal observation: {tot}")
+    # (an env held frozen after its ending needs a batch whose envs end apart:
+    # part BATCH judges it; a lone match's gate stops at its ending)
+    for kk in ("on_cadence", "off_cadence", "elimination", "clock", "zero_checks",
+               "live_held"):
+        if not tot.get(kk):
+            fail(f"terminal observation: case {kk!r} never reached (vacuous)")
 
 
 # ---------------------------------------------------------------------------
@@ -1231,6 +1471,83 @@ def judge_masks(played) -> None:
 #: tile, a tile that sees the aimed target, a near window hanging over each
 #: edge of the map, a far window cell on a block that straddles the map's
 #: edge (part pad, part map), a far window cell off the block grid.
+FULL_CASES = ("mate", "enemy_seen", "enemy_record", "enemy_unknown", "zombie", "object_seen",
+              "object_known", "object_unknown", "door", "corpse", "overflow", "watched",
+              "order_block", "aim_on_unit")
+
+
+def count_full(p, session, host) -> None:
+    """P8.8: the full view's coverage over one reference decision, counted off
+    the reference's served arrays (and, for the cut, the sim's own counts: a
+    row whose candidates pass the full list's capacity)."""
+    import rl_env
+    from simulation import obs_spec_v1 as o
+    from simulation.team_picture import live_objects
+    cov = p.full_cov
+    fl, fm, fw = host["full_list"], host["full_mask"], host["full_watched"]
+    im, va = host["in_match"].astype(bool), host["valid"].astype(bool)
+    K = o.F                                            # the knowledge column
+    for r in np.flatnonzero(im):
+        m = fm[r].astype(bool)
+        e = fl[r][m]
+        ty, kn = e[:, 0].astype(int), e[:, K].astype(int)
+        unit1 = ty == o.TYPE_SEEN
+        cov["mate"] += int(np.count_nonzero(ty[1:] == o.TYPE_MATE))
+        cov["enemy_seen"] += int(np.count_nonzero(unit1 & (kn == o.KNOW_SEEN)))
+        cov["enemy_record"] += int(np.count_nonzero(unit1 & (kn == o.KNOW_RECORD)))
+        cov["enemy_unknown"] += int(np.count_nonzero(unit1 & (kn == o.KNOW_UNKNOWN)))
+        cov["zombie"] += int(np.count_nonzero(unit1 & (e[:, 33] != 0)))
+        obj = ty == o.TYPE_OBJECT
+        cov["object_seen"] += int(np.count_nonzero(obj & (kn == o.KNOW_SEEN)))
+        cov["object_known"] += int(np.count_nonzero(obj & (kn == o.KNOW_RECORD)))
+        cov["object_unknown"] += int(np.count_nonzero(obj & (kn == o.KNOW_UNKNOWN)))
+        cov["door"] += int(np.count_nonzero(ty == o.TYPE_DOOR))
+        cov["order_block"] += int(np.count_nonzero(e[:, 47] != 0))
+        cov["aim_on_unit"] += int(np.count_nonzero((ty == o.TYPE_MATE) & (e[:, 41] != 0)))
+        cov["watched"] += int(np.count_nonzero(fw[r]))
+        if not va[r]:
+            cov["corpse"] += 1
+    sim = session.sim
+    living = [u for u in sim.units if u.alive]
+    n_mar = sum(1 for u in living if not u.is_zombie)
+    n_z = len(living) - n_mar
+    n_o = len(tuple(live_objects(sim)))
+    n_d = sum(1 for d in sim._doors if d.alive)
+    me = SimpleNamespace(session=session, layout=SimpleNamespace(n_slots=p.S, n_rows=p.T * p.S))
+    for u in rl_env.EnvRunner.roster_units(me):
+        if u is None:
+            continue
+        others = n_mar - (1 if (u.alive and not u.is_zombie) else 0)
+        if 1 + others + n_z + n_o + n_d > o.FULL_ENTRIES:
+            cov["overflow"] += 1
+    fmatch = host["full_match"]
+    for col in range(fmatch.shape[1]):
+        vs = p.full_match_vals.setdefault(col, set())
+        if len(vs) < 4:
+            vs.update(int(x) for x in np.unique(raw(fmatch[im][:, col]))[:4])
+
+
+def judge_full(played) -> None:
+    """P8.8: every coverage case of the full view > 0 over the corpus, and each
+    full_match column moved (two distinct values at least)."""
+    tot = {k: 0 for k in FULL_CASES}
+    vals = {}
+    for p in played:
+        for k, n in p.full_cov.items():
+            tot[k] += n
+        for col, vs in p.full_match_vals.items():
+            vals.setdefault(col, set()).update(vs)
+    print(f"    full view coverage: {tot}")
+    for k, n in tot.items():
+        if n == 0:
+            fail(f"full view: coverage case {k!r} never reached (vacuous)")
+    for col in sorted(vals):
+        if len(vals[col]) < 2:
+            fail(f"full view: full_match column {col} never moved over the corpus")
+    print(f"    full_match columns, distinct values: "
+          f"{ {c: len(v) for c, v in sorted(vals.items())} }")
+
+
 WIN_CASES = ("watched", "sees_target", "near_over_left", "near_over_right", "near_over_top",
              "near_over_bottom", "far_block_straddles", "far_off_grid", "aimed_found",
              "aimed_not_found")
@@ -2119,11 +2436,15 @@ def part_gate():
         gate(f"(d fire) {p.name}", [p], cdn, books_census=bc)
     for p in corpus_clock():
         gate(f"(d clock) {p.name}", [p], cdn, books_census=bc)
+    ccn = Census()                                  # P8.6a: corpus (c), decoder-driven
+    for p in corpus_c():
+        gate(f"(c) {p.name}", [p], ccn, books_census=bc)
     ca.judge("census (a)", strict=False)
     cb.judge("census (b)", strict=False)
     cdn.judge("census (d)", strict=False)
     both = Census()
-    for src in (ca, cb, cdn):
+    ccn.judge("census (c)", strict=False)
+    for src in (ca, cb, cdn, ccn):
         for k, n in src.nondefault.items():
             both.nondefault[k] = both.nondefault.get(k, 0) + n
             both.values.setdefault(k, set()).update(src.values.get(k, set()))
@@ -2139,6 +2460,11 @@ def part_gate():
                 + corpus_door() + corpus_turn() + corpus_list())
     judge_windows(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                   + corpus_door() + corpus_turn() + corpus_list() + corpus_fire())
+    judge_decoder(corpus_c())
+    judge_full(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
+               + corpus_door() + corpus_turn() + corpus_list() + corpus_fire()
+               + corpus_clock() + corpus_c())
+    judge_terminal()
     judge_books(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                 + corpus_door() + corpus_turn() + corpus_list() + corpus_fire()
                 + corpus_clock(), BOOK_CENSUS)
@@ -2174,6 +2500,12 @@ def part_batch(n_list=(2, 4)):
                   f"after the env's end), {st['served']} steps served equal")
     if frozen == 0:
         fail("batch: no env's books were compared frozen after its end (vacuous)")
+    # P8.8b: the batch's terminal observations (envs ending at different ticks)
+    bt = {kk: sum(st.get(kk, 0) for lb, st in TERMSTATS.items() if lb.startswith("batch"))
+          for kk in ("on_cadence", "off_cadence", "zero_checks", "frozen_checks", "live_held")}
+    print(f"    terminal observation, batches: {bt}")
+    if not bt["frozen_checks"] or not bt["zero_checks"] or not (bt["on_cadence"] + bt["off_cadence"]):
+        fail(f"batch: the terminal observation was not exercised (vacuous): {bt}")
 
 
 def part_handover():
@@ -2193,6 +2525,10 @@ def part_handover():
               f"dtypes and shapes")
     for t in range(p.T):
         rows = obs.team_rows(t)
+        leak = sorted(set(rows) & set(dobs.FULL_KEYS))
+        if leak or not set(dobs.FULL_KEYS) <= set(ts):
+            fail(f"handover: team_rows({t}) hands the full view's keys {leak} (the policy "
+                 f"feed), or torch() lacks them")
         for k, v in rows.items():
             base = obs.buffers[k]
             want = int(base.data.ptr) + t * p.S * int(base.strides[1])
@@ -2226,6 +2562,12 @@ def part_syncs():
         c = cd.DeviceConductor([x.sim for x in sessions], bp=bp)
         obs = dobs.DeviceObservation(c, [x.spec for x in sessions], p.S, DECIMATION,
                                      n_teams=p.T)
+        # the dead conductors of earlier parts are freed NOW, not by the cycle
+        # collector inside a counted tick (their destructors sync the stream:
+        # cuda_unit_store.cu / cuda_applier.cu ... -- not the tick's syncs)
+        import gc
+        gc.collect()
+        gc.disable()
         sc = cc.SyncCount()
         per = []
         b0 = obs.builds
@@ -2243,6 +2585,7 @@ def part_syncs():
                 per.append((k, log, had))
         finally:
             sc.close()
+            gc.enable()
         steady = [lg for k, lg, o in per[1:] if not o]
         names = sorted({x.partition(" | ")[2] for lg in steady for x in lg})
         counts[n] = [len(lg) for lg in steady]
@@ -2584,6 +2927,7 @@ def part_wall():
                                             "current_hp", "omega_q", "effort", "exposure",
                                             "live_trigger")}
     aims_done = {}
+    full_done = {}
     col["valid"] = lay.valid
     dead = 1                                         # unit_schema._LIFE_CHOICES.index("dead")
     total = {}
@@ -2635,6 +2979,7 @@ def part_wall():
                 # P8.4a: nothing team t's soldiers are told of their lanes, aims,
                 # lines of fire or turns moves with the unseen enemy's row
                 base = team_aims(obs, t, p.S)
+                full_base = team_full(obs, t, p.S)
                 pert = c._rows.copy()
                 perturb(u)(pert)
                 pert[0, u, col["live_trigger"]] = 1 - int(pert[0, u, col["live_trigger"]])
@@ -2643,18 +2988,28 @@ def part_wall():
                 obs.build_list(store_ptr=int(pert.data.ptr))
                 obs.build_masks(store_ptr=int(pert.data.ptr))
                 obs.build_windows(store_ptr=int(pert.data.ptr))
+                obs.build_full(store_ptr=int(pert.data.ptr))
                 moved = [k for k, v in team_aims(obs, t, p.S).items()
                          if not np.array_equal(v, base[k])]
+                full_moved = [k for k, v in team_full(obs, t, p.S).items()
+                              if not np.array_equal(v, full_base[k])]
                 del pert
                 obs.vision()
                 obs.aims()
                 obs.build_list()
                 obs.build_masks()
                 obs.build_windows()
+                obs.build_full()
                 if moved:
                     fail(f"wall {p.name}: tick {int(c.sims[0].tick)}, team {t}: perturbing "
                          f"unseen enemy {p.uids[u]}'s row moved the team's {moved}")
                     return
+                # P8.8: the other side of the wall -- the full view DOES see it
+                if "full_list" not in full_moved:
+                    fail(f"wall {p.name}: tick {int(c.sims[0].tick)}, team {t}: perturbing "
+                         f"unseen enemy {p.uids[u]}'s row did not move the team's full view")
+                    return
+                full_done[p.rule] = full_done.get(p.rule, 0) + 1
                 aims_done[p.rule] = aims_done.get(p.rule, 0) + 1
                 if not np.array_equal(run(perturb(sv)), vis[t]):
                     fail(f"wall {p.name}: tick {int(c.sims[0].tick)}, team {t}: perturbing seen "
@@ -2682,6 +3037,18 @@ def part_wall():
     print(f"  wall P8.4a / P8.4b / P8.4c: {aims_done} (team, tick) cases: the unseen enemy's "
           f"row perturbed (and its trigger flipped) -> the team's lanes, lanes plane, aims, "
           f"lines of fire, turns, list (entries, mask, uids) and four masks unchanged")
+    for rule in ("cone", "all_round"):
+        if not full_done.get(rule):
+            fail(f"wall: no P8.8 case under the {rule!r} rule (vacuous)")
+    print(f"  wall P8.8: {full_done} (team, tick) cases: the same perturbation MOVES the "
+          f"team's full view (the other side of the wall) while no policy value moved")
+
+
+def team_full(obs, t, S) -> dict:
+    """Team t's full view of env 0 (P8.8's WALL reading): every full key of
+    its rows."""
+    rows = slice(t * S, (t + 1) * S)
+    return {k: obs.buffers[k][0, rows].get() for k in dobs.FULL_KEYS}
 
 
 def team_aims(obs, t, S) -> dict:
@@ -2746,10 +3113,641 @@ def part_restage():
           f"picture equal to the reference over {n} ticks")
 
 
+# ---------------------------------------------------------------------------
+# P8.6a: THE DEVICE DECODER -- corpus (c), generated live (critique finding 9)
+# ---------------------------------------------------------------------------
+#: Corpus (c): (label, level, run seed, tick cap). An in-process
+#: ``rl_env.EnvRunner`` per run (both teams ``policy``, v1 actions, the
+#: commander on), its policies decoding seeded masked-random decisions.
+DEC_RUNS = (("policy crowd 102", "ship_demo", 102, 600, True),
+            ("policy crowd 104", "ship_demo", 104, 600, True),
+            ("policy crowd 105", "ship_demo", 105, 600, True),
+            ("policy crowd 110", "ship_demo", 110, 600, True),
+            ("policy crowd 116", "ship_demo", 116, 600, True),
+            ("policy ship_demo 133", "ship_demo", 133, 600, False),
+            ("policy room 83", ROOM, 83, 400, False), ("policy room 87", ROOM, 87, 400, False))
+#: Run seeds are chosen clear of P8.6a's finding (a door opened or closed
+#: beside gas a blast heated past the topology seam's OLD proved range,
+#: |T_abs| < 2^28, refused by the device DOORS stage); #29 TOPOLOGY RANGE
+#: moved the refusal to the term bound (cpp/src/cuda_topology.cuh) and
+#: :data:`RANGE_RUNS` (part RANGE_SCENES) holds the scenes that found it.
+#: (Adding runs here moves part DECODER's sync count at N = 1 -- a
+#: measurement that depends on what was played before it; kept apart.)
+#: Part RANGE_SCENES: corpus (c) runs that open or close a door beside gas a
+#: blast heated past |T_abs| < 2^28: the pre-#29-TOPOLOGY-RANGE device
+#: refused them (ApplierFault at '9e(d) doors', crowd 100 at tick 112,
+#: ship_demo 100 at tick 48; 11 of 30 seeds scanned in P8.6a).
+RANGE_RUNS = (("policy crowd 100", "ship_demo", 100, 600, True),
+              ("policy ship_demo 100", "ship_demo", 100, 600, False))
+#: The decision kit at tick 0 (the runner's session and the twin alike): the
+#: hand loadout with these counts of every hand-grenade kind, in every
+#: marine's hands, so every throw kind with every reach occurs.
+DEC_GRENADES = (3, 3, 3, 3, 3, 3)
+#: Per row and decision, the chance that one head is sent a random in-range
+#: index whatever its mask (a masked choice to count; the fallbacks).
+DEC_P_FORCE = 0.04
+#: The decoder's coverage cases (each > 0 over corpus (c), else FAIL).
+DEC_CASES = ("aim_seen", "aim_record", "aim_token", "aim_walk", "aim_keep", "trigger_0",
+             "trigger_1", "reload", "melee", "shove", "use",
+             *(f"throw{k}_arg{a}" for k in range(6) for a in range(5)),
+             *(f"plant{a}" for a in range(4)), "fb_flashlight", "fb_onto_noaim",
+             "fb_plant_onto", "throw_aim_held", "aim_lost", "aim_dead", "masked",
+             "zombie_dies", "zombie_rises", "horde_empty_tick")
+#: P8.6a's breaks: (OBS_BREAK, where) -- the kernels' codes, the late decode,
+#: the late horde latch, the next observation's list_uid.
+DEC_BREAKS = ("dec_every", "dec_div", "dec_late", "dec_horde_late", "dec_next_uid")
+
+
+def dec_kit(session):
+    """Corpus (c)'s state at tick 0: :func:`hand_kit`'s loadout row with
+    :data:`DEC_GRENADES`, and those grenades in every marine's hands."""
+    from dataclasses import replace
+    from config import CFG
+    from simulation.loadouts import get_tables
+    from simulation.weapons import get_tables as wt
+    by_name = get_tables().loadouts.by_name
+    name = str(CFG.marine.loadout)
+    rows = wt().hand_grenade_rows
+    by_name[name] = replace(by_name[name],
+                            grenades={r: DEC_GRENADES[k] for k, r in enumerate(rows)})
+    for lo in {str(t.loadout) for t in session.spec.teams}:
+        if lo in by_name:
+            by_name[lo] = replace(by_name[lo],
+                                  grenades={r: DEC_GRENADES[k] for k, r in enumerate(rows)})
+    for u in session.sim.units:
+        if not u.is_zombie:
+            u.grenade_counts = list(DEC_GRENADES[:len(rows)])
+
+
+def dec_crowd(session):
+    """:func:`dec_kit`, and every unit (both teams and the horde) put at
+    tick 0 into the open floor around team 0's first marine, two tiles
+    apart (the reference and the twin alike): enemies seen and aimed at,
+    zombies that bite and are shot, from the first decisions. The spawn's
+    vision and picture are retaken from it."""
+    from simulation import unit_fixed
+    dec_kit(session)
+    sim = session.sim
+    one = unit_fixed.FP_ONE
+    units = sorted(sim.units, key=lambda u: int(u.id))
+    a = next(u for u in units if not u.is_zombie and int(u.team) == 0)
+    cx, cy = int(a.tile_x), int(a.tile_y)
+    taken = set()
+
+    def fits(x, y, fp):
+        cells = [(x + i, y + j) for j in range(fp) for i in range(fp)]
+        ring = {(x + i, y + j) for j in range(-1, fp + 1) for i in range(-1, fp + 1)}
+        return all(_free(sim, cx_, cy_) for cx_, cy_ in cells) and not (ring & taken)
+    spots = sorted(((x, y) for y in range(cy - 12, cy + 13) for x in range(cx - 12, cx + 13)),
+                   key=lambda t: ((t[0] - cx) ** 2 + (t[1] - cy) ** 2, t[1], t[0]))
+    for u in units:
+        fp = int(u.footprint)
+        for x, y in spots:
+            if fits(x, y, fp):
+                u.set_pos_q(x * one, y * one)
+                taken.update((x + i, y + j) for j in range(fp) for i in range(fp))
+                break
+    sim._vision_cache = None
+    sim.start_team_picture(range(len(session.spec.teams)))
+
+
+def latch_cols() -> list:
+    """``(name, offset, width)`` of every store column ``LATCH_COLUMNS``
+    writes (the decoder's outputs), in a fixed order."""
+    from simulation import unit_store
+    lay = unit_store.layout()
+    names = []
+    for col, _ in cd.LATCH_COLUMNS.values():
+        if col not in names:
+            names.append(col)
+    return [(n, lay.column(n).offset, lay.column(n).width) for n in names]
+
+
+def ref_latch_array(sim) -> np.ndarray:
+    """Every unit's latch columns as the store encodes them (``sim.units``
+    order = store rows)."""
+    from simulation import unit_schema as us
+    out = []
+    for u in sim.units:
+        row = []
+        for n, _, w in latch_cols():
+            enc = us.COLUMN_BY_NAME[n].encode(getattr(u, n))
+            row += list(enc) if isinstance(enc, (tuple, list)) else [enc]
+        out.append(row)
+    return np.array(out, dtype=np.int64)
+
+
+def dev_latch_array(rows) -> np.ndarray:
+    """The same columns from a downloaded ``(U, W)`` store slice."""
+    return np.concatenate([rows[:, o:o + w] for _, o, w in latch_cols()], axis=1)
+
+
+class PolicyDriver:
+    """One corpus (c) run: an in-process ``EnvRunner`` (the real
+    ``AgentPolicy`` on v1 actions for every team, the commander, the horde),
+    reset once; the play drives its session tick by tick as
+    ``EnvRunner.step`` does (the decisions handed to each policy with the
+    ``list_uid`` they were drawn on, then the ticks), recording what the
+    gate compares."""
+
+    def __init__(self, level, run_seed: int):
+        import rl_env
+        raw = {"run": {"seed": int(run_seed), "n_envs": 1, "decimation": DECIMATION,
+                       "levels": [level.name], "policy": "policy",
+                       "levels_dir": tempfile.gettempdir()},
+               "obs": {"spec": "v1", "full_view": False},
+               "reward": {"profile": "fireteam"}, "action": {"spec": "v1"}}
+        run = rl_env.parse_run(raw, "corpus (c) run")
+        layout = rl_env.make_layout(run, [level])
+        self.runner = rl_env.EnvRunner(0, run, layout, [level], breach_physics=bp)
+        self.runner.reset()
+        self.session = self.runner.session
+        self.seed = self.runner.seed
+        self.policies = dict(self.runner.policies)
+        self.S, self.T = layout.n_slots, layout.n_teams
+        self.sizes = layout.head_sizes
+        self.rng = np.random.default_rng(int(run_seed))
+        self.host = None
+        self.cov = {k: 0 for k in DEC_CASES}
+        self.feet_seen = set()
+        self.pol_uids = set()
+        self.full = []
+
+    # -- the observation and the decision ------------------------------------
+    def aims_of(self, sim, units):
+        aims = {}
+        for c in self.session.controllers:
+            view = getattr(c, "aim_view", None)
+            if view is not None:
+                aims.update(view())
+        aimed = np.full(len(units), -1, dtype=np.int32)
+        for i, u in enumerate(units):
+            if u is not None:
+                aimed[i] = aims.get(int(u.id), (-1, None))[0]
+        return aims, aimed
+
+    def observed(self, p, s, host):
+        self.host = host
+        keep = ("list_uid",) + tuple(_aspec.MASK_KEYS)
+        d = {k: np.array(host[k], copy=True) for k in keep}
+        d["list_type"] = np.array(host["list"][:, :, 0], copy=True)
+        d["valid"] = np.array(host["valid"], copy=True)
+        p.dec_obs[int(s.sim.tick)] = d
+
+    def draw(self, host) -> np.ndarray:
+        """Masked-random decisions (``tools/rl_smoke.py``'s drawer: each head
+        uniform among its legal options, the argument among ``arg_mask``'s),
+        then per row with :data:`DEC_P_FORCE` one head forced to a random
+        in-range index."""
+        rng = self.rng
+        n = host["list_uid"].shape[0]
+        out = np.zeros((n, 5), dtype=np.int32)
+        for r in range(n):
+            for h, k in enumerate(_aspec.MASK_KEYS):
+                legal = np.flatnonzero(host[k][r])
+                out[r, (0, 1, 2, 3)[h]] = int(rng.choice(legal))
+            am = _aspec.arg_mask(out[r, 3], out[r, 1])
+            out[r, 4] = int(rng.choice(np.flatnonzero(am)))
+            if rng.random() < DEC_P_FORCE:
+                h = int(rng.integers(5))
+                out[r, h] = int(rng.integers(self.sizes[h]))
+            # the no-sim fallbacks, forced now and then (masked choices too):
+            # a throw onto the aimed unit with a compass aim, a plant "onto"
+            f = rng.random()
+            if f < DEC_P_FORCE / 2:
+                out[r, 1] = int(rng.integers(_aspec.AIM_WALK))
+                out[r, 3] = _aspec.HAND_THROW0 + int(rng.integers(self.sizes[3]
+                                                                   - _aspec.HAND_THROW0))
+                out[r, 4] = _aspec.ARG_ONTO
+            elif f < DEC_P_FORCE:
+                out[r, 3] = _aspec.HAND_PLANT
+                out[r, 4] = _aspec.ARG_ONTO
+            elif f < 1.5 * DEC_P_FORCE:
+                out[r, 3] = _aspec.HAND_FLASHLIGHT
+        return out
+
+    def decide(self, p, s):
+        tick = int(s.sim.tick)
+        if tick % DECIMATION != 0:
+            return
+        a = self.draw(self.host)
+        _aspec.check_actions(a[None], self.sizes)
+        p.decisions[tick] = a
+        masks = {k: self.host[k][None] for k in _aspec.MASK_KEYS}
+        p.masked = getattr(p, "masked", {})
+        p.masked[tick] = _aspec.masked_choices(a[None], masks)[0]
+        self.cov["masked"] += int(np.count_nonzero(p.masked[tick]))
+        lu = self.host["list_uid"]
+        S = self.S
+        for team, pol in self.policies.items():
+            pol.set_decisions(a[team * S:(team + 1) * S], lu[team * S:(team + 1) * S])
+        # coverage of the decisions on the rows that decode them
+        typ = p.dec_obs[tick]["list_type"]
+        A = _aspec
+        for r in range(a.shape[0]):
+            if not p.dec_obs[tick]["valid"][r]:
+                continue
+            feet, aim, trig, hand, arg = (int(x) for x in a[r])
+            self.feet_seen.add(feet)
+            self.cov[f"trigger_{trig}"] += 1
+            if aim < A.AIM_WALK:
+                self.cov["aim_token"] += 1
+            elif aim == A.AIM_WALK:
+                self.cov["aim_walk"] += 1
+            elif aim == A.AIM_KEEP:
+                self.cov["aim_keep"] += 1
+            else:
+                ty = int(typ[r, aim - A.AIM_TOKENS])
+                if ty == 1:
+                    self.cov["aim_seen"] += 1
+                elif ty == 2:
+                    self.cov["aim_record"] += 1
+            unit_aim = (aim >= A.AIM_TOKENS and int(lu[r, aim - A.AIM_TOKENS]) >= 0
+                        and int(typ[r, aim - A.AIM_TOKENS]) in A.AIMABLE_TYPES)
+            if hand == A.HAND_FLASHLIGHT:
+                self.cov["fb_flashlight"] += 1
+            elif hand >= A.HAND_THROW0 and arg == A.ARG_ONTO and not unit_aim:
+                self.cov["fb_onto_noaim"] += 1
+            elif hand == A.HAND_PLANT and arg == A.ARG_ONTO:
+                self.cov["fb_plant_onto"] += 1
+
+    # -- the tick: MatchSession.tick, the reference's state taken between ----
+    def tick(self, p, s):
+        from simulation import device_decoder as ddec, horde_cache
+        sim = s.sim
+        tick = int(sim.tick)
+        zomb0 = {int(u.id) for u in sim.units if u.is_zombie}
+        living_z0 = {int(u.id) for u in sim.units if u.is_zombie and u.alive}
+        prey0 = any(u.alive and not u.is_zombie for u in sim.units)
+        for c in s.controllers:
+            c.handle_frame(sim, None)
+        p.ref_latch[tick] = ref_latch_array(sim)
+        S = self.S
+        p.ref_slots[tick] = {t * S + k: ddec.host_state_form(pol, k)
+                             for t, pol in self.policies.items() for k in range(S)}
+        p.ref_horde[tick] = horde_cache.latch_of(sim, len(sim.units))
+        first = tick % DECIMATION == 0
+        for t, pol in self.policies.items():
+            recs = sim.team_picture.records(t)
+            for k, st in pol._slot.items():
+                u = sim.roster(t)[k] if k < len(sim.roster(t)) else None
+                if u is None or not u.alive or u.team != t:
+                    continue
+                self.pol_uids.add(int(u.id))
+                if st.aimed_uid >= 0:
+                    if recs.get(st.aimed_uid) is None:
+                        self.cov["aim_lost"] += 1
+                    tgt = sim.get_unit(st.aimed_uid)
+                    if tgt is not None and not tgt.alive:
+                        self.cov["aim_dead"] += 1
+                if st.throw_aim is not None and not first:
+                    self.cov["throw_aim_held"] += 1
+                if first and st.prev is not None:
+                    hand, arg = int(st.prev[4]), int(st.prev[5])
+                    A = _aspec
+                    names = {A.HAND_RELOAD: "reload", A.HAND_MELEE: "melee",
+                             A.HAND_SHOVE: "shove", A.HAND_USE: "use"}
+                    if hand in names:
+                        self.cov[names[hand]] += 1
+                    elif hand == A.HAND_PLANT:
+                        self.cov[f"plant{arg}"] += 1
+                    elif hand >= A.HAND_THROW0:
+                        self.cov[f"throw{hand - A.HAND_THROW0}_arg{arg}"] += 1
+        if not living_z0 and prey0 and sim._zombie_requests is not None:
+            # a tick the controller's horde latch is EMPTY while the
+            # conductor's own call would still begin_tick (K8's difference)
+            self.cov["horde_empty_tick"] += 1
+        sim.step()
+        if s._recorder is not None:
+            s._recorder.after_step(sim)
+        p.digests[int(sim.tick)] = cc.digests(sim)
+        living_z1 = {int(u.id) for u in sim.units if u.is_zombie and u.alive}
+        self.cov["zombie_dies"] += len(living_z0 - living_z1)
+        self.cov["zombie_rises"] += len({int(u.id) for u in sim.units if u.is_zombie} - zomb0)
+
+    def feed(self, intents):
+        """The tap's intents the conductor is fed for a decoder-driven env:
+        only the commander's orders (the decoder writes the policy units'
+        columns, the card serves the horde)."""
+        self.full.append(list(intents))      # the whole tap (diagnosis only)
+        out = []
+        for kind, args in intents:
+            if kind == "order_intent":
+                out.append((kind, args))
+            elif kind == "drive_zombies":
+                continue
+            elif kind in cd.LATCH_COLUMNS and int(args[0]) in self.pol_uids:
+                continue
+            else:
+                out.append((kind, args))
+        return out
+
+    def finish(self, p, s):
+        self.cov["feet_options"] = len(self.feet_seen)
+        p.dec_cov = dict(self.cov)
+
+
+def corpus_c():
+    """P8.6a's corpus: the policy runs of :data:`DEC_RUNS`, played once."""
+    out = []
+    for label, lvname, run_seed, cap, crowd in DEC_RUNS:
+        lv = ship_level() if lvname == "ship_demo" else room_level(lvname)
+        key = (label, -run_seed)
+        if key not in _PLAYED:
+            d = PolicyDriver(lv, run_seed)
+            play(label, lv, d.session.spec, d.seed, setup=dec_crowd if crowd else dec_kit,
+                 max_ticks=cap, driver=d)
+            _PLAYED[key] = _PLAYED[(label, d.seed)]
+        out.append(_PLAYED[key])
+    return out
+
+
+def decoder_for(obs, sessions):
+    """The device decoder of a corpus (c) gate, with the check's break."""
+    from simulation import device_decoder as ddec
+    dec = ddec.DeviceDecoder(obs, [s.spec for s in sessions])
+    if BREAK in ddec.BREAK_CODES:
+        dec.brk = ddec.BREAK_CODES[BREAK]
+    dec.late = BREAK == "dec_late"
+    dec.horde_late = BREAK == "dec_horde_late"
+    dec.snapping = True
+    return dec
+
+
+#: Per gate label: ticks whose latch columns / slot states / horde latch /
+#: digests were compared equal, decisions handed over.
+DECSTATS: dict = {}
+
+
+def decoder_tick(label, c, obs, dec, played, tick, k) -> bool:
+    """One tick of a decoder-driven gate: the decisions handed over on a
+    decision tick (against the observation's own list_uid; ``dec_next_uid``:
+    the NEXT observation's), the conductor's tick, then per env the store's
+    latch columns after the decode, the slot states, the horde latch and the
+    digests after the tick equal to the reference's."""
+    from simulation import device_decoder as ddec
+    import cupy as cp
+    st = DECSTATS.setdefault(label, {"ticks": 0, "decisions": 0, "slots": 0, "horde": 0})
+    N, n_rows = len(played), obs.n_rows
+    if tick % DECIMATION == 0:
+        acts = np.zeros((N, n_rows, 5), dtype=np.int32)
+        due = np.zeros(N, dtype=bool)
+        lu = None
+        for e, p in enumerate(played):
+            a = p.decisions.get(tick)
+            if a is not None:
+                acts[e, :a.shape[0]] = a
+                due[e] = True
+        if BREAK == "dec_next_uid":
+            lu = obs.buffers["list_uid"].get()
+            for e, p in enumerate(played):
+                nxt = p.dec_obs.get(tick + DECIMATION)
+                if nxt is not None:
+                    lu[e, :nxt["list_uid"].shape[0]] = nxt["list_uid"]
+        if due.any():
+            dec.set_decisions(cp.asarray(acts), envs=due, list_uid=lu)
+            st["decisions"] += int(due.sum())
+            got = dec.masked.get()
+            for e, p in enumerate(played):
+                if due[e] and not np.array_equal(got[e, :p.decisions[tick].shape[0]],
+                                                 p.masked[tick]):
+                    fail(f"{label}: tick {tick}, env {e}: masked_choices "
+                         f"{got[e].tolist()} vs the host's {p.masked[tick].tolist()}")
+                    return False
+    c.tick()
+    rows = dec.snap.get()
+    state = dec.host_state()
+    hl = c.cache.latch.get()
+    for e, p in enumerate(played):
+        if k >= len(p.intents):
+            continue
+        want = p.ref_latch[tick]
+        got = dev_latch_array(rows[e, :want.shape[0]])
+        if not np.array_equal(want, got):
+            idx = np.argwhere(want != got)[0]
+            names = [n for n, _, w in latch_cols() for _ in range(w)]
+            fail(f"{label}: tick {tick}, env {e}: store latch column {names[idx[1]]} of row "
+                 f"{idx[0]} is {int(got[tuple(idx)])}, the reference's "
+                 f"{int(want[tuple(idx)])} (after the decode)")
+            return False
+        for r, hs in p.ref_slots[tick].items():
+            ds = ddec.state_form(state[e, r])
+            if hs != ds:
+                fail(f"{label}: tick {tick}, env {e}, row {r}: slot state {ds} vs the "
+                     f"reference's {hs}")
+                return False
+            st["slots"] += hs is not None
+        if e in dec.horde_envs:
+            hw = p.ref_horde[tick]
+            if not np.array_equal(hl[e, :len(hw)], hw) or hl[e, len(hw):].any():
+                fail(f"{label}: tick {tick}, env {e}: horde latch {hl[e].tolist()} vs the "
+                     f"zombie controller's {hw.tolist()}")
+                return False
+            st["horde"] += 1
+        c.download([e])
+        dg = cc.digests(c.sims[e])
+        if dg != p.digests[tick + 1]:
+            fail(f"{label}: tick {tick + 1}, env {e}: digests {dg} vs the reference's "
+                 f"{p.digests[tick + 1]} (the decoded match diverged)")
+            return False
+        st["ticks"] += 1
+    return True
+
+
+def judge_decoder(played) -> None:
+    """Corpus (c)'s coverage, each case > 0 (every feet option too)."""
+    tot = {k: 0 for k in DEC_CASES}
+    feet = 0
+    for p in played:
+        for k in DEC_CASES:
+            tot[k] += p.dec_cov.get(k, 0)
+        feet = max(feet, p.dec_cov.get("feet_options", 0))
+    print(f"    decoder coverage: {tot}, feet options seen {feet} of {_aspec.N_FEET}")
+    for k, n in tot.items():
+        if n == 0:
+            fail(f"decoder coverage: case {k!r} never occurred over corpus (c)")
+    if feet < _aspec.N_FEET:
+        fail(f"decoder coverage: {feet} of {_aspec.N_FEET} feet options occurred")
+    for label, s in sorted(DECSTATS.items()):
+        print(f"    decoder {label}: {s['ticks']} ticks equal (latch columns after the decode, "
+              f"digests), {s['slots']} slot-ticks, {s['horde']} horde latches, "
+              f"{s['decisions']} decisions")
+
+
+def part_decoder():
+    """P8.6a beyond part GATE: the refusals by name, an out-of-range decision
+    raised at the books read with the host's message, the host syncs with the
+    decoder (N = 1 and 2), the aim vector / onto reach sweep."""
+    import cupy as cp
+    from simulation import device_decoder as ddec
+    # -- a team the decoder does not drive is refused at the build
+    p = corpus_b()[0]
+    s = twin(p)
+    c = cd.DeviceConductor(s.sim, bp=bp)
+    obs = dobs.DeviceObservation(c, [s.spec], p.S, DECIMATION, n_teams=p.T)
+    try:
+        ddec.DeviceDecoder(obs, [s.spec])
+    except ddec.DecoderRefused as ex:
+        print(f"  decoder: a {s.spec.teams[0].controller!r} team refused by name ({str(ex)[:80]}...)")
+    else:
+        fail("decoder: a bots-driven team was not refused at the build")
+    # -- an out-of-range decision: the host's ValueError at the books read
+    q = corpus_c()[1]
+    s = twin(q)
+    c = cd.DeviceConductor(s.sim, bp=bp)
+    obs = dobs.DeviceObservation(c, [s.spec], q.S, DECIMATION, n_teams=q.T)
+    dec = ddec.DeviceDecoder(obs, [s.spec])
+    a = np.array(q.decisions[0], copy=True)
+    a[1, 3] = dec.sizes[3]                       # the hand head one past its size
+    try:
+        _aspec.check_actions(a[None], dec.sizes)
+    except ValueError as ex:
+        host_msg = str(ex)
+    dec.set_decisions(cp.asarray(a[None]))
+    try:
+        c.tick()
+    except ValueError as ex:
+        if host_msg in str(ex) and getattr(ex, "env", None) == 0:
+            print(f"  decoder: out of range raised at the books read: {str(ex)[:120]}")
+        else:
+            fail(f"decoder: out-of-range message {str(ex)!r} is not the host's {host_msg!r}")
+    else:
+        fail("decoder: an out-of-range decision was not refused at the books read")
+    # -- a tap column intent for a decoder unit is refused by name
+    s = twin(q)
+    c = cd.DeviceConductor(s.sim, bp=bp)
+    obs = dobs.DeviceObservation(c, [s.spec], q.S, DECIMATION, n_teams=q.T)
+    dec = ddec.DeviceDecoder(obs, [s.spec])
+    try:
+        c.latch([("set_aim", (int(s.sim.units[0].id), 65536, 0))], env=0)
+    except cd.ConductorRefused as ex:
+        print(f"  decoder: a tap intent for a decoder unit refused ({str(ex)[:80]}...)")
+    else:
+        fail("decoder: a tap column intent for a decoder-driven unit was accepted")
+    # -- the host syncs and H2D copies per steady tick, N = 1 and 2
+    counts = {}
+    h2d = {}
+    for n in (1, 2):
+        sessions = [twin(q) for _ in range(n)]
+        c = cd.DeviceConductor([x.sim for x in sessions], bp=bp)
+        obs = dobs.DeviceObservation(c, [x.spec for x in sessions], q.S, DECIMATION,
+                                     n_teams=q.T)
+        dec = ddec.DeviceDecoder(obs, [x.spec for x in sessions])
+        # the dead conductors of earlier parts are freed NOW, not by the cycle
+        # collector inside a counted tick (their destructors sync the stream:
+        # cuda_unit_store.cu / cuda_applier.cu ... -- not the tick's syncs)
+        import gc
+        gc.collect()
+        gc.disable()
+        sc = cc.SyncCount()
+        per, ups = [], []
+        real_asarray = cp.asarray
+        up = []
+
+        def asarray(x, *k_, **kw):
+            if isinstance(x, (np.ndarray, list, tuple)):
+                up.append(1)
+            return real_asarray(x, *k_, **kw)
+        try:
+            for k in range(min(40, len(q.intents))):
+                tick = int(c.sims[0].tick)
+                if tick % DECIMATION == 0:
+                    dec.set_decisions(cp.asarray(np.stack([q.decisions[tick]] * n)))
+                orders = [x for x in q.intents[k] if x[0] == "order_intent"]
+                for e in range(n):
+                    c.latch(q.intents[k], env=e)
+                sc.py = []
+                up.clear()
+                cp.asarray = asarray
+                bp.host_sync_log_begin()
+                try:
+                    c.tick()
+                finally:
+                    log = list(bp.host_sync_log_end()) + sc.py
+                    cp.asarray = real_asarray
+                per.append((k, log, bool(orders)))
+                ups.append((k, len(up), bool(orders)))
+        finally:
+            sc.close()
+            gc.enable()
+        steady = [lg for k, lg, o in per[1:] if not o]
+        names = sorted({x.partition(" | ")[2] for lg in steady for x in lg})
+        counts[n] = [len(lg) for lg in steady]
+        h2d[n] = [u for k, u, o in ups[1:] if not o]
+        print(f"  decoder syncs N={n}: {np.mean(counts[n]):.2f} host syncs per steady tick, "
+              f"named {names}; host-to-device uploads from Python per steady tick: "
+              f"{sorted(set(h2d[n]))} ({dec.decodes} decodes)")
+        extra = [x for x in names if x not in ("max_n_sub", "books_read")]
+        if extra:
+            fail(f"decoder syncs N={n}: a sync outside the conductor's named reads: {extra}")
+        if any(h2d[n]):
+            fail(f"decoder syncs N={n}: a steady tick uploaded from the host {h2d[n]}")
+    if counts[1] != counts[2]:
+        fail(f"decoder syncs: the per-tick count depends on N ({counts[1][:6]} vs {counts[2][:6]})")
+    # -- the floats: aim_vector / onto_reach_q on the card against the host's
+    # arithmetic over every offset a map of the corpus allows
+    R = max(400, max(int(x) for x in ship_level().tilemap.shape))
+    ax = np.arange(-R, R + 1, dtype=np.int64)
+    dx, dy = (v.ravel() for v in np.meshgrid(ax, ax))
+    out = cp.zeros((len(dx), 4), dtype=cp.int64)
+    ddx, ddy = cp.asarray(dx), cp.asarray(dy)
+    bp.obs_dec_probe(len(dx), int(ddx.data.ptr), int(ddy.data.ptr), int(out.data.ptr),
+                     1 if BREAK == "dec_div" else 0)
+    got = out.get()
+    qx, qy, none = ddec.aim_vector_host(dx, dy)
+    import math
+    from simulation.unit_fixed import quantize_scalar
+    reach = np.array([quantize_scalar(math.sqrt(float(a * a + b * b)))
+                      for a, b in zip(dx[::97], dy[::97])], dtype=np.int64)
+    dqx, dqy, _ = ddec.aim_vector_host(dx, dy, divide=True)
+    alt = int(np.count_nonzero((dqx != qx) | (dqy != qy)))
+    bad = int(np.count_nonzero((got[:, 0] != qx) | (got[:, 1] != qy) | (got[:, 2] != none)))
+    bad_r = int(np.count_nonzero(got[::97, 3] != reach))
+    # the host arithmetic is aim_vector itself (a sample through the function)
+    from types import SimpleNamespace as NS
+    me = NS(center_tile_x=lambda: 0, center_tile_y=lambda: 0)
+    samp = [(int(a), int(b)) for a, b in zip(dx[::211], dy[::211])]
+    host_bad = sum(1 for (a, b), i in zip(samp, range(0, len(dx), 211))
+                   if (_aspec.aim_vector(me, (a, b)) or (0, 0)) != (int(qx[i]), int(qy[i])))
+    print(f"  decoder floats: {len(dx)} offsets (|dx|, |dy| <= {R}): aim vector differs on {bad}, "
+          f"the onto reach on {bad_r} of {len(reach)}; aim_vector itself vs its numpy form "
+          f"differs on {host_bad} of {len(samp)}; dx / mag in place of dx * (1 / mag) moves "
+          f"the quantized vector on {alt}")
+    if bad or bad_r or host_bad:
+        fail(f"decoder floats: the card's aim vector / reach differ from the host's "
+             f"({bad} / {bad_r} / {host_bad})")
+
+
+def part_dec_gate():
+    """P8.6a's corpus (c) alone (part GATE runs it too, with the census)."""
+    for p in corpus_c():
+        try:
+            gate(f"(c) {p.name}", [p])
+        except Exception as ex:                    # a refusal names its slot: a finding
+            fail(f"(c) {p.name}: {type(ex).__name__}: {ex}")
+    judge_decoder(corpus_c())
+
+
+def part_range_scenes():
+    """#29 TOPOLOGY RANGE: :data:`RANGE_RUNS` played and gated like corpus
+    (c): every decision and digest equal, no refusal (the old seam faulted
+    at '9e(d) doors' on both)."""
+    for label, lvname, run_seed, cap, crowd in RANGE_RUNS:
+        lv = ship_level()
+        d = PolicyDriver(lv, run_seed)
+        p = play(label, lv, d.session.spec, d.seed, setup=dec_crowd if crowd else dec_kit,
+                 max_ticks=cap, driver=d)
+        try:
+            gate(f"(range) {p.name}", [p])
+        except Exception as ex:                    # a refusal names its slot
+            fail(f"(range) {p.name}: {type(ex).__name__}: {ex}")
+
+
 PARTS = {"gate": part_gate, "batch": part_batch, "handover": part_handover,
          "syncs": part_syncs, "ended": part_ended, "floatkit": part_floatkit,
          "sight": part_sight, "wall": part_wall, "restage": part_restage,
-         "books": part_books}
+         "books": part_books, "decoder": part_decoder, "dec_gate": part_dec_gate,
+         "range_scenes": part_range_scenes}
 
 
 def main(parts=None) -> int:
