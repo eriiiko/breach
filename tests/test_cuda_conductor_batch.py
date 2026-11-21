@@ -76,3 +76,12 @@ def test_a_fault_in_env_k_names_env_k():
     books read maps a count to the wrong env (shown red with
     CONDUCTOR_BATCH_BREAK=layout: the count block read env-major)."""
     _run(["fault"])
+
+
+def test_a_quiet_env_and_a_blasting_env_each_equal_themselves_alone():
+    """#217 §8.9 T7 -- PART BLAST: a quiet env and a blasting env of one level
+    in one batch, each env == itself alone at every tick, and their sub-tick
+    counts k differ on some tick. Breaks if an env past its own k is not
+    masked (a tick_off missing on any EOS kernel), or reads another env's
+    (k, n_sub) row."""
+    _run(["blast"])

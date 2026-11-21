@@ -39,6 +39,11 @@ PART SYNCS -- the host syncs of a steady batch tick do not depend on N
 (N = 1, 2, 4 of one scene; the named reads only: ``max_n_sub``, the books
 read). ``CONDUCTOR_BATCH_BREAK=sync`` (a download per env inside the walk)
 must turn it red.
+PART BLAST (#217 §8.9 T7) -- a quiet env and a blasting env of the same level
+in one batch (the payloads scene beside the same scene with no charge laid
+and no throw): each equal to itself alone at every tick, and their sub-tick
+counts k must differ on some tick (the tick_off masks and the per-env
+(k, n_sub) rows exercised in the conductor's walk).
 PART FAULT -- a fault in env k names env k: a beam (hitscan) trigger in env 2
 of 4 is refused by name (``ShotRefused``) with ``.env == 2`` and the batch is
 refused. ``CONDUCTOR_BATCH_BREAK=layout`` (the count block read env-major)
@@ -478,8 +483,36 @@ def part_fault(k=2, n=4):
               f"is refused")
 
 
+# ---------------------------------------------------------------------------
+# PART BLAST (#217 §8.9 T7): a quiet env and a blasting env in one batch
+# ---------------------------------------------------------------------------
+def part_blast():
+    import cuda_unit_payloads_check as pg
+    loud = scene_env("payloads", 0, SCENE_TICKS)
+    quiet = Env("payloads-quiet", lambda: pg.PayloadScene(0).sim, lambda t, _tick: ())
+    ks: list = []
+
+    def record_k(c):
+        orig = c.tick
+
+        def tick(*a, **kw):
+            r = orig(*a, **kw)
+            ks.append([int(s.physics_runner.engine.eos.dbg_last_k) for s in c.sims])
+            return r
+        c.tick = tick
+    ok = batch_gate("blast+quiet N=2", [loud, quiet], SCENE_TICKS, after_build=record_k)
+    mixed = sum(1 for row in ks if len(set(row)) > 1)
+    print(f"  blast+quiet: ticks with different k across the two envs: {mixed}/{len(ks)}"
+          f" (max k {max((max(r) for r in ks), default=0)})")
+    if ok and mixed == 0:
+        fail("blast+quiet: k never differed across the envs -- the sub-tick masks "
+             "were not exercised")
+    _SOLO.clear()
+
+
 PARTS = {"scenes": part_scenes, "matches": part_matches, "swarm": part_swarm,
-         "swap": part_swap, "syncs": part_syncs, "fault": part_fault}
+         "swap": part_swap, "syncs": part_syncs, "fault": part_fault,
+         "blast": part_blast}
 
 
 def main(parts=None) -> int:

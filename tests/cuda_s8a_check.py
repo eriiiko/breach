@@ -816,6 +816,51 @@ def part1f_ship_demo() -> bool:
                     headless_render=True)
 
 
+def part1h_frag_subticks() -> bool:
+    """#217 §8.9 T7: the frag leg -- fire_studio, a frag at (24, 16) on tick
+    24 (the --stability / wind_drift_probe scene): its detonation tick runs
+    k = 8 sub-ticks (the source term), its slosh k = 1 / 2. The resident N = 1
+    tick must equal the CPU tick on every field and book with k > 1, and both
+    worlds must pick the same k every tick."""
+    print("PART 1h — fire_studio + a frag (#217 §8: k > 1 sub-ticks), 48 ticks, "
+          "every field / book / closure tol 0, k equal every tick:")
+    from level_loader import load as load_level
+    from simulation import Simulation
+    from simulation.payloads import execute_payload
+    _residency(False); _set_backends(False)
+    sims = [Simulation(load_level("fire_studio"), seed=42, breach_physics=bp,
+                       enable_recorder=False) for _ in range(2)]
+    for s_ in sims:
+        s_.set_paused(False)
+    seen = {"k_max": 0}
+
+    def step(world, t):
+        sim = world[2]
+        if t == 24:
+            pay = sim.weapons_tables.payload_for_ammo("grenade_frag")
+            execute_payload(sim.gmap, sim.edit_queue, sim.units, 16, 24, pay,
+                            sim.draws, events=[], kind="grenade")
+        sim.set_paused(False)
+        sim.step()
+
+    def post(t, g_c, g_g):
+        kc = int(sims[0].physics_runner.engine.eos.dbg_last_k)
+        kg = int(sims[1].physics_runner.engine.eos.dbg_last_k)
+        seen["k_max"] = max(seen["k_max"], kg)
+        if kc != kg:
+            print(f"  1h tick {t}: k differs (cpu {kc}, resident {kg})")
+            return 1
+        return 0
+    w_c = (sims[0].gmap, sims[0].physics_runner, sims[0])
+    w_g = (sims[1].gmap, sims[1].physics_runner, sims[1])
+    ok = _run_leg("1h fire_studio+frag", w_c, w_g, 48, step,
+                  {"temperature": 48}, post_tick=post)
+    if seen["k_max"] < 8:
+        ok = False
+        print(f"  1h: the resident tick never ran k = 8 (max {seen['k_max']}): vacuous")
+    return ok
+
+
 def part1g_ignition_gather() -> bool:
     """#29 P4a: the resident combustion gathers its per-tile ignition
     threshold on the device from `material` (int8) and the per-material
@@ -1208,8 +1253,9 @@ def main() -> int:
     p1e = part1e_fire_studio()
     p1f = part1f_ship_demo()
     p1g = part1g_ignition_gather()
+    p1h = part1h_frag_subticks()   # #217 §8.9 T7
     p2 = part2_payoff()
-    if p1a and p1b and p1c and p1d and p1e and p1f and p1g and p2:
+    if p1a and p1b and p1c and p1d and p1e and p1f and p1g and p1h and p2:
         print("S8A_RESULT: PASS")
         return 0
     print("S8A_RESULT: FAIL")

@@ -26,6 +26,9 @@ withheld-rows path, where the whole batch uploads its stamp planes); env 1 is
 RESET mid-batch (a fresh calm-pool world from tick RESET_AT, its reference a
 fresh world stepped alone). Evidence printed: the substep counts the envs ran
 on the same tick (they must differ, or the masks were never exercised).
+#217 §8.9 T7: and the SUB-TICK counts k (the blast room's sources run k > 1
+while the calm rooms stay at k = 1: the tick_off masks of every EOS kernel,
+the per-env (k, n_sub) rows) -- they must differ across envs on some tick.
 
 LEG B, real simulations: ship_demo's Simulation (no match, no units, its
 entities on -- vents, ducts, doors), N = 4, seeds 1 .. 4; env 1 takes a
@@ -314,6 +317,7 @@ def leg_a(N) -> bool:
     s8a._residency(True); s8a._set_backends(True)
     bad = 0
     nsub_by_tick = []
+    k_by_tick = []
     try:
         batch = ResidentBatch(worlds)
         for t in range(K_TICKS):
@@ -324,6 +328,7 @@ def leg_a(N) -> bool:
                 worlds[1] = fresh
             batch.step()
             nsub_by_tick.append([int(w.physics_runner.eos.dbg_last_n_sub) for w in worlds])
+            k_by_tick.append([int(w.physics_runner.eos.dbg_last_k) for w in worlds])
             for i, w in enumerate(worlds):
                 fp = _fingerprint(w)
                 if N > 1 and i == 1 and t >= RESET_AT:
@@ -344,6 +349,14 @@ def leg_a(N) -> bool:
               f"DIFFERENT n_sub across envs: {mixed}/{K_TICKS}")
         if mixed == 0:
             print("  FAIL: n_sub never differed across envs -- the masks were not exercised")
+            bad += 1
+        # #217 §8.9 T7: envs at different k in one batch
+        k_mixed = sum(1 for row in k_by_tick if len(set(row)) > 1)
+        print(f"  ticks with DIFFERENT k across envs: {k_mixed}/{K_TICKS} "
+              f"(max k {max(max(r) for r in k_by_tick)})")
+        if k_mixed == 0:
+            print("  FAIL: k never differed across envs -- the tick_off masks were "
+                  "not exercised")
             bad += 1
     if bad == 0:
         print(f"  N={N}: every env == alone, every tick, every array and book (tol 0)")

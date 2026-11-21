@@ -37,14 +37,16 @@ and who must use it; this file holds the constraints the code cannot say.
 - Wall AND thermal_solid faces carry no face; vacuum and ambient-ring faces export to a counter.
 
 ## Gas energy recovery
-- The ONE place `temperature` is derived from `gas_energy` with RAILS, once per tick over the whole accountable set. Rails write `gas_energy` back ONLY when one binds (`e_rail_sum`): an unconditional write-back drains N−1 raw per cell per tick.
+- The ONE place `temperature` is derived from `gas_energy` with RAILS, once per EOS sub-tick over the whole accountable set (#217 §8: sub-tick j's p* reads the mirror sub-tick j−1 wrote); its counters (`t_max_phys_hits`, `energy_floor_hits`, `e_rail_sum`) accumulate over the tick. Rails write `gas_energy` back ONLY when one binds (`e_rail_sum`): an unconditional write-back drains N−1 raw per cell per sub-tick.
+- The EOS step's per-tick counters reset ONCE at the step's entry and accumulate over its k sub-ticks, on every backend (the closure identity is stated per whole tick): never a reset per sub-tick.
 
 ## Energy closure identity
 - Across whole ticks in int64: `Δ Σ_accountable gas_energy == EOS + thermal-solver gas side + combustion + seams`. A new writer adds a counter AND a term in ONE of those four groups. There is no fifth, bar the one boundary export every gate already carries, `−PhysicsEngine.e_water_evac_export_sum` (water evaporation, arc #54 §2.7).
 - Radiation into gas is the thermal-solver group's `e_gas_deposit_sum`. Radiative energy that does not land is COUNTED on the boundary and is in no group, because it never touched `gas_energy` and a term would break the identity by its own amount: `e_rad_clamp_drop_sum`, `e_rad_boundary_export_sum`, `e_rad_floor_drop_sum`, `e_dep_floor_drop_sum`.
 - The ledger spans solids too: `TemperatureSolver.solid_energy_books_sum` closes against `e_solid_deposit_sum + e_solid_cond_sum + CombustionSolver.e_comb_solid_heat_sum + e_solid_low_rail_sum + e_solid_seam_sum` (#73). A new writer of thermal-solid membership books through `GameMap._solid_energy_book` (`TemperatureSolver.book_solid_seam` moves the snapshot too, so the identity closes on the tick a slot-9 seam fires).
 - Nothing relaxes to ambient: the thermostat (Pass 3, `cool_shift`) is DELETED and its term REMOVED, not zeroed (gated by `tests/test_thermostat_books.py`).
-- Gates: `tests/test_e1_hot_rail.py::test_no_transport_mint`, `tests/test_gas_energy_tile_flip.py`, and the §6 benches (`tests/_sealedbox_bisect_bench.py`, `tests/_quiet_books_bench.py`, and the fire / vent / blast benches).
+- The cap stage's returned heat `e_cap_heat_sum` (#217 §8.6.5, Erik's ruling 3) is an EOS-group term beside `e_drag_heat_sum`; `e_clamp_destroyed_sum` is an export (no term), a tripwire.
+- Gates: `tests/test_e1_hot_rail.py::test_no_transport_mint`, `tests/test_gas_energy_tile_flip.py`, `tests/test_eos_substep_whole_tick.py` (T5, exact with k > 1), and the §6 benches (`tests/_sealedbox_bisect_bench.py`, `tests/_quiet_books_bench.py`, and the fire / vent / blast benches).
 
 ## Temperature solver
 - Heat deposits are Q16.16 saturating adds. SOLIDS' temperature is derived here alone (bar combustion's booked object-site deposit); GAS temperature is the energy field's mirror. `gas_energy == nullptr` keeps the pre-#54 T-form law bit-identical for direct-binding callers.
