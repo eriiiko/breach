@@ -1,0 +1,35 @@
+# tools/staging_machines.toml -- the staging gate's per-machine table
+# (tools/staging_gate.py), keyed by hostname (platform.node(), any case).
+#
+# cpu_build / cuda_build: the build this machine uses (docs/dev_setup.md,
+# "Which Python each machine uses"): a script under cpp/ run in the staging
+# worktree, or "cmake" for the plain configure + build of dev_setup Step 6.
+#
+# known_red: a test that is red on THIS machine for a reason outside every
+# branch (red on a pristine main here too). The gate reports it as KNOWN,
+# never as a staging red; it matches the exact node id (and its parametrized
+# cases, "<id>[...]"), so it can never hide another red. Each entry says why
+# and where that was found; delete it the day the cause is fixed.
+
+[DESKTOP-F4DJPJD]
+name = "Work Desktop"
+cpu_build = "cmake"
+cuda_build = "cpp/build_cuda.bat"
+
+[[DESKTOP-F4DJPJD.known_red]]
+test = "tests/test_fire_tuning_level.py::test_generator_is_byte_deterministic"
+why = "the baked diffuse.png bytes differ from the committed one on this PC (image library); red on pristine main 7cba57dd (docs/water_look_design_2026-11-19.md)"
+
+[[DESKTOP-F4DJPJD.known_red]]
+test = "tests/test_larva_studio.py::test_the_studio_generates_deterministically_and_is_the_checked_in_one"
+why = "the baked diffuse.png bytes differ from the committed one on this PC (image library); red on pristine main 7cba57dd (docs/water_look_design_2026-11-19.md)"
+
+[DESKTOP-0E98HUV]
+name = "Home Desktop"
+cpu_build = "cpp/build_cpu_home.bat"
+cuda_build = "cpp/build_cuda.bat"
+
+[ERIK_LENOVO]
+name = "Lenovo Laptop"
+cpu_build = "cpp/build_cpu_data.bat"
+cuda_build = "cpp/build_cuda_lenovo.bat"
