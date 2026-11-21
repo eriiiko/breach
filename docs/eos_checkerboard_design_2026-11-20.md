@@ -2075,3 +2075,31 @@ Reading:
   `test_b1_signal_bus`, `test_b2_nodes`, `test_fire_flicker`,
   `test_light_field`, `test_claude_rules_paths`, `test_no_float_in_sim_tu`,
   `test_ingress_lint` green.
+
+#### The merge of main `cdf8f413` (third session, 2026-11-21)
+
+- Main brought #29 P8.6a (the device decoder), TOPOLOGY RANGE (seal / unseal
+  refuse on the moved energy, `29-topology-range`), P8.8 (the full view on
+  the card) and P8.8b (the terminal observation). Merge commit `c9678a9b`.
+- **`cpp/src/cuda_topology.cuh`, both sides kept.** #29's seal / unseal
+  pre-pass (THE TERM BOUND, `is_mirror`, the re-read donor) and this
+  branch's moved-energy refusal of the gas-N primitives (`extract_gas_n_vec`,
+  `transfer_gas_n`, `inject_gas_n_vec`'s non-accountable T-mix) are the same
+  inequality, n·(|T_abs| + 1) < 2^60, on different cells. Both sides had
+  defined the bound: unified on #29's `TERM_BOUND` and its ONE
+  `term_ok(n, t_mag)`; this branch's `MOVE_TERM_BOUND` and its
+  `term_ok(n, t)` are gone, and its three call sites pass `mag64(t)`. The
+  preconditions of #29's form hold there: n < 2^32 (`bulk_pos`, or
+  `E.bulk` after `gas_nonneg`) and |T_abs| < 2^31 + 2^28 (an int32 mirror
+  plus T_AMB, `t_ok(T_AMB)` checked first in the same `||`). Main's header
+  sentence "the gas-N primitives keep their own |T_abs| < 2^28" was the
+  pre-§8.17 state and now reads that they refuse on the same term.
+- **One stale number corrected:** #29's `T_ABS_PHYS_MAX` used T_AMB_K = 290;
+  `[physics.temperature_scale] eos_t_amb_k` is 293 since G12. Now
+  (16000 + 293)·2^16. Its `static_assert` (a 2^30 bulk at the ceiling is
+  inside 2^60) still holds: 1,067,778,048 < 2^30.
+- `tests/twin_manifest.toml`: the observation twin's `level_at`, main's kept
+  (the mark-level commit decides it). `bindings.cpp`, `conductor.py`,
+  `unit_kernels.py` and `bench_conductor.py` merged clean. The stubs were
+  regenerated from the CUDA build (`6405e471`: the decoder's and the full
+  view's bindings, the obs layout fingerprint).
