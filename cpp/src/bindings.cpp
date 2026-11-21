@@ -804,6 +804,29 @@ PYBIND11_MODULE(breach_physics, m) {
           },
           py::arg("x"), "#29 P8.1 TEST-ONLY: the observation kit's squash (CUDA's log), "
           "float64 and its float32.");
+    // #29 P8.2: THE OBSERVATION'S SIGHT (cpp/src/cuda_obs_sight.cu), on the
+    // tick stream, no sync.
+    m.def("obs_vision", &breach_cuda::obs_vision, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("solid"), py::arg("screen"),
+          py::arg("h"), py::arg("w"), py::arg("obs_table"), py::arg("table_w"),
+          py::arg("n_teams"), py::arg("sees"), py::arg("visible"), py::arg("faults"),
+          "#29 P8.2: who sees whom (vision.compute's VisionState) for every env, under "
+          "the match's sight rule from the obs table.");
+    m.def("obs_rays", &breach_cuda::obs_rays, py::arg("n_env"), py::arg("solid"),
+          py::arg("screen"), py::arg("h"), py::arg("w"), py::arg("physical"), py::arg("pairs"),
+          py::arg("n_pairs"), py::arg("out"), py::arg("faults"),
+          "#29 P8.2: vision.rays_clear in bulk on the card, every env in one launch.");
+    m.def("obs_windows", &breach_cuda::obs_windows, py::arg("n_env"), py::arg("solid"),
+          py::arg("screen"), py::arg("h"), py::arg("w"), py::arg("physical"),
+          py::arg("to_window"), py::arg("queries"), py::arg("n_q"), py::arg("wh"),
+          py::arg("ww"), py::arg("out"), py::arg("faults"),
+          "#29 P8.2: vision.window_clear in bulk on the card, every env in one launch.");
+    m.def("obs_lof_pairs", &breach_cuda::obs_lof_pairs, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("solid"), py::arg("h"), py::arg("w"),
+          py::arg("covers"), py::arg("cover_cap"), py::arg("cover_w"), py::arg("cover_count"),
+          py::arg("out"), py::arg("faults"),
+          "#29 P8.2: line_of_fire.solid_in_way over every (row, row) pair of the store, "
+          "over the observation's cover table.");
     m.def("tick_stream_ptr", []() {
               return reinterpret_cast<std::uintptr_t>(breach_cuda::tick_stream_handle());
           },

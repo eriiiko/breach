@@ -80,7 +80,7 @@ system here is Class T: NOT part of the played tick until the `device` backend
 
 ## Device sight
 - EVERY line a device kernel asks is `unit_sight::has_los` (`cpp/src/cuda_unit_sight.cuh`): the sight form over `solid` and `sight_screen`, `physical` (a null screen) over `solid` alone. It is `GameMap.has_los` step for step: an arithmetic change lands in `has_los` first (the Sight rule), then here and in `sight_lines.cpp`, in one patch.
-- `sight_screen` is a RESIDENT plane (`GameMap._RESIDENT_UNIT_PLANES`): a device kernel is handed the batch's buffer as it is; the bulk form (`rays_clear`, the observation's) stays `sight_lines.cpp`'s until P8b, never a second device walk.
+- `sight_screen` is a RESIDENT plane (`GameMap._RESIDENT_UNIT_PLANES`): a device kernel is handed the batch's buffer as it is. The bulk forms (`rays_clear`, `window_clear`, who sees whom, the line of fire: the observation's) are `cpp/src/cuda_obs_sight.cuh`'s functions over this one walk (`.claude/rules/sight.md`), never a second device walk.
 
 ## The march (device)
 - `unit_march::march` (`cpp/src/cuda_unit_march.cuh`) is `combat.BulletInFlight.advance` on the continuous path integer for integer, on ONE round-table row: slot 4's shooting (the rounds marched in their firing tick) and slot 2''s rounds both call it; a third caller (the beam, a turret) calls it too, never a copy. A change to `advance`, `push_on`, `chew_wall`'s record, `attack_resolver`'s exposure / crit rolls or `draws.round_index` lands here IN THE SAME PATCH: the corpus fires few rounds, so the twin ledger traces little of it, and `tests/cuda_unit_shooting_check.py` (the march on synthetic rounds) is the guard.

@@ -210,6 +210,10 @@ if(BREACH_CUDA)
         # Class T, pure integer (its float16 values are generated bit
         # patterns), on the same target-wide CUDA determinism floor.
         src/cuda_obs.cu
+        # #29 P8.2: the observation's sight (who sees whom, rays, windows,
+        # lines of fire over the cover table) over the one device sight
+        # function; float64 through the observation's float kit. Class T.
+        src/cuda_obs_sight.cu
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like

@@ -16,7 +16,9 @@ the rows' units, the team picture the session keeps). Kept: the tick's
 intents and the OWNED arrays of each decision. (a) the pinned ship_demo
 matches ``bots`` and ``bots_v1`` (``tests/_pinned_matches``); (b) a training
 room (``tools/gen_training_rooms.py``'s ``range_door``, written to a temp
-folder: a door, cover, ``all_round``); (d) the hand match (P8.1: a ship_demo
+folder: a door, ``all_round``; no cover: the crates are ``range_hall``'s,
+P8.2's :func:`corpus_cover` plays it as it is and with a crate moved onto
+the line of fire); (d) the hand match (P8.1: a ship_demo
 bots match cut at :data:`HAND_TICKS` with a hand state at tick 0 and hand
 intents, :func:`hand_setup` / :func:`hand_script`, for the owned columns (a)
 and (b) never move); and, for the batch, more seeds of (a) and (b).
@@ -55,7 +57,22 @@ numpy, double -> float32 equal to numpy, a*b + c never contracted, the
 squash's served float32 equal to the host's (CUDA's log; the float64
 difference count is printed).
 
-THE BREAKS (``OBS_BREAK``), each must turn a part red: ``anchor`` (the
+P8.2 (no served column: the sight every later block reads) --
+- inside every GATE / BATCH run: who sees whom (``DeviceObservation.vision``:
+  ``seen_by``, ``visible_by_team``) equal to the reference's VisionState
+  (``vision.state_for``, the team picture's) at EVERY tick, both sight rules,
+  the per-rule census (pair-ticks, pairs ever seen / not seen / both) judged
+  by part GATE; the line of fire (``lof_pairs``, ``line_of_fire.solid_in_way``
+  over the cover table) on every (unit, unit) pair at every decision tick,
+  the pairs a cover decided counted (> 0 over the corpus, else FAIL); a
+  cover's alive unchanged over every match (the table is staged once);
+- PART SIGHT: the bulk forms against ``rays_clear`` / ``window_clear``;
+- PART WALL: the wall's first device gate (critique finding 22).
+
+THE BREAKS (``OBS_BREAK``), each must turn a part red: ``cone`` / ``early``
+/ ``cover`` (P8.2, part GATE: the cone a degree wider, who sees whom before
+the conversion, every cover box one tile off), ``forms`` (P8.2, part SIGHT:
+the two has_los forms swapped); ``anchor`` (the
 blocks read the units one tile off: the window's anchor wrong), ``stale``
 (the blocks are not rebuilt after tick 0), ``constant`` (an owned column
 forced constant on both sides: the constancy guard), ``divisor`` (P8.1: the
@@ -96,7 +113,7 @@ FAILS: list = []
 BREAK = os.environ.get("OBS_BREAK", "")
 #: The patch this script's gates are at: every column owned by it or an
 #: earlier patch of the version-2 table is compared.
-PATCH = "P8.1"
+PATCH = "P8.2"
 #: The decision cadence of the corpus (design 13.1's decimation, a run file's
 #: ``[run] decimation``; the device observation takes it as its argument).
 DECIMATION = 4
@@ -178,6 +195,14 @@ class Played:
         self.intents = []                     # per tick k: [(kind, args)]
         self.obs = {}                         # tick -> {(key, name): array}
         self.end = 0
+        # P8.2: the reference's VisionState every tick, its line of fire over
+        # every (unit, unit) pair at every decision tick, the sight rule
+        self.vision = {}                      # tick -> (seen_by, visible_by_team)
+        self.lof = {}                         # tick -> (U, U) uint8 (sim.units order)
+        self.lof_cover = {}                   # tick -> pairs a cover decided (walk clear)
+        self.rule = "cone"
+        self.uids = []
+        self.cover_alive = None               # (at tick 0, at the end)
 
 
 _PLAYED: dict = {}
@@ -189,16 +214,17 @@ def ship_level():
     return pm.ship_demo()
 
 
-def room_level():
+def room_level(name: str = ROOM):
     global _ROOMS_DIR
     import gen_training_rooms as TR
     import level_loader
     if _ROOMS_DIR is None:
         _ROOMS_DIR = tempfile.mkdtemp(prefix="obs_rooms_")
+    if not (Path(_ROOMS_DIR) / name / "level.toml").exists():
         for d in TR.drafts():
-            if d.name == ROOM:
+            if d.name == name:
                 TR.write(d, _ROOMS_DIR)
-    return level_loader.load(ROOM, _ROOMS_DIR)
+    return level_loader.load(name, _ROOMS_DIR)
 
 
 def host_observation(session, ctx, T, S) -> dict:
@@ -215,6 +241,24 @@ def host_observation(session, ctx, T, S) -> dict:
     out["valid"][...] = valid
     out["in_match"][...] = in_match
     return out
+
+
+def host_lof(sim):
+    """THE reference line of fire (``line_of_fire.solid_in_way_many``) from
+    every unit's centre tile to every unit's (``sim.units`` order, dead and
+    turned included): ``(U, U)`` uint8, and the count of pairs a COVER decided
+    (the physical walk clear, a live cover crossing the segment)."""
+    from simulation import line_of_fire, vision
+    cs = [(int(u.center_tile_x()), int(u.center_tile_y())) for u in sim.units]
+    n = len(cs)
+    out = np.zeros((n, n), dtype=np.uint8)
+    pairs = np.array([(ay, ax, by, bx) for ax, ay in cs for bx, by in cs],
+                     dtype=np.int32).reshape(-1, 4)
+    walk = vision.rays_clear(sim, pairs, physical=True).reshape(n, n) if n else None
+    for a in range(n):
+        out[a] = np.array(line_of_fire.solid_in_way_many(sim, cs[a], cs), dtype=np.uint8)
+    cover = int(np.count_nonzero(out.astype(bool) & walk)) if n else 0
+    return out, cover
 
 
 def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Played:
@@ -247,8 +291,18 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Pl
         nonlocal t_obs
         ts = time.perf_counter()
         p.obs[int(s.sim.tick)] = owned_parts(host_observation(s, ctx, T, S), own, False)
+        p.lof[int(s.sim.tick)], p.lof_cover[int(s.sim.tick)] = host_lof(s.sim)
         t_obs += time.perf_counter() - ts
 
+    def see():
+        from simulation import vision
+        vs = vision.state_for(s.sim)          # the team picture's (slot 11) cached state
+        p.vision[int(s.sim.tick)] = (dict(vs.seen_by), dict(vs.visible_by_team))
+
+    p.rule = str(getattr(s.sim, "sight", "cone"))
+    p.uids = [int(u.id) for u in s.sim.units]
+    alive0 = [bool(c.alive) for c in (s.sim.cover or ())]
+    see()
     observe()
     tap.take()                                # the setup's own calls are no intents
     while not s.is_terminal() and (max_ticks is None or int(s.sim.tick) < max_ticks):
@@ -256,9 +310,11 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Pl
             script(s.sim)
         s.tick()
         p.intents.append(tap.take())
+        see()
         if int(s.sim.tick) % DECIMATION == 0:
             observe()
     s.sim.attach_intent_log(None)
+    p.cover_alive = (alive0, [bool(c.alive) for c in (s.sim.cover or ())])
     p.end = int(s.sim.tick)
     _PLAYED[key] = p
     print(f"  played {name}@{seed}: {p.end} ticks, {len(p.obs)} decisions "
@@ -356,11 +412,16 @@ def gate(label, played: list, census: Census | None = None) -> bool:
         obs.skip_build = True
     if BREAK == "divisor":                         # rounds over the NEXT weapon row's magazine
         _divisor_break(obs)
+    _sight_breaks(obs)
     n_cmp = 0
     end = max(p.end for p in played)
     t0 = time.perf_counter()
     for k in range(end + 1):
         tick = int(c.sims[0].tick)
+        if not vision_equal(label, obs, played, tick):
+            return False
+        if tick % DECIMATION == 0 and not lof_equal(label, obs, played, tick):
+            return False
         if tick % DECIMATION == 0:
             got = obs.host(own)
             for e, p in enumerate(played):
@@ -405,6 +466,150 @@ def gate(label, played: list, census: Census | None = None) -> bool:
           f"{obs.builds} block launches, {1000 * (time.perf_counter() - t0) / max(1, end):.1f} "
           f"ms per tick incl. the gate's downloads)")
     return True
+
+
+# ---------------------------------------------------------------------------
+# P8.2: who sees whom, every tick; the line of fire over the cover table
+# ---------------------------------------------------------------------------
+#: Per sight rule: pair-ticks compared, the (match, observer, target) pairs
+#: ever seen / ever not seen (o != t); per gate label the line-of-fire pairs
+#: and those a cover decided. Filled by every gate; judged by part GATE.
+VSTATS: dict = {}
+LOFSTATS: dict = {}
+
+
+def _sight_breaks(obs):
+    """THE P8.2 BREAKS: ``cone`` (the cone's half-angle one degree wider in
+    the obs table), ``early`` (who sees whom computed one slot too early:
+    before the ruleset's tick end, the conversion), ``cover`` (every cover
+    box shifted one tile in y)."""
+    import cupy as cp
+    if BREAK == "cone":
+        from config import CFG
+        from simulation import vision
+        off = {n: o for n, o, _ in dobs.table_layout()}["CONE_COS_BITS"]
+        t = obs.table.get()
+        t[:, off] = dobs._f64_bits(vision.cos_threshold(
+            float(CFG.onephase.vision_cone_half_deg) + 1.0))
+        obs.table = cp.asarray(t)
+        obs.vision()                               # tick 0 again, broken
+    if BREAK == "early":
+        obs.early_vision = True
+    if BREAK == "cover":
+        cov = obs.cover_host.copy()
+        for f in ("Y0_BITS", "Y1_BITS"):
+            i = dobs.COVER_FIELDS.index(f)
+            vals = np.ascontiguousarray(cov[..., i]).view(np.float64) + 1.0
+            cov[..., i] = vals.view(np.int64)
+        obs.cover = cp.asarray(cov)
+
+
+def _teams_of_slot(obs):
+    from simulation.factions import ZOMBIE_TEAM
+    return list(range(obs.T)) + [int(ZOMBIE_TEAM)]
+
+
+def vision_equal(label, obs, played, tick) -> bool:
+    """Every env's device who-sees-whom equal to its reference's VisionState
+    at ``tick`` (``seen_by`` and ``visible_by_team``, every pair), no fault;
+    the per-rule census filled."""
+    sees = obs.sees.get()
+    vis = obs.visible.get()
+    faults = obs.vision_faults.get()
+    slots = _teams_of_slot(obs)
+    for e, p in enumerate(played):
+        if tick > p.end:
+            continue
+        if int(faults[e]):
+            fail(f"{label}: tick {tick}, env {e}: vision fault bits {int(faults[e])}")
+            return False
+        uids = obs.c.uids[e]
+        if uids != p.uids:
+            fail(f"{label}: env {e}: the store's rows are not the reference's units")
+            return False
+        want_seen, want_vis = p.vision[tick]
+        bad_teams = [t for t in want_vis if t not in slots]
+        if bad_teams:
+            fail(f"{label}: tick {tick}, env {e}: reference teams {bad_teams} have no slot")
+            return False
+        got_seen, got_vis = dobs.vision_state(sees[e], vis[e], uids, slots)
+        n = len(uids)
+        ref = np.zeros((n, n), dtype=bool)
+        row = {u: r for r, u in enumerate(uids)}
+        for tid, obsv in want_seen.items():
+            for oid in obsv:
+                ref[row[oid], row[tid]] = True
+        dev = sees[e][:n, :n].astype(bool)
+        if got_seen != want_seen or got_vis != want_vis or not np.array_equal(ref, dev):
+            idx = np.argwhere(ref != dev)
+            at = (f"pair (observer {uids[idx[0][0]]}, target {uids[idx[0][1]]}): reference "
+                  f"{bool(ref[tuple(idx[0])])} device {bool(dev[tuple(idx[0])])}"
+                  if len(idx) else "the visible sets")
+            fail(f"{label}: tick {tick}, env {e} ({p.name}@{p.seed}, rule {p.rule}): who sees "
+                 f"whom differs on {len(idx)} pair(s), first {at}; visible reference "
+                 f"{want_vis} device {got_vis}")
+            return False
+        st = VSTATS.setdefault(p.rule, {"pair_ticks": 0, "true": set(), "false": set(),
+                                        "seen_ticks": 0})
+        st["pair_ticks"] += n * (n - 1)
+        st["seen_ticks"] += int(np.count_nonzero(ref))
+        key = (p.name, p.seed, e)
+        off = ~np.eye(n, dtype=bool)
+        st["true"].update((key, int(a), int(b)) for a, b in np.argwhere(ref & off))
+        st["false"].update((key, int(a), int(b)) for a, b in np.argwhere(~ref & off))
+    return True
+
+
+def lof_equal(label, obs, played, tick) -> bool:
+    """``line_of_fire.solid_in_way`` on the card over every (unit, unit)
+    pair equal to the reference at a decision tick; the pairs a cover decided
+    counted."""
+    out, faults = obs.lof_pairs()
+    out, faults = out.get(), faults.get()
+    for e, p in enumerate(played):
+        if tick > p.end:
+            continue
+        if int(faults[e]):
+            fail(f"{label}: tick {tick}, env {e}: line-of-fire fault bits {int(faults[e])}")
+            return False
+        want = p.lof[tick]
+        n = want.shape[0]
+        got = out[e][:n, :n]
+        if not np.array_equal(want, got):
+            idx = np.argwhere(want != got)
+            a, b = (int(x) for x in idx[0])
+            fail(f"{label}: tick {tick}, env {e} ({p.name}@{p.seed}): solid_in_way differs on "
+                 f"{len(idx)} pair(s), first (unit {p.uids[a]} -> unit {p.uids[b]}): reference "
+                 f"{int(want[a, b])} device {int(got[a, b])}")
+            return False
+        st = LOFSTATS.setdefault(label, {"pairs": 0, "blocked": 0, "cover": 0, "covers": 0})
+        st["pairs"] += n * n
+        st["blocked"] += int(np.count_nonzero(want))
+        st["cover"] += int(p.lof_cover[tick])
+        st["covers"] = int(obs.cover_count_host[e])
+    return True
+
+
+def judge_vision() -> None:
+    """The census of who sees whom per rule and of the line of fire: a rule
+    whose pairs were never both seen and unseen, or a corpus where no cover
+    ever decided a pair, FAILS (a vacuous gate)."""
+    for rule, st in sorted(VSTATS.items()):
+        both = len(st["true"] & st["false"])
+        print(f"    vision rule {rule}: {st['pair_ticks']} pair-ticks compared, "
+              f"{st['seen_ticks']} seen; {len(st['true'])} pairs ever seen, "
+              f"{len(st['false'])} ever not seen, {both} both")
+        if not st["true"] or not st["false"] or both == 0:
+            fail(f"vision rule {rule}: no pair was both seen and unseen over the corpus "
+                 f"(the gate would be vacuous)")
+    for rule in ("cone", "all_round"):
+        if rule not in VSTATS:
+            fail(f"vision: no corpus match runs the {rule!r} rule")
+    for label, st in sorted(LOFSTATS.items()):
+        print(f"    line of fire {label}: {st['pairs']} pairs compared, {st['blocked']} "
+              f"blocked, {st['cover']} by a cover ({st['covers']} cover entities)")
+    if not any(st["cover"] > 0 for st in LOFSTATS.values()):
+        fail("line of fire: no cover decided any pair over the corpus (vacuous)")
 
 
 def corpus_a():
@@ -495,11 +700,54 @@ def hand_script(sim):
         sim.shove_intent(int(m[7].id))
 
 
+#: P8.2's cover hand match: the training room whose crates are cover
+#: (``range_hall``: two crates, ``blocks_los`` false, placed OFF the line of
+#: fire), with crate 0 moved at tick 0 onto the line between the two spawns
+#: (the reference and the twin alike), so the learner bot's line of fire to
+#: the target crosses it (the room's own crates never cross a pair: counted).
+COVER_ROOM = "range_hall"
+
+
+def hall_setup(session):
+    """The cover hand state at tick 0: crate 0 of ``sim.cover`` made a 3 x 1
+    tile box on the segment between the two units' centre tiles."""
+    sim = session.sim
+    a, b = sorted(sim.units, key=lambda u: int(u.id))[:2]
+    ax, ay = a.center_tile_x(), a.center_tile_y()
+    bx, by = b.center_tile_x(), b.center_tile_y()
+    mx, my = (ax + bx) // 2, (ay + by) // 2
+    c = sim.cover[0]
+    c.x0, c.x1 = float(mx - 1), float(mx + 2)
+    c.y0, c.y1 = float(my), float(my + 1)       # one tile tall: a one-tile shift clears it
+
+
 def corpus_d():
     lv = ship_level()
     import _pinned_matches as pm
     return [play("hand", lv, pm.spec_of(lv, "bots"), HAND_SEED, setup=hand_setup,
                  script=hand_script, max_ticks=HAND_TICKS)]
+
+
+def corpus_cover():
+    """P8.2: the training room with cover as it is, and the cover hand match."""
+    lv = room_level(COVER_ROOM)
+    return [play(COVER_ROOM, lv, None, None),
+            play("hall_cover", lv, None, 51, setup=hall_setup)]
+
+
+#: P8.2: the all_round rule over many units (the training rooms are 1 v 1, so
+#: no team there ever has a seen AND an unseen enemy): a ship_demo bots match
+#: whose spec names ``sight = "all_round"``, cut at this many ticks.
+ROUND_TICKS = 480
+
+
+def corpus_round():
+    from dataclasses import replace
+
+    import _pinned_matches as pm
+    lv = ship_level()
+    spec = replace(lv.match, sight="all_round")       # the "bots" match is the level's own
+    return [play("ship_all_round", lv, spec, 61, max_ticks=ROUND_TICKS)]
 
 
 def part_gate():
@@ -510,6 +758,10 @@ def part_gate():
         gate(f"(b) {p.name}", [p], cb)
     for p in corpus_d():
         gate(f"(d) {p.name}", [p], cdn)
+    for p in corpus_cover():
+        gate(f"(b/d cover) {p.name}", [p], cb)
+    for p in corpus_round():
+        gate(f"(d all_round) {p.name}", [p], cdn)
     ca.judge("census (a)", strict=False)
     cb.judge("census (b)", strict=False)
     cdn.judge("census (d)", strict=False)
@@ -519,6 +771,15 @@ def part_gate():
             both.nondefault[k] = both.nondefault.get(k, 0) + n
             both.values.setdefault(k, set()).update(src.values.get(k, set()))
     both.judge("census (a)+(b)+(d)")
+    judge_vision()
+    for p in corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round():
+        a0, a1 = p.cover_alive
+        if a0 != a1:
+            fail(f"cover: a cover's alive changed on the continuous path in {p.name} "
+                 f"({a0} -> {a1}): the staged cover table would be stale")
+        else:
+            print(f"    cover {p.name}@{p.seed}: {len(a0)} cover entities, alive unchanged "
+                  f"over {p.end} ticks")
 
 
 def part_batch(n_list=(2, 4)):
@@ -745,8 +1006,274 @@ def part_floatkit():
              f"{len(sx)} values (CUDA's log vs the host's: the shared-module trigger)")
 
 
+# ---------------------------------------------------------------------------
+# P8.2: PART SIGHT -- the bulk forms against rays_clear / window_clear
+# ---------------------------------------------------------------------------
+SIGHT_PAIRS = 30000
+SIGHT_WINDOWS = 120
+WIN = 25
+
+
+def _ship_states():
+    """Three ship_demo states of one shape (one launch): the level as it
+    starts (every door shut), half the doors OPENED (``want_open`` and the
+    door sweep, on a scratch session), and grille tiles (open to gas, closed
+    to sight: the sight screen set) stamped on 3% of the open tiles of a
+    scratch copy. Returns (sims, label)."""
+    import _pinned_matches as pm
+    from simulation import door_system
+    from simulation.entities.door import DOOR_OPEN
+    from simulation.match_session import MatchSession
+    lv = ship_level()
+    spec = pm.spec_of(lv, "bots")
+    a, b, g = (MatchSession(lv, spec, seed=41, breach_physics=bp) for _ in range(3))
+    _toggle_doors(b.sim, every=2)
+    opened = sum(int(d.state == DOOR_OPEN) for d in b.sim._doors)
+    rng = np.random.default_rng(82)
+    open_tiles = np.argwhere(~g.sim.gmap.solid)
+    pick = open_tiles[rng.choice(len(open_tiles), max(1, len(open_tiles) // 33), replace=False)]
+    g.sim.gmap.sight_screen[pick[:, 0], pick[:, 1]] = True
+    print(f"  ship_demo states: shut doors / {opened} of {len(b.sim._doors)} doors opened / "
+          f"{len(pick)} grille tiles")
+    return [a.sim, b.sim, g.sim], "ship_demo"
+
+
+def _toggle_doors(sim, every=1) -> int:
+    """Flip every ``every``-th door (an open one shut, a shut one open)
+    through its latch and the door sweep (a scratch session); returns how
+    many flipped."""
+    from simulation import door_system
+    from simulation.entities.door import DOOR_OPEN
+    doors = list(sim._doors)[::every]
+    before = [d.state for d in doors]
+    for d in doors:
+        d.want_open = d.state != DOOR_OPEN
+    door_system.sweep_doors(sim)
+    return sum(int(d.state != s) for d, s in zip(doors, before))
+
+
+def _room_states():
+    """The training room with a door (as it starts: open; and shut) and the
+    one with cover crates (``blocks_los`` false: rays_clear ignores them)."""
+    from simulation.match_session import MatchSession
+    lv = room_level()
+    a, b = (MatchSession(lv, None, seed=42, breach_physics=bp) for _ in range(2))
+    flipped = _toggle_doors(b.sim)
+    print(f"  {ROOM} states: as it starts / {flipped} of {len(b.sim._doors)} door(s) flipped")
+    return [a.sim, b.sim], ROOM
+
+
+def _hall_states():
+    from simulation.match_session import MatchSession
+    lv = room_level(COVER_ROOM)
+    a = MatchSession(lv, None, seed=43, breach_physics=bp)
+    print(f"  {COVER_ROOM} state: {len(a.sim.cover)} cover entities")
+    return [a.sim], COVER_ROOM
+
+
+def _hot_points(sims):
+    """Tiles where a line's answer turns: door span tiles and grille tiles."""
+    pts = []
+    for s in sims:
+        for d in s._doors:
+            pts += [tuple(t) for t in d.span]
+        pts += [tuple(t) for t in np.argwhere(s.gmap.sight_screen)]
+    return np.array(sorted(set(pts)), dtype=np.int64).reshape(-1, 2)
+
+
+def _pairs(rng, h, w, hot, n):
+    """``n`` (y0, x0, y1, x1) pairs: uniform over the map and a 3-tile ring
+    outside it (out of bounds), lines across the hot tiles, and pairs on one
+    tile."""
+    k = n // 3
+    uni = np.stack([rng.integers(-3, h + 3, k), rng.integers(-3, w + 3, k),
+                    rng.integers(-3, h + 3, k), rng.integers(-3, w + 3, k)], axis=1)
+    if len(hot):
+        c = hot[rng.integers(0, len(hot), k)]
+        near = np.concatenate([c + rng.integers(-10, 11, (k, 2)),
+                               c + rng.integers(-10, 11, (k, 2))], axis=1)
+    else:
+        near = uni.copy()
+    m = n - 2 * k
+    one = rng.integers(-2, max(h, w) + 2, (m, 2))
+    same = np.concatenate([one, one], axis=1)
+    return np.concatenate([uni, near, same]).astype(np.int32)
+
+
+def _sight_group(sims, label, rng) -> None:
+    import cupy as cp
+    from simulation import vision
+    h, w = sims[0].gmap.solid.shape
+    solid = cp.asarray(np.stack([np.ascontiguousarray(s.gmap.solid) for s in sims]))
+    screen = cp.asarray(np.stack([np.ascontiguousarray(s.gmap.sight_screen) for s in sims]))
+    hot = _hot_points(sims)
+    pairs = _pairs(rng, h, w, hot, SIGHT_PAIRS)
+    host = {}
+    for physical in (False, True):
+        dev_phys = (not physical) if BREAK == "forms" else physical
+        stack = cp.asarray(np.stack([pairs] * len(sims)))
+        got, faults = dobs.rays_clear_device(bp, solid, screen, stack, dev_phys)
+        got, faults = got.get(), faults.get()
+        for e, s in enumerate(sims):
+            want = vision.rays_clear(s, pairs, physical=physical).astype(np.uint8)
+            host[(e, physical)] = want
+            if int(faults[e]) or not np.array_equal(want, got[e]):
+                bad = np.flatnonzero(want != got[e])
+                i = int(bad[0]) if len(bad) else -1
+                fail(f"sight {label}: env {e} rays_clear(physical={physical}) differs on "
+                     f"{len(bad)} of {len(pairs)} pairs (faults {int(faults[e])})"
+                     + (f", first {tuple(int(x) for x in pairs[i])}: reference {want[i]} "
+                        f"device {got[e][i]}" if i >= 0 else ""))
+                return
+    oob = int(np.count_nonzero((pairs[:, [0, 2]] < 0).any(1) | (pairs[:, [0, 2]] >= h).any(1)
+                               | (pairs[:, [1, 3]] < 0).any(1) | (pairs[:, [1, 3]] >= w).any(1)))
+    same = int(np.count_nonzero((pairs[:, 0] == pairs[:, 2]) & (pairs[:, 1] == pairs[:, 3])))
+    forms = sum(int(np.count_nonzero(host[(e, False)] != host[(e, True)]))
+                for e in range(len(sims)))
+    doors = (int(np.count_nonzero(host[(0, True)] != host[(1, True)]))
+             if len(sims) > 1 else None)
+    print(f"  sight {label}: {len(sims)} envs x {len(pairs)} pairs equal in both forms "
+          f"({oob} with an end outside the map, {same} on one tile; {doors} pairs the "
+          f"opened doors turn, {forms} env-pairs the two forms answer apart)")
+    if label == "ship_demo" and forms == 0:
+        fail("sight ship_demo: no pair where the two forms differ (the grille case is vacuous)")
+    if doors == 0:
+        fail(f"sight {label}: no pair turned by flipping the doors (vacuous)")
+    # -- windows --
+    n = SIGHT_WINDOWS
+    cy, cx = rng.integers(-2, h + 2, n), rng.integers(-2, w + 2, n)
+    q = np.stack([cy, cx, cy - WIN // 2 + rng.integers(-15, 16, n),
+                  cx - WIN // 2 + rng.integers(-15, 16, n)], axis=1).astype(np.int32)
+    if len(hot):                                    # half of them centred near a hot tile
+        hh = hot[rng.integers(0, len(hot), n // 2)] + rng.integers(-6, 7, (n // 2, 2))
+        q[: n // 2, 0], q[: n // 2, 1] = hh[:, 0], hh[:, 1]
+        q[: n // 2, 2], q[: n // 2, 3] = hh[:, 0] - WIN // 2, hh[:, 1] - WIN // 2
+    cells = 0
+    for to_window in (False, True):
+        for physical in (False, True):
+            dev_phys = (not physical) if BREAK == "forms" else physical
+            got, faults = dobs.window_clear_device(bp, solid, screen,
+                                                   cp.asarray(np.stack([q] * len(sims))),
+                                                   WIN, WIN, to_window, dev_phys)
+            got, faults = got.get(), faults.get()
+            for e, s in enumerate(sims):
+                for j, (y, x, wy, wx) in enumerate(q.tolist()):
+                    want = vision.window_clear(s, y, x, wy, wx, WIN, WIN, to_window=to_window,
+                                               physical=physical)
+                    cells += want.size
+                    if int(faults[e]) or not np.array_equal(want.astype(np.uint8), got[e, j]):
+                        bad = np.argwhere(want.astype(np.uint8) != got[e, j])
+                        fail(f"sight {label}: env {e} window_clear(({y}, {x}), ({wy}, {wx}), "
+                             f"to_window={to_window}, physical={physical}) differs on "
+                             f"{len(bad)} cells, first {tuple(int(v) for v in bad[0])}"
+                             if len(bad) else f"sight {label}: env {e} window faults")
+                        return
+    print(f"  sight {label}: {len(sims)} envs x {n} windows x 4 (both directions, both forms) "
+          f"equal ({cells} cells)")
+
+
+def part_sight():
+    """vision.rays_clear / window_clear on the card (P8.2) equal to the host's
+    on dense random pairs and windows over real maps: ship_demo with its
+    doors shut, half opened, and grille tiles; the training room (crates
+    that do not block sight) shut and opened. Break ``forms``: the two
+    has_los forms swapped."""
+    rng = np.random.default_rng(8202)
+    for states in (_ship_states, _room_states, _hall_states):
+        sims, label = states()
+        _sight_group(sims, label, rng)
+
+
+# ---------------------------------------------------------------------------
+# P8.2: PART WALL -- the wall's first device gate (critique finding 22)
+# ---------------------------------------------------------------------------
+def part_wall():
+    """Who a team sees depends on an enemy's row only through that enemy
+    standing in view: perturbing the store row (facing, hp, turn rate,
+    effort, exposure) of an enemy NO member of team t sees leaves t's
+    visible set unchanged; the same perturbation of a SEEN enemy leaves it
+    unchanged too, and killing the seen enemy removes it. Corpus (a) bots
+    (cone) and the all_round ship match, at decision ticks."""
+    import cupy as cp
+    from simulation import turning
+    from simulation import unit_store
+    lay = unit_store.layout()
+    col = {n: lay.column(n).offset for n in ("team", "life_state", "facing_q",
+                                            "current_hp", "omega_q", "effort", "exposure")}
+    col["valid"] = lay.valid
+    dead = 1                                         # unit_schema._LIFE_CHOICES.index("dead")
+    total = {}
+    for p in corpus_a()[:1] + corpus_round():
+        s = twin(p)
+        c = cd.DeviceConductor(s.sim, bp=bp)
+        obs = dobs.DeviceObservation(c, [s.spec], p.S, DECIMATION, n_teams=p.T)
+        done = 0
+        for k in range(len(p.intents)):
+            c.latch(p.intents[k], env=0)
+            c.tick()
+            if int(c.sims[0].tick) % DECIMATION or done >= 6:
+                continue
+            rows = c._rows.get()[0]
+            vis = obs.visible.get()[0]
+            for t in range(p.T):
+                enemy = [r for r in range(len(p.uids)) if rows[r, col["valid"]]
+                         and rows[r, col["life_state"]] == 0 and rows[r, col["team"]] != t]
+                seen = [r for r in enemy if vis[t, r]]
+                unseen = [r for r in enemy if not vis[t, r]]
+                if not seen or not unseen:
+                    continue
+
+                def run(edit):
+                    pert = c._rows.copy()
+                    edit(pert)
+                    obs.vision(store_ptr=int(pert.data.ptr))
+                    out = obs.visible.get()[0, t].copy()
+                    del pert
+                    return out
+
+                def perturb(r):
+                    def f(a):
+                        f0 = int(a[0, r, col["facing_q"]])
+                        f1 = f0 + turning.PI_Q16 // 2       # a quarter turn, in (-PI, PI]
+                        a[0, r, col["facing_q"]] = f1 - 2 * turning.PI_Q16 \
+                            if f1 > turning.PI_Q16 else f1
+                        a[0, r, col["current_hp"]] = max(1, int(a[0, r, col["current_hp"]]) // 3)
+                        a[0, r, col["omega_q"]] += 12345
+                        a[0, r, col["effort"]] += 1 << 15
+                        a[0, r, col["exposure"]] += 7
+                    return f
+
+                u, sv = unseen[0], seen[0]
+                if not np.array_equal(run(perturb(u)), vis[t]):
+                    fail(f"wall {p.name}: tick {int(c.sims[0].tick)}, team {t}: perturbing "
+                         f"unseen enemy {p.uids[u]}'s row changed the team's visible set")
+                    return
+                if not np.array_equal(run(perturb(sv)), vis[t]):
+                    fail(f"wall {p.name}: tick {int(c.sims[0].tick)}, team {t}: perturbing seen "
+                         f"enemy {p.uids[sv]}'s facing / hp changed whether it is seen")
+                    return
+
+                def kill(a):
+                    a[0, sv, col["life_state"]] = dead
+                killed = run(kill)
+                if killed[sv] or np.array_equal(killed, vis[t]):
+                    fail(f"wall {p.name}: tick {int(c.sims[0].tick)}, team {t}: killing seen "
+                         f"enemy {p.uids[sv]} did not remove it from the visible set")
+                    return
+                done += 1
+            obs.vision()                             # the real store again
+        total[p.rule] = total.get(p.rule, 0) + done
+        print(f"  wall {p.name} ({p.rule}): {done} (team, tick) cases with a seen and an "
+              f"unseen enemy: unseen perturbed -> unchanged, seen perturbed -> unchanged, "
+              f"seen killed -> removed")
+    for rule in ("cone", "all_round"):
+        if not total.get(rule):
+            fail(f"wall: no case under the {rule!r} rule (vacuous)")
+
+
 PARTS = {"gate": part_gate, "batch": part_batch, "handover": part_handover,
-         "syncs": part_syncs, "ended": part_ended, "floatkit": part_floatkit}
+         "syncs": part_syncs, "ended": part_ended, "floatkit": part_floatkit,
+         "sight": part_sight, "wall": part_wall}
 
 
 def main(parts=None) -> int:

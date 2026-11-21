@@ -3192,6 +3192,114 @@ of one decision's blocks for all envs, P8.0's block and the vector
 together): 0.018 ms at N = 1, 0.018 ms at N = 64, 0.055 ms at N = 256 (P8.0's
 block alone measured 0.014 / 0.017 / 0.039).
 
+**P8.2 AS-BUILT (2026-11-21, branch `29-p82-obs-sight`).** No served
+column; the sight every later block reads. THE DEVICE FUNCTIONS are
+`cpp/src/cuda_obs_sight.cuh` (namespace `obs_sight`, the observation's own
+header, including `cuda_unit_sight.cuh`'s `has_los` and never walking a line
+itself): `line_clear(solid, screen, h, w, physical, y0, x0, y1, x1, bad)`
+(`rays_clear` for one pair), `window_cell(..., to_window, y, x, wy, wx, ww,
+k, bad)` (`window_clear`'s cell k, row-major), `blocks_segment(cover_row,
+x0, y0, x1, y1)` (`CoverRuntime.blocks_segment`, float64 through the kit:
+`1.0 / d`, the two products, swaps and clips in the reference's order),
+`solid_in_way(solid, h, w, covers, n, ax, ay, bx, by, bad)`
+(`line_of_fire.solid_in_way`: the physical walk, then every live cover),
+`within_cone(facing_q, dx, dy, thr)` and `can_see(o, t, rule, cone_cos,
+radius, ...)` (`vision.can_see` for two living units of different teams,
+both rules), plus the one `floordiv` / `tile_of` / centre (P8.0's copies in
+`cuda_obs.cu` now use these). THE LAUNCHES (`cpp/src/cuda_obs_sight.cu`,
+every env in one launch on the tick stream, a `(N,)` fault-bit buffer, no
+sync): `bp.obs_vision` (one thread per (env, observer row, target row)),
+`bp.obs_rays` (pairs `(N, P, 4)`), `bp.obs_windows` (queries `(N, Q, 4)` =
+(y, x, wy, wx), out `(N, Q, wh, ww)`), `bp.obs_lof_pairs` (every (row,
+row) of the store over the cover table); faces
+`device_obs.rays_clear_device` / `window_clear_device` (CuPy planes and
+pairs) and `DeviceObservation.vision` / `lof_pairs`. WHO SEES WHOM is
+`DeviceObservation.sees` `(N, U, U)` uint8 (`sees[e, o, t]`: store row o
+is among `seen_by[row t]`) and `visible` `(N, T + 1, U)` uint8 (slot s < T
+the marine team s, slot T the zombie team; a unit on any other team is
+refused at the build, `check_teams`); `device_obs.vision_state` reads one
+env's tables back as `VisionState`'s two dicts. It runs EVERY tick at the
+walk's `11'` line BEFORE the blocks (`DeviceObservation.stage`, which the
+conductor's call line now calls) and at the build (tick 0): the place the
+reference's slot 11 (`team_picture.update`) first asks `vision.state_for`,
+after the advance, order expiry and the ruleset's tick end (the
+conversion); every later ask in the reference's tick (the bots at the next
+tick's start, the observation) reads that cache. Every tick, not only on
+decision ticks: P8.3's picture reads it every tick. Ended envs are not
+skipped (cheap, and the state is defined). THE RULE AND ITS DIALS are obs
+table rows (`device_obs.sight_values`): `SIGHT_RULE` (`match.SIGHT_RULES`'
+index of `Simulation.sight`), `CONE_COS_BITS` (`vision.cos_threshold` of the
+live half-angle) and `AWARENESS_R_BITS` (`float(awareness_radius_tiles)`);
+`OBS_SIGHT_*` and `OBS_ZOMBIE_TEAM` are generated constants. THE CONE needed
+nothing beyond the kit: `Unit.facing` is `facing_q / 65536.0` exactly, so
+`unit_fixed.cos_rad` / `sin_rad` quantize it back to `facing_q` and the
+facing vector is `cos_q16(f) / 65536.0`, `-(sin_q16(f) / 65536.0)` (the
+integer kit, already on the card); `math.radians` and the threshold's
+cosine are taken on the host once per table build (the table row is the
+reference function's own float); the per-pair test is int squares, two
+products, an add, `__dsqrt_rn` (IEEE, correctly rounded like `math.sqrt`)
+and a divide, never fused; the awareness test compares the exact int `d2`
+with the float64 product `r * r` as Python compares int with float. THE
+COVER TABLE (`device_obs.cover_values`, `(N, C, OBS_COVER_W)` int64 + counts:
+the rectangle as the CoverRuntime's own float64 bits, alive, blocks_los) is
+staged ONCE at the build. K7, traced: the continuous shooting path never
+reads `sim.cover` (`process_shooting`, `_directional_fire` and the auto-fire
+branch call `_dispatch_trigger` without `cover`, so `march_cover` stays
+None and a round passes a crate); the only writer of a cover's `alive` is
+`CoverRuntime.chew`, reached only through a round marched WITH cover, which
+only OnePhaseWEGO's `timeline._fire_at` passes (refused by the conductor);
+payloads and blasts do not touch cover. So nothing changes a cover on the
+continuous path, the game cannot destroy one there, and the check asserts
+every match's covers keep their `alive`. A cover with `blocks_los = true`
+is refused by name at the build: the host applies it inside every
+`ray_clear` / `rays_clear` / `window_clear` (who sees whom, every window),
+which the device lines do not; no level places one. Choices where the
+design was silent: the visible table is per team SLOT (marine teams of the
+layout plus the zombie team), not per team value; faults are a per-env bit
+buffer the gate reads (no refusal path is reachable on a served level:
+team values are checked at the build, coordinates are map-bounded), not a
+books row; the cover table rides `DeviceObservation`, not the conductor's
+object tables (nothing in the sim reads it). Finding: the check's docstring
+said `range_door` carries cover; the crates are `range_hall`'s (and placed
+OFF the line between the spawns: no pair of that room's match is ever
+blocked by one), and the training rooms are 1 v 1, so no team there ever has
+both a seen and an unseen enemy. Hence two P8.2 corpus matches: the cover
+hand match `hall_cover` (`range_hall`, crate 0 made a 3 x 1 box on the line
+between the spawns at tick 0, reference and twin alike) and
+`ship_all_round` (the level's own ship_demo bots match with `sight =
+"all_round"`, cut at 480 ticks). Gates (`tests/cuda_obs_check.py`,
+`PATCH = "P8.2"`): WHO SEES WHOM equal to the reference's `VisionState`
+(`seen_by`, `visible_by_team`, every pair) at EVERY tick of bots (1349
+ticks), bots_v1 (272), range_door (200), the hand match (320), range_hall
+(32), hall_cover (26), ship_all_round (480), and of every env of the
+batches N = 2 / 4 (ship_demo, the room); census: cone 256 608 pair-ticks,
+164 (match, observer, target) pairs both seen and unseen, 396 ever unseen;
+all_round 64 014 pair-ticks, 45 both, 138 ever unseen; a rule without a
+both-pair fails. THE LINE OF FIRE equal on every (unit, unit) pair at every
+decision tick of the same matches (48 672 pairs on bots, 17 424 on
+ship_all_round, ...), a cover decided 2 pairs (hall_cover, tick 0; the
+room's own crates decide none), every cover's alive unchanged over every
+match. PART SIGHT: 30 000 pairs per env in both forms and 120 windows x
+both directions x both forms against `rays_clear` / `window_clear` on
+ship_demo (doors shut / 30 of 60 opened / 178 grille tiles: 773 pairs the
+doors turn, 465 the two forms answer apart; ~20 % of pairs with an end off
+the map, a third on one tile), range_door (its door flipped: 1155 pairs
+turned) and range_hall (crates); every value equal. PART WALL: 7 (team,
+tick) cases on bots (cone) and 6 on ship_all_round: an unseen enemy's row
+perturbed (facing a quarter turn, hp, turn rate, effort, exposure) leaves
+the team's visible set unchanged, the same on a seen enemy too, killing the
+seen enemy removes it. Breaks, each red: `cone` (half-angle + 1 degree: bots
+tick 419, pair 8 -> 2), `early` (vision before the conversion: bots_v1 tick
+271, 6 pairs), `cover` (boxes one tile down: hall_cover tick 0), `forms`
+(part SIGHT: 465 pairs on the grille map). Unchanged: every P8.0 / P8.1
+part (raw-bit equal decisions as before, 2.00 syncs per steady tick at N =
+1 and 2 with vision every tick). Cost (`tools/bench_conductor.py --obs`,
+ship_demo, GPU time): vision 0.015 ms per tick at N = 1, 0.013 at N = 64,
+0.030 at N = 256; a representative window call per decision (144 windows
+of 25 x 25 per env: every roster row's window from every unit's centre)
+0.039 / 0.491 / 1.919 ms; the P8.0 + P8.1 blocks 0.030 / 0.018 / 0.045 ms.
+No golden re-baseline; the played game unchanged (no host value moved).
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:

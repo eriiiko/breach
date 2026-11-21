@@ -31,10 +31,18 @@ def test_the_device_observation_equals_the_host_one_on_the_corpus():
     decision tick, every column / plane owned so far (the column-to-patch
     table; from P8.1 the float32 vector columns of the store and the
     tables) equals the host observation as raw bits, and no owned column is
-    constant over the corpus. BREAKS IF a block reads the wrong anchor
-    (OBS_BREAK=anchor), is not rebuilt on a decision tick (OBS_BREAK=stale),
-    the gate compares a column that never moves (OBS_BREAK=constant), or a
-    column divides by a neighbouring table row (OBS_BREAK=divisor)."""
+    constant over the corpus; from P8.2 who sees whom (seen_by,
+    visible_by_team) equals the reference's VisionState at EVERY tick under
+    both sight rules (a rule whose pairs were never both seen and unseen
+    fails), and the line of fire over the cover table equals
+    ``line_of_fire.solid_in_way`` on every (unit, unit) pair at every
+    decision tick (a corpus where no cover decided a pair fails). BREAKS IF
+    a block reads the wrong anchor (OBS_BREAK=anchor), is not rebuilt on a
+    decision tick (OBS_BREAK=stale), the gate compares a column that never
+    moves (OBS_BREAK=constant), a column divides by a neighbouring table row
+    (OBS_BREAK=divisor), the cone is a degree wider (OBS_BREAK=cone), who
+    sees whom runs before the conversion (OBS_BREAK=early), or a cover box
+    sits one tile off (OBS_BREAK=cover)."""
     _run(["gate"], timeout=7200)
 
 
@@ -83,3 +91,25 @@ def test_the_observation_float_kit_rounds_like_the_host():
     arithmetic is fused (OBS_BREAK=fused), or CUDA's log moves a served
     squashed value (then the shared log module is due)."""
     _run(["floatkit"])
+
+
+def test_sight_in_bulk_on_the_card_equals_rays_clear_and_window_clear():
+    """PROPERTY (#29 P8.2): the device's bulk sight (rays and windows, both
+    has_los forms, both window directions) equals ``vision.rays_clear`` /
+    ``window_clear`` on dense random pairs and windows over real maps:
+    ship_demo with its doors shut, half opened and with grille tiles (closed
+    to sight, open to air), a training room with its door flipped, the
+    training room with cover crates; ends outside the map and pairs on one
+    tile included. BREAKS IF the two forms are swapped (OBS_BREAK=forms), a
+    window cell is walked the wrong way, or an env reads another's planes."""
+    _run(["sight"])
+
+
+def test_who_a_team_sees_depends_only_on_the_enemies_in_view():
+    """PROPERTY (#29 P8.2, THE WALL's first device gate): perturbing the
+    store row of an enemy no member of a team sees leaves that team's
+    visible set unchanged, the same perturbation of a seen enemy leaves it
+    unchanged, and killing the seen enemy removes it; under both sight rules.
+    BREAKS IF the visible table is indexed by the wrong row or team, or a
+    target's own facing / hp decides whether it is seen."""
+    _run(["wall"])

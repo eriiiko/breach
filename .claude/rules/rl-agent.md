@@ -12,6 +12,7 @@ paths:
   - "src/simulation/device_obs.py"
   - "cpp/src/cuda_obs.*"
   - "cpp/src/cuda_obs_float.cuh"
+  - "cpp/src/cuda_obs_sight.*"
   - "cpp/src/obs_layout.h"
   - "tools/gen_obs_layout.py"
   - "tests/cuda_obs_check.py"
@@ -57,6 +58,8 @@ and who must use it; this file holds the constraints the code cannot say. The
 - The observation's float arithmetic is `cpp/src/cuda_obs_float.cuh` alone: float64 in the reference's operation order through the never-fused intrinsics, ONE cast per value into the served dtype (float16 only through the kit's hand conversion: never `__double2half`, never through float32). `log` / `log1p` are CUDA's own: a served value they move fails the gate, and is the trigger for the shared log module (the lead's call), never a tolerance.
 - The integer reads a block shares with the unit kernels (`mag_status`, `composed_flags`, `handling_ticks`, `scaled`, `wrap_q16`) are the unit library's, called with the device tables: never a copy in the observation's TU.
 - An owned column the corpus cannot move gets a case in the check's hand match (corpus (d): a hand state at tick 0 given to the reference and the twin alike, hand intents through the tap), never a weakened census.
+- DEVICE VISION (`DeviceObservation.vision`: `sees` (N, U, U) per observer / target row, `visible` (N, T + 1, U) per team slot, the zombie team the last) is THE device form of `vision.state_for`: computed EVERY tick at the walk's `11'` line BEFORE the blocks (`stage`), where the reference's slot 11 first asks (after the advance and the conversion); every device block that asks what a team or a unit sees reads these tables, never its own pair loop. The sight rule and its dials are obs-table rows (`device_obs.sight_values`), never a kernel argument; a team value without a slot is refused at the build.
+- THE COVER TABLE (`device_obs.cover_values`) is staged ONCE at the build: on the continuous path nothing changes a cover's `alive` (`CoverRuntime.chew` is reached only through a round marched with `cover`, which only OnePhaseWEGO passes). A path that starts chewing cover on the continuous ruleset moves the table onto the card in the same patch. Every line of fire (`line_of_fire.solid_in_way`) on the card is `obs_sight::solid_in_way` over it.
 - An env is built on ITS decision ticks (its episode start and the run's decimation, read on the card) and skipped while its ended latch is set.
 - The hand-over's ordering rests on the BLOCKING tick stream and CuPy / torch on the legacy default stream: a change to either is a change to the hand-over, held by the check's handover part.
 
