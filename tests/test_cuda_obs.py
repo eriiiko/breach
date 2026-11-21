@@ -62,7 +62,13 @@ def test_the_device_observation_equals_the_host_one_on_the_corpus():
     wall / a cover crate / a mate, aim_of finding nobody / a mate / another
     side, ticks 0 / between / at the cap); BREAKS IF the lane walk or the
     rasteriser truncates where Python floors (OBS_BREAK=lane_trunc) or the
-    lane walk runs one tile wide of its line (OBS_BREAK=lane_wide)."""
+    lane walk runs one tile wide of its line (OBS_BREAK=lane_wide). From
+    P8.4b the list (every entry column but the decoder's and the order's),
+    its mask and its uids are raw-bit equal, every coverage case reached (an
+    entry of every block, a grenade and a charge, a door in reach and out of
+    reach, a block overflowing its capacity); BREAKS IF a block's sort ties
+    by the higher id (OBS_BREAK=list_tie) or the door block holds one entry
+    fewer than its capacity (OBS_BREAK=list_cap)."""
     _run(["gate"], timeout=7200)
 
 
@@ -132,7 +138,8 @@ def test_who_a_team_sees_depends_only_on_the_enemies_in_view():
     unchanged, and killing the seen enemy removes it; under both sight rules.
     From P8.4a the same perturbation of the unseen enemy (its trigger flipped
     too) moves none of the team's fire lanes, lanes plane, aim_of answers,
-    lines of fire or turns. BREAKS IF the visible table is indexed by the
+    lines of fire or turns, and from P8.4b no entry, mask or uid of its
+    list. BREAKS IF the visible table is indexed by the
     wrong row or team, a target's own facing / hp decides whether it is
     seen, or an answer of the team reads a unit it does not see."""
     _run(["wall"])

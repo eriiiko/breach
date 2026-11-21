@@ -29,6 +29,7 @@
 #include "cuda_batch.cuh"          // tstream(): THE tick stream (blocking)
 #include "cuda_obs_float.cuh"      // #29 P8.1: the observation's float kit
 #include "cuda_obs_picture.cuh"    // #29 P8.4a: the picture's records (the aim's candidates)
+#include "cuda_obs_rows.cuh"       // #29 P8.4b: env_due, is_mate, is_seen (one copy)
 #include "cuda_obs_sight.cuh"      // #29 P8.2: the observation's sight (floordiv, tile_of)
 #include "cuda_unit_events.h"      // UnitRecordList (the door tables' buffers)
 #include "cuda_unit_lib.cuh"       // #29 P8.1: the unit library's integer reads (used, never added to)
@@ -67,17 +68,8 @@ constexpr int CELLS = OBS_WIN * OBS_WIN;
 using obs_sight::floordiv;
 using obs_sight::tile_of;
 
-// The env's decision tick: (tick - episode start) a multiple of the
-// decimation, and its ended latch clear.
-__device__ __forceinline__ bool env_due(int e, const int64_t* trow, const int64_t* params,
-                                        const uint8_t* ended) {
-    if (ended[e]) return false;
-    const int64_t tick = trow[(size_t)e * unit_draws::TICK_ROW_W + unit_draws::TICK_ROW_TICK];
-    const int64_t t0 = params[(size_t)e * OBS_PARAM_W + OBS_PARAM_EPISODE_TICK];
-    const int64_t dec = params[(size_t)e * OBS_PARAM_W + OBS_PARAM_DECIMATION];
-    const int64_t d = tick - t0;
-    return dec > 0 && d >= 0 && d % dec == 0;
-}
+// The env's decision tick (the observation's one copy, cuda_obs_rows.cuh).
+using obs_rows::env_due;
 
 // FieldPlanes.door: per living door, its code (open / closed) at every span
 // tile on the map, the max (order-free, so an atomic max is exact).
@@ -403,19 +395,9 @@ __global__ void k_obs_vector(const int64_t* store, int n_units, const int64_t* t
 using obs_pic::PicLayout;
 using obs_pic::pic_layout;
 
-// A store row that is a living mate of team t (TeamKnowledge.mates).
-__device__ __forceinline__ bool is_mate(const int64_t* m, int64_t t) {
-    using namespace unit_store;
-    return m[UNIT_COL_VALID] && m[UNIT_COL_LIFE_STATE] == OBS_LIFE_ALIVE &&
-           !m[UNIT_COL_IS_ZOMBIE] && m[UNIT_COL_TEAM] == t;
-}
-
-// A store row team t sees now and holds a record of (TeamKnowledge.seen:
-// visible_by_team[t] restricted to the records).
-__device__ __forceinline__ bool is_seen(const uint8_t* vis_t, const int64_t* blk,
-                                        const PicLayout& L, int U, int t, int q) {
-    return vis_t[q] && obs_pic::rec_of(blk, L, U, t, q)[OBS_PIC_REC_PRESENT];
-}
+// TeamKnowledge.mates / .seen (the observation's one copy, cuda_obs_rows.cuh).
+using obs_rows::is_mate;
+using obs_rows::is_seen;
 
 // _cone_of: a zombie the reference kit's melee arc; a ranged weapon (range >
 // 0) its shot cone (the SPREAD hook over the cone door of spread_deg); else

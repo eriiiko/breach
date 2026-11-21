@@ -218,6 +218,10 @@ if(BREACH_CUDA)
         # the walk's last stage; integer state, its one float sum and the
         # vector columns through the observation's float kit. Class T.
         src/cuda_obs_picture.cu
+        # #29 P8.4b: the list (obs_spec_v1.build_list's five blocks, sorted by
+        # integer keys), its mask and uids; float64 through the observation's
+        # float kit, one cast per value. Class T.
+        src/cuda_obs_list.cu
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like

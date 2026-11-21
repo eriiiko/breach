@@ -37,6 +37,7 @@
 #include "cuda_object_table.h"     // ObjectTable (the grenade and charge tables)
 #include "cuda_obs_float.cuh"
 #include "cuda_obs_picture.cuh"
+#include "cuda_obs_rows.cuh"
 #include "cuda_obs_sight.cuh"
 #include "cuda_unit_books.h"       // books_defer: the faults ride the one books read
 #include "cuda_unit_events.h"
@@ -399,15 +400,7 @@ __global__ void k_picture_teams(const int64_t* store, int U, const int64_t* ring
 // The vector's P8.3 columns (obs_spec_v1.build_vector, line for line): hp,
 // vel_x / vel_y, the five hit_* (1.4), the four record counts (1.5).
 // ---------------------------------------------------------------------------
-__device__ __forceinline__ bool env_due(int e, const int64_t* trow, const int64_t* params,
-                                        const uint8_t* ended) {
-    if (ended[e]) return false;
-    const int64_t tick = tick_of(trow, e);
-    const int64_t t0 = params[(size_t)e * OBS_PARAM_W + OBS_PARAM_EPISODE_TICK];
-    const int64_t dec = params[(size_t)e * OBS_PARAM_W + OBS_PARAM_DECIMATION];
-    const int64_t d = tick - t0;
-    return dec > 0 && d >= 0 && d % dec == 0;
-}
+using obs_rows::env_due;   // the observation's one copy (cuda_obs_rows.cuh)
 
 __device__ __forceinline__ void put_v(float* v, int col, double x) { v[col] = obs_f64::to_f32(x); }
 
@@ -444,19 +437,11 @@ __global__ void k_picture_vector(const int64_t* store, int U, const int32_t* row
     const double cap = of_bits(OBS_SQUASH_CAP_BITS);
     const int64_t* m = obs_pic::unit_of(blk, L, sr);
     // -- 1.1: hp over the bar (float(current_hp) / float(bar), exact Q16 views)
-    {
-        const double x = div((double)u[UNIT_COL_CURRENT_HP], 65536.0);
-        const double d = m[OBS_PIC_UNIT_BAR_SET] ? div((double)m[OBS_PIC_UNIT_BAR_Q], 65536.0)
-                                                 : 0.0;
-        put_v(v, OBS_V_HP, squash(d == 0.0 ? 0.0 : div(x, d), cap));
-    }
+    put_v(v, OBS_V_HP, obs_pic::hp_over_bar(u[UNIT_COL_CURRENT_HP], m, cap));
     // -- the motion tracker's one-tick displacement over v_ref
     {
-        int64_t vx = 0, vy = 0;
-        if (m[OBS_PIC_UNIT_MOTION_SET]) {
-            vx = m[OBS_PIC_UNIT_NOW_X] - m[OBS_PIC_UNIT_PREV_X];
-            vy = m[OBS_PIC_UNIT_NOW_Y] - m[OBS_PIC_UNIT_PREV_Y];
-        }
+        int64_t vx, vy;
+        obs_pic::motion_of(m, &vx, &vy);
         put_v(v, OBS_V_VEL_X, squash(ratio(vx, ot[OBS_TAB_V_REF_Q]), cap));
         put_v(v, OBS_V_VEL_Y, squash(ratio(vy, ot[OBS_TAB_V_REF_Q]), cap));
     }

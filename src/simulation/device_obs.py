@@ -120,6 +120,20 @@ BUILT = {
         # P8.3: the columns of the team picture (bars, motion, last hit, records)
         "hp", "vel_x", "vel_y", "hit_recent", "hit_age", "hit_from_cos", "hit_from_sin",
         "hit_cause", "enemies_known", "enemies_seen", "zombies_known", "zombies_near"),
+    # P8.4b: the list -- every entry column but the decoder's (on_next_tick,
+    # prev_aim: P8.6a) and the order block's (P8.6b) -- its mask and its uids
+    "list": (
+        "type", "dx", "dy", "dist_c", "cos", "sin", "vel_x", "vel_y", "side", "class", "hp",
+        "exposure", "firing", "reloading", "reload_left", "winding", "throw_left",
+        "throw_kind", "planting", "plant_left", "plant_timer", "stunned", "blinded", "down",
+        "seen_by_me", "lof_solid", "lof_mate", "ticks_to_on", "in_range", "in_throw_range",
+        "facing_on_me", "aims_at", "zombie_state", "mates_aiming", "mates_firing",
+        "dmg_last_s", "priority", "frag_catch", "aim_cos", "aim_sin", "aim_is_unit",
+        "feet_dx", "feet_dy", "throttle", "land_dx", "land_dy", "me_in_its_lane",
+        "it_in_my_lane", "age", "obj_kind", "whose", "time_left", "remote", "blast_r",
+        "in_blast", "on_floor", "open", "in_reach", "hull", "wired"),
+    "list_mask": None,
+    "list_uid": None,
 }
 
 #: The served dtypes of the observation's float keys (P8.1, said once): the
@@ -155,6 +169,14 @@ WEAPON_FIELDS = ("MAG_SIZE", "RANGE_TILES", "ROF_TICKS", "RELOAD_TICKS", "CONE_A
 PROFILE_FIELDS = ("TEMPERATURE_MAX_BITS", "PRESSURE_MIN_BITS", "PRESSURE_MAX_BITS")
 #: A team's row: its ``n`` and its loadout's row (-1: none).
 TEAM_FIELDS = ("N", "LOADOUT")
+#: An ammo row's fields the list reads (P8.4b, ``[ammo.*]`` in the unit
+#: schema's row order, the grenade / charge tables' ``ammo_name`` index):
+#: OBJ_KIND = its place in ``ObsContext.obj_rows`` (-1: not a hand or charge
+#: row), RADIUS = its payload row's radius (0: no payload,
+#: ``_object_entry``'s KeyError), TRAVEL_SPEED_BITS = the round's
+#: ``travel_speed_tiles_per_second`` as its float64 bits (what
+#: ``Projectile.travel_speed`` holds).
+AMMO_FIELDS = ("OBJ_KIND", "RADIUS", "TRAVEL_SPEED_BITS")
 #: The scalars, in order: (name, the ObsContext attribute or a reader key).
 TABLE_SCALARS = (
     "L_REF", "REF_ROF_TICKS", "REF_CONE_Q", "REF_MELEE_ARC_Q", "V_REF_Q", "V_FALL_Q",
@@ -210,7 +232,8 @@ def _table_counts() -> dict:
             "weapons": len(us.TABLES["weapons"]()),
             "profiles": len(us.TABLES["env_profiles"]()),
             "species": len(SPECIES_REGISTRY),
-            "grenades": len(weapon_tables().hand_grenade_rows)}
+            "grenades": len(weapon_tables().hand_grenade_rows),
+            "ammo": len(us.TABLES["ammo"]())}
 
 
 def table_layout() -> list:
@@ -225,6 +248,7 @@ def table_layout() -> list:
     rows.append(("WEAPON", n["weapons"] * len(WEAPON_FIELDS)))
     rows.append(("PROFILE", n["profiles"] * len(PROFILE_FIELDS)))
     rows.append(("SPECIES_PROFILE", n["species"] * len(PROFILE_FIELDS)))
+    rows.append(("AMMO", n["ammo"] * len(AMMO_FIELDS)))          # P8.4b
     out, off = [], 0
     for name, w in rows:
         out.append((name, off, w))
@@ -243,7 +267,7 @@ def _table_constants() -> list:
     out.append(("OBS_TAB_W", table_width()))
     out += [("OBS_TAB_N_LOADOUTS", n["loadouts"]), ("OBS_TAB_N_WEAPONS", n["weapons"]),
             ("OBS_TAB_N_PROFILES", n["profiles"]), ("OBS_TAB_N_SPECIES", n["species"]),
-            ("OBS_TAB_N_GRENADES", n["grenades"])]
+            ("OBS_TAB_N_GRENADES", n["grenades"]), ("OBS_TAB_N_AMMO", n["ammo"])]
     for i, f in enumerate(LOADOUT_FIELDS):
         out.append((f"OBS_LOADOUT_{f}", i))
     out.append(("OBS_LOADOUT_W", len(LOADOUT_FIELDS) - 1 + n["grenades"]))
@@ -259,6 +283,9 @@ def _table_constants() -> list:
     for i, f in enumerate(COVER_FIELDS):
         out.append((f"OBS_COVER_{f}", i))
     out.append(("OBS_COVER_W", len(COVER_FIELDS)))
+    for i, f in enumerate(AMMO_FIELDS):
+        out.append((f"OBS_AMMO_{f}", i))
+    out.append(("OBS_AMMO_W", len(AMMO_FIELDS)))
     return out
 
 
@@ -339,6 +366,21 @@ def table_values(sim, ctx) -> np.ndarray:
             out[b + 0] = _f64_bits(p.temperature_max)
             out[b + 1] = _f64_bits(p.pressure_min)
             out[b + 2] = _f64_bits(p.pressure_max)
+    # ammo rows (P8.4b): the schema's row order, the values from the SIM's
+    # tables (the objects _object_entry and Projectile read)
+    aw = len(AMMO_FIELDS)
+    wt = sim.weapons_tables
+    obj_rows = tuple(ctx.obj_rows)
+    for i, name in enumerate(us.TABLES["ammo"]()):
+        b = off["AMMO"] + i * aw
+        out[b + 0] = obj_rows.index(name) if name in obj_rows else -1
+        try:
+            out[b + 1] = int(wt.payload_for_ammo(name).radius)
+        except KeyError:
+            out[b + 1] = 0
+        row = wt.ammo.by_name.get(name)
+        out[b + 2] = _f64_bits(getattr(row, "travel_speed_tiles_per_second", 0.0)
+                               if row is not None else 0.0)
     return out
 
 
@@ -441,6 +483,30 @@ AIM_FAULT_BITS = {"GRID": 1, "RANGE": 2, "LAW": 4}
 AIM_BREAK_CODES = {"lane_trunc": 1, "lane_wide": 2}
 
 
+# ---------------------------------------------------------------------------
+# P8.4b: THE LIST (``bp.obs_list``)
+# ---------------------------------------------------------------------------
+#: Fault bits of ``obs_list`` (a per-env word the gate reads; no served level
+#: reaches one): a seen object whose serial is on no live table row.
+LIST_FAULT_BITS = {"OBJECT": 1}
+#: The check's breaks (``OBS_BREAK``): ``list_tie`` (a block's sort ties by the
+#: HIGHER id, the tie-break turned round), ``list_cap`` (the door block holds
+#: one entry fewer than its capacity).
+LIST_BREAK_CODES = {"list_tie": 1, "list_cap": 2}
+
+
+def wired_values(sim, cap: int) -> np.ndarray:
+    """ONE env's wired flags (``(cap,)`` uint8) per door table row (row k =
+    ``sim._doors[k]``, ordinal order): ``room_graph.wired_door_ordinals`` of
+    the level's wires (``ObsWorld.wires``), static for the episode."""
+    from simulation import room_graph
+    wired = room_graph.wired_door_ordinals(tuple(getattr(sim.level, "wires", ()) or ()))
+    out = np.zeros((int(cap),), dtype=np.uint8)
+    for k, d in enumerate(getattr(sim, "_doors", ()) or ()):
+        out[k] = 1 if int(d.ordinal) in wired else 0
+    return out
+
+
 class DeviceObsRefused(RuntimeError):
     """A batch or a level the device observation does not serve (by name)."""
 
@@ -504,6 +570,23 @@ def _constants() -> list:
     out += [(f"OBS_{k}", v) for k, v in AIM_CODES.items()]
     out += [(f"OBS_AIM_FAULT_{k}", v) for k, v in AIM_FAULT_BITS.items()]
     out += [(f"OBS_AIM_BREAK_{k.upper()}", v) for k, v in AIM_BREAK_CODES.items()]
+    # -- P8.4b: the entry's layout, the blocks' types and capacities, the uid
+    # bases, the sentinels the entry reads
+    from simulation import damage, movement, team_picture
+    out.append(("OBS_F", o.F))
+    out += [(f"OBS_L_{_cname(f.name)}", f.pos) for f in o.ENTRY_COLUMNS]
+    out += [("OBS_TYPE_MATE", o.TYPE_MATE), ("OBS_TYPE_SEEN", o.TYPE_SEEN),
+            ("OBS_TYPE_RECORD", o.TYPE_RECORD), ("OBS_TYPE_OBJECT", o.TYPE_OBJECT),
+            ("OBS_TYPE_DOOR", o.TYPE_DOOR),
+            ("OBS_CAP_SEEN", o.CAPS_FIXED[0]), ("OBS_CAP_RECORD", o.CAPS_FIXED[1]),
+            ("OBS_CAP_OBJECT", o.CAPS_FIXED[2]), ("OBS_CAP_DOOR", o.CAPS_FIXED[3]),
+            ("OBS_ENTRIES_BEYOND_SLOTS", o.ENTRIES_BEYOND_SLOTS),
+            ("OBS_DOOR_UID_BASE", o.DOOR_UID_BASE),
+            ("OBS_LIST_OBJECT_UID_BASE", team_picture.OBJECT_UID_BASE),
+            ("OBS_THROW_NO_REACH", us.THROW_NO_REACH), ("OBS_NO_TIMER", us.NO_TIMER),
+            ("OBS_THROTTLE_ONE", movement.THROTTLE_ONE), ("OBS_KINETIC", damage.KINETIC)]
+    out += [(f"OBS_LIST_FAULT_{k}", v) for k, v in LIST_FAULT_BITS.items()]
+    out += [(f"OBS_LIST_BREAK_{k.upper()}", v) for k, v in LIST_BREAK_CODES.items()]
     return out
 
 
@@ -539,7 +622,7 @@ def header_text() -> str:
         "#pragma once",
         "// ==========================================================================",
         "// GENERATED by tools/gen_obs_layout.py from src/simulation/device_obs.py",
-        "// (#29 P8.0 .. P8.4a) -- NEVER EDIT BY HAND. The device observation's",
+        "// (#29 P8.0 .. P8.4b) -- NEVER EDIT BY HAND. The device observation's",
         "// constants, each read from observation spec v1's own tables (obs_spec_v1),",
         "// the door entity and the unit schema, and the obs table's offsets",
         "// (device_obs.table_layout: its block widths are config table sizes). A",
@@ -805,6 +888,13 @@ class DeviceObservation:
         self.ttw = cp.full((N, self.n_rows, U), -1, dtype=cp.int32)
         self.aim_faults = cp.zeros((N,), dtype=cp.int32)
         self.aims_brk = 0                     # THE BREAK hook (the check's), 0 in a real run
+        # -- P8.4b: the list (its wired flags per door table row, static) -----
+        from simulation.obs_spec_v1 import ENTRIES_BEYOND_SLOTS
+        self.wired_cap = max(1, max(len(getattr(s, "_doors", ()) or ()) for s in c.sims))
+        self.wired = cp.asarray(np.stack([wired_values(s, self.wired_cap) for s in c.sims]))
+        self.n_entries = self.S + ENTRIES_BEYOND_SLOTS
+        self.list_faults = cp.zeros((N,), dtype=cp.int32)
+        self.list_brk = 0                     # THE BREAK hook (the check's), 0 in a real run
         c.attach_observation(self)
         # tick 0: who sees whom, the picture's first state, the first decision
         self.vision()
@@ -911,6 +1001,8 @@ class DeviceObservation:
             int(pic.state.data.ptr), int(pic.W), int(b["vector"].data.ptr))
         # P8.4a: the lanes (and the lanes plane), aim_of, the line of fire
         self.aims(store)
+        # P8.4b: the list, its mask and its uids (reads the P8.4a answers)
+        self.build_list(store)
         self.builds += 1
 
     def aims(self, store_ptr=None) -> None:
@@ -940,6 +1032,37 @@ class DeviceObservation:
             int(self.aim.data.ptr), int(self.lof.data.ptr), int(self.ttw.data.ptr),
             int(self.buffers["near_u"].data.ptr), int(self.aim_faults.data.ptr),
             int(self.aims_brk))
+
+    def build_list(self, store_ptr=None) -> None:
+        """P8.4b for every env on its decision tick: ``list`` / ``list_mask``
+        / ``list_uid`` (``obs_spec_v1.build_list``'s five blocks, each sorted
+        by (squared centre distance, id) -- integer keys, ids unique within a
+        block, so the order is total and the card takes it by successive
+        minima -- and cut at its capacity after the sort), from the store, the
+        device tables, the obs table, the device vision (``visible``,
+        ``sees``), the picture's block, the P8.4a answers (``aim``, ``lof``,
+        ``ttw``, ``lane_own``), the grenade / charge / door tables and the
+        vacuum / ambient planes. One launch on the tick stream, no sync;
+        faults into :attr:`list_faults`. ``store_ptr``: the store read
+        (default the conductor's; the WALL gate hands a perturbed copy)."""
+        c = self.c
+        b = self.buffers
+        store = int(c.store.device_ptr) if store_ptr is None else int(store_ptr)
+        pic = self.picture
+        gh, gw = self.lane_shape
+        self.bp.obs_list(
+            int(self.N), store, int(c.U), int(c.store.shape[2]), c.store.tables,
+            int(self.rowmap.data.ptr), int(self.n_rows), int(self.S), int(self.T),
+            int(self.table.data.ptr), int(self.table.shape[1]), int(self.teams.data.ptr),
+            int(c.trow.ptr), int(self.params.data.ptr), int(self.ended.data.ptr),
+            int(self.visible.data.ptr), int(self.sees.data.ptr), int(pic.state.data.ptr),
+            int(pic.W), int(self.aim.data.ptr), int(self.lof.data.ptr), int(self.ttw.data.ptr),
+            int(self.lane_own.data.ptr), int(gh), int(gw), c.grenades.buffer,
+            c.charges.buffer, c.doors.buffer, c.door_tiles.buffer,
+            int(c.fields["is_vacuum"].data.ptr), int(c.fields["is_ambient"].data.ptr),
+            int(c.h), int(c.w), int(self.wired.data.ptr), int(self.wired_cap),
+            int(self.n_entries), int(b["list"].data.ptr), int(b["list_mask"].data.ptr),
+            int(b["list_uid"].data.ptr), int(self.list_faults.data.ptr), int(self.list_brk))
 
     # -- the hand-over -------------------------------------------------------
     def torch(self) -> dict:
@@ -972,4 +1095,5 @@ __all__ = ["HEADER_REL", "GENERATOR", "BUILT", "DeviceObsRefused", "DeviceObserv
            "team_values", "LOADOUT_FIELDS", "WEAPON_FIELDS", "PROFILE_FIELDS",
            "TEAM_FIELDS", "TABLE_SCALARS", "COVER_FIELDS", "sight_values", "cover_values",
            "check_teams", "rays_clear_device", "window_clear_device", "vision_state",
-           "lane_values", "lane_grid_shape", "AIM_CODES", "AIM_FAULT_BITS", "AIM_BREAK_CODES"]
+           "lane_values", "lane_grid_shape", "AIM_CODES", "AIM_FAULT_BITS", "AIM_BREAK_CODES",
+           "AMMO_FIELDS", "LIST_FAULT_BITS", "LIST_BREAK_CODES", "wired_values"]

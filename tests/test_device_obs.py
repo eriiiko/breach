@@ -244,6 +244,41 @@ def test_every_integer_the_obs_table_carries_is_the_reference_value():
         assert int(teams[i, 1]) == us.table_row("loadouts", team.loadout)
 
 
+def test_the_ammo_rows_are_what_the_list_reads():
+    """Property (#29 P8.4b): the obs table's ammo block holds, per ``[ammo.*]``
+    row in the unit schema's row order (the grenade / charge tables'
+    ``ammo_name`` index), what ``obs_spec_v1._object_entry`` and
+    ``Projectile`` read for that round: its place in ``ObsContext.obj_rows``
+    (-1 when it is neither a hand nor a charge row), its payload radius (0
+    without a payload: the entry's KeyError) and its travel speed as its own
+    float64 bits. Breaks when the block follows another row order, a radius
+    is read from another payload, or the speed is re-quantized."""
+    import numpy as np
+    from simulation import unit_schema as us
+    ses, ctx, _ = _ship_session()
+    sim = ses.sim
+    t = device_obs.table_values(sim, ctx)
+    aw = len(device_obs.AMMO_FIELDS)
+    wt = sim.weapons_tables
+    bits = lambda x: int(np.array(float(x)).view(np.int64))  # noqa: E731
+    names = list(us.TABLES["ammo"]())
+    assert names, "no ammo rows"
+    kinds = set()
+    for name in names:
+        b = _row("AMMO") + us.table_row("ammo", name) * aw
+        want_kind = ctx.obj_rows.index(name) if name in ctx.obj_rows else -1
+        try:
+            want_r = int(wt.payload_for_ammo(name).radius)
+        except KeyError:
+            want_r = 0
+        assert int(t[b]) == want_kind, name
+        assert int(t[b + 1]) == want_r, name
+        assert int(t[b + 2]) == bits(wt.ammo.by_name[name].travel_speed_tiles_per_second), name
+        kinds.add(want_kind)
+    # every object row of the list is a row of the block
+    assert set(range(len(ctx.obj_rows))) <= kinds
+
+
 def test_the_float_dtype_lists_are_the_served_float_keys():
     """Property: ``device_obs.FLOAT16_KEYS`` / ``FLOAT32_KEYS`` (which cast
     of the float kit a key's values take) name exactly the served keys of

@@ -164,6 +164,32 @@ void obs_aims(int n_env, std::uintptr_t store, int n_units, int store_w,
               std::uintptr_t lane_own, int gh, int gw, std::uintptr_t aim, std::uintptr_t lof,
               std::uintptr_t ttw, std::uintptr_t near_u, std::uintptr_t faults, int brk);
 
+// ---------------------------------------------------------------------------
+// #29 P8.4b: THE LIST (cpp/src/cuda_obs_list.cu): obs_spec_v1.build_list for
+// every env on its decision tick with its ended latch clear, on the tick
+// stream, no sync: list (N, n_rows, n_entries, OBS_F) float32, list_mask (N,
+// n_rows, n_entries) uint8, list_uid (N, n_rows, n_entries) int32; the five
+// blocks each sorted by (squared centre distance, id) and cut at its
+// capacity. Reads the store, the device tables, the obs table and the team
+// rows, the device vision (visible (N, T + 1, U), sees (N, U, U)), the
+// picture's block, P8.4a's answers (aim, lof, ttw, lane_own), the grenade /
+// charge / door tables, the is_vacuum / is_ambient planes (N, h, w) and the
+// wired flags (N, wired_cap) per door table row. The columns of later
+// patches (on_next_tick, prev_aim, the order block) are written 0. `faults`:
+// (N,) int32 bits OBS_LIST_FAULT_*; `brk`: the check's breaks
+// (OBS_LIST_BREAK_*), 0 in every real run.
+void obs_list(int n_env, std::uintptr_t store, int n_units, int store_w,
+              const UnitTablesDevice& tables, std::uintptr_t rowmap, int n_rows, int n_slots,
+              int n_teams, std::uintptr_t obs_table, int table_w, std::uintptr_t teams,
+              std::uintptr_t tick_row, std::uintptr_t params, std::uintptr_t ended,
+              std::uintptr_t visible, std::uintptr_t sees, std::uintptr_t state, int state_w,
+              std::uintptr_t aim, std::uintptr_t lof, std::uintptr_t ttw, std::uintptr_t lane_own,
+              int gh, int gw, ObjectTable& grenades, ObjectTable& charges, UnitRecordList& doors,
+              UnitRecordList& door_tiles, std::uintptr_t is_vacuum, std::uintptr_t is_ambient,
+              int h, int w, std::uintptr_t wired, int wired_cap, int n_entries,
+              std::uintptr_t list, std::uintptr_t list_mask, std::uintptr_t list_uid,
+              std::uintptr_t faults, int brk);
+
 // The compiled layout's fingerprint (obs_layout.h): what device_obs checks.
 const char* obs_layout_fingerprint();
 
