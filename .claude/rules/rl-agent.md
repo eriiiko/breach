@@ -1,6 +1,9 @@
 ---
 paths:
   - "src/rl_env.py"
+  - "src/rl_env_device.py"
+  - "tests/cuda_env_check.py"
+  - "tests/test_rl_env_device_doors.py"
   - "src/simulation/obs_spec_v1.py"
   - "src/simulation/action_spec_v1.py"
   - "src/simulation/reward_v1.py"
@@ -34,7 +37,11 @@ and who must use it; this file holds the constraints the code cannot say. The
 `game-ai-lead` skill is the role's continuity.
 
 ## Batched environment
-- One API, two backends (`cpu_farm` built; `device` refused until the residency arc delivers it). A trainer never touches a Simulation or a kernel.
+- One API, two backends: `cpu_farm` (THE reference) and `device` (`src/rl_env_device.py`: the device conductor with the observation, books and decoder attached), held equal step by step by `tests/cuda_env_check.py` (BACKEND EQUALITY) and, before a device run, the pre-flight. A new env feature lands on BOTH backends or is refused by name on the one that lacks it. A trainer never touches a Simulation or a kernel.
+- The device backend refuses by name at its build: a marine team not `policy`, a horde not `zombies` / `idle` (design §12.3), `[run] commander` other than `"none"` (the commander has no device form; who writes orders in device training is Erik's open decision), the `"counters"` profile, a spec other than v1, a level set that cannot share one batch (`rl_env_device.batch_signature`).
+- `[run] commander` (`control_source.COMMANDERS`) picks who writes a policy team's orders, honoured by `create_match_controllers` alone (`MatchSession(commander=)`), never a per-backend branch; the default is today's ("bots"). Both backends build an episode through `rl_env.episode_match`, never a second episode build.
+- On the device backend what the card builds stays a torch tensor on the card: the observation, full view and `final_` sets are the env's own buffers; the served arrays are fresh device copies taken BEFORE any reset re-seeds the books. A step that ends no episode and takes no checkpoint adds no host sync beyond the conductor's two per tick (part SYNCS).
+- `BatchedEnv.coverage` is ONE set of counters (`rl_env.coverage_*`, the same functions over numpy or CuPy), counted on both backends: never a second census.
 - One run file (`run.toml`, OUTSIDE the repo, door-checked by name, its sha256 the manifest's); nothing `[rl.*]` in config.toml.
 - Episode k of env e is `episode_draw(run_seed, e, k)`, one Philox block (`Salt.EPISODE`): pure, never a function of N or of other envs' resets. Reset by MASK; rows `(team, slot)`; observations only through the accessor; rewards from the credited events.
 - Workers import only the CPU build, nothing from `renderer/`.
@@ -111,5 +118,5 @@ and who must use it; this file holds the constraints the code cannot say. The
 - Eliminations, the win and the clock come from `MatchRules` (never a second rule of who won). Under a profile the clock is an ENDING (`terminated`, never `truncated`). Read-side only: nothing synced, no digest moves.
 
 ## Training snapshot
-- A training run's code is an ANNOTATED tag at HEAD in its own detached checkout (the git-workflow training-checkout row). `require_snapshot` refuses, naming the check, unless the tag is annotated, HEAD is its commit, the tree is clean including untracked files under `src/`, `levels/`, `config.toml`, `cpp/`, `agents/`, `tools/` (`SNAPSHOT_PATHS`: a stray module there would be imported by the trainer, a stray tool would write the rooms; the main checkout's untracked tools are why a kept run starts from its own checkout), both modules come from this checkout, `bp.build_id()` == HEAD, and the run file's sha256 is recorded. `device` also needs an empty twin ledger and is refused until P8b.
+- A training run's code is an ANNOTATED tag at HEAD in its own detached checkout (the git-workflow training-checkout row). `require_snapshot` refuses, naming the check, unless the tag is annotated, HEAD is its commit, the tree is clean including untracked files under `src/`, `levels/`, `config.toml`, `cpp/`, `agents/`, `tools/` (`SNAPSHOT_PATHS`: a stray module there would be imported by the trainer, a stray tool would write the rooms; the main checkout's untracked tools are why a kept run starts from its own checkout), both modules come from this checkout, `bp.build_id()` == HEAD, and the run file's sha256 is recorded. `device` also needs an empty twin ledger, the CPU build's build id at HEAD (the reference the twins are held equal to), every compiled layout fingerprint this checkout's (`rl_env.DEVICE_LAYOUTS`) and a passed pre-flight (`rl_env_device.preflight`: both backends on the run's own levels, compared at every step), the costly check last; its manifest records the CPU build id and the layout fingerprints.
 - With `[run] out_dir` (refused inside the checkout) `BatchedEnv` writes `run_manifest.json`; a resume refuses any change but the host, by name.
