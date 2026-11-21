@@ -31,6 +31,12 @@ either side. The gas-N primitives (inject / extract / transfer) and
 _aperture_blocked on synthetic and real states over their range (no air,
 negative holdings, a vacuum tile, a trace slice near its saturation, a
 destination at the int32 edge, out of bounds), results, planes and books equal.
+PART RANGE (#29 TOPOLOGY RANGE) -- seal / unseal over the WHOLE int32
+temperature range (the old |T_abs| < 2^28 edge, just past it, T_MAX_PHYS,
+the plane's top and bottom, random draws), bulk at its maximum on the term
+bound's edge, an unseal donor read twice: equal to the host; past the term
+bound refused by name, nothing written; destroy_wall + on_tile_changed beside
+cells at the extremes equal.
 PART SCENE -- the SHADOW LOCKSTEP of slot 1b (+ the use write) and slot 9e(d)
 on the DOOR SCENE (door ENTITIES: ship_demo has none): every tick the door
 table, the tile table, every plane, the books and the write set equal; the
