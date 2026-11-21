@@ -84,8 +84,8 @@ def test_every_book_twins_a_host_quantity(ship_gmap):
 
 def test_the_non_resident_planes_are_exactly_those_outside_the_resident_set():
     """Property: ``non_resident_planes`` names a plane iff it is not a
-    resident field (``GameMap._RESIDENT_FIELD_NAMES``) -- the list P8b must
-    bring onto the device. Breaks if a plane joins or leaves the resident set
+    resident field (``GameMap._RESIDENT_FIELD_NAMES``) -- the planes the device
+    conductor uploads as its own copies. Breaks if a plane joins or leaves the resident set
     and the list does not follow."""
     from simulation.gamemap import GameMap
     res = set(GameMap._RESIDENT_FIELD_NAMES)

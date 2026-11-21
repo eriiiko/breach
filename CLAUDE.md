@@ -297,7 +297,7 @@ amends the rule file, never this line's length.
 | Team picture | `src/simulation/team_picture.py` | What a team knows of the enemy lives in ONE place, updated once per tick; never a second picture |
 | Match recording / replay | `src/match_replay.py` + `Simulation.attach_intent_log` | Replay is re-simulation through ONE intent tap; `main.py --replay` is the only playback path |
 | MatchSession + the `policy` controller | `src/simulation/match_session.py` + `src/control_policy.py` | THE steppable match; a policy drives units only as this controller |
-| Batched environment | `src/rl_env.py` | THE one env; a trainer never touches a Simulation or a kernel |
+| Batched environment | `src/rl_env.py` + `src/rl_env_device.py` | THE one env; a trainer never touches a Simulation or a kernel |
 | Observation spec | `src/simulation/obs_spec_v1.py` + `EntityFieldAccessor.observe` | A named, versioned spec behind THE WALL; a new idea is a new spec |
 | Full view | `obs_spec_v1.FullView` | The value network's privileged view, never a key of `obs` |
 | Device observation | `src/simulation/device_obs.py` + `cpp/src/cuda_obs.*` + generated `cpp/src/obs_layout.h` | THE device form of observation spec v1 and the full view, built in the conductor tick into env-owned buffers; the host builders stay the reference; never a second observation |

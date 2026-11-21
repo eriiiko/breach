@@ -529,7 +529,7 @@ __device__ inline int64_t move_speed_q16(int64_t cw, int64_t cf, int64_t side, i
 // 1b envelope (acts), the HANDLING durations (unit_traits._handling), the
 // magazine as mag_status reads it (combat.magazines_carried / mag_status),
 // the shove's cooldown (unit_impulse.shove_cooled). Slot 1b is their first
-// user; P8b's mask kernel calls the same functions at the tick's start. And
+// user; the device masks (cuda_obs) call the same functions at the tick's start. And
 // the RECORD LIST's view and row sink (cuda_unit_events.h's UnitRecordList:
 // the request list of slot 1b; the event ring is the other instance).
 // ============================================================================
@@ -734,7 +734,7 @@ __device__ inline bool can_shove(const int64_t* row, const int64_t* tab, int64_t
 // (unit_impulse.add with its angular part angular_q -- slot 1b's shove and
 // the serial applier's PUSH effect both need it), the footprint centre
 // (unit_impulse.centre_q), verb_gates.can_melee in both of its moments (slot
-// 4a's own read and the tick-start read P8b's mask kernel calls), the
+// 4a's own read and the tick-start read the device masks call), the
 // adjacency predicate (combat.melee_adjacent) and the arc target
 // (combat.melee_arc_target). Integer for integer the Python; held equal on
 // synthetic rows by the verbs probe (cuda_unit_verbs_probe.cu).

@@ -35,7 +35,7 @@ and who must use it; this file holds the constraints the code cannot say.
 
 ## Flash blinding
 - Through the `blind_*` columns (door `weapons._blind_columns`), applied by `apply_flash_blind` from `execute_payload`: never a per-grenade check. Every living unit of ANY team, the thrower included, in range with `GameMap.has_los`; a wall protects fully; a longer blinding is never shortened. Integer, no draw.
-- ACCEPTED GAP: the blinded player's screen is not whited out and an agent's observation is not masked (the obs door is P8b's).
+- ACCEPTED GAP: the blinded player's screen is not whited out and an agent's observation is not masked (observation spec v1 has no blindness input; a new spec's question).
 
 ## Melee verb
 - A blow is a melee-archetype weapon ROW named by the loadout, never a branch. Slot 4a consumes every latch and records on the SAME `attack_effects` as the shots, decided against the slot-start state; hit, stun and push all land at 4c.

@@ -42,7 +42,8 @@ planes :data:`CROP_EXTRA_CHANNELS` (``material`` and unit occupancy by team,
 relative to the observing unit). It is a READ-SIDE product like a render read:
 each plane is dequantized ONCE at the read through its Q16 boundary module
 (:func:`_crop_plane`), never written back, never inside the sim path. This is
-the CPU backing; #25's gather kernel is its device backing (P8b). ``light``
+the CPU backing; the device backend serves no crop (it refuses the ``crop``
+spec by name, #29 P8.10a). ``light``
 is refused until #81 separates light's inputs (ACCEPTED GAP).
 
 **The observation door (#195 1g).** ``observe(spec, units, out, **kw)`` is
