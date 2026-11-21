@@ -792,14 +792,17 @@ __global__ void K_kset_scan(unsigned long long* __restrict__ pre,
                             const bool* __restrict__ solid,
                             const bool* __restrict__ is_vacuum,
                             const bool* __restrict__ is_ambient,
-                            int32_t inv_2dx_q, int h, int w) {
+                            int32_t inv_2dx_q, int h, int w,
+                            const float* __restrict__ perm) {   // §8.17 lever a (nullable)
     const int n = h * w;
     pre = bptr(pre, (size_t)EOS_PRE_SLOTS);
     wind_x = bptr(wind_x, n); wind_y = bptr(wind_y, n); ntot = bptr(ntot, n);
     solid = bptr(solid, n); is_vacuum = bptr(is_vacuum, n); is_ambient = bptr(is_ambient, n);
+    perm = bptr(perm, n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (solid[i] || is_vacuum[i] || (is_ambient && is_ambient[i])) continue;
+        if (perm && perm[i] < 1.0f) continue;          // a partial-permeability cell
         if (ntot[i] < EOS_N_K_MIN_RAW) continue;
         const int y = i / w, x = i - (i / w) * w;
         bool mem = true;
@@ -1146,7 +1149,8 @@ void device_prestage(const EOSSolver& solver, const EOSHostPrestage& pre,
     cuda_check(cudaGetLastError(), "K_ntot (pre-stage)");
     // #217 §8.6.2: the k-set reductions over the ENTRY state, and |S|
     K_kset_scan<<<g, blk, 0, stv>>>(d_pre, d_wind_x, d_wind_y, S.ntot, d_solid,
-                                    d_is_vacuum, d_is_ambient, pre.inv_2dx_q, h, w);
+                                    d_is_vacuum, d_is_ambient, pre.inv_2dx_q, h, w,
+                                    solver.kset_skip_partial ? d_dyn_permeability : nullptr);
     cuda_check(cudaGetLastError(), "K_kset_scan");
     if (d_div_source) {
         K_src_max<<<g, blk, 0, stv>>>(d_pre, d_div_source, d_solid, d_is_vacuum,

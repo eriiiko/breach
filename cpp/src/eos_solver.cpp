@@ -736,7 +736,8 @@ void EOSSolver::step(
         wind_x, wind_y, n_total_.data(), solid, is_vacuum,
         ambient_mode ? is_ambient : nullptr,
         (int)div_source.size() == n ? div_source.data() : nullptr,
-        h, w, inv_2dx_q, kset_.data());
+        h, w, inv_2dx_q, kset_.data(),
+        kset_skip_partial ? dyn_permeability : nullptr);   // §8.17 lever a
     const int64_t kset_max_rad = km.max_rad, kset_max_div = km.max_div,
                   max_src = km.max_src;
     dbg_last_kset[0] = kset_max_rad; dbg_last_kset[1] = kset_max_div;
@@ -873,6 +874,7 @@ void EOSSolver::step(
     // ======================================================================
     dbg_solves_last_step = 0;
     dbg_subtick_umax.clear();
+    dbg_residual.clear();
     for (int tk = 0; tk < k_ticks; ++tk) {
     const bool last_subtick = (tk == k_ticks - 1);
     const int32_t* p_warm = (tk == 0) ? p_prev : atmosphere;
@@ -2277,6 +2279,19 @@ void EOSSolver::mg_run_solve_cpu(int n_levels) const {
     }
 
     MGLevel& L0 = levels_[0];
+    if (dbg_record_residual) {      // #217 §8.17 telemetry: nothing reads it
+        residual(L0);
+        int64_t rmax = 0, bmax = 0;
+        for (int i = 0; i < n; ++i) {
+            if (L0.excl[i] != 0) continue;
+            const int64_t r = L0.res[i] < 0 ? -L0.res[i] : L0.res[i];
+            const int64_t b = L0.b[i] < 0 ? -L0.b[i] : L0.b[i];
+            if (r > rmax) rmax = r;
+            if (b > bmax) bmax = b;
+        }
+        dbg_residual.push_back(rmax);
+        dbg_residual.push_back(bmax);
+    }
     for (int i = 0; i < n; ++i) {
         if (L0.excl[i] != 0) L0.P[i] = 0;    // vacuum Dirichlet + solid zero
     }
@@ -2295,7 +2310,8 @@ EosKsetMax eos_kset_scan(const int32_t* wind_x, const int32_t* wind_y,
                          const int32_t* n_total,
                          const bool* solid, const bool* is_vacuum,
                          const bool* is_ambient, const int32_t* div_source,
-                         int h, int w, int32_t inv_2dx_q, uint8_t* kset_out) {
+                         int h, int w, int32_t inv_2dx_q, uint8_t* kset_out,
+                         const float* dyn_permeability) {
     EosKsetMax km;
     const int n = h * w;
     const auto boundary = [&](int j) -> bool {
@@ -2306,7 +2322,10 @@ EosKsetMax eos_kset_scan(const int32_t* wind_x, const int32_t* wind_y,
         for (int x = 0; x < w; ++x) {
             const int i = row + x;
             uint8_t mem = 0;
-            if (!solid[i] && !boundary(i) && n_total[i] >= EOS_N_K_MIN_RAW) {
+            // §8.17 lever a: a partial-permeability cell is out (an exact
+            // compare of the stamped / material value, the cmask idiom)
+            const bool partial = dyn_permeability != nullptr && dyn_permeability[i] < 1.0f;
+            if (!solid[i] && !boundary(i) && !partial && n_total[i] >= EOS_N_K_MIN_RAW) {
                 mem = 1;
                 for (int dy = -EOS_R_K; dy <= EOS_R_K && mem; ++dy) {
                     const int yy = y + dy;

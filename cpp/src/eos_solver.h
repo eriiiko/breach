@@ -124,8 +124,9 @@
 // SUB-TICKS. The EOS updates pressure at least once per C_P = 1 tile of air
 // motion: steps 0-7 run k times a tick at dt_k = dt/k, k in {1, 2, 4, 8},
 // chosen ONCE at entry from three integer reductions over the K-SET (gas
-// cells -- not solid, vacuum or ambient ring -- holding Dalton N >= N_K_MIN
-// with no vacuum or ring cell within R_K tiles, 4-neighbour distance):
+// cells -- not solid, vacuum or ambient ring, and (#217 §8.17) not of partial
+// permeability -- holding Dalton N >= N_K_MIN with no vacuum or ring cell
+// within R_K tiles, 4-neighbour distance):
 //   k_u   = ceil(max|u| * dt / (C_P * dx))            (the wind)
 //   k_div = ceil(gamma * dt * max|div u| / eps*)       (eps* = 1: the solve's
 //           rhs p*(1 - gamma dt_k div u) stays positive in every sub-tick)
@@ -186,12 +187,16 @@ FP_HD inline int eos_subtick_n_sub(int n_adv, int k, int n_sub_max, int floor_k)
 // (Q16, the face-form stencil of the solve) and, when div_source is given,
 // max |S| over the cells the source applies to (not solid, vacuum or ring).
 // is_ambient nullable (space); kset_out (nullable) receives the membership.
+// dyn_permeability (nullable; #217 §8.17 lever a, EOSSolver::kset_skip_partial):
+// a cell with perm < 1 is out of the k-set.
 struct EosKsetMax { int64_t max_rad = 0, max_div = 0, max_src = 0; };
 EosKsetMax eos_kset_scan(const int32_t* wind_x, const int32_t* wind_y,
                          const int32_t* n_total,
                          const bool* solid, const bool* is_vacuum,
                          const bool* is_ambient, const int32_t* div_source,
-                         int h, int w, int32_t inv_2dx_q, uint8_t* kset_out);
+                         int h, int w, int32_t inv_2dx_q, uint8_t* kset_out,
+                         const float* dyn_permeability = nullptr);
+
 
 // dt_k = dt / k: ONE helper (exact in float for k a power of two). The CPU,
 // the per-call host stage and the resident fold table all call it.
@@ -382,6 +387,19 @@ public:
     bool subtick_loop = true;
     bool subtick_ceiling = true;
     bool cap_heat = true;
+    // #217 §8.17 (the cost levers, a numerics method choice; design §8.17):
+    //   kset_skip_partial  a cell of PARTIAL permeability (0 < perm < 1: a
+    //                      unit's footprint, a crate) is out of the k-set:
+    //                      the donor flux moves only perm*u through it, and
+    //                      its collocated divergence was measured to move
+    //                      ~1/55 of the mass the k-rule read there (lever a,
+    //                      ADOPTED: ship_demo's match mean k 3.4 -> 2.4). A
+    //                      TEST SEAM like the three above, never off in play
+    //                      (off: the §8 k-set).
+    // (Lever b, fewer V-cycles on warm sub-ticks, was measured and NOT
+    // adopted: 6 of 8 is the fewest that keeps T3, for -4 % at N = 16/64 on
+    // range_hall; design §8.17.)
+    bool kset_skip_partial = true;
     // trace_mass_scale RETIRED (energy-books arc, P-T0, design §2.6 — the
     // 0% ruling): traces left the Dalton sum entirely rather than keep the
     // half-citizenship (2% pressure weight, zero thermal weight) that fed
@@ -569,6 +587,13 @@ public:
     mutable int dbg_solves_last_step = 0;
     bool dbg_record_subtick_umax = false;
     mutable std::vector<int32_t> dbg_subtick_umax;
+    //   dbg_residual          per sub-tick of the last step(), the level-0
+    //                         solve's { max|b - A P|, max|b| } (F8 counts)
+    //                         after its V-cycles; recorded only while
+    //                         dbg_record_residual is set (§8.17: the
+    //                         instrument lever b was measured with)
+    bool dbg_record_residual = false;
+    mutable std::vector<int64_t> dbg_residual;
 
     // --- P6.4 telemetry: the c_LOCAL velocity cap the last step() derived ---
     // (q16 raw). c_LOCAL = c_amb·sqrt(T_max_abs/T_AMB) is computed from the

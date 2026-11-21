@@ -14,8 +14,8 @@ band, the 5 % stored-pressure lag) or the energy identity, exact.
 
 T1  each pressure update sees bounded mass motion        (breaks: loop around
     1a/1d only; the n_sub floor dropped; the ceiling dropped)
-T2  no pile and no sink (a frag, the studio's legacy charges, a hull breach)
-                                                         (breaks: k forced to 1)
+T2  no pile and no sink (a frag, a frag beside a body, the studio's legacy
+    charges, a hull breach)                              (breaks: k forced to 1)
 T3  the stored pressure tracks the air                   (breaks: k forced to 1)
 T4  the cap returns only what the kick supplied          (breaks: the cap
     exports everything again; the cap heats a speed that came from outside)
@@ -89,9 +89,11 @@ def _detonate(sim, x, y, ammo):
                     events=[], kind="grenade")
 
 
-def _kset(g):
+def _kset(g, skip_partial=False):
     """The k-set of §8.6.2 in numpy (the C++ eos_kset_scan's membership):
-    gas cells, N >= 5 %, no vacuum / ring cell within 2 tiles (4-neighbour)."""
+    gas cells, N >= 5 %, no vacuum / ring cell within 2 tiles (4-neighbour);
+    with ``skip_partial`` (#217 §8.17 lever a, the solver's
+    ``kset_skip_partial``) no partial-permeability cell (perm < 1)."""
     from scipy.ndimage import binary_dilation
     bnd = g.is_vacuum.copy()
     if getattr(g, "is_ambient", None) is not None:
@@ -99,7 +101,10 @@ def _kset(g):
     diamond = np.array([[0, 0, 1, 0, 0], [0, 1, 1, 1, 0], [1, 1, 1, 1, 1],
                         [0, 1, 1, 1, 0], [0, 0, 1, 0, 0]], bool)
     near = binary_dilation(bnd, structure=diamond)
-    return (~g.solid) & (~bnd) & (~near) & (g._gas_bulk_n_raw() >= 3277)
+    ks = (~g.solid) & (~bnd) & (~near) & (g._gas_bulk_n_raw() >= 3277)
+    if skip_partial:
+        ks &= ~(g.dyn_permeability < 1.0)
+    return ks
 
 
 def _identity_terms(sim):
@@ -127,9 +132,14 @@ def _e_acct(g):
     return int(g.gas_energy[acct].astype(object).sum())
 
 
-def _run(level, ticks, det=None, ammo="grenade_frag", eos=None, ring=None):
-    """Run a level, recording per tick what every test below reads."""
+def _run(level, ticks, det=None, ammo="grenade_frag", eos=None, ring=None, units=()):
+    """Run a level, recording per tick what every test below reads.
+    ``units``: (x, y) tiles where an idle marine stands from tick 0 (#217
+    §8.17: a body in the blast's path)."""
+    from simulation.unit import Unit
     sim = _sim(level)
+    for i, (ux, uy) in enumerate(units):
+        sim.add_unit(Unit(f"s8_body_{i}", x=float(ux), y=float(uy), team=0))
     e = sim.physics_runner.eos
     for k, v in (eos or {}).items():
         setattr(e, k, v)
@@ -161,7 +171,8 @@ def _run(level, ticks, det=None, ammo="grenade_frag", eos=None, ring=None):
                     + (terms[3] - prev_t[3]) + terms[4])
         resid = (e_now - prev_e) - expected
         prev_e, prev_t = e_now, terms
-        ks = _kset(g)
+        ks = _kset(g, bool(e.kset_skip_partial))
+        body = (g.dyn_permeability < 1.0) & ~g.solid
         r = dict(
             t=t, k=int(e.dbg_last_k), solves=int(e.dbg_solves_last_step),
             n_sub=int(e.dbg_last_n_sub),
@@ -175,6 +186,12 @@ def _run(level, ticks, det=None, ammo="grenade_frag", eos=None, ring=None):
                           / (E[acct].mean() / Q / Q / float(e.T_AMB_K))),
             resid=resid, tmax=int(e.t_max_phys_hits), rail=int(e.e_rail_sum),
             umed=float(np.median(np.hypot(g.wind_x, g.wind_y)[acct]) / Q),
+            # #217 §8.17: the partial-permeability (body) cells
+            body_n=((float(n[body].min() / n0), float(n[body].max() / n0))
+                    if body.any() else None),
+            body_cupd=(float(np.hypot(g.wind_x, g.wind_y)[body].max() / Q * DT / dx)
+                       if body.any() else 0.0),
+            body_in_kset=bool((body & ks).any()),
         )
         if ring:
             x, y = ring
@@ -319,6 +336,52 @@ def test_the_frag_leg_breaks_with_one_update_per_tick():
     ceiling kept): the source ring empties below 0.05 N0.
     BREAKS IF: the frag leg's criterion stops discriminating the regime."""
     run = _run("fire_studio", FRAG[2] + 12, det=FRAG, ring=FRAG[:2],
+               eos=dict(subtick_loop=False))
+    assert min(r["ring"] for r in run["rows"]) < 0.05, (
+        "the source ring stayed >= 0.05 N0 with k forced to 1")
+
+
+#: #217 §8.17 lever a: a marine standing three tiles from the frag, in the
+#: blast's path (fire_studio is open air there).
+BODY = (FRAG[0] + 3, FRAG[1])
+
+
+@pytest.fixture(scope="module")
+def frag_body_run():
+    return _run("fire_studio", 72, det=FRAG, ring=FRAG[:2], units=[BODY])
+
+
+def test_a_frag_beside_a_body_leaves_no_sink_and_no_pile(frag_body_run):
+    """PROPERTY (T2, the body leg; #217 §8.17 lever a, 2026-11-21): with a
+    marine standing three tiles from the frag, its footprint (permeability
+    0.5) is OUT of the k-set, yet the blast stays as stable as T2's frag leg:
+    the source tile and its 4-ring keep N >= 0.05 N0, no cell piles above
+    4 N0, the body's own cells stay within [0.05, 4] N0 on every tick, and
+    the detonation tick runs k = K_MAX. Non-vacuous: the body's cells are out
+    of the k-set and the wind in them crosses more than one tile per tick on
+    some tick of the blast (the exclusion hides a fast wind from k, which the
+    free air around the body must still carry).
+    BREAKS IF: the exclusion takes the blast's own free air out of the k-set
+    (a lost k: the ring empties, as with k forced to 1), or the body's cells
+    are emptied or piled by air the k-rule no longer reads."""
+    rows = frag_body_run["rows"]
+    assert all(not r["body_in_kset"] for r in rows if r["body_n"] is not None),         "a partial-permeability cell is in the k-set (lever a is off)"
+    assert any(r["body_cupd"] > 1.0 for r in rows),         "the body's cells never carried a wind past one tile per tick (vacuous)"
+    low = [(r["t"], r["ring"]) for r in rows if r["ring"] < 0.05]
+    pile = [(r["t"], r["nmax"]) for r in rows if r["nmax"] > 4.0]
+    body = [(r["t"], r["body_n"]) for r in rows if r["body_n"] is not None
+            and not (0.05 <= r["body_n"][0] and r["body_n"][1] <= 4.0)]
+    assert not low, f"source ring emptied below 0.05 N0: {low[:5]}"
+    assert not pile, f"a pile above 4 N0: {pile[:5]}"
+    assert not body, f"the body's cells left [0.05, 4] N0: {body[:5]}"
+    assert rows[FRAG[2]]["k"] == frag_body_run["k_max"],         f"the detonation tick ran k = {rows[FRAG[2]]['k']}"
+
+
+def test_the_body_leg_breaks_with_one_update_per_tick():
+    """NON-VACUITY of the body leg (L1-1's mutation, k forced to 1 with the
+    ceiling kept): the source ring empties below 0.05 N0 with the body there.
+    BREAKS IF: the body leg's criterion stops discriminating the regime."""
+    run = _run("fire_studio", FRAG[2] + 12, det=FRAG, ring=FRAG[:2], units=[BODY],
                eos=dict(subtick_loop=False))
     assert min(r["ring"] for r in run["rows"]) < 0.05, (
         "the source ring stayed >= 0.05 N0 with k forced to 1")

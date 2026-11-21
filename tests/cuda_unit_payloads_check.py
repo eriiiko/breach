@@ -1318,6 +1318,14 @@ def _scene_level(variant, tile_m=1.0):
     tm[4:11, 96] = MAT_HULL
     tm[14:29, 82] = MAT_STEEL                    # a wall (no blast breaks steel) with one gap (y 27): a blast
     tm[27, 82] = MAT_AIR                         # stopped by it, one around it
+    # #217 §8 (2026-11-21): a steel partition, hull to hull, between the
+    # grenades' half (throwers and their victims, x <= 49) and the shells'
+    # and charges' half (x >= 58). Until §8 the shells' blast wind died out
+    # across the room; with whole-step sub-ticks the strength rows' shells
+    # (sets S2, S3, S7) blow 45-62 m/s at the throwers by tick s + 6 (about
+    # 10 m/s before), flooring every thrower mid wind-up, so no grenade of
+    # those sets left the hand and six (grenade, row) pairs never detonated.
+    tm[2:h - 2, 55] = MAT_STEEL
     return LevelData(name=f"p7c1_scene{variant}", version="3", path=Path("."),
                      tilemap=tm, tile_size_m=tile_m, diffuse_path=Path("."),
                      boundary="space")
@@ -1446,16 +1454,8 @@ class PayloadScene:
                 cap = (30 if self.v % 2 == 0 else 12) * ONE      # the fields differ
                 if 3 <= y < SH - 3 and g.wall_hp[y, x] > cap:
                     g.wall_hp[y, x] = cap
-        # #217 §8 (2026-11-21): the shooters open fire once the first two waves
-        # have LEFT THE HAND (latched at s and s + 1, released a wind-up later).
-        # They fired at s and s + 1 until §8; with whole-step sub-ticks the
-        # strength rows' shells (sets S2, S3, S7: frag_hot_mass, quad_*,
-        # studio_*) blow 45-62 m/s across the room by tick s + 6 (about 10 m/s
-        # before), flooring every thrower mid wind-up, so no grenade of those
-        # sets left the hand and six (grenade, row) pairs never detonated.
-        rel = s + 2 + int(sim.weapons_tables.weapons.by_name["hand_grenade"].throw_windup_ticks)
         for name in ("S0", "S1", "S2", "F0", "F1", "F2", "K", "P"):
-            sim.set_trigger(w[name].id, k in (rel, rel + 1, s + 40) and w[name].alive)
+            sim.set_trigger(w[name].id, k in (s, s + 1, s + 40) and w[name].alive)
         if k == s + 5:                                 # the charges: every applied row
             for j, am in enumerate(self.charge_ammo()):
                 x = 60 + 3 * (j % 12)

@@ -417,13 +417,22 @@ __device__ inline int chew_wall(const TopoEnv& E, const int64_t* tab, int64_t y,
 // THE ONE-TERM PRIMITIVE (#217 §8, 2026-11-21): extract_gas_n_vec moves ONE
 // energy term out of ONE cell (want < 2^32, the cell's bulk), so its donor's
 // |T_abs| is proved to T_BOUND_ONE = 2^30: |want * T_abs| < 2^62 and
-// |E - de| < 2^61 + 2^62 < 2^63. 2^30 raw is 16384 game degrees absolute,
-// above every legal gas temperature (T_MAX_PHYS + T_AMB = 16293 on the
-// shipped config; tests/cuda_unit_vents_check.py PART PROBE asserts the
-// config stays under it). With whole-step sub-ticks hot air legally reaches
-// a return vent's aperture past the old 2^28 (4907 game degrees measured on
-// the hazard scene). Seal / unseal / transfer keep T_BOUND (2^28): their
-// proofs and gates were not re-done here.
+// |E - de| < 2^61 + 2^62 < 2^63. The proof is the PRE-CHECK, not the rail:
+// past 2^30 the call FAULTS (writes nothing), whatever wrote the mirror.
+// THE CONSTANT IT COVERS: [physics.thermal] T_MAX_PHYS = 16000 game degrees
+// above ambient (config.toml, bound in physics_runner.py; the EOS step-7
+// recovery rails gas T to it once per sub-tick), with T_abs = temperature +
+// T_AMB_Q (GameMap.gas_t_abs_at, no S_EOS factor), T_AMB = quantize(
+// [physics.temperature_scale] eos_t_amb_k = 293): the hottest railed gas is
+// (16000 + 293) * 65536 = 1,067,778,048 < 2^30 = 1,073,741,824 (91 game
+// degrees of margin; tests/cuda_unit_vents_check.py PART PROBE refuses a
+// config past it by name). CAVEAT: a seam write refreshes the mirror without
+// rails, so between a seam write and the next recovery a mirror may sit above
+// T_MAX_PHYS; past 2^30 that is a refusal by name, never an overflow. With
+// whole-step sub-ticks hot air legally reaches a return vent's aperture past
+// the old 2^28 (4907 game degrees measured on the hazard scene). Seal /
+// unseal / transfer keep T_BOUND (2^28): their multi-term proofs were not
+// redone here.
 //
 // FLOATS: the ripple pair is written as the bit pattern of 0.0f (0u); the
 // seal's `permeability > 0.0` compare is the seal_mat_ok table row (made once

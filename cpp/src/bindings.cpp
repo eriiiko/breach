@@ -5118,6 +5118,8 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("subtick_loop",      &EOSSolver::subtick_loop)
         .def_readwrite("subtick_ceiling",   &EOSSolver::subtick_ceiling)
         .def_readwrite("cap_heat",          &EOSSolver::cap_heat)
+        // #217 §8.17 lever a: the k-set's partial-permeability seam
+        .def_readwrite("kset_skip_partial", &EOSSolver::kset_skip_partial)
         // trace_mass_scale binding RETIRED (P-T0, design §2.6 — the member
         // itself is gone from EOSSolver; see eos_solver.h).
         .def_readonly("energy_floor_hits",  &EOSSolver::energy_floor_hits)
@@ -5263,6 +5265,9 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("dbg_record_subtick_umax", &EOSSolver::dbg_record_subtick_umax)
         .def_property_readonly("dbg_subtick_umax", [](const EOSSolver& s) {
             return std::vector<int32_t>(s.dbg_subtick_umax.begin(), s.dbg_subtick_umax.end()); })
+        .def_readwrite("dbg_record_residual", &EOSSolver::dbg_record_residual)
+        .def_property_readonly("dbg_residual", [](const EOSSolver& s) {
+            return std::vector<int64_t>(s.dbg_residual.begin(), s.dbg_residual.end()); })
         // EOS P6.4: the c_LOCAL scalar the last step() derived (q16 raw).
         // VELOCITY-CLAMP (P-V1, D2v2): the kick no longer reads this — the
         // kick's per-cell cap is folded fresh from tick-entry T (formula A;

@@ -96,7 +96,7 @@ def _device_used() -> int:
 
 def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
             profile_ticks: int, obs: bool = False, decimation: int = 4,
-            obs_builds: int = 50, stagger: int = 0) -> dict:
+            obs_builds: int = 50, stagger: int = 0, eos: dict | None = None) -> dict:
     """One (level, N) in THIS process; returns the result row. ``stagger`` > 0
     (#217 §8.7, the cost gate): env e runs the recorded match ``e * stagger``
     ticks LATER (nothing latched before its start), so the match's blasts land
@@ -118,6 +118,9 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
     end = max(1, int(rec.end_tick))
     used0 = _device_used()
     sims = [MatchSession(level, rec.spec, seed=e + 1, breach_physics=bp).sim for e in range(n)]
+    for s in sims:      # #217 §8.17: --eos overrides on every env's solver
+        for k, v in (eos or {}).items():
+            setattr(s.physics_runner.eos, k, type(getattr(s.physics_runner.eos, k))(v))
     t0 = time.perf_counter()
     c = DeviceConductor(sims, bp=bp)
     t_build = time.perf_counter() - t0
@@ -319,6 +322,8 @@ def sweep(args) -> int:
                    "--build", args.build, "--decimation", str(args.decimation)]
             if args.obs:
                 cmd.append("--obs")
+            for kv in args.eos:
+                cmd += ["--eos", kv]
             t0 = time.perf_counter()
             p = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT),
                                env=dict(os.environ, PYTHONPATH=os.environ.get("PYTHONPATH", "")))
@@ -348,6 +353,9 @@ def main(argv=None) -> int:
     ap.add_argument("--stagger", type=int, default=0,
                     help="#217 §8.7: env e runs the recorded match e*STAGGER ticks later "
                          "(0 = every env latches the same tick's intents)")
+    ap.add_argument("--eos", action="append", default=[], metavar="KEY=INT",
+                    help="#217 §8.17: an EOS solver field set on every env before the "
+                         "conductor is built (repeatable; the cost levers, measured)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--table", default=None, metavar="JSON",
                     help="print the table of a sweep's --out file and exit")
@@ -372,7 +380,8 @@ def main(argv=None) -> int:
         try:
             row = run_one(args.level, args.levels_dir, args.n, args.warmup, args.ticks,
                           args.profile_ticks, obs=args.obs, decimation=args.decimation,
-                          stagger=args.stagger)
+                          stagger=args.stagger,
+                          eos={k: int(v) for k, v in (x.split("=", 1) for x in args.eos)})
         except Exception as ex:   # an out-of-memory N is a row of the table, by name
             row = {"level": args.level, "n": args.n, "error": f"{type(ex).__name__}: {ex}"[:400]}
         print("CONDUCTOR_BENCH_JSON " + json.dumps(row), flush=True)

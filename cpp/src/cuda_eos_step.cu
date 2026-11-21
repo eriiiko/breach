@@ -268,7 +268,8 @@ EOSHostPrestage eos_host_prestage(
             wind_x, wind_y, n_total.data(), solid, is_vacuum,
             ambient_mode ? is_ambient : nullptr,
             (int)solver.div_source.size() == n_ ? solver.div_source.data() : nullptr,
-            h, w, inv_2dx_q, nullptr);
+            h, w, inv_2dx_q, nullptr,
+            solver.kset_skip_partial ? dyn_permeability : nullptr);   // §8.17 lever a
         pre.k = solver.subtick_loop
             ? eos_subtick_k((int64_t)sqrt_q16(km.max_rad), km.max_div, km.max_src,
                             pre.dt_q, pre.gdt_q, pre.cp_dx_q, solver.K_MAX)
