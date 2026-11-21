@@ -154,6 +154,19 @@ def default_scenario_sim() -> Simulation:
     return sim
 
 
+def arena_vents_sim() -> Simulation:
+    """The named 0.333 m A/B scene (#217 §8.9 T6(b), L2-6): ``levels/test_arena``
+    as shipped -- its vents and ducts kept, no unit, no fixture -- so the vents'
+    pump primitives, the seal-free arena air and the 0.333 m EOS path all run.
+    The golden scenario above is 1.0 m; this is the tile size the game ships,
+    and the scene a k = 1 / legacy-switch A/B must hold equal to its base."""
+    from level_loader import load as load_level
+    lvl = load_level("test_arena", levels_dir=str(ROOT / "levels"))
+    sim = Simulation(lvl, seed=SEED, breach_physics=bp, enable_recorder=False)
+    sim.set_paused(False)
+    return sim
+
+
 def swarm_scenario_sim() -> Simulation:
     """The swarm-present A/B fixture (arc #63 P2): the default scenario plus
     a scripted spawn/reclaim/spawn sequence, using explicit raw-Q16 values

@@ -83,8 +83,11 @@ def _device_used() -> int:
 
 
 def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
-            profile_ticks: int) -> dict:
-    """One (level, N) in THIS process; returns the result row."""
+            profile_ticks: int, stagger: int = 0) -> dict:
+    """One (level, N) in THIS process; returns the result row. ``stagger`` > 0
+    (#217 §8.7, the cost gate): env e runs the recorded match ``e * stagger``
+    ticks LATER (nothing latched before its start), so the match's blasts land
+    on different ticks in different envs, as in a training batch."""
     import numpy as np
     import breach_physics as bp
     from dataclasses import replace
@@ -108,13 +111,22 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
 
     def latch():
         for e, s in enumerate(sims):
-            c.latch(rec.intents.get(int(s.tick) % end, ()), env=e)
+            t_match = int(s.tick) - e * stagger
+            rows = rec.intents.get(t_match % end, ()) if t_match >= 0 else ()
+            c.latch(rows, env=e)
+
+    def env_k():
+        # #217 §8: each env's sub-tick count of the tick just run (None on a
+        # build before §8, which has no sub-ticks)
+        ks = [getattr(s.physics_runner.eos, "dbg_last_k", None) for s in sims]
+        return None if any(k is None for k in ks) else [int(k) for k in ks]
 
     for _ in range(warmup):
         latch()
         c.tick()
     wall = []
     syncs = []
+    ks = []
     for _ in range(ticks):
         latch()
         bp.host_sync_log_begin()
@@ -122,6 +134,7 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         c.tick()
         wall.append(time.perf_counter() - ts)
         syncs.append(list(bp.host_sync_log_end()))
+        ks.append(env_k())
     used1 = _device_used()
     seg_gpu: dict = {}
     seg_host: dict = {}
@@ -144,6 +157,14 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         "build_s": round(t_build, 2),
         "ms_per_tick": round(ms, 3), "ms_per_tick_median": round(1000 * float(np.median(wall)), 3),
         "ms_per_env_tick": round(ms / n, 3),
+        "stagger": stagger,
+        # #217 §8.7: P(batch k > 1), E[max k], E[mean k] over the timed ticks
+        "p_batch_k_gt1": (None if not ks or ks[0] is None
+                          else round(float(np.mean([max(k) > 1 for k in ks])), 3)),
+        "mean_max_k": (None if not ks or ks[0] is None
+                       else round(float(np.mean([max(k) for k in ks])), 3)),
+        "mean_k": (None if not ks or ks[0] is None
+                   else round(float(np.mean([np.mean(k) for k in ks])), 3)),
         "syncs_per_tick": round(float(np.mean([len(s) for s in syncs])), 2),
         "sync_names": names,
         "mem_used_mb": round((used1 - used0) / 2 ** 20, 1),
@@ -185,7 +206,9 @@ def format_rows(rows) -> str:
                    f"{r['ms_per_env_tick']:>7.3f} {r['syncs_per_tick']:>5.1f} "
                    f"{r['mem_per_env_mb']:>7.1f} {g['unit side']:>8.2f} {g['slot 7']:>7.2f} "
                    f"{hh['unit side']:>9.2f} {hh['slot 7']:>7.2f} {hh['books read']:>6.2f} "
-                   f"{hh['fold']:>6.2f}  {tops}")
+                   f"{hh['fold']:>6.2f}  {tops}"
+                   + (f"  | P(k>1) {r['p_batch_k_gt1']} E[max k] {r['mean_max_k']} "
+                      f"E[k] {r['mean_k']}" if r.get("p_batch_k_gt1") is not None else ""))
     return "\n".join(out)
 
 
@@ -196,7 +219,7 @@ def sweep(args) -> int:
             cmd = [sys.executable, str(Path(__file__).resolve()), "--run", "--level", level,
                    "--n", str(n), "--levels-dir", args.levels_dir, "--warmup", str(args.warmup),
                    "--ticks", str(args.ticks), "--profile-ticks", str(args.profile_ticks),
-                   "--build", args.build]
+                   "--stagger", str(args.stagger), "--build", args.build]
             t0 = time.perf_counter()
             p = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT),
                                env=dict(os.environ, PYTHONPATH=os.environ.get("PYTHONPATH", "")))
@@ -223,6 +246,9 @@ def main(argv=None) -> int:
     ap.add_argument("--warmup", type=int, default=10)
     ap.add_argument("--ticks", type=int, default=60)
     ap.add_argument("--profile-ticks", type=int, default=20)
+    ap.add_argument("--stagger", type=int, default=0,
+                    help="#217 §8.7: env e runs the recorded match e*STAGGER ticks later "
+                         "(0 = every env latches the same tick's intents)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--table", default=None, metavar="JSON",
                     help="print the table of a sweep's --out file and exit")
@@ -242,7 +268,7 @@ def main(argv=None) -> int:
         import_build(Path(args.build))
         try:
             row = run_one(args.level, args.levels_dir, args.n, args.warmup, args.ticks,
-                          args.profile_ticks)
+                          args.profile_ticks, args.stagger)
         except Exception as ex:   # an out-of-memory N is a row of the table, by name
             row = {"level": args.level, "n": args.n, "error": f"{type(ex).__name__}: {ex}"[:400]}
         print("CONDUCTOR_BENCH_JSON " + json.dumps(row), flush=True)
