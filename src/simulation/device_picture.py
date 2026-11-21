@@ -239,11 +239,12 @@ def _dq(d) -> int:
 
 
 def device_form(block: np.ndarray, uids, n_teams_env: int, T: int, U: int,
-                g_count: int, c_count: int) -> dict:
+                g_count: int, c_count: int, key_is_row: bool = False) -> dict:
     """One env's DEVICE block (``(PIC_W,)`` int64, downloaded) as the normal
     form: rows named by the store's unit ids (``uids``, row order), objects
     by their position (grenade rows, then charge rows: the host lists'
-    order) through the side arrays' serials."""
+    order) through the side arrays' serials (``key_is_row``: the tracker
+    keyed by the row itself, THE BREAK ``serial_row``'s reading)."""
     sec = {n: block[o:o + int(np.prod(s))].reshape(s) for n, o, s in layout(T, U)}
     R = {f: i for i, f in enumerate(REC_FIELDS)}
     Q = {f: i for i, f in enumerate(UNIT_FIELDS)}
@@ -281,9 +282,9 @@ def device_form(block: np.ndarray, uids, n_teams_env: int, T: int, U: int,
     g, _c = _caps()
     serial_pos = {}
     for i in range(g_count):
-        serial_pos[int(sec["SIDE_G"][i])] = i
+        serial_pos[i if key_is_row else int(sec["SIDE_G"][i])] = i
     for j in range(c_count):
-        serial_pos[int(sec["SIDE_C"][j])] = g_count + j
+        serial_pos[(g + j) if key_is_row else int(sec["SIDE_C"][j])] = g_count + j
     objs, seen, nxt = {}, {}, {}
     for t in range(n_teams_env):
         objs[t] = {}
@@ -512,8 +513,11 @@ class DevicePicture:
         blk = self.state.get()
         _gr, gcnt, _ = self.c.grenades.download()
         _cr, ccnt, _ = self.c.charges.download()
+        # THE BREAK serial_row keys the tracker by row: read it so, so the
+        # break shows exactly where a row index is no identity (a compaction)
+        row = self.brk == BREAK_CODES["serial_row"]
         return [device_form(blk[e], self.c.uids[e], self.obs.env_teams[e], self.T, self.U,
-                            int(gcnt[e]), int(ccnt[e])) for e in range(self.N)]
+                            int(gcnt[e]), int(ccnt[e]), key_is_row=row) for e in range(self.N)]
 
 
 class PictureFault(RuntimeError):

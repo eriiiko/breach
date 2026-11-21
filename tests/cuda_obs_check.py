@@ -69,7 +69,24 @@ P8.2 (no served column: the sight every later block reads) --
 - PART SIGHT: the bulk forms against ``rays_clear`` / ``window_clear``;
 - PART WALL: the wall's first device gate (critique finding 22).
 
-THE BREAKS (``OBS_BREAK``), each must turn a part red: ``cone`` / ``early``
+P8.3 (the device team picture, ``simulation.device_picture``) --
+- inside every GATE / BATCH run: the picture's WHOLE state
+  (``device_picture.device_form`` of the card's block) equal to the
+  reference picture's (``host_form``, objects named by their position in
+  ``projectiles + planted_charges``) at EVERY tick, field by field, and the
+  damage window's sums (``damage_last_s``) raw-bit equal; the coverage of
+  every case (:data:`PICTURE_CASES`, each > 0 else FAIL) counted off the
+  reference; the door hand match (:func:`corpus_door`) for the grenade lost
+  and re-seen; the 13 vector columns P8.3 owns in the census;
+- PART RESTAGE: the seam a per-env reset uses.
+
+THE BREAKS (``OBS_BREAK``), each must turn a part red: ``early_picture``,
+``lifetime``, ``dmg_order``, ``serial_row`` (P8.3, part GATE: the picture
+before the conversion, a record kept one tick longer, the tick's hits fed
+to the damage window in reverse, the object serial replaced by the row
+index), ``dmg_sum`` (P8.3: the window's sums in reverse order -- every
+entry is on the Q16 grid, so the float64 sums are exact and this break
+CANNOT turn red; it is run to show it); ``cone`` / ``early``
 / ``cover`` (P8.2, part GATE: the cone a degree wider, who sees whom before
 the conversion, every cover box one tile off), ``forms`` (P8.2, part SIGHT:
 the two has_los forms swapped); ``anchor`` (the
@@ -958,7 +975,7 @@ def corpus_round():
 #: (team 1 re-sees it under the same id).
 DOOR_SEED = 71
 DOOR_TICKS = 150
-DOOR_THROWS = ((2, 20), (14, 280))      # (tick, fuse ticks)
+DOOR_THROWS = ((2, 20, 0), (14, 280, 1))   # (tick, fuse ticks, kind: a frag, then a smoke)
 DOOR_USES = (60, 95)
 
 
@@ -968,6 +985,10 @@ def door_setup(session):
     a, b = sorted(session.sim.units, key=lambda u: int(u.id))[:2]
     a.set_pos_q(16 * one, 16 * one)
     b.set_pos_q(23 * one, 17 * one)
+    # the hand state is tick 0's: the spawn's vision and picture are retaken
+    # from it (the reference and the twin alike), as a hand-built sim does
+    session.sim._vision_cache = None
+    session.sim.start_team_picture(range(len(session.spec.teams)))
 
 
 def door_script(sim):
@@ -975,9 +996,9 @@ def door_script(sim):
     one = unit_fixed.FP_ONE
     a, b = sorted(sim.units, key=lambda u: int(u.id))[:2]
     t = int(sim.tick)
-    for tk, fuse in DOOR_THROWS:
+    for tk, fuse, kind in DOOR_THROWS:
         if t == tk and a.alive:
-            sim.throw_grenade_intent(int(a.id), one, 0, fuse, reach_q=3 * one, kind=1)
+            sim.throw_grenade_intent(int(a.id), one, 0, fuse, reach_q=3 * one, kind=kind)
     if t in DOOR_USES and b.alive:
         sim.use_intent(int(b.id))
 
