@@ -89,7 +89,7 @@ P8.4a (the lanes, ``aim_of``, the line of fire, ``ticks_to_within``:
   decision tick: each team's fire lanes, each own lane, each ``aim_of``
   answer, each (soldier, seen enemy)'s ``solid_in_way`` / ``mate_in_way`` /
   ``ticks_to_within``; the coverage of every case (:data:`AIM_CASES`, each >
-  0 else FAIL);
+  0 else FAIL), the cap case from the turn hand match (:func:`corpus_turn`);
 - PART WALL extended: the unseen enemy's row perturbed (its trigger
   flipped too) moves none of the team's lanes, lanes plane, aims, lines of
   fire or turns.
@@ -1270,6 +1270,30 @@ def corpus_door():
                  max_ticks=DOOR_TICKS)]
 
 
+#: P8.4a's turn hand match: the room with a door, both teams idle (nothing
+#: turns anyone), the two units placed as in the door match, unit 1 facing
+#: AWAY from unit 0 and turning at the slowest the trait door allows (hook
+#: TURN = ONE / 8): its ticks_to_within toward the enemy it sees behind it is
+#: the cap (4 x the class half turn), a case no played match reaches.
+TURN_SEED = 73
+TURN_TICKS = 40
+
+
+def turn_setup(session):
+    from simulation import turning, unit_fixed, unit_traits
+    b = sorted(session.sim.units, key=lambda u: int(u.id))[1]
+    turning.place(b, 0)                                 # east: unit 0 stands west
+    unit_traits.compile_unit(session.sim, b, {"TURN": unit_fixed.FP_ONE // 8})
+    door_setup(session)                                 # placed, vision and picture retaken
+
+
+def corpus_turn():
+    from dataclasses import replace
+    lv = room_level()
+    spec = replace(lv.match, teams=tuple(replace(t, controller="idle") for t in lv.match.teams))
+    return [play("slow_turn", lv, spec, TURN_SEED, setup=turn_setup, max_ticks=TURN_TICKS)]
+
+
 def part_gate():
     ca, cb, cdn = Census(), Census(), Census()
     for p in corpus_a():
@@ -1284,6 +1308,8 @@ def part_gate():
         gate(f"(d all_round) {p.name}", [p], cdn)
     for p in corpus_door():
         gate(f"(d door) {p.name}", [p], cdn)
+    for p in corpus_turn():
+        gate(f"(d turn) {p.name}", [p], cdn)
     ca.judge("census (a)", strict=False)
     cb.judge("census (b)", strict=False)
     cdn.judge("census (d)", strict=False)
@@ -1295,7 +1321,7 @@ def part_gate():
     both.judge("census (a)+(b)+(d)")
     judge_vision()
     judge_aims(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
-               + corpus_door())
+               + corpus_door() + corpus_turn())
     judge_picture(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                   + corpus_door())
     for p in corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round():
