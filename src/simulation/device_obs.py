@@ -140,6 +140,15 @@ BUILT = {
     "mask_trigger": None,
     "mask_hand": None,
 }
+# P8.5a: THE WINDOWS -- the eight physics planes of both windows, the two
+# sight planes, the far unit planes, the vector's air block and felt
+# temperature (``DeviceObservation.build_windows``)
+_PHYSICS = ("temperature", "fire", "poison", "teargas", "smoke", "pressure", "wind_x", "wind_y")
+BUILT["near_f"] = _PHYSICS
+BUILT["near_u"] = BUILT["near_u"] + ("watched", "sees_target")
+BUILT["far_f"] = BUILT["far_f"] + _PHYSICS
+BUILT["far_u"] = BUILT["far_u"] + ("mates", "enemies", "records")
+BUILT["vector"] = BUILT["vector"] + tuple(f"air[{k}]" for k in range(8)) + ("felt_temp",)
 
 #: The served dtypes of the observation's float keys (P8.1, said once): the
 #: float16 keys go through the kit's hand conversion, the float32 ones through
@@ -199,6 +208,11 @@ TABLE_SCALARS = (
     # P8.4a: the fire lanes' dials (TeamKnowledge.lane_dials: [bots] lane_cell,
     # lane_halfwidth -- the one source every lane reader sees)
     "LANE_CELL", "LANE_HALFWIDTH",
+    # P8.5a: the windows' table values P8.1 left -- the zombie profile's
+    # resist_mult[POISON] (damage.mitigation_for on is_zombie) as its float64
+    # bits, and the wind's impulse dial (FieldPlanes: the sim's ImpulseTable
+    # wind_k_q, the observation's own impulse table)
+    "ZOMBIE_RESIST_POISON_BITS", "WIND_K_Q",
 )
 
 # ---------------------------------------------------------------------------
@@ -254,6 +268,9 @@ def table_layout() -> list:
     rows.append(("PROFILE", n["profiles"] * len(PROFILE_FIELDS)))
     rows.append(("SPECIES_PROFILE", n["species"] * len(PROFILE_FIELDS)))
     rows.append(("AMMO", n["ammo"] * len(AMMO_FIELDS)))          # P8.4b
+    # P8.5a: per species its mitigation's resist_mult[POISON] (float64 bits;
+    # a non-zombie's damage.mitigation_for is its species' profile)
+    rows.append(("SPECIES_RESIST_POISON", n["species"]))
     out, off = [], 0
     for name, w in rows:
         out.append((name, off, w))
@@ -328,6 +345,7 @@ def table_values(sim, ctx) -> np.ndarray:
         "SMOKE_DENSE_BITS": _f64_bits(ctx.smoke_dense),
         **sight_values(sim),
         **lane_values(),
+        **window_values(sim),
     }
     out = np.zeros(table_width(), dtype=np.int64)
     off = {name: o for name, o, _ in table_layout()}
@@ -386,7 +404,24 @@ def table_values(sim, ctx) -> np.ndarray:
         row = wt.ammo.by_name.get(name)
         out[b + 2] = _f64_bits(getattr(row, "travel_speed_tiles_per_second", 0.0)
                                if row is not None else 0.0)
+    # P8.5a: each species' resist_mult[POISON], as physics_value reads it
+    from simulation.damage import POISON
+    b = off["SPECIES_RESIST_POISON"]
+    for i, sp in enumerate(SPECIES_REGISTRY.values()):
+        out[b + i] = _f64_bits(sp.mitigation.resist_mult[POISON])
     return out
+
+
+def window_values(sim) -> dict:
+    """The obs table's window rows (P8.5a), read from what ``physics_value``
+    and ``FieldPlanes`` read: the zombie mitigation's ``resist_mult[POISON]``
+    (``damage.mitigation_for`` of a zombie) as its float64 bits, the sim's
+    impulse table's ``wind_k_q`` (``observe_rows`` hands ``sim.impulse_table``
+    to ``FieldPlanes``)."""
+    from simulation.damage import POISON
+    from simulation.species import ZOMBIE_MITIGATION
+    return {"ZOMBIE_RESIST_POISON_BITS": _f64_bits(ZOMBIE_MITIGATION.resist_mult[POISON]),
+            "WIND_K_Q": int(sim.impulse_table.wind_k_q)}
 
 
 def sight_values(sim) -> dict:
@@ -513,6 +548,22 @@ MASK_FAULT_BITS = {"GATE": 1, "DOOR": 2}
 MASK_BREAK_CODES = {"mask_swap": 1, "mask_reach": 2}
 
 
+# ---------------------------------------------------------------------------
+# P8.5a: THE WINDOWS (``bp.obs_planes``)
+# ---------------------------------------------------------------------------
+#: Fault bits of ``obs_planes`` (a per-env word the gate reads; no served level
+#: reaches one): SIGHT (a sight walk's coordinate past the kit's range), FELT
+#: (the felt temperature's footprint or exposure past its proved range),
+#: PROFILE (a unit's environment row past the obs table's profile blocks).
+WIN_FAULT_BITS = {"SIGHT": 1, "FELT": 2, "PROFILE": 4}
+#: The check's breaks (``OBS_BREAK``): ``win_profile`` (every plane's profile
+#: read one row further in the obs table: the neighbouring row),
+#: ``win_anchor`` (the far window's block anchor one block off), ``win_half``
+#: (the float16 cast through float32: double rounding), ``win_argmax`` (the far
+#: wind's argmax takes the LAST largest load, the reduction in the other order).
+WIN_BREAK_CODES = {"win_profile": 1, "win_anchor": 2, "win_half": 3, "win_argmax": 4}
+
+
 def wired_values(sim, cap: int) -> np.ndarray:
     """ONE env's wired flags (``(cap,)`` uint8) per door table row (row k =
     ``sim._doors[k]``, ordinal order): ``room_graph.wired_door_ordinals`` of
@@ -527,6 +578,41 @@ def wired_values(sim, cap: int) -> np.ndarray:
 
 class DeviceObsRefused(RuntimeError):
     """A batch or a level the device observation does not serve (by name)."""
+
+
+#: The resident planes the windows read, each in its own dtype (P8.5a): the
+#: dequantizes' sources (``FieldPlanes``), the wind's mass (``gas`` O2 + N2),
+#: the felt temperature's exposures (``heat``, ``rad_flux_sweep``) and the
+#: sight planes' (``solid``, ``sight_screen``).
+WINDOW_PLANES = {"temperature": "int32", "fire": "int32", "gas": "int32",
+                 "atmosphere": "int32", "wind_x": "int32", "wind_y": "int32",
+                 "heat": "int32", "rad_flux_sweep": "int64", "solid": "bool",
+                 "sight_screen": "bool"}
+
+
+def check_window_sources(conductor, ctxs) -> None:
+    """Refuse a batch whose windows' sources are not what the kernel reads:
+    every plane of :data:`WINDOW_PLANES` resident (a device buffer of the
+    batch) in its dtype, and the felt temperature's Q16 dials -- the unit
+    library's law reads the DEVICE TABLES' ``heat_gain_q`` / ``heat_ambient_q``
+    -- equal to ``exchange.heat_dials_q`` of each episode's ``ObsContext``
+    ``heat_dials`` (the observation's own object)."""
+    from simulation import exchange, unit_tables
+    f = conductor.fields
+    for name, dt in WINDOW_PLANES.items():
+        if name not in f:
+            raise DeviceObsRefused(f"device observation: the windows read plane {name!r}, "
+                                   f"which is not resident")
+        if str(f[name].dtype) != dt:
+            raise DeviceObsRefused(f"device observation: plane {name!r} is "
+                                   f"{f[name].dtype}, the windows read {dt}")
+    for e, (sim, ctx) in enumerate(zip(conductor.sims, ctxs)):
+        vec = unit_tables.values(sim)
+        want = exchange.heat_dials_q(ctx.heat_dials)
+        got = (unit_tables.read(vec, "heat_gain_q"), unit_tables.read(vec, "heat_ambient_q"))
+        if tuple(int(x) for x in want) != tuple(got):
+            raise DeviceObsRefused(f"device observation (env {e}): the device tables' heat "
+                                   f"dials {got} are not the episode's {tuple(want)}")
 
 
 # ---------------------------------------------------------------------------
@@ -616,6 +702,32 @@ def _constants() -> list:
     out += [("OBS_MASK_HAND_THROW0", a.HAND_THROW0)]
     out += [(f"OBS_MASK_FAULT_{k}", v) for k, v in MASK_FAULT_BITS.items()]
     out += [(f"OBS_MASK_BREAK_{k.upper()}", v) for k, v in MASK_BREAK_CODES.items()]
+    # -- P8.5a: the windows -- the planes' indices (the physics planes in the
+    # spec's order, which the kernel's law follows by name), the currencies
+    # the dequantizes divide by (gas_fixed / fire_fixed / atmosphere_fixed),
+    # the gas rows FieldPlanes and wind_load_plane read, faults and breaks
+    from simulation import atmosphere_fixed, fire_fixed, gamemap, gas_fixed, gases
+    if tuple(o.PHYSICS_PLANES) != _PHYSICS or tuple(o.NEAR_F_PLANES) != _PHYSICS:
+        raise DeviceObsRefused(f"device observation: the physics planes {o.PHYSICS_PLANES} "
+                               f"are not the windows kernel's law order {_PHYSICS}")
+    out += [("OBS_NEAR_F_PLANES", len(o.NEAR_F_PLANES)),
+            ("OBS_N_PHYSICS", len(o.PHYSICS_PLANES)),
+            ("OBS_NEAR_U_WATCHED", o.NEAR_U_PLANES.index("watched")),
+            ("OBS_NEAR_U_SEES_TARGET", o.NEAR_U_PLANES.index("sees_target")),
+            ("OBS_FAR_F_PHYSICS0", o.FAR_F_PLANES.index(o.PHYSICS_PLANES[0])),
+            ("OBS_FAR_U_MATES", o.FAR_U_PLANES.index("mates")),
+            ("OBS_FAR_U_ENEMIES", o.FAR_U_PLANES.index("enemies")),
+            ("OBS_FAR_U_RECORDS", o.FAR_U_PLANES.index("records")),
+            ("OBS_Q16_ONE", int(gas_fixed._Q16_ONE_F)),
+            ("OBS_TRACE_ONE", int(gas_fixed._TRACE_ONE_F)),
+            ("OBS_FIRE_ONE", int(fire_fixed.FP_ONE_F)),
+            ("OBS_ATM_ONE", int(atmosphere_fixed.FP_ONE_F)),
+            ("OBS_WIND_SHIFT", int(atmosphere_fixed.FP_SHIFT)),
+            ("OBS_GAS_POISON", int(gases.POISON)), ("OBS_GAS_TEARGAS", int(gases.TEARGAS)),
+            ("OBS_GAS_SMOKE", int(gases.SMOKE)), ("OBS_GAS_O2", int(gamemap.O2)),
+            ("OBS_GAS_N2", int(gamemap.INERT_N2))]
+    out += [(f"OBS_WIN_FAULT_{k}", v) for k, v in WIN_FAULT_BITS.items()]
+    out += [(f"OBS_WIN_BREAK_{k.upper()}", v) for k, v in WIN_BREAK_CODES.items()]
     return out
 
 
@@ -927,6 +1039,17 @@ class DeviceObservation:
         # -- P8.4c: the four masks ---------------------------------------------
         self.mask_faults = cp.zeros((N,), dtype=cp.int32)
         self.masks_brk = 0                    # THE BREAK hook (the check's), 0 in a real run
+        # -- P8.5a: the windows -------------------------------------------------
+        check_window_sources(c, self.ctx)
+        from simulation.obs_spec_v1 import BLOCK
+        self.block_shape = (-(-c.h // BLOCK), -(-c.w // BLOCK))
+        self.far_raw = cp.zeros((N, len(_PHYSICS)) + self.block_shape, dtype=cp.float64)
+        # the decoder's aimed uid per row (-1: none): what sees_target is FROM
+        # every window tile TO (the aimed entry's recorded centre); P8.6a's
+        # decoder writes it, the check feeds it, a run without a decoder keeps -1
+        self.aimed = cp.full((N, self.n_rows), -1, dtype=cp.int32)
+        self.win_faults = cp.zeros((N,), dtype=cp.int32)
+        self.win_brk = 0                      # THE BREAK hook (the check's), 0 in a real run
         c.attach_observation(self)
         # tick 0: who sees whom, the picture's first state, the first decision
         self.vision()
@@ -1037,6 +1160,8 @@ class DeviceObservation:
         self.build_list(store)
         # P8.4c: the four masks (read the list just built)
         self.build_masks(store)
+        # P8.5a: the windows (sees_target reads the list just built)
+        self.build_windows(store)
         self.builds += 1
 
     def aims(self, store_ptr=None) -> None:
@@ -1122,6 +1247,43 @@ class DeviceObservation:
             int(b["mask_aim"].data.ptr), int(b["mask_trigger"].data.ptr),
             int(b["mask_hand"].data.ptr), int(self.mask_faults.data.ptr), int(self.masks_brk))
 
+    def build_windows(self, store_ptr=None) -> None:
+        """P8.5a for every env on its decision tick: ``build_windows``' eight
+        physics planes of the near window (the tile's real-unit value over
+        the soldier's own table values, squashed, one cast to float16) and of
+        the far window (the block MAX of each plane, the wind of the block's
+        first largest load: :attr:`far_raw`, then the same law), the sight
+        planes ``watched`` (FROM every record's centre of the team TO each
+        window tile, OR-ed) and ``sees_target`` (FROM each tile TO the
+        recorded centre of the entry :attr:`aimed` names, when the list holds
+        it past the mates), the far unit planes (mates at live centres,
+        records at recorded centres split seen / not seen), and the vector's
+        ``air`` block and ``felt_temp``. Reads the resident planes in their
+        own dtype and currency; three launches on the tick stream, no sync;
+        faults into :attr:`win_faults`. ``store_ptr``: the store read (default
+        the conductor's; the WALL gate hands a perturbed copy)."""
+        c = self.c
+        b = self.buffers
+        f = c.fields
+        store = int(c.store.device_ptr) if store_ptr is None else int(store_ptr)
+        pic = self.picture
+        hb, wb = self.block_shape
+        self.bp.obs_planes(
+            int(self.N), store, int(c.U), int(c.store.shape[2]), c.store.tables,
+            int(self.rowmap.data.ptr), int(self.n_rows), int(self.S), int(self.T),
+            int(self.table.data.ptr), int(self.table.shape[1]), int(c.trow.ptr),
+            int(self.params.data.ptr), int(self.ended.data.ptr),
+            int(f["temperature"].data.ptr), int(f["fire"].data.ptr), int(f["gas"].data.ptr),
+            int(f["gas"].shape[1]), int(f["atmosphere"].data.ptr), int(f["wind_x"].data.ptr),
+            int(f["wind_y"].data.ptr), int(f["heat"].data.ptr),
+            int(f["rad_flux_sweep"].data.ptr), int(f["solid"].data.ptr),
+            int(f["sight_screen"].data.ptr), int(c.h), int(c.w), int(self.far_raw.data.ptr),
+            int(hb), int(wb), int(self.visible.data.ptr), int(pic.state.data.ptr), int(pic.W),
+            int(self.aimed.data.ptr), int(b["list_uid"].data.ptr),
+            int(b["list_mask"].data.ptr), int(self.n_entries), int(b["near_f"].data.ptr),
+            int(b["near_u"].data.ptr), int(b["far_f"].data.ptr), int(b["far_u"].data.ptr),
+            int(b["vector"].data.ptr), int(self.win_faults.data.ptr), int(self.win_brk))
+
     # -- the hand-over -------------------------------------------------------
     def torch(self) -> dict:
         """Every served buffer as a torch tensor sharing its memory (DLPack;
@@ -1155,4 +1317,5 @@ __all__ = ["HEADER_REL", "GENERATOR", "BUILT", "DeviceObsRefused", "DeviceObserv
            "check_teams", "rays_clear_device", "window_clear_device", "vision_state",
            "lane_values", "lane_grid_shape", "AIM_CODES", "AIM_FAULT_BITS", "AIM_BREAK_CODES",
            "AMMO_FIELDS", "LIST_FAULT_BITS", "LIST_BREAK_CODES", "wired_values",
-           "MASK_FAULT_BITS", "MASK_BREAK_CODES"]
+           "MASK_FAULT_BITS", "MASK_BREAK_CODES", "WIN_FAULT_BITS", "WIN_BREAK_CODES",
+           "WINDOW_PLANES", "check_window_sources", "window_values"]

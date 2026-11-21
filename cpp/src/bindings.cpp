@@ -884,6 +884,21 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("faults"), py::arg("brk"),
           "#29 P8.4c: action_spec_v1.build_masks (the four masks) for every env on its "
           "decision tick.");
+    // #29 P8.5a: the windows (cpp/src/cuda_obs_windows.cu), on the tick stream, no sync.
+    m.def("obs_planes", &breach_cuda::obs_planes, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("tables"), py::arg("rowmap"),
+          py::arg("n_rows"), py::arg("n_slots"), py::arg("n_teams"), py::arg("obs_table"),
+          py::arg("table_w"), py::arg("tick_row"), py::arg("params"), py::arg("ended"),
+          py::arg("temperature"), py::arg("fire"), py::arg("gas"), py::arg("n_gases"),
+          py::arg("atmosphere"), py::arg("wind_x"), py::arg("wind_y"), py::arg("heat"),
+          py::arg("rad"), py::arg("solid"), py::arg("screen"), py::arg("h"), py::arg("w"),
+          py::arg("far_raw"), py::arg("hb"), py::arg("wb"), py::arg("visible"),
+          py::arg("state"), py::arg("state_w"), py::arg("aimed"), py::arg("list_uid"),
+          py::arg("list_mask"), py::arg("n_entries"), py::arg("near_f"), py::arg("near_u"),
+          py::arg("far_f"), py::arg("far_u"), py::arg("vector"), py::arg("faults"),
+          py::arg("brk"),
+          "#29 P8.5a: obs_spec_v1.build_windows' physics, sight and far unit planes and "
+          "build_vector's air block and felt temperature for every env on its decision tick.");
     m.def("obs_picture_layout", [](int n_teams, int n_units) {
               py::dict d;
               for (const auto& kv : breach_cuda::obs_picture_layout(n_teams, n_units))

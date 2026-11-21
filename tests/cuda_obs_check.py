@@ -176,7 +176,7 @@ FAILS: list = []
 BREAK = os.environ.get("OBS_BREAK", "")
 #: The patch this script's gates are at: every column owned by it or an
 #: earlier patch of the version-2 table is compared.
-PATCH = "P8.4c"
+PATCH = "P8.5a"
 #: The decision cadence of the corpus (design 13.1's decimation, a run file's
 #: ``[run] decimation``; the device observation takes it as its argument).
 DECIMATION = 4
@@ -280,6 +280,12 @@ class Played:
         self.list_cov = {k: 0 for k in LIST_CASES}
         # P8.4c: the masks' coverage, counted off the reference
         self.mask_cov = {}
+        # P8.5a: per decision tick the rows' aimed uids (aim_rule), the
+        # windows' coverage and per float plane its cells past the squash's
+        # knee, counted off the reference
+        self.aimed = {}                       # tick -> (rows,) int32
+        self.win_cov = {k: 0 for k in WIN_CASES}
+        self.knee = {}                        # (key, plane) -> cells with |x| > 1
 
 
 _PLAYED: dict = {}
@@ -304,17 +310,51 @@ def room_level(name: str = ROOM):
     return level_loader.load(name, _ROOMS_DIR)
 
 
-def host_observation(session, ctx, T, S) -> dict:
+def aim_rule(sim, units, tick: int) -> tuple:
+    """P8.5a: THE CHECK'S STAND-IN FOR THE DECODER'S AIM (``observe_rows``'s
+    ``aims``: per unit id the uid the body aimed at), until P8.6a's decoder
+    writes ``DeviceObservation.aimed``: from the second decision on, row i's
+    soldier aims at choice ``(tick // DECIMATION + i) % n`` of its team's
+    record uids (sorted) followed by one mate's uid (a mate's place: no
+    target) -- so ``sees_target`` moves, and a record dropping out of the
+    list or a mate's place reads none. Returns ``(aims, aimed)``: the dict
+    the reference takes and the ``(rows,)`` int32 uids the device is fed
+    (-1: none)."""
+    aims, aimed = {}, np.full(len(units), -1, dtype=np.int32)
+    if tick < DECIMATION:
+        return aims, aimed
+    for i, u in enumerate(units):
+        if u is None:
+            continue
+        t = int(u.team)
+        recs = sorted(int(x) for x in sim.team_picture.records(t))
+        mates = sorted(int(m.id) for m in sim.units
+                       if m.alive and not m.is_zombie and int(m.team) == t and m is not u)
+        choices = recs + mates[:1]
+        if not choices:
+            continue
+        uid = choices[(tick // DECIMATION + i) % len(choices)]
+        aims[int(u.id)] = (uid, None)
+        aimed[i] = uid
+    return aims, aimed
+
+
+def host_observation(session, ctx, T, S, aimed_out=None) -> dict:
     """The env's served observation of ``session`` now, built by THE
     reference (``EnvRunner.row_units`` / ``row_flags`` over the session,
-    ``obs_spec_v1.observe_rows``), one env's ``(U, ...)`` arrays."""
+    ``obs_spec_v1.observe_rows`` with :func:`aim_rule`'s aims), one env's
+    ``(U, ...)`` arrays; ``aimed_out`` (a list) receives the rows' aimed
+    uids."""
     import rl_env
     from simulation import obs_spec_v1 as o
     me = SimpleNamespace(session=session, layout=SimpleNamespace(n_slots=S, n_rows=T * S))
     shapes = o.shapes(1, T * S, S)
     out = {k: np.zeros(sh[1:], dtype=dt) for k, (sh, dt) in shapes.items()}
     units = rl_env.EnvRunner.row_units(me)
-    o.observe_rows(session.sim, ctx, units, out)
+    aims, aimed = aim_rule(session.sim, units, int(session.sim.tick))
+    if aimed_out is not None:
+        aimed_out.append(aimed)
+    o.observe_rows(session.sim, ctx, units, out, aims=aims)
     # P8.4c: the four masks at the START of the decision tick, from the list
     # just built (rl_env.observe_v1's own call of build_masks)
     from simulation import action_spec_v1 as a
@@ -376,8 +416,11 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Pl
     def observe():
         nonlocal t_obs
         ts = time.perf_counter()
+        aimed = []
         with AimTap(p.aim_cov) as at, ListTap(p.list_cov, ctx.caps):
-            host = host_observation(s, ctx, T, S)
+            host = host_observation(s, ctx, T, S, aimed)
+        p.aimed[int(s.sim.tick)] = aimed[0]
+        count_windows(p, s, host)
         p.obs[int(s.sim.tick)] = owned_parts(host, own, False)
         count_list(p.list_cov, host, len(ctx.hand_rows))
         count_masks(p.mask_cov, host)
@@ -518,6 +561,9 @@ def gate(label, played: list, census: Census | None = None) -> bool:
         obs.list_brk = dobs.LIST_BREAK_CODES[BREAK]
     if BREAK in dobs.MASK_BREAK_CODES:             # P8.4c: two gates swapped, the reach wide
         obs.masks_brk = dobs.MASK_BREAK_CODES[BREAK]
+    if BREAK in dobs.WIN_BREAK_CODES:              # P8.5a: profile row, anchor, half, argmax
+        obs.win_brk = dobs.WIN_BREAK_CODES[BREAK]
+    import cupy as cp
     n_cmp = 0
     end = max(p.end for p in played)
     t0 = time.perf_counter()
@@ -540,6 +586,10 @@ def gate(label, played: list, census: Census | None = None) -> bool:
             mf = obs.mask_faults.get()
             if mf.any():
                 fail(f"{label}: tick {tick}: mask fault bits {mf.tolist()}")
+                return False
+            wf = obs.win_faults.get()
+            if wf.any():
+                fail(f"{label}: tick {tick}: window fault bits {wf.tolist()}")
                 return False
         if tick % DECIMATION == 0:
             got = obs.host(own)
@@ -582,6 +632,17 @@ def gate(label, played: list, census: Census | None = None) -> bool:
             break
         for e, p in enumerate(played):
             c.latch(p.intents[k] if k < len(p.intents) else (), env=e)
+        if (tick + 1) % DECIMATION == 0:
+            # P8.5a: the decoder's stand-in -- each env's rows aimed as its
+            # reference was at that decision (aim_rule), before the tick builds
+            feed = np.full((len(played), obs.n_rows), -1, dtype=np.int32)
+            for e, p in enumerate(played):
+                a = p.aimed.get(tick + 1)
+                if a is not None:
+                    for i, uid in enumerate(a):
+                        t_, s_ = divmod(i, p.S)
+                        feed[e, t_ * S + s_] = uid
+            obs.aimed[...] = cp.asarray(feed)
         c.tick()
     print(f"  {label}: {n_cmp} env-decisions equal (N = {len(played)}, {end} ticks, "
           f"{obs.builds} block launches, {1000 * (time.perf_counter() - t0) / max(1, end):.1f} "
@@ -1107,6 +1168,94 @@ def judge_masks(played) -> None:
 
 
 # ---------------------------------------------------------------------------
+# P8.5a: the windows' coverage, counted off the reference
+# ---------------------------------------------------------------------------
+#: The cases the windows' corpus must reach (each > 0, else FAIL): a watched
+#: tile, a tile that sees the aimed target, a near window hanging over each
+#: edge of the map, a far window cell on a block that straddles the map's
+#: edge (part pad, part map), a far window cell off the block grid.
+WIN_CASES = ("watched", "sees_target", "near_over_left", "near_over_right", "near_over_top",
+             "near_over_bottom", "far_block_straddles", "far_off_grid", "aimed_found",
+             "aimed_not_found")
+#: The float planes whose served cells past the squash's knee are counted.
+_KNEE_KEYS = ("near_f", "far_f")
+
+
+def count_windows(p, session, host) -> None:
+    """Add one host observation's window coverage to ``p.win_cov`` and its
+    cells past the squash's knee (|x| > 1, the log path) to ``p.knee``."""
+    import rl_env
+    from simulation import obs_spec_v1 as o
+    sim = session.sim
+    me = SimpleNamespace(session=session, layout=SimpleNamespace(n_slots=p.S, n_rows=p.T * p.S))
+    units = rl_env.EnvRunner.row_units(me)
+    h, w = sim.gmap.solid.shape
+    hb, wb = -(-h // o.BLOCK), -(-w // o.BLOCK)
+    cov = p.win_cov
+    nu = host["near_u"]
+    cov["watched"] += int(np.count_nonzero(nu[:, o.NEAR_U_PLANES.index("watched")]))
+    cov["sees_target"] += int(np.count_nonzero(nu[:, o.NEAR_U_PLANES.index("sees_target")]))
+    straddle_y = h % o.BLOCK != 0
+    straddle_x = w % o.BLOCK != 0
+    for i, u in enumerate(units):
+        if u is None:
+            continue
+        cx, cy = int(u.center_tile_x()), int(u.center_tile_y())
+        cov["near_over_left"] += int(cx - o.HALF < 0)
+        cov["near_over_right"] += int(cx + o.HALF >= w)
+        cov["near_over_top"] += int(cy - o.HALF < 0)
+        cov["near_over_bottom"] += int(cy + o.HALF >= h)
+        by0, bx0 = cy // o.BLOCK - o.HALF, cx // o.BLOCK - o.HALF
+        bi = np.arange(by0, by0 + o.WIN)
+        bj = np.arange(bx0, bx0 + o.WIN)
+        on_i = (bi >= 0) & (bi < hb)
+        on_j = (bj >= 0) & (bj < wb)
+        cov["far_off_grid"] += int(o.WIN * o.WIN - on_i.sum() * on_j.sum())
+        n = 0
+        if straddle_y and (hb - 1) in bi:
+            n += int(on_j.sum())
+        if straddle_x and (wb - 1) in bj:
+            n += int(on_i.sum())
+        cov["far_block_straddles"] += n
+        if int(p.aimed[max(p.aimed)][i]) >= 0:
+            # found: build_list marked the aimed entry (prev_aim, col 66) at a
+            # place past the mates' block, so sees_target is FROM the window
+            # TO its recorded centre; else none (not listed, or a mate)
+            ent = host["list"][i, p.S - 1:p.S - 1 + o.CAPS_FIXED[0] + o.CAPS_FIXED[1], 66]
+            cov["aimed_found" if bool(np.any(ent)) else "aimed_not_found"] += 1
+    for key in _KNEE_KEYS:
+        names = o.NEAR_F_PLANES if key == "near_f" else o.FAR_F_PLANES
+        a = np.asarray(host[key], dtype=np.float32)
+        for k, name in enumerate(names):
+            if name not in o.PHYSICS_PLANES:
+                continue
+            p.knee[(key, name)] = p.knee.get((key, name), 0) + int(
+                np.count_nonzero(np.abs(a[:, k]) > 1.0))
+
+
+def judge_windows(played) -> None:
+    total = {k: 0 for k in WIN_CASES}
+    knee = {}
+    for p in played:
+        for k in WIN_CASES:
+            total[k] += p.win_cov[k]
+        for k, n in p.knee.items():
+            knee[k] = knee.get(k, 0) + n
+    print("    window cases: " + ", ".join(f"{k} {total[k]}" for k in WIN_CASES))
+    print("    cells past the squash's knee (|x| > 1): " + ", ".join(
+        f"{k[0]}/{k[1]} {n}" for k, n in sorted(knee.items())))
+    for k in WIN_CASES:
+        if not total[k]:
+            fail(f"window coverage: the case {k!r} is never reached over the corpus (vacuous)")
+    for name in ("temperature", "fire", "poison", "teargas", "smoke", "wind_x", "wind_y"):
+        if not (knee.get(("near_f", name), 0) or knee.get(("far_f", name), 0)):
+            print(f"    NOTE: plane {name} never passes the squash's knee over the corpus")
+    if not any(knee.values()):
+        fail("window coverage: no float plane passes the squash's knee (the log path is never "
+             "served)")
+
+
+# ---------------------------------------------------------------------------
 # P8.3: the device team picture, its WHOLE state every tick
 # ---------------------------------------------------------------------------
 #: The coverage cases the picture's corpus must reach (each > 0, else FAIL).
@@ -1624,6 +1773,8 @@ def part_gate():
                + corpus_door() + corpus_turn() + corpus_list())
     judge_masks(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                 + corpus_door() + corpus_turn() + corpus_list())
+    judge_windows(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
+                  + corpus_door() + corpus_turn() + corpus_list())
     for p in corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round():
         a0, a1 = p.cover_alive
         if a0 != a1:
@@ -2112,6 +2263,7 @@ def part_wall():
                 obs.aims(store_ptr=int(pert.data.ptr))
                 obs.build_list(store_ptr=int(pert.data.ptr))
                 obs.build_masks(store_ptr=int(pert.data.ptr))
+                obs.build_windows(store_ptr=int(pert.data.ptr))
                 moved = [k for k, v in team_aims(obs, t, p.S).items()
                          if not np.array_equal(v, base[k])]
                 del pert
@@ -2119,6 +2271,7 @@ def part_wall():
                 obs.aims()
                 obs.build_list()
                 obs.build_masks()
+                obs.build_windows()
                 if moved:
                     fail(f"wall {p.name}: tick {int(c.sims[0].tick)}, team {t}: perturbing "
                          f"unseen enemy {p.uids[u]}'s row moved the team's {moved}")
@@ -2169,7 +2322,11 @@ def team_aims(obs, t, S) -> dict:
             "list_uid": obs.buffers["list_uid"][0, rows].get(),
             # P8.4c: the four masks of the team's rows
             **{k: obs.buffers[k][0, rows].get()
-               for k in ("mask_feet", "mask_aim", "mask_trigger", "mask_hand")}}
+               for k in ("mask_feet", "mask_aim", "mask_trigger", "mask_hand")},
+            # P8.5a: every window plane of the team's rows, its air block and
+            # felt temperature
+            **{k: obs.buffers[k][0, rows].get() for k in ("near_f", "near_u", "far_f", "far_u")},
+            "air_felt": obs.buffers["vector"][0, rows][..., list(range(58, 66)) + [96]].get()}
 
 
 # ---------------------------------------------------------------------------

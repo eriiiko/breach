@@ -209,6 +209,30 @@ void obs_masks(int n_env, std::uintptr_t store, int n_units, int store_w,
                std::uintptr_t mask_feet, std::uintptr_t mask_aim, std::uintptr_t mask_trigger,
                std::uintptr_t mask_hand, std::uintptr_t faults, int brk);
 
+// #29 P8.5a: THE WINDOWS (cuda_obs_windows.cu) for every env on its decision
+// tick with its ended latch clear, on the tick stream, no sync: the eight
+// physics planes of near_f and far_f (from the RESIDENT planes temperature,
+// fire, gas (n_gases, h, w), atmosphere, wind_x / wind_y, solid, through
+// `far_raw` (N, 8, hb, wb) float64, the far blocks' raw reductions), near_u
+// watched / sees_target (the picture's records `state`, the visible table,
+// the decoder's `aimed` (N, n_rows) uid, the list just built), far_u mates /
+// enemies / records, and the vector's air block and felt_temp (the heat /
+// rad_flux_sweep planes through the unit library's felt temperature over the
+// device tables). Faults OR into `faults` (N,) int32 (OBS_WIN_FAULT_*);
+// `brk`: the check's breaks (OBS_WIN_BREAK_*), 0 in every real run.
+void obs_planes(int n_env, std::uintptr_t store, int n_units, int store_w,
+                const UnitTablesDevice& tables, std::uintptr_t rowmap, int n_rows, int n_slots,
+                int n_teams, std::uintptr_t obs_table, int table_w, std::uintptr_t tick_row,
+                std::uintptr_t params, std::uintptr_t ended, std::uintptr_t temperature,
+                std::uintptr_t fire, std::uintptr_t gas, int n_gases, std::uintptr_t atmosphere,
+                std::uintptr_t wind_x, std::uintptr_t wind_y, std::uintptr_t heat,
+                std::uintptr_t rad, std::uintptr_t solid, std::uintptr_t screen, int h, int w,
+                std::uintptr_t far_raw, int hb, int wb, std::uintptr_t visible,
+                std::uintptr_t state, int state_w, std::uintptr_t aimed, std::uintptr_t list_uid,
+                std::uintptr_t list_mask, int n_entries, std::uintptr_t near_f,
+                std::uintptr_t near_u, std::uintptr_t far_f, std::uintptr_t far_u,
+                std::uintptr_t vector, std::uintptr_t faults, int brk);
+
 // The compiled layout's fingerprint (obs_layout.h): what device_obs checks.
 const char* obs_layout_fingerprint();
 

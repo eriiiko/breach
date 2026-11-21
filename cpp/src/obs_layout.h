@@ -14,7 +14,7 @@
 
 namespace obs_layout {
 
-constexpr const char* OBS_LAYOUT_FINGERPRINT = "ae0286abd8b0cb20a7bb1e30063e1ceeb2154787d4f65254c26fe5b94aa2d21b";
+constexpr const char* OBS_LAYOUT_FINGERPRINT = "a528b03fc11ebfb39c7fa5595ac18cda1a09a24e5ec7f06474d825dcd30b1ab7";
 
 constexpr int OBS_WIN = 25;
 constexpr int OBS_HALF = 12;
@@ -178,13 +178,16 @@ constexpr int OBS_TAB_CONE_COS_BITS = 30;
 constexpr int OBS_TAB_AWARENESS_R_BITS = 31;
 constexpr int OBS_TAB_LANE_CELL = 32;
 constexpr int OBS_TAB_LANE_HALFWIDTH = 33;
-constexpr int OBS_TAB_STATUS_SCALE = 34;
-constexpr int OBS_TAB_LOADOUT = 43;
-constexpr int OBS_TAB_WEAPON = 53;
-constexpr int OBS_TAB_PROFILE = 148;
-constexpr int OBS_TAB_SPECIES_PROFILE = 151;
-constexpr int OBS_TAB_AMMO = 154;
-constexpr int OBS_TAB_W = 229;
+constexpr int OBS_TAB_ZOMBIE_RESIST_POISON_BITS = 34;
+constexpr int OBS_TAB_WIND_K_Q = 35;
+constexpr int OBS_TAB_STATUS_SCALE = 36;
+constexpr int OBS_TAB_LOADOUT = 45;
+constexpr int OBS_TAB_WEAPON = 55;
+constexpr int OBS_TAB_PROFILE = 150;
+constexpr int OBS_TAB_SPECIES_PROFILE = 153;
+constexpr int OBS_TAB_AMMO = 156;
+constexpr int OBS_TAB_SPECIES_RESIST_POISON = 231;
+constexpr int OBS_TAB_W = 232;
 constexpr int OBS_TAB_N_LOADOUTS = 1;
 constexpr int OBS_TAB_N_WEAPONS = 19;
 constexpr int OBS_TAB_N_PROFILES = 1;
@@ -393,6 +396,31 @@ constexpr int OBS_MASK_FAULT_GATE = 1;
 constexpr int OBS_MASK_FAULT_DOOR = 2;
 constexpr int OBS_MASK_BREAK_MASK_SWAP = 1;
 constexpr int OBS_MASK_BREAK_MASK_REACH = 2;
+constexpr int OBS_NEAR_F_PLANES = 8;
+constexpr int OBS_N_PHYSICS = 8;
+constexpr int OBS_NEAR_U_WATCHED = 2;
+constexpr int OBS_NEAR_U_SEES_TARGET = 3;
+constexpr int OBS_FAR_F_PHYSICS0 = 1;
+constexpr int OBS_FAR_U_MATES = 1;
+constexpr int OBS_FAR_U_ENEMIES = 2;
+constexpr int OBS_FAR_U_RECORDS = 3;
+constexpr int OBS_Q16_ONE = 65536;
+constexpr int OBS_TRACE_ONE = 16777216;
+constexpr int OBS_FIRE_ONE = 65536;
+constexpr int OBS_ATM_ONE = 65536;
+constexpr int OBS_WIND_SHIFT = 16;
+constexpr int OBS_GAS_POISON = 2;
+constexpr int OBS_GAS_TEARGAS = 3;
+constexpr int OBS_GAS_SMOKE = 1;
+constexpr int OBS_GAS_O2 = 5;
+constexpr int OBS_GAS_N2 = 6;
+constexpr int OBS_WIN_FAULT_SIGHT = 1;
+constexpr int OBS_WIN_FAULT_FELT = 2;
+constexpr int OBS_WIN_FAULT_PROFILE = 4;
+constexpr int OBS_WIN_BREAK_WIN_PROFILE = 1;
+constexpr int OBS_WIN_BREAK_WIN_ANCHOR = 2;
+constexpr int OBS_WIN_BREAK_WIN_HALF = 3;
+constexpr int OBS_WIN_BREAK_WIN_ARGMAX = 4;
 
 // float16 bit patterns of k / (OBS_BLOCK * OBS_BLOCK), k = 0 .. OBS_BLOCK^2
 // (a __constant__ table's initialiser in the kernel's TU).
