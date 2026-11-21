@@ -246,7 +246,8 @@ __device__ inline void advance_plant(int64_t* loc, const int64_t* tab, int64_t t
 }
 
 // verb_gates.use_door (#215): among the live doors in reach (a span tile in
-// the unit's footprint plus its one-tile ring), the one the unit FACES --
+// the unit's footprint plus its one-tile ring: unit_lib::reach_key, the
+// library's one statement of the reach since #29 P8.4c), the one the unit FACES --
 // the smallest verb_gates.facing_off: |wrap_q16(atan2_q16(-dy, dx) - facing)|
 // to the centre of the door's NEAREST span tile from the footprint centre
 // (squared Q16 distance, ties to the earlier tile in span order; a tile
@@ -257,9 +258,7 @@ __device__ inline void advance_plant(int64_t* loc, const int64_t* tab, int64_t t
 // index -1 a pad. -1 = none. An operand past the kit's int32 range faults.
 __device__ inline int64_t use_door(const int64_t* loc, const int64_t* spans, int n_spans,
                                    bool* bad) {
-    const int64_t x0 = tile_of(loc[UNIT_COL_X_Q]), y0 = tile_of(loc[UNIT_COL_Y_Q]);
     const int64_t fp = loc[UNIT_COL_FOOTPRINT];
-    const int64_t side = fp + 2;
     // pass 1: the candidates (doors with a ring tile), each door's reach key
     int n_cand = 0;
     int64_t first = -1, first_k = 0;
@@ -269,9 +268,8 @@ __device__ inline int64_t use_door(const int64_t* loc, const int64_t* spans, int
         int64_t k_door = -1;
         for (; j < n_spans && spans[(size_t)j * SPAN_W] == door; ++j) {
             const int64_t* s = spans + (size_t)j * SPAN_W;
-            const int64_t ry = s[1] - (y0 - 1), rx = s[2] - (x0 - 1);
-            if (ry < 0 || ry >= side || rx < 0 || rx >= side) continue;
-            const int64_t k = ry * side + rx;
+            const int64_t k = reach_key(loc, s[1], s[2]);    // the library's reach (P8.4c)
+            if (k < 0) continue;
             if (k_door < 0 || k < k_door) k_door = k;
         }
         if (door >= 0 && k_door >= 0) {
@@ -295,11 +293,8 @@ __device__ inline int64_t use_door(const int64_t* loc, const int64_t* spans, int
         int64_t k_door = -1, d2_min = -1, ndx = 0, ndy = 0;
         for (; j < n_spans && spans[(size_t)j * SPAN_W] == door; ++j) {
             const int64_t* s = spans + (size_t)j * SPAN_W;
-            const int64_t ry = s[1] - (y0 - 1), rx = s[2] - (x0 - 1);
-            if (ry >= 0 && ry < side && rx >= 0 && rx < side) {
-                const int64_t k = ry * side + rx;
-                if (k_door < 0 || k < k_door) k_door = k;
-            }
+            const int64_t k = reach_key(loc, s[1], s[2]);
+            if (k >= 0 && (k_door < 0 || k < k_door)) k_door = k;
             const int64_t dx = (s[2] << 16) + half - cx, dy = (s[1] << 16) + half - cy;
             if (!fits_i32(dx) || !fits_i32(dy)) {
                 *bad = true;

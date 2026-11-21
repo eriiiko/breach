@@ -190,6 +190,25 @@ void obs_list(int n_env, std::uintptr_t store, int n_units, int store_w,
               std::uintptr_t list, std::uintptr_t list_mask, std::uintptr_t list_uid,
               std::uintptr_t faults, int brk);
 
+// ---------------------------------------------------------------------------
+// #29 P8.4c: THE FOUR MASKS (cpp/src/cuda_obs_list.cu): action_spec_v1.
+// build_masks for every env on its decision tick with its ended latch clear,
+// on the tick stream, no sync, AFTER obs_list (the aim mask reads the list's
+// type column and its mask): mask_feet (N, n_rows, OBS_MASK_N_FEET), mask_aim
+// (N, n_rows, OBS_MASK_AIM_TOKENS + n_entries), mask_trigger (N, n_rows,
+// OBS_MASK_N_TRIGGER), mask_hand (N, n_rows, OBS_MASK_HAND_THROW0 + n_kinds),
+// uint8. Every hand bit is ONE unit-library gate (the use bit over the door
+// tables through unit_lib::reach_key). `faults`: (N,) int32 bits
+// OBS_MASK_FAULT_*; `brk`: the check's breaks (OBS_MASK_BREAK_*), 0 in every
+// real run.
+void obs_masks(int n_env, std::uintptr_t store, int n_units, int store_w,
+               const UnitTablesDevice& tables, std::uintptr_t rowmap, int n_rows, int n_slots,
+               std::uintptr_t tick_row, std::uintptr_t params, std::uintptr_t ended,
+               std::uintptr_t list, std::uintptr_t list_mask, int n_entries,
+               UnitRecordList& doors, UnitRecordList& door_tiles, int n_kinds,
+               std::uintptr_t mask_feet, std::uintptr_t mask_aim, std::uintptr_t mask_trigger,
+               std::uintptr_t mask_hand, std::uintptr_t faults, int brk);
+
 // The compiled layout's fingerprint (obs_layout.h): what device_obs checks.
 const char* obs_layout_fingerprint();
 

@@ -33,6 +33,9 @@
 //
 // Columns owned by later patches stay 0 here: on_next_tick / prev_aim (the
 // decoder's, P8.6a) and the order block 47-51 (P8.6b).
+//
+// #29 P8.4c: THE FOUR MASKS (obs_masks, k_masks below) live in this TU too,
+// one launch after the list's.
 // ==========================================================================
 #include "cuda_obs.h"
 
@@ -472,8 +475,8 @@ __device__ bool door_centre(const Doors& D, const int64_t* row, int64_t* x, int6
 // verb's reach of the soldier (verb_gates.door_in_reach: a span tile on its
 // footprint or its one-tile ring), a hull door (horde.is_hull_door: a span
 // tile 4-bordering, outside the span, the map's edge, vacuum or the ambient
-// ring), wired. NOTE for P8.4c: the reach is restated here until the use
-// verb's geometry is lifted into the unit library; then this calls it.
+// ring), wired. The reach is the unit library's unit_lib::reach_key (the use
+// verb's own geometry, P8.4c), never restated here.
 __device__ void door_entry(float* E, int k, const Doors& D, const View& v) {
     using namespace object_tables;
     const int64_t* row = D.d + (size_t)k * OBJ_DOOR_W;
@@ -484,15 +487,12 @@ __device__ void door_entry(float* E, int k, const Doors& D, const View& v) {
     put(E, OBS_L_CLASS, -1.0);
     put(E, OBS_L_OPEN, row[OBJ_DOOR_COL_STATE] == OBS_DOOR_STATE_OPEN ? 1.0 : 0.0);
     const int64_t a = row[OBJ_DOOR_COL_TILE_START], n = row[OBJ_DOOR_COL_TILE_COUNT];
-    const int64_t x0 = tile_of(v.me[UNIT_COL_X_Q]), y0 = tile_of(v.me[UNIT_COL_Y_Q]);
-    const int64_t side = v.me[UNIT_COL_FOOTPRINT] + 2;
     bool reach = false, hull = false;
     const int NY[4] = {-1, 1, 0, 0}, NX[4] = {0, 0, -1, 1};
     for (int64_t i = a; i < a + n; ++i) {
         int64_t ty, tx;
         span_tile(D, i, &ty, &tx);
-        const int64_t ry = ty - (y0 - 1), rx = tx - (x0 - 1);
-        if (0 <= ry && ry < side && 0 <= rx && rx < side) reach = true;
+        if (unit_lib::reach_key(v.me, ty, tx) >= 0) reach = true;
         for (int nb = 0; nb < 4 && !hull; ++nb) {
             const int64_t ny = ty + NY[nb], nx = tx + NX[nb];
             bool in_span = false;
@@ -665,6 +665,128 @@ __global__ void k_list(const int64_t* store, int U, const int64_t* tables, const
     }
 }
 
+
+// ==========================================================================
+// #29 P8.4c: THE FOUR MASKS (action_spec_v1.build_masks), one thread per
+// (env, row), every env on its decision tick with its ended latch clear, read
+// AFTER the list of the same tick (the aim mask reads its type and mask). The
+// state is the decision tick's start (the walk's end of tick T - 1 is the
+// reference's start of tick T: the tick row already holds T). A row that is
+// not valid (no roster unit, dead, turned) reads default_masks: stand,
+// "where I walk", release, nothing. Each hand bit is ONE unit-library gate
+// (unit_lib::can_reload, can_melee at the tick's start, can_shove, can_plant,
+// can_throw per kind; use: acts() and a live door with a span tile at
+// unit_lib::reach_key >= 0 -- verb_gates.can_use, whose use_door returns a
+// door iff one is in reach); never a copy of a decision.
+// ==========================================================================
+
+// verb_gates.can_use's question on the door table: a live door (row order =
+// sim._doors) whose span holds a tile in the unit's reach. A live door whose
+// span leaves the door-tile table sets *bad.
+__device__ bool door_in_reach_any(const int64_t* me, const int64_t* drows, int64_t n_doors,
+                                  const int64_t* tiles, int64_t n_tiles, bool* bad) {
+    using namespace object_tables;
+    for (int64_t q = 0; q < n_doors; ++q) {
+        const int64_t* row = drows + (size_t)q * OBJ_DOOR_W;
+        if (!row[OBJ_DOOR_COL_ALIVE]) continue;
+        const int64_t a = row[OBJ_DOOR_COL_TILE_START], c = row[OBJ_DOOR_COL_TILE_COUNT];
+        if (a < 0 || c < 0 || a + c > n_tiles) {
+            *bad = true;
+            return false;
+        }
+        for (int64_t i = a; i < a + c; ++i) {
+            const int64_t* t = tiles + (size_t)i * OBJ_DOOR_TILE_W;
+            if (unit_lib::reach_key(me, t[OBJ_DOOR_TILE_COL_TY], t[OBJ_DOOR_TILE_COL_TX]) >= 0)
+                return true;
+        }
+    }
+    return false;
+}
+
+__global__ void k_masks(const int64_t* store, int U, const int64_t* tables, const int32_t* rowmap,
+                        int n_rows, int S, const int64_t* trow, const int64_t* params,
+                        const uint8_t* ended, const float* list, const uint8_t* list_mask,
+                        int n_entries, const int64_t* doors, const int64_t* door_count,
+                        int door_cap, const int64_t* door_tiles, const int64_t* tile_count,
+                        int tile_cap, int n_kinds, uint8_t* m_feet, uint8_t* m_aim,
+                        uint8_t* m_trig, uint8_t* m_hand, int32_t* faults, int brk) {
+    const int e = blockIdx.y;
+    const int r = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r >= n_rows || !env_due(e, trow, params, ended)) return;
+    const size_t er = (size_t)e * n_rows + r;
+    const int n_aim = OBS_MASK_AIM_TOKENS + n_entries;
+    const int n_hand = OBS_MASK_HAND_THROW0 + n_kinds;
+    uint8_t* feet = m_feet + er * OBS_MASK_N_FEET;
+    uint8_t* aim = m_aim + er * n_aim;
+    uint8_t* trig = m_trig + er * OBS_MASK_N_TRIGGER;
+    uint8_t* hand = m_hand + er * n_hand;
+    for (int i = 0; i < OBS_MASK_N_FEET; ++i) feet[i] = 0;
+    for (int i = 0; i < n_aim; ++i) aim[i] = 0;
+    for (int i = 0; i < OBS_MASK_N_TRIGGER; ++i) trig[i] = 0;
+    for (int i = 0; i < n_hand; ++i) hand[i] = 0;
+    const int t = r / S;
+    const int sr = rowmap[er];
+    const int64_t* me = store + ((size_t)e * U + (sr < 0 ? 0 : sr)) * UNIT_STORE_W;
+    if (sr < 0 || sr >= U || me[UNIT_COL_LIFE_STATE] != OBS_LIFE_ALIVE ||
+        me[UNIT_COL_TEAM] != (int64_t)t) {
+        // default_masks: exactly one legal option per head
+        feet[OBS_MASK_FEET_STAND] = 1;
+        aim[OBS_MASK_AIM_WALK] = 1;
+        trig[0] = 1;
+        hand[OBS_MASK_HAND_NOTHING] = 1;
+        return;
+    }
+    const int64_t* tab = tables + (size_t)e * unit_tables::UNIT_TABLES_W;
+    const int64_t tick = trow[(size_t)e * unit_draws::TICK_ROW_W + unit_draws::TICK_ROW_TICK];
+    const int64_t dec = params[(size_t)e * OBS_PARAM_W + OBS_PARAM_DECIMATION];
+    for (int i = 0; i < OBS_MASK_N_FEET; ++i) feet[i] = 1;
+    for (int i = 0; i < OBS_MASK_N_TRIGGER; ++i) trig[i] = 1;
+    // the aim: the wind-up holds it over the coming decision's every tick
+    if (me[UNIT_COL_THROW_RELEASE_TICK] >= tick + dec - 1) {
+        aim[OBS_MASK_AIM_KEEP] = 1;
+    } else {
+        for (int i = 0; i < OBS_MASK_AIM_KEEP; ++i) aim[i] = 1;
+        const float* L = list + er * (size_t)n_entries * OBS_F;
+        const uint8_t* M = list_mask + er * (size_t)n_entries;
+        for (int i = 0; i < n_entries; ++i) {
+            const int64_t ty = (int64_t)L[(size_t)i * OBS_F + OBS_L_TYPE];   // astype: truncation
+            const bool aimable = ty >= 0 && ty < 31 && ((OBS_MASK_AIMABLE_BITS >> ty) & 1);
+            aim[OBS_MASK_AIM_TOKENS + i] = (M[i] != 0 && aimable) ? 1 : 0;
+        }
+    }
+    // the hand: ONE gate per bit
+    bool bad = false;
+    const bool reload = unit_lib::can_reload(me, tab, tick, &bad);
+    const bool shove = unit_lib::can_shove(me, tab, tick, &bad);
+    const bool swap = brk == OBS_MASK_BREAK_MASK_SWAP;     // THE BREAK: two gates swapped
+    hand[OBS_MASK_HAND_NOTHING] = 1;
+    hand[OBS_MASK_HAND_RELOAD] = (swap ? shove : reload) ? 1 : 0;
+    hand[OBS_MASK_HAND_MELEE] = unit_lib::can_melee(me, tab, tick, true, &bad) ? 1 : 0;
+    hand[OBS_MASK_HAND_SHOVE] = (swap ? reload : shove) ? 1 : 0;
+    {
+        using namespace object_tables;
+        int64_t wide[UNIT_STORE_W];
+        const int64_t* who = me;
+        if (brk == OBS_MASK_BREAK_MASK_REACH) {            // THE BREAK: the reach one tile wider
+            for (int c = 0; c < UNIT_STORE_W; ++c) wide[c] = me[c];
+            wide[UNIT_COL_FOOTPRINT] += 1;
+            who = wide;
+        }
+        const int64_t nd = door_count[e], nt = tile_count[e];
+        bool dbad = nd < 0 || nd > door_cap || nt < 0 || nt > tile_cap;
+        const bool use = !dbad && unit_lib::acts(me) &&
+                         door_in_reach_any(who, doors + (size_t)e * door_cap * OBJ_DOOR_W, nd,
+                                           door_tiles + (size_t)e * tile_cap * OBJ_DOOR_TILE_W,
+                                           nt, &dbad);
+        if (dbad) atomicOr(faults + e, OBS_MASK_FAULT_DOOR);
+        hand[OBS_MASK_HAND_USE] = (use && !dbad) ? 1 : 0;
+    }
+    hand[OBS_MASK_HAND_PLANT] = unit_lib::can_plant(me, tab, tick, &bad) ? 1 : 0;
+    hand[OBS_MASK_HAND_FLASHLIGHT] = 0;                    // reserved (design 2.6)
+    for (int k = 0; k < n_kinds; ++k)
+        hand[OBS_MASK_HAND_THROW0 + k] = unit_lib::can_throw(me, tab, k, &bad) ? 1 : 0;
+    if (bad) atomicOr(faults + e, OBS_MASK_FAULT_GATE);
+}
 }  // namespace
 
 void obs_list(int n_env, std::uintptr_t store, int n_units, int store_w,
@@ -723,6 +845,47 @@ void obs_list(int n_env, std::uintptr_t store, int n_units, int store_w,
     const cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess)
         throw std::runtime_error(std::string("obs_list: launch failed: ") + cudaGetErrorString(err));
+}
+
+void obs_masks(int n_env, std::uintptr_t store, int n_units, int store_w,
+               const UnitTablesDevice& tables, std::uintptr_t rowmap, int n_rows, int n_slots,
+               std::uintptr_t tick_row, std::uintptr_t params, std::uintptr_t ended,
+               std::uintptr_t list, std::uintptr_t list_mask, int n_entries,
+               UnitRecordList& doors, UnitRecordList& door_tiles, int n_kinds,
+               std::uintptr_t mask_feet, std::uintptr_t mask_aim, std::uintptr_t mask_trigger,
+               std::uintptr_t mask_hand, std::uintptr_t faults, int brk) {
+    auto need = [](bool ok, const char* what) {
+        if (!ok) throw std::invalid_argument(std::string("obs_masks: ") + what);
+    };
+    need(n_env >= 1 && n_units >= 1 && n_rows >= 1 && n_slots >= 1 && n_kinds >= 0,
+         "a non-positive size");
+    need(n_rows % n_slots == 0, "n_rows is not a multiple of n_slots");
+    need(n_entries == n_slots + OBS_ENTRIES_BEYOND_SLOTS,
+         "n_entries is not n_slots + OBS_ENTRIES_BEYOND_SLOTS");
+    need(n_kinds <= UNIT_COL_GRENADE_COUNTS_W, "more throw kinds than the store's grenade counts");
+    need(store_w == UNIT_STORE_W, "the store's width is not UNIT_STORE_W");
+    need(tables.n_env() == n_env && tables.width() == unit_tables::UNIT_TABLES_W,
+         "the device tables' shape");
+    need(doors.n_env() == n_env && door_tiles.n_env() == n_env, "the door tables' env count");
+    need(doors.width() == object_tables::OBJ_DOOR_W &&
+         door_tiles.width() == object_tables::OBJ_DOOR_TILE_W, "the door tables' widths");
+    need(store && rowmap && tick_row && params && ended && list && list_mask && mask_feet &&
+         mask_aim && mask_trigger && mask_hand && faults, "a null device pointer");
+    cudaStream_t s = tstream();
+    k_masks<<<dim3((n_rows + 63) / 64, n_env), 64, 0, s>>>(
+        reinterpret_cast<const int64_t*>(store), n_units, tables.values(),
+        reinterpret_cast<const int32_t*>(rowmap), n_rows, n_slots,
+        reinterpret_cast<const int64_t*>(tick_row), reinterpret_cast<const int64_t*>(params),
+        reinterpret_cast<const uint8_t*>(ended), reinterpret_cast<const float*>(list),
+        reinterpret_cast<const uint8_t*>(list_mask), n_entries, doors.records_dev(),
+        doors.count_dev(), doors.cap(), door_tiles.records_dev(), door_tiles.count_dev(),
+        door_tiles.cap(), n_kinds, reinterpret_cast<uint8_t*>(mask_feet),
+        reinterpret_cast<uint8_t*>(mask_aim), reinterpret_cast<uint8_t*>(mask_trigger),
+        reinterpret_cast<uint8_t*>(mask_hand), reinterpret_cast<int32_t*>(faults), brk);
+    const cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess)
+        throw std::runtime_error(std::string("obs_masks: launch failed: ") +
+                                 cudaGetErrorString(err));
 }
 
 }  // namespace breach_cuda

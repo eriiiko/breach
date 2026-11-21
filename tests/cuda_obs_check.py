@@ -105,7 +105,22 @@ P8.4b (the list: ``DeviceObservation.build_list``) --
 - PART WALL extended: the unseen enemy's row perturbed moves no entry, mask
   or uid of the team's list.
 
-THE BREAKS (``OBS_BREAK``), each must turn a part red: ``list_tie``,
+P8.4c (the four masks: ``DeviceObservation.build_masks``) --
+- inside every GATE / BATCH run: ``mask_feet``, ``mask_aim``,
+  ``mask_trigger``, ``mask_hand`` raw-bit equal to the reference's
+  (``action_spec_v1.build_masks`` over the host list, ``rl_env.observe_v1``'s
+  call), no mask fault; the coverage (:data:`MASK_CASES`: every hand bit,
+  every fixed aim token and an aimable entry both set and clear over the
+  corpus, the wind-up's KEEP-only case, a use with a door in reach; the bits
+  the spec fixes -- stand, the first trigger option, nothing always legal,
+  the flashlight always masked -- exempt by name), counted off the
+  reference, each > 0 else FAIL;
+- PART WALL extended: the unseen enemy's row perturbed moves no mask of the
+  team.
+
+THE BREAKS (``OBS_BREAK``), each must turn a part red: ``mask_swap``,
+``mask_reach`` (P8.4c, part GATE: the reload and shove bits' gates swapped;
+the use mask's reach one tile wider); ``list_tie``,
 ``list_cap`` (P8.4b, part GATE: the sort ties by the higher id; the door
 block one entry short of its capacity); ``lane_trunc``,
 ``lane_wide`` (P8.4a, part GATE: C's truncating division in place of the
@@ -155,12 +170,13 @@ for _p in (_ROOT, _ROOT / "src", _ROOT / "tools", _ROOT / "tests"):
 import cuda_conductor_check as cc  # noqa: E402
 from simulation import conductor as cd  # noqa: E402
 from simulation import device_obs as dobs  # noqa: E402
+from simulation import action_spec_v1 as _aspec  # noqa: E402
 
 FAILS: list = []
 BREAK = os.environ.get("OBS_BREAK", "")
 #: The patch this script's gates are at: every column owned by it or an
 #: earlier patch of the version-2 table is compared.
-PATCH = "P8.4b"
+PATCH = "P8.4c"
 #: The decision cadence of the corpus (design 13.1's decimation, a run file's
 #: ``[run] decimation``; the device observation takes it as its argument).
 DECIMATION = 4
@@ -262,6 +278,8 @@ class Played:
         self.aim_cov = {k: 0 for k in AIM_CASES}
         # P8.4b: the list's coverage, counted off the reference
         self.list_cov = {k: 0 for k in LIST_CASES}
+        # P8.4c: the masks' coverage, counted off the reference
+        self.mask_cov = {}
 
 
 _PLAYED: dict = {}
@@ -295,7 +313,16 @@ def host_observation(session, ctx, T, S) -> dict:
     me = SimpleNamespace(session=session, layout=SimpleNamespace(n_slots=S, n_rows=T * S))
     shapes = o.shapes(1, T * S, S)
     out = {k: np.zeros(sh[1:], dtype=dt) for k, (sh, dt) in shapes.items()}
-    o.observe_rows(session.sim, ctx, rl_env.EnvRunner.row_units(me), out)
+    units = rl_env.EnvRunner.row_units(me)
+    o.observe_rows(session.sim, ctx, units, out)
+    # P8.4c: the four masks at the START of the decision tick, from the list
+    # just built (rl_env.observe_v1's own call of build_masks)
+    from simulation import action_spec_v1 as a
+    tables = a.action_tables(session.sim, S)
+    for k, (sh, dt) in a.mask_shapes(1, T * S, tables.n_entries, tables.n_kinds).items():
+        out[k] = np.zeros(sh[1:], dtype=dt)
+    a.build_masks(session.sim, units, out["list"][:, :, 0], out["list_mask"],
+                  out["list_uid"], tables, DECIMATION, out)
     valid, in_match = rl_env.EnvRunner.row_flags(me)
     out["valid"][...] = valid
     out["in_match"][...] = in_match
@@ -353,6 +380,7 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Pl
             host = host_observation(s, ctx, T, S)
         p.obs[int(s.sim.tick)] = owned_parts(host, own, False)
         count_list(p.list_cov, host, len(ctx.hand_rows))
+        count_masks(p.mask_cov, host)
         p.aims[int(s.sim.tick)] = at.rec
         p.lof[int(s.sim.tick)], p.lof_cover[int(s.sim.tick)] = host_lof(s.sim)
         t_obs += time.perf_counter() - ts
@@ -488,6 +516,8 @@ def gate(label, played: list, census: Census | None = None) -> bool:
         obs.aims_brk = dobs.AIM_BREAK_CODES[BREAK]
     if BREAK in dobs.LIST_BREAK_CODES:             # P8.4b: the sort's tie, a capacity
         obs.list_brk = dobs.LIST_BREAK_CODES[BREAK]
+    if BREAK in dobs.MASK_BREAK_CODES:             # P8.4c: two gates swapped, the reach wide
+        obs.masks_brk = dobs.MASK_BREAK_CODES[BREAK]
     n_cmp = 0
     end = max(p.end for p in played)
     t0 = time.perf_counter()
@@ -506,6 +536,10 @@ def gate(label, played: list, census: Census | None = None) -> bool:
             lf = obs.list_faults.get()
             if lf.any():
                 fail(f"{label}: tick {tick}: list fault bits {lf.tolist()}")
+                return False
+            mf = obs.mask_faults.get()
+            if mf.any():
+                fail(f"{label}: tick {tick}: mask fault bits {mf.tolist()}")
                 return False
         if tick % DECIMATION == 0:
             got = obs.host(own)
@@ -1003,6 +1037,73 @@ def judge_list(played) -> None:
     for k in LIST_CASES:
         if not total.get(k):
             fail(f"list coverage: the case {k!r} is never reached over the corpus (vacuous)")
+
+
+# ---------------------------------------------------------------------------
+# P8.4c: the masks' coverage (the masks are compared as served keys)
+# ---------------------------------------------------------------------------
+#: The bits the spec FIXES (never both set and clear, by the reference's own
+#: rule): stand, the first trigger option and "nothing" always legal, the
+#: flashlight always masked (reserved, design 2.6).
+MASK_FIXED = {("mask_feet", _aspec.FEET_STAND), ("mask_trigger", 0),
+              ("mask_hand", _aspec.HAND_NOTHING), ("mask_hand", _aspec.HAND_FLASHLIGHT)}
+#: The named cases (each > 0 else FAIL) beside the per-bit "set and clear".
+MASK_CASES = ("aim_keep_only", "aim_entry_set", "aim_entry_clear", "use_door_set",
+              "default_row")
+
+
+def count_masks(cov, host) -> None:
+    """Per mask bit of one host observation: the rows it is set and clear
+    on (``cov[(key, bit)] = [set, clear]``; the aim's entry positions pooled
+    as ``("mask_aim", "entry")``), and the named cases."""
+    from simulation import action_spec_v1 as a
+    for key in a.MASK_KEYS:
+        m = np.asarray(host[key]).astype(bool)
+        n_fixed = a.AIM_TOKENS if key == "mask_aim" else m.shape[1]
+        for j in range(n_fixed):
+            c = cov.setdefault((key, j), [0, 0])
+            c[0] += int(m[:, j].sum())
+            c[1] += int((~m[:, j]).sum())
+        if key == "mask_aim":
+            ent = m[:, a.AIM_TOKENS:]
+            c = cov.setdefault((key, "entry"), [0, 0])
+            c[0] += int(ent.sum())
+            c[1] += int((~ent).sum())
+    aim = np.asarray(host["mask_aim"]).astype(bool)
+    keep = aim[:, a.AIM_KEEP] & ~aim[:, a.AIM_WALK]
+    valid = np.asarray(host["valid"]).astype(bool)
+    cov["aim_keep_only"] = cov.get("aim_keep_only", 0) + int((keep & valid).sum())
+    ent = aim[:, a.AIM_TOKENS:][valid & ~keep]
+    cov["aim_entry_set"] = cov.get("aim_entry_set", 0) + int(ent.any(axis=1).sum())
+    cov["aim_entry_clear"] = cov.get("aim_entry_clear", 0) + int((~ent).any(axis=1).sum())
+    hand = np.asarray(host["mask_hand"]).astype(bool)
+    cov["use_door_set"] = cov.get("use_door_set", 0) + int(hand[:, a.HAND_USE].sum())
+    cov["default_row"] = cov.get("default_row", 0) + int((~valid).sum())
+
+
+def judge_masks(played) -> None:
+    total = {}
+    for p in played:
+        for k, n in p.mask_cov.items():
+            if isinstance(n, list):
+                t = total.setdefault(k, [0, 0])
+                t[0] += n[0]
+                t[1] += n[1]
+            else:
+                total[k] = total.get(k, 0) + n
+    bits = sorted((k for k in total if isinstance(total[k], list)), key=str)
+    print("    mask coverage (set / clear): " + ", ".join(
+        f"{k[0][5:]}[{k[1]}] {total[k][0]}/{total[k][1]}" for k in bits))
+    print("    mask cases: " + ", ".join(f"{k} {total.get(k, 0)}" for k in MASK_CASES))
+    for k in bits:
+        if k in MASK_FIXED:
+            continue
+        if not total[k][0] or not total[k][1]:
+            fail(f"mask coverage: {k[0]} bit {k[1]} is never both set and clear over the "
+                 f"corpus (set {total[k][0]}, clear {total[k][1]}): the gate on it is vacuous")
+    for k in MASK_CASES:
+        if not total.get(k):
+            fail(f"mask coverage: the case {k!r} is never reached over the corpus (vacuous)")
 
 
 # ---------------------------------------------------------------------------
@@ -1521,6 +1622,8 @@ def part_gate():
                   + corpus_door())
     judge_list(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                + corpus_door() + corpus_turn() + corpus_list())
+    judge_masks(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
+                + corpus_door() + corpus_turn() + corpus_list())
     for p in corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round():
         a0, a1 = p.cover_alive
         if a0 != a1:
@@ -2008,12 +2111,14 @@ def part_wall():
                 obs.vision(store_ptr=int(pert.data.ptr))
                 obs.aims(store_ptr=int(pert.data.ptr))
                 obs.build_list(store_ptr=int(pert.data.ptr))
+                obs.build_masks(store_ptr=int(pert.data.ptr))
                 moved = [k for k, v in team_aims(obs, t, p.S).items()
                          if not np.array_equal(v, base[k])]
                 del pert
                 obs.vision()
                 obs.aims()
                 obs.build_list()
+                obs.build_masks()
                 if moved:
                     fail(f"wall {p.name}: tick {int(c.sims[0].tick)}, team {t}: perturbing "
                          f"unseen enemy {p.uids[u]}'s row moved the team's {moved}")
@@ -2042,15 +2147,16 @@ def part_wall():
             fail(f"wall: no case under the {rule!r} rule (vacuous)")
         if not aims_done.get(rule):
             fail(f"wall: no P8.4a case under the {rule!r} rule (vacuous)")
-    print(f"  wall P8.4a / P8.4b: {aims_done} (team, tick) cases: the unseen enemy's row "
-          f"perturbed (and its trigger flipped) -> the team's lanes, lanes plane, aims, lines "
-          f"of fire, turns and list (entries, mask, uids) unchanged")
+    print(f"  wall P8.4a / P8.4b / P8.4c: {aims_done} (team, tick) cases: the unseen enemy's "
+          f"row perturbed (and its trigger flipped) -> the team's lanes, lanes plane, aims, "
+          f"lines of fire, turns, list (entries, mask, uids) and four masks unchanged")
 
 
 def team_aims(obs, t, S) -> dict:
     """Team t's P8.4a answers of env 0 (the WALL's reading): its fire lanes,
     the lanes plane of its rows, its aim_of answers, its rows' lines of fire
-    and ticks_to_within; P8.4b: its rows' list, list mask and list uids."""
+    and ticks_to_within; P8.4b: its rows' list, list mask and list uids;
+    P8.4c: its rows' four masks."""
     rows = slice(t * S, (t + 1) * S)
     from simulation import obs_spec_v1 as o
     k = o.NEAR_U_PLANES.index("lanes")
@@ -2060,7 +2166,10 @@ def team_aims(obs, t, S) -> dict:
             # P8.4b: the list of the team's rows, its mask and its uids
             "list": obs.buffers["list"][0, rows].get(),
             "list_mask": obs.buffers["list_mask"][0, rows].get(),
-            "list_uid": obs.buffers["list_uid"][0, rows].get()}
+            "list_uid": obs.buffers["list_uid"][0, rows].get(),
+            # P8.4c: the four masks of the team's rows
+            **{k: obs.buffers[k][0, rows].get()
+               for k in ("mask_feet", "mask_aim", "mask_trigger", "mask_hand")}}
 
 
 # ---------------------------------------------------------------------------

@@ -874,6 +874,16 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("list_uid"), py::arg("faults"), py::arg("brk"),
           "#29 P8.4b: obs_spec_v1.build_list (the list, its mask and its uids) for every "
           "env on its decision tick.");
+    // #29 P8.4c: the four masks (cpp/src/cuda_obs_list.cu), on the tick stream, no sync.
+    m.def("obs_masks", &breach_cuda::obs_masks, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("tables"), py::arg("rowmap"),
+          py::arg("n_rows"), py::arg("n_slots"), py::arg("tick_row"), py::arg("params"),
+          py::arg("ended"), py::arg("list"), py::arg("list_mask"), py::arg("n_entries"),
+          py::arg("doors"), py::arg("door_tiles"), py::arg("n_kinds"), py::arg("mask_feet"),
+          py::arg("mask_aim"), py::arg("mask_trigger"), py::arg("mask_hand"),
+          py::arg("faults"), py::arg("brk"),
+          "#29 P8.4c: action_spec_v1.build_masks (the four masks) for every env on its "
+          "decision tick.");
     m.def("obs_picture_layout", [](int n_teams, int n_units) {
               py::dict d;
               for (const auto& kv : breach_cuda::obs_picture_layout(n_teams, n_units))
