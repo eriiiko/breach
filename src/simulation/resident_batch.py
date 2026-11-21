@@ -26,8 +26,8 @@ space maps only (the sky exchange is the host's: ACCEPTED GAP), no light
 (render state until #81). The templates, seeds and states differ per env.
 
 This is the P5 driver G1 measures ("NO units, the ship's entities ON, device
-vs farm") -- not the ``device`` backend of ``BatchedEnv`` (refused until
-P8b). It needs the CUDA build and CuPy; ``physics_runner.set_residency``
+vs farm") -- not the ``device`` backend of ``BatchedEnv`` (``src/rl_env_device.py``,
+the device conductor over these buffers, #29 P8.10a). It needs the CUDA build and CuPy; ``physics_runner.set_residency``
 must be on (the runner's step would otherwise take the host path).
 """
 from __future__ import annotations
@@ -107,12 +107,40 @@ class ResidentBatch:
     def reset_env(self, e, sim):
         """Replace env ``e`` by ``sim`` (mid-batch reset: a fresh episode in
         that slot). The other envs are untouched."""
-        if not 0 <= e < self.n_env:
-            raise IndexError(e)
-        self._check_homogeneous([self.sims[0] if e else sim, sim] + [
-            s for k, s in enumerate(self.sims) if k not in (0, e)])
+        self.check_reset(e, sim)
         self.sims[e] = sim
         self._bind(e, sim)
+
+    def check_reset(self, e, sim):
+        """#29 P8.9a: refuse (``ValueError`` by name) a ``sim`` env ``e``
+        cannot take -- the batch stays homogeneous -- before anything is
+        written (the device conductor's reset checks every structure first)."""
+        if not 0 <= e < self.n_env:
+            raise IndexError(e)
+        if sim.physics_runner is None:
+            raise ValueError(f"ResidentBatch: env {e}'s new sim has no physics runner")
+        # the new sim against the slot's current occupant (which shares the
+        # buffers' shapes: at N = 1 there is no other env to compare with)
+        old = self.sims[e]
+        g, g0 = sim.gmap, old.gmap
+        if (g._h, g._w) != (g0._h, g0._w):
+            raise ValueError(f"ResidentBatch: env {e}'s new grid {(g._h, g._w)} differs "
+                             f"from the batch's {(g0._h, g0._w)} (a batch is homogeneous)")
+        if g.gas.shape != g0.gas.shape:
+            raise ValueError(f"ResidentBatch: env {e}'s new gas table differs")
+        if (g.tilt_x, g.tilt_y) != (g0.tilt_x, g0.tilt_y):
+            raise ValueError(f"ResidentBatch: env {e}'s new tilt differs")
+        if sim._tps != old._tps:
+            raise ValueError(f"ResidentBatch: env {e}'s new tick rate differs")
+        if g.is_ambient.any() and self.n_env > 1:
+            raise ValueError(f"ResidentBatch: env {e}'s new sim is an ambient map -- a "
+                             "batch is space maps (ACCEPTED GAP, design §4.2)")
+        for name, buf in self.buffers.items():
+            a = getattr(g, name)
+            if tuple(a.shape) != tuple(buf.shape[1:]) or a.dtype != buf.dtype:
+                raise ValueError(f"ResidentBatch: env {e}'s new {name} is {a.dtype} "
+                                 f"{tuple(a.shape)}, the batch's {buf.dtype} "
+                                 f"{tuple(buf.shape[1:])}")
 
     def step(self, take_sources=None):
         """One tick of every env (paused envs refuse: a batch steps together).

@@ -237,6 +237,11 @@ if(BREACH_CUDA)
         # the horde latch, the decoder's observation columns; float64 through
         # the observation's float kit. Class T.
         src/cuda_obs_decoder.cu
+        # #29 P8.6b (part 1): the order -- the route over the room graph's
+        # device table (the horde's one device flood), the vector's order block,
+        # the far route / place planes; float64 through the observation's float
+        # kit, one cast per value. Class T.
+        src/cuda_obs_orders.cu
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like

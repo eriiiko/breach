@@ -253,7 +253,7 @@ FAILS: list = []
 BREAK = os.environ.get("OBS_BREAK", "")
 #: The patch this script's gates are at: every column owned by it or an
 #: earlier patch of the version-2 table is compared.
-PATCH = "P8.8b"
+PATCH = "P8.6b"
 #: The decision cadence of the corpus (design 13.1's decimation, a run file's
 #: ``[run] decimation``; the device observation takes it as its argument).
 DECIMATION = 4
@@ -571,6 +571,7 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None,
         count_list(p.list_cov, host, len(ctx.hand_rows))
         count_masks(p.mask_cov, host)
         count_full(p, s, host)
+        count_orders(p, s, host)              # P8.6b
         p.aims[int(s.sim.tick)] = at.rec
         p.lof[int(s.sim.tick)], p.lof_cover[int(s.sim.tick)] = host_lof(s.sim)
         t_obs += time.perf_counter() - ts
@@ -629,11 +630,23 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None,
         p.result = (dpic_outcome(r_.outcome), -1 if r_.team is None else int(r_.team),
                     int(r_.ticks))
     p.book_cov = ref.coverage()
+    _freeze(p)
     _PLAYED[key] = p
     print(f"  played {name}@{seed}: {p.end} ticks, {len(p.obs)} decisions "
           f"({time.perf_counter() - t0:.1f} s, host observation {1000 * t_obs / len(p.obs):.1f} "
           f"ms per decision)")
     return p
+
+
+def _freeze(p: Played) -> None:
+    """A play is shared by every part of the process that reads it (DEVICE
+    CHECK PLAYS): its per-decision arrays and its terminal observation are
+    made read-only, so a part that writes to them raises instead of handing a
+    later part an altered reference."""
+    for arrs in list(p.obs.values()) + ([p.final] if p.final is not None else []):
+        for a in arrs.values():
+            if isinstance(a, np.ndarray):
+                a.flags.writeable = False
 
 
 def twin(p: Played):
@@ -749,6 +762,10 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
         obs.win_brk = dobs.WIN_BREAK_CODES[BREAK]
     if BREAK in dobs.FULL_BREAK_CODES:             # P8.8: the visible set, the tie, the cap
         obs.full_brk = dobs.FULL_BREAK_CODES[BREAK]
+    if BREAK in dobs.ORDER_BREAK_CODES:            # P8.6b: the previous openings, the tie, the place row
+        obs.order_brk = dobs.ORDER_BREAK_CODES[BREAK]
+    if BREAK == "ord_expiry":                     # P8.6b: an expired order still shown
+        obs.expiry_brk = True
     import cupy as cp
     n_cmp = 0
     end = max(p.end for p in played)
@@ -788,12 +805,16 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
             if ff.any():
                 fail(f"{label}: tick {tick}: full view fault bits {ff.tolist()}")
                 return False
+            of = obs.order_faults.get()
+            if of.any():
+                fail(f"{label}: tick {tick}: order fault bits {of.tolist()}")
+                return False
         if tick % DECIMATION == 0:
             got = obs.host(own)
             for e, p in enumerate(played):
                 if tick > p.end:
                     continue
-                want = p.obs[tick]
+                want = dict(p.obs[tick])           # a shared play: never written
                 mine = {kk: (got[kk[0]][e] if kk[1] is None else
                              got[kk[0]][e][..., _plane_index(kk[0], kk[1])]
                              if kk[0] in ("vector", "list") else
@@ -2413,6 +2434,307 @@ def corpus_fire():
     return [play("fire_hand", lv, spec, FIRE_SEED, setup=fire_setup, max_ticks=FIRE_TICKS)]
 
 
+#: P8.6b's ORDER HAND MATCH: ship_demo, both teams idle (only the hand intents
+#: move anything), cut at :data:`ORDER_TICKS`. At tick 0 (the reference and the
+#: twin alike): a closed door D in a wall running north-south, joining team 0's
+#: room ``ra`` (which has other exits) to a room ``rb``, is made a HULL door
+#: (the wall tile above its span marked vacuum, as the list hand match does),
+#: so the route cannot use it while it is shut (``opening_states``: not
+#: openable; a closed ORDINARY door counts as openable, so shutting one never
+#: changes a route); soldier A (team 0) stands beside it in ``ra``, its
+#: footprint's ring touching the span; every door of a room nobody stands in
+#: is WIRED (a level wire; the drive table was built at load, so the play is
+#: unchanged), so that room is unreachable. The orders, every one through
+#: ``Simulation.order_intent`` (the tap carries them to the twin): A go to
+#: ``rb`` (the long way round while D is shut); B hold the room it stands in
+#: with a priority target (inside, route 0); C clear D's opening for
+#: :data:`ORDER_C_TICKS` (unreachable while D is shut); E fall back to ``rb``
+#: (A's place: the same place in the list) from tick 5, a time limit ending
+#: off the cadence (it expires); F (team 1) go to the unreachable room; G
+#: hold its room, a short limit; I go to another opening, REPLACED at tick
+#: 60, cleared at tick 100; B cleared at 70 and given a hold again at 90; H
+#: never. At :data:`ORDER_USE_TICK` A opens D (the route field changes
+#: between two decisions with the orders held); from :data:`ORDER_WALK_TICK`
+#: A walks east through the doorway into ``rb`` (route 2, 1, 0 at its anchor,
+#: the compass pointing east), stopping at :data:`ORDER_STOP_TICK`. Soldier B
+#: stands at tick 0 beside ANOTHER door of ``ra`` (an ordinary one, D2) and
+#: opens it at :data:`ORDER_B_USES` [0], shuts it at [1]: shutting an ordinary
+#: door changes no route (it is openable either way), but the openings'
+#: states move (passable, then openable), so a route read over the states of
+#: the PREVIOUS decision differs at the first decision after the shutting
+#: (the break ``ord_prev``).
+ORDER_SEED = 81
+ORDER_TICKS = 160
+ORDER_USE_TICK = 30
+ORDER_WALK_TICK = 48
+ORDER_STOP_TICK = 84
+ORDER_C_TICKS = 70
+ORDER_B_USES = (10, 21)
+#: The coverage of the order's rows (counted off the reference, each > 0 over
+#: the corpora with orders: the order hand match, the list hand match and
+#: corpus (c)), per valid row at every decision tick.
+ORDER_CASES = ("no_order", "what_go_to", "what_hold", "what_clear", "what_fall_back_to",
+               "place_room", "place_opening", "limit", "no_limit", "target", "no_target",
+               "inside", "route_0", "route_1", "route_more", "unreachable", "route_changed",
+               "expired", "replaced", "with_and_without", "same_place", "compass_dx")
+
+
+def _order_free_block(sim, y, x, fp) -> bool:
+    from simulation import horde
+    h, w = sim.gmap.material.shape
+    if not (0 <= y and 0 <= x and y + fp <= h and x + fp <= w):
+        return False
+    walk = horde.walkable_tiles(sim.gmap)
+    return bool(walk[y:y + fp, x:x + fp].all())
+
+
+def _order_scene(sim):
+    """The order hand match's scene, a pure read of the level at tick 0 (the
+    same for the reference and the twin): ``(door D, the wall tile above its
+    span, A's anchor, ra, rb, D's opening id, the unreachable room, its
+    doors, B's anchor beside D2)``. D: a live closed door whose span is one
+    column with a solid tile above it, its west neighbour in team 0's room
+    ``ra``, its east neighbour in another room ``rb``, ``ra`` holding
+    another opening; A's anchor: the free block of ``ra`` west of the span,
+    its top row the span's, its ring touching the span."""
+    from simulation import room_graph
+    from simulation.entities.door import DOOR_CLOSED
+    from simulation.unit_orders import graph_of
+    g = graph_of(sim)
+    gm = sim.gmap
+    marines = _marines(sim)
+    fp = int(marines[0].footprint)
+    t0 = [u for u in marines if int(u.team) == 0]
+    home = int(room_graph.place_at(g, t0[0].center_tile_y(), t0[0].center_tile_x()))
+    found = None
+    for d in sim._doors:
+        if not d.alive or d.state != DOOR_CLOSED:
+            continue
+        span = sorted((int(ty), int(tx)) for ty, tx in d.span)
+        if len({x for _, x in span}) != 1:
+            continue
+        x = span[0][1]
+        y0, y1 = span[0][0], span[-1][0]
+        if y0 < 1 or not gm.solid[y0 - 1, x]:
+            continue
+        ra = int(room_graph.place_at(g, y0, x - 1))
+        rb = int(room_graph.place_at(g, y0, x + 1))
+        if ra != home or not (0 <= rb < (1 << 16)) or rb == ra:
+            continue
+        op = [o for o in g.openings
+              if any(o.x <= tx < o.x + o.w and o.y <= ty < o.y + o.h for ty, tx in span)]
+        if len(op) != 1:
+            continue
+        if sum(1 for o in g.openings if ra in (int(o.a), int(o.b))) < 2:
+            continue
+        a_spot = (y0, x - fp)
+        if y1 - y0 + 1 < fp or not _order_free_block(sim, *a_spot, fp):
+            continue
+        found = (d, (y0 - 1, x), a_spot, ra, rb, int(op[0].id))
+        break
+    assert found is not None, "order hand match: no door D (one column, wall above, team 0's room)"
+    d = found[0]
+    # D2 and B's anchor: another closed door of ra whose span is one row with
+    # ra below it, B's block of ra right below the span, its west column the
+    # span's second tile (the ring touches the span), D2 the only door in reach;
+    # the room sealed below is one neither D nor D2 opens
+    b_spot = d_2 = None
+    for d2 in sim._doors:
+        if d2 is d or not d2.alive or d2.state != DOOR_CLOSED:
+            continue
+        span = sorted((int(ty), int(tx)) for ty, tx in d2.span)
+        if len({y for y, _ in span}) != 1:
+            continue
+        y, x0 = span[0]
+        spot = (y + 1, x0 + 1)
+        if (int(room_graph.place_at(g, y + 1, x0)) == found[3]
+                and _order_free_block(sim, *spot, fp)
+                and abs(spot[0] - found[2][0]) + abs(spot[1] - found[2][1]) > 2 * fp):
+            b_spot, d_2 = spot, d2
+            break
+    assert b_spot is not None, "order hand match: no second door D2 of ra for soldier B"
+    found = found + (b_spot,)
+    occupied = {room_graph.place_at(g, u.center_tile_y(), u.center_tile_x()) for u in sim.units}
+    door_of = {}
+    for dd in sim._doors:
+        if dd.alive and dd.state == DOOR_CLOSED:
+            for ty, tx in dd.span:
+                door_of[(int(ty), int(tx))] = dd
+    for room in g.rooms:
+        r = int(room.id)
+        if r in (found[3], found[4]) or r in occupied:
+            continue
+        ops = [o for o in g.openings if int(o.a) == r or int(o.b) == r]
+        if not ops or any(found[3] in (int(o.a), int(o.b)) for o in ops):
+            continue                     # never a neighbour of ra: A's long way round stays
+        doors = set()
+        ok = True
+        for o in ops:
+            for t in o.tiles:
+                if t in door_of:
+                    doors.add(door_of[t])
+                elif gm.materials.mobility[gm.material[t]] > 0:
+                    ok = False
+        if ok and doors and d not in doors and d_2 not in doors:
+            return found[:6] + (r, sorted(doors, key=lambda x: int(x.ordinal)), found[6])
+    raise AssertionError("order hand match: no sealable room found")
+
+
+def order_setup(session):
+    from dataclasses import replace as dc_replace
+    from types import SimpleNamespace as NS
+    from simulation import horde, unit_fixed
+    sim = session.sim
+    one = unit_fixed.FP_ONE
+    scene = _order_scene(sim)
+    _ORDER_SCENES[id(sim)] = scene
+    d, wall, a_spot, ra, rb, op_id, r_u, doors, b_spot = scene
+    sim.gmap.is_vacuum[wall[0], wall[1]] = True
+    assert horde.is_hull_door(sim.gmap, d.span)
+    m = _marines(sim)
+    t0 = [u for u in m if int(u.team) == 0]
+    t0[0].set_pos_q(a_spot[1] * one, a_spot[0] * one)          # A
+    t0[1].set_pos_q(b_spot[1] * one, b_spot[0] * one)          # B, beside D2
+    wires = tuple(NS(input="open", target_ordinal=int(x.ordinal)) for x in doors)
+    sim.level = dc_replace(sim.level, wires=tuple(getattr(sim.level, "wires", ()) or ()) + wires)
+    sim._vision_cache = None
+    sim.start_team_picture(range(len(session.spec.teams)))
+
+
+def order_script(sim):
+    from simulation import room_graph, unit_fixed
+    from simulation.unit_orders import ORDER_OPENING_BASE as B, graph_of
+    g = graph_of(sim)
+    t = int(sim.tick)
+    one = unit_fixed.FP_ONE
+    m = _marines(sim)
+    t0 = [u for u in m if int(u.team) == 0]
+    t1 = [u for u in m if int(u.team) == 1]
+    A, Bu, C, E = t0[:4]
+    F, G, H, I = t1[:4]
+    if t == 0:
+        _d, _w, _a, ra, rb, op_id, r_u, _doors, _b = _ORDER_SCENES[id(sim)]
+        here = lambda u: int(room_graph.place_at(g, u.center_tile_y(), u.center_tile_x()))  # noqa: E731
+        other_op = next(int(o.id) for o in g.openings if int(o.id) != op_id)
+        _ORDER_PLAN[id(sim)] = dict(ra=ra, rb=rb, op=op_id, ru=r_u, other_op=other_op,
+                                    b_room=here(Bu), g_room=here(G))
+    p = _ORDER_PLAN[id(sim)]
+    alive = lambda u: u.alive and not u.is_zombie  # noqa: E731
+    plan = {0: [(A, 1, p["rb"], 0, -1), (Bu, 2, p["b_room"], 0, int(F.id)),
+                (C, 3, B + p["op"], ORDER_C_TICKS, -1), (F, 1, p["ru"], 0, -1),
+                (G, 2, p["g_room"], 22, int(A.id)), (I, 1, B + p["other_op"], 0, -1)],
+            5: [(E, 4, p["rb"], 50, -1)],
+            60: [(I, 1, p["rb"], 0, int(Bu.id))],
+            70: [(Bu, 0, -1, 0, -1)],
+            90: [(Bu, 2, p["b_room"], 0, -1)],
+            100: [(I, 0, -1, 0, -1)]}
+    for u, what, where, ticks, target in plan.get(t, ()):
+        if alive(u):
+            sim.order_intent(int(u.id), what, where, ticks, target)
+    if t in ORDER_B_USES and alive(Bu):
+        sim.use_intent(int(Bu.id))
+    if t == ORDER_USE_TICK and alive(A):
+        sim.use_intent(int(A.id))
+    if t == ORDER_WALK_TICK and alive(A):
+        sim.set_move_dir(int(A.id), one, 0, one)
+    if t == ORDER_STOP_TICK and alive(A):
+        sim.clear_move_dir(int(A.id))
+
+
+#: per sim (the reference's and the twin's apart): the scene as found at tick 0
+#: (the doors move later) and the plan's places
+_ORDER_PLAN: dict = {}
+_ORDER_SCENES: dict = {}
+
+
+def corpus_orders(seeds=(ORDER_SEED,)):
+    from dataclasses import replace
+    lv = ship_level()
+    spec = replace(lv.match, teams=tuple(replace(t, controller="idle") for t in lv.match.teams))
+    return [play("order_hand", lv, spec, sd, setup=order_setup,
+                 script=order_script, max_ticks=ORDER_TICKS) for sd in seeds]
+
+
+#: P8.6b's batch: the order hand match at these seeds beside the list hand
+#: match (orders held in every env of the batch, ending at different ticks).
+ORDER_BATCH_SEEDS = (ORDER_SEED, 83, 85)
+
+
+def count_orders(p, session, host) -> None:
+    """P8.6b's coverage off the reference at a decision: per valid row its
+    order's kind, place kind, clock and target, whether it stands inside the
+    place, its route's length at its anchor (0, 1, more, unreachable: the
+    host's own ``obs_spec_v1.route``), a route that CHANGED since the row's
+    previous decision while its order stayed (the map or a door moved), an
+    order that expired or was replaced since, a team holding rows with and
+    without an order."""
+    import rl_env
+    from simulation import horde
+    from simulation import obs_spec_v1 as o
+    from simulation.unit_orders import NO_LIMIT, NO_TARGET, ORDER_OPENING_BASE, graph_of
+    cov = p.__dict__.setdefault("order_cov", {k: 0 for k in ORDER_CASES})
+    prev = p.__dict__.setdefault("_order_prev", {})
+    sim = session.sim
+    tick = int(sim.tick)
+    me = SimpleNamespace(session=session, layout=SimpleNamespace(n_slots=p.S, n_rows=p.T * p.S))
+    units = rl_env.EnvRunner.row_units(me)
+    graph = graph_of(sim)
+    world = o.ObsWorld(sim)
+    vec = host["vector"]
+    names = {1: "what_go_to", 2: "what_hold", 3: "what_clear", 4: "what_fall_back_to"}
+    per_team = {}
+    for i, u in enumerate(units):
+        if u is None:
+            continue
+        t = i // p.S
+        what, where = int(u.order_what), int(u.order_where)
+        until, target = int(u.order_until), int(u.order_target)
+        last = prev.get(int(u.id))
+        if what == 0:
+            cov["no_order"] += 1
+            per_team.setdefault(t, [0, 0])[0] += 1
+            if last is not None and last[0] and last[2] != NO_LIMIT and last[2] <= tick:
+                cov["expired"] += 1
+            prev[int(u.id)] = (0, -1, NO_LIMIT, None)
+            continue
+        per_team.setdefault(t, [0, 0])[1] += 1
+        cov[names[what]] += 1
+        cov["place_room" if where < ORDER_OPENING_BASE else "place_opening"] += 1
+        cov["limit" if until != NO_LIMIT else "no_limit"] += 1
+        cov["target" if target != NO_TARGET else "no_target"] += 1
+        if float(vec[i, 87]) == 1.0:
+            cov["inside"] += 1
+        if float(vec[i, 92]) != 0.0:
+            cov["compass_dx"] += 1
+        if any(v is not None and v is not u and int(v.order_what) and int(v.order_where) == where
+               for v in units[t * p.S:(t + 1) * p.S]):
+            cov["same_place"] += 1
+        field = None
+        if graph is not None:
+            field = np.array(o.route(world, graph, where, int(u.footprint)), copy=True)
+            here = horde.field_at(field, int(u.tile_y), int(u.tile_x))
+            cov["unreachable" if here == horde.UNREACHED else "route_0" if here == 0
+                else "route_1" if here == 1 else "route_more"] += 1
+        if last is not None and last[0]:
+            if (last[0], last[1], last[2]) != (what, where, until):
+                cov["replaced"] += 1
+            elif field is not None and last[3] is not None and not np.array_equal(field, last[3]):
+                cov["route_changed"] += 1
+        prev[int(u.id)] = (what, where, until, field)
+    cov["with_and_without"] += sum(1 for a, b in per_team.values() if a and b)
+
+
+def judge_orders(played) -> None:
+    tot = {k: 0 for k in ORDER_CASES}
+    for p in played:
+        for k, v in getattr(p, "order_cov", {}).items():
+            tot[k] += v
+    print(f"    order coverage (rows at decisions): {tot}")
+    for k, v in tot.items():
+        if v == 0:
+            fail(f"order coverage: case {k!r} never reached (the gate on it would be vacuous)")
+
+
 def part_gate():
     ca, cb, cdn = Census(), Census(), Census()
     bc = BOOK_CENSUS
@@ -2436,9 +2758,10 @@ def part_gate():
         gate(f"(d fire) {p.name}", [p], cdn, books_census=bc)
     for p in corpus_clock():
         gate(f"(d clock) {p.name}", [p], cdn, books_census=bc)
+    for p in corpus_orders():                       # P8.6b: every order kind by hand
+        gate(f"(d orders) {p.name}", [p], cdn, books_census=bc)
     ccn = Census()                                  # P8.6a: corpus (c), decoder-driven
-    for p in corpus_c():
-        gate(f"(c) {p.name}", [p], ccn, books_census=bc)
+    gate_c(ccn, bc)
     ca.judge("census (a)", strict=False)
     cb.judge("census (b)", strict=False)
     cdn.judge("census (d)", strict=False)
@@ -2464,6 +2787,7 @@ def part_gate():
     judge_full(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                + corpus_door() + corpus_turn() + corpus_list() + corpus_fire()
                + corpus_clock() + corpus_c())
+    judge_orders(corpus_list() + corpus_orders() + corpus_c())
     judge_terminal()
     judge_books(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                 + corpus_door() + corpus_turn() + corpus_list() + corpus_fire()
@@ -2478,13 +2802,34 @@ def part_gate():
                   f"over {p.end} ticks")
 
 
+def part_orders():
+    """P8.6b on its own (part GATE runs the same with every corpus): the order
+    hand match and the list hand match at N = 1, every owned column raw-bit
+    equal at every decision, the order's rows non-constant over the two, the
+    order coverage judged over them (part GATE judges it with corpus (c))."""
+    cen = Census()
+    for p in corpus_orders() + corpus_list():
+        gate(f"(orders) {p.name}", [p], cen)
+    own = {k for k in cen.nondefault if (k[0] == "vector" and k[1] in dobs.ORDER_VECTOR)
+           or (k[0] == "list" and k[1] in dobs.ORDER_LIST) or k in (("far_f", "route"),
+                                                                    ("far_u", "place"))}
+    sub = Census()
+    for k in own:
+        sub.nondefault[k] = cen.nondefault[k]
+        sub.values[k] = cen.values[k]
+    sub.judge("census orders")
+    judge_orders(corpus_orders() + corpus_list())
+
+
 def part_batch(n_list=(2, 4)):
     lv = ship_level()
     import _pinned_matches as pm
     ships = [play(w or "bots", lv, pm.spec_of(lv, w or "bots"), s) for w, s in BATCH_SHIP]
     rl = room_level()
     rooms = [play(ROOM, rl, None, s) for s in BATCH_ROOM]
-    for group, ps in (("ship_demo", ships), ("room", rooms)):
+    o = corpus_orders(ORDER_BATCH_SEEDS)          # P8.6b: orders in every env
+    orders = [o[0], corpus_list()[0]] + o[1:]
+    for group, ps in (("ship_demo", ships), ("room", rooms), ("orders", orders)):
         ends = [p.end for p in ps]
         print(f"  {group} ends per env: {ends}")
         if len(set(ends[:max(n_list)])) < 2:
@@ -2928,6 +3273,7 @@ def part_wall():
                                             "live_trigger")}
     aims_done = {}
     full_done = {}
+    order_done = {}
     col["valid"] = lay.valid
     dead = 1                                         # unit_schema._LIFE_CHOICES.index("dead")
     total = {}
@@ -2936,10 +3282,15 @@ def part_wall():
         c = cd.DeviceConductor(s.sim, bp=bp)
         obs = dobs.DeviceObservation(c, [s.spec], p.S, DECIMATION, n_teams=p.T)
         done = 0
+        orders = wall_orders(s.sim)               # P8.6b: every marine holds an order
         for k in range(len(p.intents)):
-            c.latch(p.intents[k], env=0)
+            if done >= 6:
+                # every case counted: the rest of the match would only tick
+                # (nothing after the sixth case is compared or counted)
+                break
+            c.latch(list(p.intents[k]) + (orders if k == 0 else []), env=0)
             c.tick()
-            if int(c.sims[0].tick) % DECIMATION or done >= 6:
+            if int(c.sims[0].tick) % DECIMATION:
                 continue
             rows = c._rows.get()[0]
             vis = obs.visible.get()[0]
@@ -2989,6 +3340,7 @@ def part_wall():
                 obs.build_masks(store_ptr=int(pert.data.ptr))
                 obs.build_windows(store_ptr=int(pert.data.ptr))
                 obs.build_full(store_ptr=int(pert.data.ptr))
+                obs.build_orders(store_ptr=int(pert.data.ptr))
                 moved = [k for k, v in team_aims(obs, t, p.S).items()
                          if not np.array_equal(v, base[k])]
                 full_moved = [k for k, v in team_full(obs, t, p.S).items()
@@ -3000,6 +3352,7 @@ def part_wall():
                 obs.build_masks()
                 obs.build_windows()
                 obs.build_full()
+                obs.build_orders()
                 if moved:
                     fail(f"wall {p.name}: tick {int(c.sims[0].tick)}, team {t}: perturbing "
                          f"unseen enemy {p.uids[u]}'s row moved the team's {moved}")
@@ -3010,6 +3363,8 @@ def part_wall():
                          f"unseen enemy {p.uids[u]}'s row did not move the team's full view")
                     return
                 full_done[p.rule] = full_done.get(p.rule, 0) + 1
+                if np.any(base["order_block"][..., 0] != 0):   # P8.6b: orders were held
+                    order_done[p.rule] = order_done.get(p.rule, 0) + 1
                 aims_done[p.rule] = aims_done.get(p.rule, 0) + 1
                 if not np.array_equal(run(perturb(sv)), vis[t]):
                     fail(f"wall {p.name}: tick {int(c.sims[0].tick)}, team {t}: perturbing seen "
@@ -3042,6 +3397,35 @@ def part_wall():
             fail(f"wall: no P8.8 case under the {rule!r} rule (vacuous)")
     print(f"  wall P8.8: {full_done} (team, tick) cases: the same perturbation MOVES the "
           f"team's full view (the other side of the wall) while no policy value moved")
+    for rule in ("cone", "all_round"):
+        if not order_done.get(rule):
+            fail(f"wall: no P8.6b case (orders held) under the {rule!r} rule (vacuous)")
+    print(f"  wall P8.6b: {order_done} (team, tick) cases with orders held: the order block, "
+          f"the list's order columns and the route / place planes unchanged")
+
+
+def wall_orders(sim) -> list:
+    """P8.6b's WALL orders: the intents (as the tap records them) giving
+    every marine at tick 0 a go-to order to the room the first marine of the
+    other team stands in, that marine its priority target: the order block,
+    the list's order columns and the route / place planes all non-default
+    while the wall is perturbed."""
+    from simulation import room_graph
+    from simulation.unit_orders import graph_of
+    g = graph_of(sim)
+    if g is None:
+        return []
+    m = _marines(sim)
+    out = []
+    for u in m:
+        other = next((v for v in m if int(v.team) != int(u.team)), None)
+        if other is None:
+            continue
+        where = int(room_graph.place_at(g, other.center_tile_y(), other.center_tile_x()))
+        if not 0 <= where < (1 << 16):
+            continue
+        out.append(("order_intent", (int(u.id), 1, where, 0, int(other.id))))
+    return out
 
 
 def team_full(obs, t, S) -> dict:
@@ -3072,7 +3456,10 @@ def team_aims(obs, t, S) -> dict:
             # P8.5a: every window plane of the team's rows, its air block and
             # felt temperature
             **{k: obs.buffers[k][0, rows].get() for k in ("near_f", "near_u", "far_f", "far_u")},
-            "air_felt": obs.buffers["vector"][0, rows][..., list(range(58, 66)) + [96]].get()}
+            "air_felt": obs.buffers["vector"][0, rows][..., list(range(58, 66)) + [96]].get(),
+            # P8.6b: the order block of the team's rows (the list's order
+            # columns, the route and place planes are in "list" / "far_*")
+            "order_block": obs.buffers["vector"][0, rows][..., list(range(84, 96))].get()}
 
 
 # ---------------------------------------------------------------------------
@@ -3718,13 +4105,51 @@ def part_decoder():
              f"({bad} / {bad_r} / {host_bad})")
 
 
-def part_dec_gate():
-    """P8.6a's corpus (c) alone (part GATE runs it too, with the census)."""
+#: Part GATE's gate runs of corpus (c), for part DEC_GATE in the same process:
+#: label -> the failures its run recorded; and DECSTATS as those runs left it.
+_C_GATED: dict = {}
+_C_DECSTATS: dict = {}
+
+
+def gate_c(census=None, books_census=None) -> None:
+    """Corpus (c) gated at N = 1, each run alone: a refusal names its slot
+    and fails that run only, the next runs. Part GATE runs it with its census;
+    part DEC_GATE runs exactly this (without the census, which only counts
+    what passed) -- so without a break part GATE's runs ARE part DEC_GATE's,
+    and DEC_GATE reads them when part GATE ran first in this process
+    (:data:`_C_GATED`)."""
+    _C_GATED.clear()
     for p in corpus_c():
+        label = f"(c) {p.name}"
+        n0 = len(FAILS)
         try:
-            gate(f"(c) {p.name}", [p])
+            gate(label, [p], census, books_census=books_census)
         except Exception as ex:                    # a refusal names its slot: a finding
-            fail(f"(c) {p.name}: {type(ex).__name__}: {ex}")
+            fail(f"{label}: {type(ex).__name__}: {ex}")
+        _C_GATED[label] = list(FAILS[n0:])
+    _C_DECSTATS.clear()
+    _C_DECSTATS.update({k: dict(v) for k, v in DECSTATS.items()})
+
+
+def part_dec_gate():
+    """P8.6a's corpus (c) alone, every run gated and the decoder's coverage
+    judged. Part GATE gates the same runs with the same :func:`gate_c` (and
+    adds the census): when it ran earlier in this process with no break
+    switch set, this part reads its runs' verdicts instead of gating the
+    same runs a second time (the DEVICE CHECK PLAYS fold); by hand, alone or
+    under a break, it gates them itself."""
+    labels = [f"(c) {p.name}" for p in corpus_c()]
+    if not BREAK and labels and all(lb in _C_GATED for lb in labels):
+        print(f"  corpus (c): part GATE's {len(labels)} gate runs of this process read "
+              f"(the same gate_c, not run twice)")
+        for lb in labels:
+            for msg in _C_GATED[lb]:
+                fail(msg)
+            if not _C_GATED[lb]:
+                print(f"  {lb}: equal (part GATE's run)")
+        DECSTATS.update({k: dict(v) for k, v in _C_DECSTATS.items()})
+    else:
+        gate_c()
     judge_decoder(corpus_c())
 
 
@@ -3743,21 +4168,426 @@ def part_range_scenes():
             fail(f"(range) {p.name}: {type(ex).__name__}: {ex}")
 
 
+# ---------------------------------------------------------------------------
+# #29 P8.9b: THE PER-ENV RESET OF THE OBSERVATION SIDE -- episode after episode
+# ---------------------------------------------------------------------------
+#: The breaks of part RESET (``OBS_BREAK``): ``DeviceObservation.reset_brk``.
+RESET_BREAKS = ("reset_picture", "reset_books", "reset_decoder", "reset_ended")
+#: Episodes per env the room run must complete (each env auto-reset at its own
+#: ending, its next episode drawn by ``episode_draw``).
+RESET_EPISODES = int(os.environ.get("OBS_RESET_EPISODES", "3"))
+#: (label, level, run seed, N, episodes per env, tick cap, forced resets
+#: {env: (step index, ...)}: a reset after that step though the match runs on).
+RESET_RUNS = (("room N=4", "room", 301, 4, RESET_EPISODES, None, {}),
+              ("ship_demo N=2", "ship", 302, 2, 0, 360, {1: (14,), 0: (40,)}))
+
+
+def _reset_layout(level, run_seed: int, n_envs: int):
+    import rl_env
+    raw = {"run": {"seed": int(run_seed), "n_envs": int(n_envs), "decimation": DECIMATION,
+                   "levels": [level.name], "policy": "policy",
+                   "levels_dir": tempfile.gettempdir()},
+           "obs": {"spec": "v1", "full_view": True},
+           "reward": {"profile": "fireteam"}, "action": {"spec": "v1"}}
+    run = rl_env.parse_run(raw, "reset run")
+    return run, rl_env.make_layout(run, [level])
+
+
+def _obs_dict(layout) -> dict:
+    sh = dict(layout.obs_shapes())
+    sh.update(layout.full_shapes())
+    return {k: np.zeros(s[1:], dtype=d) for k, (s, d) in sh.items()}
+
+
+class RefEnv:
+    """THE REFERENCE of one env of the reset run: a host ``rl_env.EnvRunner``
+    (the farm worker's own calls: ``reset``, ``observe``, ``step``, at an
+    ending ``observe`` into the final arrays then ``reset``), every team
+    ``policy`` decoding seeded masked-random decisions (part DEC_GATE's
+    drawer), recording per step what the device is compared with."""
+
+    def __init__(self, e, run, layout, level, seed):
+        import rl_env
+        self.e, self.layout = e, layout
+        self.r = rl_env.EnvRunner(e, run, layout, [level], breach_physics=bp)
+        self.rng = np.random.default_rng(int(seed) * 1000 + e)
+        self.sizes = layout.head_sizes
+        self.steps = []
+        self.endings = self.ticks = 0
+        self._begin()
+        self.live = self._observe()
+
+    def _begin(self):
+        self.r.reset()
+        s = self.r.session
+        self.tap = cc.Tap()
+        s.sim.attach_intent_log(self.tap)
+        self.per_tick = []
+        orig = s.tick
+        pol_uids = {int(u.id) for t in range(len(s.spec.teams)) for u in s.sim.roster(t)
+                    if u is not None}
+
+        def tick():
+            orig()
+            out = []
+            for kind, args in self.tap.take():
+                if kind == "drive_zombies":
+                    continue
+                if kind in cd.LATCH_COLUMNS and int(args[0]) in pol_uids:
+                    continue
+                out.append((kind, args))
+            self.per_tick.append(out)
+        s.tick = tick
+        self.old = np.zeros((self.layout.n_rows, N_OLD_REF), dtype=np.float32)
+
+    def _observe(self) -> dict:
+        d = _obs_dict(self.layout)
+        self.r.observe(d)
+        return d
+
+    def forms(self) -> dict:
+        """The picture, the books and the decoder slot states now (between
+        steps): what the device's are compared with at a decision."""
+        from simulation import device_books as dbk, device_decoder as ddec, device_picture as dpic
+        sim = self.r.session.sim
+        S = self.layout.n_slots
+        return {"picture": dpic.host_form(sim.team_picture, sim),
+                "books": dbk.host_form(self.r.books, self.old),
+                "slots": {t * S + k: ddec.host_state_form(pol, k)
+                          for t, pol in self.r.policies.items() for k in range(S)}}
+
+    def draw(self, host) -> np.ndarray:
+        rng = self.rng
+        n = host["list_uid"].shape[0]
+        out = np.zeros((n, 5), dtype=np.int32)
+        for r in range(n):
+            for h, k in enumerate(_aspec.MASK_KEYS):
+                out[r, h] = int(rng.choice(np.flatnonzero(host[k][r])))
+            am = _aspec.arg_mask(out[r, 3], out[r, 1])
+            out[r, 4] = int(rng.choice(np.flatnonzero(am)))
+        return out
+
+    def step(self, forced: bool) -> dict:
+        host = self.live
+        forms = self.forms()
+        a = self.draw(host)
+        self.per_tick = []
+        out = self.r.step(a)
+        st = {"obs": host, "forms": forms, "acts": a, "ticks": int(out["ticks"]),
+              "intents": list(self.per_tick), "ended": bool(out["ended"]), "final": None,
+              "forced": False, "episode": int(self.r.k),
+              "served": {"reward": np.asarray(out["reward"], dtype=np.float32),
+                         "counters": np.asarray(out["counters"], dtype=np.float32),
+                         "team_balance": np.asarray(out["team_balance"], dtype=np.float32),
+                         "team_uncredited": np.asarray(out["team_uncredited"],
+                                                       dtype=np.float32),
+                         "team_outcome": np.asarray(out["team_outcome"], dtype=np.float32),
+                         "rows_ended": np.asarray(out["rows_ended"], dtype=np.uint8),
+                         "terminated": np.uint8(out["terminated"]),
+                         "truncated": np.uint8(out["truncated"])}}
+        self.old = np.asarray(out["counters"][:, :N_OLD_REF], dtype=np.float32)
+        self.ticks += st["ticks"]
+        if st["ended"]:
+            st["final"] = self._observe()
+            self.endings += 1
+            self._begin()
+        elif forced:
+            st["forced"] = True
+            self._begin()
+        self.live = self._observe()
+        self.steps.append(st)
+        return st
+
+
+def _row_of_dev(arrs: dict, e: int) -> dict:
+    return {k: v[e] for k, v in arrs.items()}
+
+
+def obs_equal(label, dev: dict, host: dict) -> str | None:
+    """The first owned (key, column) whose raw bits differ, or None."""
+    own = owned_obs()
+    a, b = owned_parts(host, own, False), owned_parts(dev, own, False)
+    for k in a:
+        if not np.array_equal(raw(a[k]), raw(b[k])):
+            idx = np.argwhere(raw(a[k]) != raw(b[k]))
+            return f"{k}: {len(idx)} value(s) differ, first at {tuple(int(x) for x in idx[0])}"
+    return None
+
+
+N_OLD_REF = 0          # set at the part's start (rl_env.N_OLD_COUNTERS)
+
+
+def reset_run(label, level, run_seed, N, episodes, cap, forced) -> dict:
+    """ONE reset run: the references first (each env until it completed
+    ``episodes`` episodes, then on to the longest env's tick count, or to
+    ``cap`` ticks), then the device -- a conductor, a device observation and
+    a device decoder over N envs whose episodes are built by a second
+    ``EnvRunner`` per env (the same run, the same ``episode_draw``: the host
+    build of decision 4) -- fed the references' decisions and order intents,
+    each env reset by ``DeviceConductor.reset_env`` at its own ending (or a
+    forced step), and compared at every decision, every step end, every
+    ending and every reset."""
+    import cupy as cp
+    import rl_env
+    from simulation import device_books as dbk, device_decoder as ddec
+    global N_OLD_REF
+    N_OLD_REF = rl_env.N_OLD_COUNTERS
+    run, layout = _reset_layout(level, run_seed, N)
+    refs = [RefEnv(e, run, layout, level, run_seed) for e in range(N)]
+    t0 = time.perf_counter()
+    for r in refs:
+        while (r.endings < episodes or (cap is not None and r.ticks < cap)) and \
+                (cap is None or r.ticks < cap):
+            r.step(len(r.steps) in forced.get(r.e, ()))
+    horizon = max(r.ticks for r in refs) if cap is None else cap
+    for r in refs:
+        while r.ticks < horizon:
+            r.step(len(r.steps) in forced.get(r.e, ()))
+    print(f"  {label}: references played ({time.perf_counter() - t0:.1f} s): episodes "
+          f"ended per env {[r.endings for r in refs]}, steps {[len(r.steps) for r in refs]}, "
+          f"horizon {horizon} ticks")
+    # -- the device -----------------------------------------------------------
+    builders = [rl_env.EnvRunner(e, run, layout, [level], breach_physics=bp) for e in range(N)]
+    for b in builders:
+        b.reset()
+    c = cd.DeviceConductor([b.session.sim for b in builders], bp=bp)
+    obs = dobs.DeviceObservation(c, [b.session.spec for b in builders], layout.n_slots,
+                                 DECIMATION, n_teams=layout.n_teams)
+    dec = ddec.DeviceDecoder(obs, [b.session.spec for b in builders])
+    if BREAK in RESET_BREAKS:
+        obs.reset_brk = BREAK
+    T, S, R = obs.T, obs.S, obs.n_rows
+    pos, into = [0] * N, [0] * N
+    stats = {"resets": 0, "endings": 0, "forced": 0, "decisions": 0, "ticks": 0,
+             "after_reset_decisions": 0, "others_held": 0,
+             # P8.6b: resets of an env whose last decision showed an order (the
+             # old order must be gone from the new episode's first decision), and
+             # order rows shown after a reset (the new episode's orders)
+             "resets_with_orders": 0, "order_rows_after_reset": 0}
+    fresh = [False] * N
+    had_orders = [False] * N
+
+    def fail_at(msg):
+        fail(f"{label}: {msg}")
+        return stats
+
+    def decision_checks(e, st, tick):
+        got = obs.host()
+        msg = obs_equal(label, _row_of_dev(got, e), st["obs"])
+        if msg:
+            return f"env {e}, step {pos[e]} (episode {st['episode']}, tick {tick}): {msg}"
+        pf = obs.picture.forms()[e]
+        if pf != st["forms"]["picture"]:
+            from simulation.device_picture import first_difference
+            return (f"env {e}, step {pos[e]} (tick {tick}): the picture differs: "
+                    f"{first_difference(st['forms']['picture'], pf)}")
+        bf = obs.books.forms()[e]
+        if bf != st["forms"]["books"]:
+            k = next(k for k in bf if bf[k] != st["forms"]["books"][k])
+            return f"env {e}, step {pos[e]} (tick {tick}): the books differ at {k!r}"
+        state = dec.host_state()
+        for row, hs in st["forms"]["slots"].items():
+            ds = ddec.state_form(state[e, row])
+            if hs != ds:
+                return (f"env {e}, step {pos[e]} (tick {tick}): row {row}'s slot state {ds} vs "
+                        f"the reference's {hs}")
+        return None
+
+    while True:
+        live = [e for e in range(N) if pos[e] < len(refs[e].steps)]
+        if not live or stats["ticks"] >= horizon:
+            break
+        due = np.zeros(N, dtype=bool)
+        acts = np.zeros((N, R, 5), dtype=np.int32)
+        for e in live:
+            if into[e] == 0:
+                st = refs[e].steps[pos[e]]
+                msg = decision_checks(e, st, int(c.sims[e].tick))
+                if msg:
+                    return fail_at(msg)
+                due[e] = True
+                acts[e, :st["acts"].shape[0]] = st["acts"]
+                stats["decisions"] += 1
+                stats["after_reset_decisions"] += int(fresh[e])
+                held = np.asarray(st["obs"]["vector"])[:, 84] != 0     # order_what
+                had_orders[e] = bool(held.any())
+                if fresh[e]:
+                    stats["order_rows_after_reset"] += int(held.sum())
+        if due.any():
+            dec.set_decisions(cp.asarray(acts), envs=due)
+        for e in live:
+            st = refs[e].steps[pos[e]]
+            c.latch(st["intents"][into[e]] if into[e] < len(st["intents"]) else (), env=e)
+        c.tick()
+        stats["ticks"] += 1
+        for e in live:
+            st = refs[e].steps[pos[e]]
+            into[e] += 1
+            ended = bool(c.ended_now[e])
+            if into[e] < st["ticks"]:
+                if ended:
+                    return fail_at(f"env {e}: ended at tick {int(c.sims[e].tick)}, inside a step "
+                                   f"the reference did not end")
+                continue
+            # the step's end: the served arrays, the ending, the reset
+            sv = obs.books.host_served()
+            for k, want in st["served"].items():
+                got = sv[k][e]
+                got = got[:np.shape(want)[0]] if np.ndim(want) else got
+                if not np.array_equal(raw(np.asarray(got)), raw(np.asarray(want))):
+                    return fail_at(f"env {e}, step {pos[e]} end (tick {int(c.sims[e].tick)}): "
+                                   f"served {k!r} differs")
+            if ended != st["ended"]:
+                return fail_at(f"env {e}, step {pos[e]} end: ended {ended}, the reference "
+                               f"{st['ended']}")
+            if st["ended"] or st["forced"]:
+                if st["ended"]:
+                    fin = {k: v[e] for k, v in ((k, obs.final[k].get()) for k in obs.final)}
+                    msg = obs_equal(label, fin, st["final"])
+                    if msg:
+                        return fail_at(f"env {e}, episode {st['episode']}: the terminal "
+                                       f"observation differs: {msg}")
+                    stats["endings"] += 1
+                before = obs.host()
+                fin_before = {k: v.get() for k, v in obs.final.items()}
+                b = builders[e]
+                b.reset()
+                c.reset_env(e, b.session.sim, b.session.spec)
+                stats["resets"] += 1
+                stats["forced"] += int(st["forced"])
+                stats["resets_with_orders"] += int(had_orders[e])
+                after = obs.host()
+                for k in before:
+                    other = [x for x in range(N) if x != e]
+                    if not np.array_equal(raw(before[k][other]), raw(after[k][other])):
+                        return fail_at(f"the reset of env {e} moved another env's {k!r}")
+                for k, v in fin_before.items():
+                    if not np.array_equal(raw(v), raw(obs.final[k].get())):
+                        return fail_at(f"the reset of env {e} moved the final_ {k!r}")
+                stats["others_held"] += N - 1
+                fresh[e] = True
+            pos[e] += 1
+            into[e] = 0
+    print(f"  {label}: {stats['resets']} resets ({stats['endings']} at an ending, "
+          f"{stats['forced']} forced), {stats['decisions']} env-decisions compared "
+          f"({stats['after_reset_decisions']} after a reset), {stats['ticks']} ticks, other envs "
+          f"held at {stats['others_held']} env-resets; every observation key, mask, the full "
+          f"view, the picture, the books, the slot states, the served arrays and the "
+          f"terminal observations equal; P8.6b: {stats['resets_with_orders']} resets of an env "
+          f"showing orders, {stats['order_rows_after_reset']} order rows shown after a reset")
+    return stats
+
+
+def part_reset():
+    """P8.9b's gate: :data:`RESET_RUNS` (a training room, N = 4, every env
+    auto-reset at its own ending for :data:`RESET_EPISODES` episodes at
+    least; ship_demo, N = 2, forced resets mid-match with zombies and live
+    records), the device equal to its references episode by episode."""
+    tot = 0
+    for label, lv, seed, n, eps, cap, forced in RESET_RUNS:
+        level = ship_level() if lv == "ship" else room_level()
+        st = reset_run(label, level, seed, n, eps, cap, forced)
+        tot += st["resets"]
+        if eps and st["endings"] < eps * n and not FAILS:
+            fail(f"{label}: {st['endings']} endings, fewer than {eps} per env (vacuous)")
+        if lv == "ship" and not FAILS and (not st["resets_with_orders"]
+                                           or not st["order_rows_after_reset"]):
+            fail(f"{label}: no reset of an env holding orders, or no order after a reset "
+                 f"(P8.6b's reset gate would be vacuous): {st}")
+    print(f"  reset: {tot} resets over the runs")
+
+
+def part_reset_cost(n_list=(4, 64)):
+    """The cost of a per-env reset with the observation attached (ship_demo,
+    every team ``policy``): the host build of the next episode (an
+    ``EnvRunner.reset``: ``MatchSession`` + ``ObsContext`` + the books and
+    tables), the sim-side restage, the observation side (picture, books,
+    decoder, the tick-0 build), their host syncs and uploads, and the next
+    tick's syncs against a steady tick's."""
+    import gc
+    import rl_env
+    from simulation import device_decoder as ddec
+    level = ship_level()
+    for n in n_list:
+        run, layout = _reset_layout(level, 401, n)
+        builders = [rl_env.EnvRunner(e, run, layout, [level], breach_physics=bp)
+                    for e in range(n)]
+        for b in builders:
+            b.reset()
+        c = cd.DeviceConductor([b.session.sim for b in builders], bp=bp)
+        obs = dobs.DeviceObservation(c, [b.session.spec for b in builders], layout.n_slots,
+                                     DECIMATION, n_teams=layout.n_teams)
+        ddec.DeviceDecoder(obs, [b.session.spec for b in builders])
+        for _ in range(3):
+            c.tick()
+        gc.collect()
+        gc.disable()
+        sc = cc.SyncCount()
+        res = []
+        try:
+            for k in range(3):
+                e = (7 * k + 1) % n
+                t0 = time.perf_counter()
+                builders[e].reset()
+                build = 1000.0 * (time.perf_counter() - t0)
+                sc.py = []
+                bp.host_sync_log_begin()
+                t1 = time.perf_counter()
+                w = c.reset_env(e, builders[e].session.sim, builders[e].session.spec)
+                total = 1000.0 * (time.perf_counter() - t1)
+                rlog = list(bp.host_sync_log_end()) + sc.py
+                logs = []
+                for _ in range(2):
+                    sc.py = []
+                    bp.host_sync_log_begin()
+                    c.tick()
+                    logs.append(list(bp.host_sync_log_end()) + sc.py)
+                res.append((build, total, w, rlog, logs))
+        finally:
+            sc.close()
+            gc.enable()
+        for build, total, w, rlog, logs in res:
+            names = sorted({x.partition(" | ")[2] or x for x in rlog})
+            print(f"  reset cost N={n}: host build (EnvRunner.reset) {build:.1f} ms; reset_env "
+                  f"{total:.1f} ms (observation side {w['obs']['ms']:.1f} ms), uploads "
+                  f"{w['uploads']} + {w['obs']['uploads']}, host syncs {len(rlog)} {names}; "
+                  f"the tick after {len(logs[0])} syncs, the next {len(logs[1])}")
+        del c, obs
+        gc.collect()
+
+
 PARTS = {"gate": part_gate, "batch": part_batch, "handover": part_handover,
          "syncs": part_syncs, "ended": part_ended, "floatkit": part_floatkit,
          "sight": part_sight, "wall": part_wall, "restage": part_restage,
          "books": part_books, "decoder": part_decoder, "dec_gate": part_dec_gate,
-         "range_scenes": part_range_scenes}
+         "range_scenes": part_range_scenes, "reset": part_reset, "reset_cost": part_reset_cost,
+         "orders": part_orders}
+
+
+#: The per-run tallies the parts' judges read: cleared before every part, so a
+#: part judges only what IT ran (as in a fresh process), never another part's
+#: gate runs. The plays (``_PLAYED``) are NOT cleared: they are shared.
+_TALLIES = (TERMSTATS, VSTATS, LOFSTATS, AIMSTATS, PICSTATS, BOOKSTATS, BOOK_CENSUS, DECSTATS)
+
+
+def _reset_tallies() -> None:
+    for t in _TALLIES:
+        t.clear()
 
 
 def main(parts=None) -> int:
+    """Run ``parts`` (default: all) in ONE process: every match of the corpus
+    is played once (``_PLAYED``) and read by every part that needs it; each
+    part is judged alone (``_check_parts.run_parts``: its own FAILS, the
+    tallies cleared, a crash failing that part only)."""
+    import _check_parts
     from simulation import physics_runner as pr
     pr.set_residency(False)               # the reference runs the CPU path (the oracle)
     t0 = time.perf_counter()
     print(f"OBS check at {PATCH}: owned {owned()}")
-    for name in (parts or list(PARTS)):
-        print(f"PART {name}")
-        PARTS[name]()
+    _check_parts.run_parts(parts or list(PARTS), PARTS, FAILS, _reset_tallies)
+    n_host = sum(p.end for p in {id(p): p for p in _PLAYED.values()}.values())
+    print(f"host ticks played: {n_host} over {len({id(p) for p in _PLAYED.values()})} plays")
     print(f"{time.perf_counter() - t0:.1f} s")
     print("OBS_RESULT:", "PASS" if not FAILS else f"FAIL ({len(FAILS)})")
     return 0 if not FAILS else 1

@@ -215,18 +215,8 @@ __device__ __forceinline__ uint16_t half_of(double x, int brk) {
     return brk == OBS_WIN_BREAK_WIN_HALF ? to_half_bits((double)to_f32(x)) : to_half_bits(x);
 }
 
-// The soldier of row r of env e: its store row (nullptr when the row is not
-// valid: no unit, not alive, not on team r / S).
-__device__ __forceinline__ const int64_t* row_unit(const int64_t* store, int U, const int32_t* rowmap,
-                                                   int e, int n_rows, int r, int n_slots) {
-    using namespace unit_store;
-    const int sr = rowmap[(size_t)e * n_rows + r];
-    if (sr < 0 || sr >= U) return nullptr;
-    const int64_t* u = store + ((size_t)e * U + sr) * UNIT_STORE_W;
-    if (u[UNIT_COL_LIFE_STATE] != OBS_LIFE_ALIVE || u[UNIT_COL_TEAM] != (int64_t)(r / n_slots))
-        return nullptr;
-    return u;
-}
+// The soldier of row r of env e (obs_rows::row_unit, the observation's one copy).
+using obs_rows::row_unit;
 
 // FieldPlanes.far_raw: one thread per (env, block).
 __global__ void k_far_raw(const int32_t* temp, const int32_t* fire, const int32_t* gas, int n_gases,

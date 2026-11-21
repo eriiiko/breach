@@ -870,10 +870,31 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("lane_own"), py::arg("gh"), py::arg("gw"), py::arg("grenades"),
           py::arg("charges"), py::arg("doors"), py::arg("door_tiles"), py::arg("is_vacuum"),
           py::arg("is_ambient"), py::arg("h"), py::arg("w"), py::arg("wired"),
-          py::arg("wired_cap"), py::arg("n_entries"), py::arg("list"), py::arg("list_mask"),
+          py::arg("wired_cap"), py::arg("places"), py::arg("place_cap"), py::arg("place_w"),
+          py::arg("place_count"), py::arg("n_entries"), py::arg("list"), py::arg("list_mask"),
           py::arg("list_uid"), py::arg("faults"), py::arg("brk"),
           "#29 P8.4b: obs_spec_v1.build_list (the list, its mask and its uids) for every "
-          "env on its decision tick.");
+          "env on its decision tick (P8.6b: the team-mates' order block over the place "
+          "table).");
+    // #29 P8.6b (part 1): the order (cpp/src/cuda_obs_orders.cu), on the tick
+    // stream, no sync.
+    m.def("obs_orders", &breach_cuda::obs_orders, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("tables"), py::arg("rowmap"),
+          py::arg("n_rows"), py::arg("n_slots"), py::arg("n_teams"), py::arg("obs_table"),
+          py::arg("table_w"), py::arg("tick_row"), py::arg("params"), py::arg("ended"),
+          py::arg("material"), py::arg("is_vacuum"), py::arg("is_ambient"), py::arg("h"),
+          py::arg("w"), py::arg("doors"), py::arg("door_tiles"), py::arg("wired"),
+          py::arg("wired_cap"), py::arg("has_graph"), py::arg("graph_place"),
+          py::arg("graph_grid"), py::arg("openings"), py::arg("open_cap"), py::arg("open_w"),
+          py::arg("open_count"), py::arg("open_prev"), py::arg("places"), py::arg("place_cap"),
+          py::arg("place_w"), py::arg("place_count"), py::arg("route_ok"),
+          py::arg("route_pass"), py::arg("route_dist"), py::arg("route_q"),
+          py::arg("route_door"), py::arg("route_keys"), py::arg("route_row"),
+          py::arg("route_blocks"), py::arg("hb"), py::arg("wb"), py::arg("vector"),
+          py::arg("far_f"), py::arg("far_u"), py::arg("faults"), py::arg("brk"),
+          "#29 P8.6b: obs_spec_v1's order block of the vector and the far route / place "
+          "planes (the route over the room graph's device table) for every env on its "
+          "decision tick.");
     // #29 P8.4c: the four masks (cpp/src/cuda_obs_list.cu), on the tick stream, no sync.
     m.def("obs_masks", &breach_cuda::obs_masks, py::arg("n_env"), py::arg("store"),
           py::arg("n_units"), py::arg("store_w"), py::arg("tables"), py::arg("rowmap"),
@@ -925,7 +946,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("reward"), py::arg("counters"), py::arg("team_balance"),
           py::arg("team_uncredited"), py::arg("team_outcome"), py::arg("rows_ended"),
           py::arg("terminated"), py::arg("truncated"), py::arg("words"), py::arg("first"),
-          py::arg("brk"),
+          py::arg("brk"), py::arg("only_env") = -1,
           "#29 P8.7: the reward books, the served reward groups, termination and the "
           "ended latch for every env; returns whether the words were deferred into the "
           "conductor's books read.");
@@ -1066,6 +1087,16 @@ PYBIND11_MODULE(breach_physics, m) {
                  s.upload(rows.data());
              }, py::arg("rows"),
              "Copy (N, U, W) int64 rows into the device store (tick stream).")
+        .def("upload_env", [](breach_cuda::UnitStoreDevice& s, int e,
+                              py::array_t<int64_t, py::array::c_style> rows) {
+                 if (rows.ndim() != 2 || rows.shape(0) != s.n_units() ||
+                     rows.shape(1) != s.width() || e < 0 || e >= s.n_env())
+                     throw std::invalid_argument(
+                         "UnitStoreBuffer.upload_env: env in 0 .. n_env and (n_units, width) "
+                         "C-contiguous int64 rows");
+                 s.upload_env(e, rows.data());
+             }, py::arg("env"), py::arg("rows"),
+             "#29 P8.9a: env e's (U, W) rows alone (tick stream, no host sync).")
         .def("download", [](breach_cuda::UnitStoreDevice& s) {
                  py::array_t<int64_t> out({(py::ssize_t)s.n_env(),
                                            (py::ssize_t)s.n_units(),
@@ -1093,6 +1124,14 @@ PYBIND11_MODULE(breach_physics, m) {
                          "C-contiguous int64");
                  t.upload(rows.data());
              }, py::arg("rows"))
+        .def("upload_env", [](breach_cuda::UnitTablesDevice& t, int e,
+                              py::array_t<int64_t, py::array::c_style> row) {
+                 if (row.ndim() != 1 || row.shape(0) != t.width() || e < 0 || e >= t.n_env())
+                     throw std::invalid_argument(
+                         "UnitTablesBuffer.upload_env: env in 0 .. n_env and a (width,) int64 row");
+                 t.upload_env(e, row.data());
+             }, py::arg("env"), py::arg("row"),
+             "#29 P8.9a: env e's vector alone (no host sync).")
         .def("download", [](breach_cuda::UnitTablesDevice& t) {
                  py::array_t<int64_t> out({(py::ssize_t)t.n_env(), (py::ssize_t)t.width()});
                  t.download(out.mutable_data());
@@ -1380,6 +1419,19 @@ PYBIND11_MODULE(breach_physics, m) {
                      r.upload(recs.data(), counts.data());
                  }, py::arg("recs"), py::arg("counts"),
                  "#29 P7a.3: set every env's list and count; dropped and staging to 0.")
+            .def("upload_env", [](UnitRecordList& r, int e,
+                                  py::array_t<int64_t, py::array::c_style> recs, int64_t count) {
+                     if (recs.ndim() != 2 || recs.shape(0) != r.cap() ||
+                         recs.shape(1) != r.width())
+                         throw std::invalid_argument(
+                             "UnitRecordListBuffer.upload_env: recs (cap, width) int64");
+                     if (e < 0 || e >= r.n_env() || count < 0 || count > r.cap())
+                         throw std::invalid_argument(
+                             "UnitRecordListBuffer.upload_env: env or count outside its range");
+                     r.upload_env(e, recs.data(), count);
+                 }, py::arg("env"), py::arg("recs"), py::arg("count"),
+                 "#29 P8.9a: set env e's list and count ALONE (the others untouched); its "
+                 "dropped and staging to 0; no host sync.")
             .def("counts", [](UnitRecordList& r) {
                      py::array_t<int64_t> cnt(r.n_env()), drp(r.n_env());
                      r.download(nullptr, cnt.mutable_data(), drp.mutable_data());
@@ -1655,8 +1707,10 @@ PYBIND11_MODULE(breach_physics, m) {
                  py::arg("tile_cap"))
             .def("begin", [](EditDoor& d) { d.begin(); },
                  "The 6b flush's reset: every env's rows empty, its seq 0.")
-            .def("reset_env", [](EditDoor& d, int e) { d.reset_env(e); }, py::arg("env"),
-                 "#29 P7e.3: env e's reset alone: its rows empty, its seq 0.")
+            .def("reset_env", [](EditDoor& d, int e, int64_t seq) { d.reset_env(e, seq); },
+                 py::arg("env"), py::arg("seq") = 0,
+                 "#29 P7e.3: env e's reset alone: its rows empty, its seq 0 (#29 P8.9a: or "
+                 "seq, the new episode's queue seq).")
             .def("set_seq", [](EditDoor& d, py::array_t<int64_t, py::array::c_style> seq) {
                      if (seq.ndim() != 1 || seq.shape(0) != d.n_env())
                          throw std::invalid_argument("EditDoorBuffer.set_seq: (n_env,) int64");

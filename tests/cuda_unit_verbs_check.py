@@ -1395,13 +1395,18 @@ def _run_done(name, drivers, ticks, after=30):
 
 
 def part_done():
-    lim = {"bots": 60.0, "idle": 6.0, "horde": 60.0}
     tps = int(ShipDriver(hooks=False).sim._tps)
-    del tps
+    # the elimination case: the bots arena's clock is set PAST the run's
+    # horizon, so only an elimination can end it (its length is the physics'
+    # and the bots' business, never an assumption of this check)
+    lim = {"bots": 2.0 * DONE_TICKS / tps, "idle": 6.0, "horde": 60.0}
     ended, out = _run_done("done (elimination: bots)", [MatchDriver("bots", lim["bots"])],
                            DONE_TICKS)
-    if ended[0] is None or out[0][0] != unit_kernels.DONE_WIN:
-        fail(f"done: the bots match did not end in a win ({ended}, {out})")
+    if ended[0] is None:
+        fail(f"done: the bots arena saw no elimination within {DONE_TICKS} ticks (the case "
+             f"'a win by elimination' was not reached: raise UNIT_VERBS_DONE_TICKS)")
+    elif out[0][0] != unit_kernels.DONE_WIN:
+        fail(f"done: the bots match ended, but not in a win ({ended}, {out})")
     ended, out = _run_done("done (the limit, both teams alive: a draw)",
                            [MatchDriver("idle", lim["idle"])], DONE_TICKS)
     if ended[0] is None or out[0][0] != unit_kernels.DONE_DRAW:

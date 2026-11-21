@@ -164,6 +164,16 @@ class TickRow:
         r = np.ascontiguousarray(rows, dtype=np.int64).reshape(self.n_env, TICK_ROW_W)
         self.buf.set(r)
 
+    def write_env(self, e: int, row) -> None:
+        """#29 P8.9a: env ``e``'s row ALONE from a host row ``(TICK_ROW_W,)``
+        (:func:`tick_row` of its new episode at tick 0): the latch of a
+        per-env reset, the other envs' rows untouched."""
+        r = np.ascontiguousarray(row, dtype=np.int64).reshape(TICK_ROW_W)
+        if not 0 <= int(e) < self.n_env:
+            raise IndexError(f"tick row: env {e} of {self.n_env}")
+        import cupy as cp
+        self.buf[int(e)] = cp.asarray(r)
+
     @property
     def ptr(self) -> int:
         return int(self.buf.data.ptr)

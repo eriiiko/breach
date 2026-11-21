@@ -1543,9 +1543,15 @@ def spray_box_max(store, h: int, w: int) -> int:
     """The largest cone box any env's tables allow on an ``(h, w)`` grid:
     ``(2 r + 1)^2`` of the largest ``spray_range_tiles`` row, never more than
     the grid (the box is clipped to it) -- the launch's scratch per env."""
+    return spray_box_of(store.tables.download(), h, w)
+
+
+def spray_box_of(tables, h: int, w: int) -> int:
+    """#29 P8.9a: :func:`spray_box_max` over host ``(N, T)`` table vectors
+    (a per-env reset's new env, read without a download)."""
     from simulation import unit_tables
     c = unit_tables.layout().column("spray_range_tiles")
-    tab = np.asarray(store.tables.download(), dtype=np.int64)
+    tab = np.asarray(tables, dtype=np.int64)
     r = int(tab[:, c.offset:c.offset + c.width].max()) if tab.size else 0
     return min((2 * r + 1) ** 2, int(h) * int(w))
 

@@ -437,6 +437,26 @@ class DeviceStore:
         """The device store as a fresh ``(N, U, W)`` int64 array."""
         return self._buf.download()
 
+    def upload_env(self, e: int, rows, tables=None) -> None:
+        """#29 P8.9a: env ``e``'s slice ALONE -- ``rows`` ``(U, W)`` int64
+        (:func:`pack` of the env's units, padded) and, given, its device
+        tables vector ``(T,)`` (``unit_tables.values``) -- every other env
+        untouched; on the tick stream, no host sync (a per-env reset)."""
+        from simulation import unit_tables
+        a = np.ascontiguousarray(rows)
+        if a.shape != self.shape[1:] or a.dtype != np.int64:
+            raise ValueError(f"unit store: upload_env needs {self.shape[1:]} int64, "
+                             f"got {a.shape} {a.dtype}")
+        if not 0 <= int(e) < self.shape[0]:
+            raise IndexError(f"unit store: env {e} of {self.shape[0]}")
+        if tables is not None:
+            t = np.ascontiguousarray(tables, dtype=np.int64)
+            if t.shape != (unit_tables.layout().width,):
+                raise ValueError(f"unit store: an env's tables must be "
+                                 f"({unit_tables.layout().width},), got {t.shape}")
+            self.tables.upload_env(int(e), t)
+        self._buf.upload_env(int(e), a)
+
 
 __all__ = ["VALID", "HEADER_REL", "GENERATOR", "StoreColumn", "Layout",
            "layout", "header_text", "pack", "pack_batch", "row_values",

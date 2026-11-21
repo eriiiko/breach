@@ -226,15 +226,66 @@ def test_the_device_backend_refuses_while_the_ledger_has_debt(snap, level,
                             probe=probe)
 
 
-def test_the_device_backend_refuses_outright_with_an_empty_ledger(snap):
-    """Property: with every check green and no debt, ``device`` still
-    refuses -- no device backend exists in P1b. Breaks if the door claimed
-    a backend that is not built."""
+def _device_probe(repo, probe):
+    """The device branch's probe: the CPU build's file and id (HEAD), the
+    layouts all matching (the CUDA module cannot load in a temp repo)."""
+    return dict(probe, cpu_bp_file=str(repo / "cpp/build/Release/breach_physics.pyd"),
+                cpu_build_id=probe["build_id"],
+                layouts={"unit_store": ("f" * 64, "f" * 64),
+                         "device_obs": ("e" * 64, "e" * 64)})
+
+
+def _passing_preflight(seen):
+    def pre(cfg):
+        seen.append(cfg)
+        return {"steps": 7, "endings": [1, 1], "coverage": {
+            "counters_moved": [0] * len(rl_env.COUNTER_NAMES)}}
+    return pre
+
+
+def test_the_device_branch_checks_the_cpu_build_the_layouts_and_the_preflight(snap):
+    """Property (#29 P8.10a): with an empty ledger, the CPU build's id at
+    HEAD, every layout fingerprint this checkout's and a passing pre-flight,
+    ``device`` passes and records the CPU build id, the layouts and the
+    pre-flight's steps / endings; the pre-flight is called with the run.
+    Breaks if the device door is still a stub, skips the pre-flight, or
+    records something it did not check."""
     repo, probe, run, _ = snap
-    probe = dict(probe, **_with_ledger(repo, True, False))
-    msg = _refused("backend", repo, probe, run, backend="device",
-                   tag="train/t2")
-    assert "no device backend yet" in msg
+    probe = _device_probe(repo, dict(probe, **_with_ledger(repo, True, False)))
+    seen = []
+    rec = rl_env.require_snapshot("train/t2", "device", run, repo=repo, probe=probe,
+                                  preflight=_passing_preflight(seen))
+    assert seen == [run]
+    assert rec["backend"] == "device"
+    assert rec["device"]["cpu_build_id"] == probe["cpu_build_id"]
+    assert rec["device"]["layouts"] == {"device_obs": "e" * 64, "unit_store": "f" * 64}
+    assert rec["device"]["preflight"]["steps"] == 7
+
+
+@pytest.mark.parametrize("what", ["cpu build", "layouts", "pre-flight"])
+def test_the_device_branch_refuses_a_stale_cpu_build_layout_or_preflight(snap, what):
+    """Property (#29 P8.10a): ``device`` refuses, naming the check, a CPU
+    build from another commit (the reference the device twins are held equal
+    to), a compiled layout whose fingerprint is not the checkout's, and a
+    pre-flight that found the backends apart; the pre-flight (the costly
+    check) never runs when an earlier check refuses. Breaks if a device run
+    could start on a stale reference, a stale generated header or a backend
+    pair that disagree."""
+    repo, probe, run, _ = snap
+    probe = _device_probe(repo, dict(probe, **_with_ledger(repo, True, False)))
+    seen = []
+    pre = _passing_preflight(seen)
+    if what == "cpu build":
+        probe["cpu_build_id"] = "0" * 40
+    elif what == "layouts":
+        probe["layouts"] = dict(probe["layouts"], unit_store=("a" * 64, "f" * 64))
+    else:
+        def pre(cfg):
+            raise RuntimeError("pre-flight: the backends differ at step 3")
+    with pytest.raises(rl_env.SnapshotRefused, match=f"require_snapshot: {what}:"):
+        rl_env.require_snapshot("train/t2", "device", run, repo=repo, probe=probe,
+                                preflight=pre)
+    assert seen == []
 
 
 # ---------------------------------------------------------------------------

@@ -235,6 +235,41 @@ class DeviceHordeCache:
             self.hdr[...] = 0
             self.keys[...] = 0
 
+    def _check_env(self, e: int, rc) -> None:
+        f = rc.keys.shape[0]
+        if f > self.fcap:
+            raise applier.HordeCacheOverflow(
+                f"horde cache: env {e} holds {f} fields past its capacity {self.fcap}")
+        if rc.masks.shape[1:] != (self.h, self.w):
+            raise ValueError(f"horde cache: env {e}'s map is {rc.masks.shape[1:]}, the "
+                             f"cache's {(self.h, self.w)}")
+
+    def check_env(self, e: int, rc) -> None:
+        """#29 P8.9a: refuse by name, before any write, a cache env ``e``
+        cannot hold (past the field capacity, another map shape)."""
+        if not 0 <= int(e) < self.n_env:
+            raise IndexError(f"horde cache: env {e} of {self.n_env}")
+        self.ensure(*rc.masks.shape[1:])
+        self._check_env(int(e), rc)
+
+    def stage_env(self, e: int, rc) -> None:
+        """#29 P8.9a: env ``e``'s cache ALONE from its host
+        :class:`CacheRecords` (a per-env reset; the other envs untouched),
+        the fields past its count zeroed as :meth:`stage_lists` leaves them;
+        CuPy copies on the null stream (ordered with the blocking tick
+        stream)."""
+        import cupy as cp
+        self.check_env(e, rc)
+        e, f = int(e), rc.keys.shape[0]
+        keys = np.zeros(self.keys.shape[1:], dtype=np.int64)
+        dist = np.zeros(self.dist.shape[1:], dtype=np.int32)
+        keys[:f] = rc.keys
+        dist[:f] = rc.dist
+        self.hdr[e] = cp.asarray(np.asarray(rc.header, dtype=np.int64))
+        self.keys[e] = cp.asarray(keys)
+        self.dist[e] = cp.asarray(dist)
+        self.masks[e] = cp.asarray(np.asarray(rc.masks, dtype=np.uint8))
+
     def stage_lists(self, per_env) -> None:
         """Set every env's cache from its host :class:`CacheRecords`."""
         import cupy as cp
@@ -247,12 +282,7 @@ class DeviceHordeCache:
         masks = np.zeros(self.masks.shape, dtype=np.uint8)
         for e, rc in enumerate(per_env):
             f = rc.keys.shape[0]
-            if f > self.fcap:
-                raise applier.HordeCacheOverflow(
-                    f"horde cache: env {e} holds {f} fields past its capacity {self.fcap}")
-            if rc.masks.shape[1:] != (self.h, self.w):
-                raise ValueError(f"horde cache: env {e}'s map is {rc.masks.shape[1:]}, the "
-                                 f"cache's {(self.h, self.w)}")
+            self._check_env(e, rc)
             hdr[e] = rc.header
             keys[e, :f] = rc.keys
             dist[e, :f] = rc.dist

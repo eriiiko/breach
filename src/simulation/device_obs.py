@@ -175,6 +175,19 @@ BUILT["list"] = BUILT["list"] + ("on_next_tick", "prev_aim")
 # (``DeviceObservation.build_full``)
 FULL_KEYS = ("full_list", "full_mask", "full_uid", "full_match", "full_watched")
 BUILT.update({k: None for k in FULL_KEYS})
+# P8.6b (part 1): THE ORDER -- the vector's order block, the list's order
+# columns, the far window's route and place planes, read from the device
+# order columns, the room graph's device table and the map as it stands
+# (``DeviceObservation.build_orders``)
+ORDER_VECTOR = ("order_what", "order_has_limit", "order_left", "inside", "place_kind",
+                "place_dx", "place_dy", "place_dist_c", "compass_dx", "compass_dy",
+                "route_len", "has_target")
+ORDER_LIST = ("order_what", "order_place_dx", "order_place_dy", "order_same_place",
+              "order_left")
+BUILT["vector"] = BUILT["vector"] + ORDER_VECTOR
+BUILT["list"] = BUILT["list"] + ORDER_LIST
+BUILT["far_f"] = BUILT["far_f"] + ("route",)
+BUILT["far_u"] = BUILT["far_u"] + ("place",)
 
 #: The served dtypes of the observation's float keys (P8.1, said once): the
 #: float16 keys go through the kit's hand conversion, the float32 ones through
@@ -670,6 +683,67 @@ class DeviceObsRefused(RuntimeError):
     """A batch or a level the device observation does not serve (by name)."""
 
 
+# ---------------------------------------------------------------------------
+# P8.6b (part 1): THE ROOM GRAPH (device) and the order's codes
+# ---------------------------------------------------------------------------
+#: An opening row of the room graph's device table (int64): its id and its
+#: rectangle (``level_loader.OpeningRecord``: x, y, w, h in tiles).
+OPEN_FIELDS = ("ID", "X", "Y", "WIDTH", "HEIGHT")
+#: A row of the route's per-row answers (int32): the route slot the row's
+#: order floods into (-1: none), the field at the soldier's anchor
+#: (``horde.field_at``), the compass step (``horde.candidates``' first, 0 0
+#: without one).
+ROUTE_ROW_FIELDS = ("SLOT", "HERE", "CDX", "CDY")
+#: Fault bits of ``obs_orders`` (a per-env word the gate reads; no served
+#: level reaches one): RANGE (a material id outside the mobility table, a
+#: door's span off its tile table).
+ORDER_FAULT_BITS = {"RANGE": 1}
+#: The check's breaks (``OBS_BREAK``): ``ord_prev`` (the route computed over
+#: the openings as they stood at the env's PREVIOUS build), ``ord_tie`` (the
+#: compass's tie between equal lower neighbours taken last in the cell's
+#: parity order instead of first), ``ord_place`` (the place centre read from
+#: the place table's NEXT row). ``ord_expiry`` (an expired order still shown)
+#: is host side: ``DeviceObservation.expiry_brk``, the conductor's ``10'``
+#: expiry line skipped.
+ORDER_BREAK_CODES = {"ord_prev": 1, "ord_tie": 2, "ord_place": 3}
+
+
+def room_graph_values(sim, shape) -> tuple:
+    """ONE env's ROOM GRAPH (device): the FIXED part of the level's room graph
+    the observation reads (``unit_orders.graph_of``), static for the episode:
+    ``(has_graph, place, grid, openings)`` -- ``place`` ``(h, w)`` int32 is
+    ``obs_spec_v1.place_plane`` (THE tile -> place map ``room_graph.place_at``
+    answers: its room, else the lowest-id opening holding it, else
+    ``NO_PLACE``), ``grid`` ``(h, w)`` int32 the tile -> room map (-1 outside
+    every room; the far ``place`` plane of a room), ``openings`` ``(O,
+    OPEN_W)`` int64 in the graph's order (``opening_states`` walks them; the
+    route opens an openable one's rectangle). Without a graph: 0, every tile
+    ``NO_PLACE`` / -1, no opening. An opening off the map is refused by name
+    (the host's ``walk[t]`` would raise or wrap)."""
+    from simulation import obs_spec_v1 as o
+    from simulation.unit_orders import NO_PLACE, graph_of
+    h, w = (int(x) for x in shape)
+    g = graph_of(sim)
+    if g is None:
+        return (0, np.full((h, w), NO_PLACE, dtype=np.int32), np.full((h, w), -1, dtype=np.int32),
+                np.zeros((0, len(OPEN_FIELDS)), dtype=np.int64))
+    if tuple(g.grid.shape) != (h, w):
+        raise DeviceObsRefused(f"device observation: the room graph's grid {g.grid.shape} is not "
+                               f"the batch's map {(h, w)}")
+    rows = []
+    for op in g.openings:
+        x, y, ow, oh = int(op.x), int(op.y), int(op.w), int(op.h)
+        if x < 0 or y < 0 or ow < 1 or oh < 1 or x + ow > w or y + oh > h:
+            raise DeviceObsRefused(f"device observation: opening {op.id} ({x}, {y}, {ow}, {oh}) "
+                                   f"is not inside the map {(h, w)}")
+        rows.append((int(op.id), x, y, ow, oh))
+    place = np.asarray(o.place_plane(g), dtype=np.int64)
+    if place.min() < -(1 << 31) or place.max() >= (1 << 31):
+        raise DeviceObsRefused("device observation: a place code past int32")
+    return (1, place.astype(np.int32), np.asarray(g.grid, dtype=np.int32),
+            np.array(rows, dtype=np.int64).reshape(-1, len(OPEN_FIELDS)))
+
+
 #: The resident planes the windows read, each in its own dtype (P8.5a): the
 #: dequantizes' sources (``FieldPlanes``), the wind's mass (``gas`` O2 + N2),
 #: the felt temperature's exposures (``heat``, ``rad_flux_sweep``) and the
@@ -857,6 +931,25 @@ def _constants() -> list:
     out.append(("OBS_PLACE_W", len(PLACE_FIELDS)))
     out += [(f"OBS_FULL_FAULT_{k}", v) for k, v in FULL_FAULT_BITS.items()]
     out += [(f"OBS_FULL_BREAK_{k.upper()}", v) for k, v in FULL_BREAK_CODES.items()]
+    # -- P8.6b (part 1): the order -- the far planes it owns and the route's
+    # fill, the order's codes (unit_orders), the flood's unreached value
+    # (horde), the room graph's opening rows, the route's per-row answers,
+    # faults and breaks
+    from simulation import horde
+    out += [("OBS_FAR_F_ROUTE", o.FAR_F_PLANES.index("route")),
+            ("OBS_FAR_U_PLACE", o.FAR_U_PLANES.index("place")),
+            ("OBS_ROUTE_OUTSIDE_HALF", half(o.OUTSIDE_FILL["route"])),
+            ("OBS_ROUTE_OUTSIDE_BITS", _f64_bits(float(o.OUTSIDE_FILL["route"]))),
+            ("OBS_ORDER_NONE", int(unit_orders.ORDER_NONE)),
+            ("OBS_ORDER_OPENING_BASE", int(unit_orders.ORDER_OPENING_BASE)),
+            ("OBS_NO_TARGET", int(unit_orders.NO_TARGET)),
+            ("OBS_ROUTE_UNREACHED", int(horde.UNREACHED))]
+    out += [(f"OBS_OPEN_{f}", i) for i, f in enumerate(OPEN_FIELDS)]
+    out.append(("OBS_OPEN_W", len(OPEN_FIELDS)))
+    out += [(f"OBS_ROUTE_ROW_{f}", i) for i, f in enumerate(ROUTE_ROW_FIELDS)]
+    out.append(("OBS_ROUTE_ROW_W", len(ROUTE_ROW_FIELDS)))
+    out += [(f"OBS_ORDER_FAULT_{k}", v) for k, v in ORDER_FAULT_BITS.items()]
+    out += [(f"OBS_ORDER_BREAK_{k.upper()}", v) for k, v in ORDER_BREAK_CODES.items()]
     return out
 
 
@@ -1206,6 +1299,31 @@ class DeviceObservation:
         self.full_aim = cp.full((N, 2, U), AIM_CODES["AIM_NONE"], dtype=cp.int32)
         self.full_faults = cp.zeros((N,), dtype=cp.int32)
         self.full_brk = 0                     # THE BREAK hook (the check's), 0 in a real run
+        # -- P8.6b (part 1): the order -- the room graph's device table (static
+        # per episode, staged per env at the build and at a reset) and the
+        # route's scratch (recomputed every decision: no cache to invalidate)
+        graphs = [room_graph_values(sim, (c.h, c.w)) for sim in c.sims]
+        self.open_cap = max(1, max(len(g[3]) for g in graphs))
+        self.has_graph = cp.asarray(np.array([g[0] for g in graphs], dtype=np.int32))
+        self.graph_place = cp.asarray(np.stack([g[1] for g in graphs]))
+        self.graph_grid = cp.asarray(np.stack([g[2] for g in graphs]))
+        op = np.zeros((N, self.open_cap, len(OPEN_FIELDS)), dtype=np.int64)
+        for e, g in enumerate(graphs):
+            op[e, :len(g[3])] = g[3]
+        self.openings = cp.asarray(op)
+        self.open_count = cp.asarray(np.array([len(g[3]) for g in graphs], dtype=np.int32))
+        self.open_prev = cp.zeros((N, self.open_cap), dtype=cp.uint8)  # ord_prev's memory
+        self.route_ok = cp.zeros((N, c.h, c.w), dtype=cp.uint8)
+        self.route_pass = cp.zeros((N, c.h, c.w), dtype=cp.uint8)
+        self.route_dist = cp.zeros((N, c.h, c.w), dtype=cp.int32)
+        self.route_q = cp.zeros((N, 2, c.h, c.w), dtype=cp.int32)
+        self.route_door = cp.zeros((N, int(c.doors.shape[1])), dtype=cp.uint8)
+        self.route_keys = cp.zeros((N, self.n_rows, 2), dtype=cp.int64)
+        self.route_row = cp.zeros((N, self.n_rows, len(ROUTE_ROW_FIELDS)), dtype=cp.int32)
+        self.route_blocks = cp.zeros((N, self.n_rows) + self.block_shape, dtype=cp.int32)
+        self.order_faults = cp.zeros((N,), dtype=cp.int32)
+        self.order_brk = 0                    # THE BREAK hook (the check's), 0 in a real run
+        self.expiry_brk = False               # THE BREAK hook ord_expiry (the conductor reads it)
         # -- P8.8b: the terminal observation (the final_ buffers) --------------
         self.term_params = cp.zeros((N, PARAM_W), dtype=cp.int64)
         self.term_skip = cp.ones((N,), dtype=cp.uint8)
@@ -1213,6 +1331,10 @@ class DeviceObservation:
         self.terminals = 0                   # terminal builds (an ending tick of some env)
         self.term_brk = ""                   # THE BREAK hook (TERM_BREAKS, the check's)
         self._term_pending = np.zeros(N, dtype=bool)  # term_next's deferred envs
+        # -- P8.9b: the per-env reset (the live build's skip row) --------------
+        self.reset_skip = cp.ones((N,), dtype=cp.uint8)
+        self.resets = 0                      # per-env resets of the observation side
+        self.reset_brk = ""                  # THE BREAK hook (RESET_BREAKS, the check's)
         # -- P8.7: the device books (the reward, termination, the ended latch)
         self.books = device_books.DeviceBooks(self, self.reward_terms)
         c.attach_observation(self)
@@ -1242,6 +1364,180 @@ class DeviceObservation:
         # the ending tick's blocks are built as the reference builds its last
         # observation; the latch the books set skips every later tick
         self.books.update()
+
+    # -- P8.9b: the per-env reset of the observation side ----------------------
+    def reset_prepare(self, e: int, sim, spec):
+        """THE OBSERVATION SIDE OF A PER-ENV RESET, first half: every host
+        value env ``e``'s next episode (``sim`` at its tick 0, built through
+        ``MatchSession`` with ``spec``) restages, read from the reference's
+        own objects exactly as the build reads them, and every refusal by name
+        (:class:`DeviceObsRefused`, ``PictureRefused``, ``DecoderRefused``):
+        the episode must fit the batch's layout (T, S, U, the cover / wired /
+        place capacities, one lane cell, the head sizes). Called by
+        ``DeviceConductor.reset_env`` BEFORE it writes anything; nothing here
+        writes the card."""
+        from types import SimpleNamespace
+        from simulation.obs_spec_v1 import ObsContext
+        from simulation.device_picture import PictureRefused, block_from_form, host_form
+        from simulation.device_picture import PARAM_FIELDS as PIC_PARAMS
+        c = self.c
+        e = int(e)
+        who = f"device observation reset (env {e})"
+        if spec is None:
+            raise DeviceObsRefused(f"{who}: the new episode's MatchSpec is needed (reset_env("
+                                   "e, sim, spec))")
+        n_t = len(spec.teams)
+        if n_t > self.T:
+            raise DeviceObsRefused(f"{who}: {n_t} marine teams, the layout {self.T}")
+        check_teams(sim, self.T, f" ({who})")
+        uids = [int(u.id) for u in sim.units]
+        row_of = {uid: r for r, uid in enumerate(uids)}
+        rowmap = np.full((self.n_rows,), -1, dtype=np.int32)
+        for t in range(n_t):
+            roster = sim.roster(t)
+            if len(roster) > self.S:
+                raise DeviceObsRefused(f"{who}: team {t} holds {len(roster)} roster slots, "
+                                       f"the layout {self.S}")
+            for u in roster:
+                if u is not None:
+                    rowmap[t * self.S + int(u.slot)] = row_of[int(u.id)]
+        ctx = ObsContext.build(sim, spec, self.S, n_teams=self.T)
+        table = table_values(sim, ctx, self.reward_terms)
+        if int(table[_row_of("LANE_CELL")]) != int(self.table_host[0, _row_of("LANE_CELL")]):
+            raise DeviceObsRefused(f"{who}: the lane cell {int(table[_row_of('LANE_CELL')])} "
+                                   f"is not the batch's (the lane grid's shape)")
+        cover = cover_values(sim)
+        if len(cover) > self.cover_cap:
+            raise DeviceObsRefused(f"{who}: {len(cover)} covers, the batch's capacity "
+                                   f"{self.cover_cap}")
+        n_doors = len(getattr(sim, "_doors", ()) or ())
+        if n_doors > self.wired_cap:
+            raise DeviceObsRefused(f"{who}: {n_doors} doors, the wired table's capacity "
+                                   f"{self.wired_cap}")
+        places = place_values(sim)
+        if len(places) > self.place_cap:
+            raise DeviceObsRefused(f"{who}: {len(places)} places, the batch's capacity "
+                                   f"{self.place_cap}")
+        # P8.6b: the room graph's device table (its map shape, its openings)
+        graph = room_graph_values(sim, (c.h, c.w))
+        if len(graph[3]) > self.open_cap:
+            raise DeviceObsRefused(f"{who}: {len(graph[3])} openings, the batch's capacity "
+                                   f"{self.open_cap}")
+        # the window sources' heat dials (check_window_sources' per-env half)
+        from simulation import exchange, unit_tables
+        vec = unit_tables.values(sim)
+        want = tuple(int(x) for x in exchange.heat_dials_q(ctx.heat_dials))
+        got = (unit_tables.read(vec, "heat_gain_q"), unit_tables.read(vec, "heat_ambient_q"))
+        if want != tuple(got):
+            raise DeviceObsRefused(f"{who}: the device tables' heat dials {got} are not the "
+                                   f"episode's {want}")
+        # the picture: the new sim's own after its tick-0 update (spawn_match's
+        # start_team_picture), as ONE block through the restage's conversion
+        pic = getattr(sim, "team_picture", None)
+        if pic is None or tuple(pic.teams) != tuple(range(n_t)):
+            raise PictureRefused(f"{who}: the sim's team picture "
+                                 f"{None if pic is None else tuple(pic.teams)} is not the "
+                                 f"match's teams {tuple(range(n_t))}")
+        pic_params = np.array((int(pic.memory_ticks), int(pic.window_ticks), n_t),
+                              dtype=np.int64)
+        assert len(PIC_PARAMS) == len(pic_params)
+        pic_block = block_from_form(host_form(pic, sim), uids, self.T, int(c.U), pic_params,
+                                    where=who)
+        dec = None
+        if c.decoder is not None:
+            dec = c.decoder.reset_prepare(e, sim, spec)
+        return SimpleNamespace(spec=spec, n_t=n_t, rowmap=rowmap, ctx=ctx, table=table,
+                               teams=team_values(spec, self.T), cover=cover, places=places,
+                               graph=graph,
+                               wired=wired_values(sim, self.wired_cap), pic_params=pic_params,
+                               pic_block=pic_block, dec=dec)
+
+    def reset_env(self, e: int, sim, prep) -> dict:
+        """THE OBSERVATION SIDE OF A PER-ENV RESET, second half (called by
+        ``DeviceConductor.reset_env`` after the sim side's restage, between
+        ticks): env ``e``'s row map, obs table and team rows, parameter row
+        (the episode starts at the sim's tick), ended latch CLEARED, cover /
+        wired / place tables, the stand-in aim cleared; who sees whom retaken
+        (every env: a pure function of state no write has moved since the
+        tick's own); the device team picture RESTAGED from the new sim's
+        picture (its tick-0 update); the books RE-BORN (their constructor for
+        env e alone); the decoder's slot state emptied and its pending
+        decision dropped; then the tick-0 observation and full view BUILT
+        into the LIVE buffers for env ``e`` alone (the reference's ``observe``
+        after the worker's reset). The ``final_`` buffers keep the ended
+        episode's terminal observation. Every other env's buffers, picture,
+        books and decoder state untouched. Returns the host work."""
+        import time as _time
+        cp = self.cp
+        e = int(e)
+        t0 = _time.perf_counter()
+        self.env_teams[e] = prep.n_t
+        self.ctx[e] = prep.ctx
+        self.rowmap[e] = cp.asarray(prep.rowmap)
+        self.table_host[e] = prep.table
+        self.teams_host[e] = prep.teams
+        self.table[e] = cp.asarray(prep.table)
+        self.teams[e] = cp.asarray(prep.teams)
+        self.episode_tick[e] = int(sim.tick)
+        self.params_host[e, PARAM_EPISODE_TICK] = int(sim.tick)
+        self.params_host[e, PARAM_DECIMATION] = self.decimation
+        self.params[e] = cp.asarray(self.params_host[e])
+        if self.reset_brk != "reset_ended":      # THE BREAK: the ended latch kept
+            self.ended[e] = 0
+        self.ended_host[e] = False
+        self._term_pending[e] = False
+        cov = np.zeros(self.cover_host.shape[1:], dtype=np.int64)
+        cov[:len(prep.cover)] = prep.cover
+        self.cover_host[e] = cov
+        self.cover_count_host[e] = len(prep.cover)
+        self.cover[e] = cp.asarray(cov)
+        self.cover_count[e] = len(prep.cover)
+        self.wired[e] = cp.asarray(prep.wired)
+        pl = np.zeros(tuple(self.places.shape[1:]), dtype=np.int64)
+        pl[:len(prep.places)] = prep.places
+        self.places[e] = cp.asarray(pl)
+        self.place_count[e] = len(prep.places)
+        # P8.6b: the room graph's device table of the new episode; ord_prev's
+        # memory of the old episode's openings dropped
+        has, place, grid, opens = prep.graph
+        self.has_graph[e] = int(has)
+        self.graph_place[e] = cp.asarray(place)
+        self.graph_grid[e] = cp.asarray(grid)
+        op = np.zeros(tuple(self.openings.shape[1:]), dtype=np.int64)
+        op[:len(opens)] = opens
+        self.openings[e] = cp.asarray(op)
+        self.open_count[e] = len(opens)
+        self.open_prev[e] = 0
+        self.aimed[e] = -1
+        uploads = 18
+        # who sees whom at the new episode's tick 0 (every env: idempotent)
+        self.vision()
+        # the picture: restaged from the host's tick-0 picture
+        if self.reset_brk != "reset_picture":    # THE BREAK: the old episode's picture kept
+            self.picture.reset_env(e, prep.pic_block, prep.pic_params)
+        # the books: their constructor for env e alone
+        if self.reset_brk != "reset_books":      # THE BREAK: the old episode's books kept
+            self.books.reset_env(e, prep.n_t)
+        # the decoder: its slot state and pending decision emptied
+        if self.c.decoder is not None and self.reset_brk != "reset_decoder":
+            self.c.decoder.reset_env(e, prep.dec)
+        uploads += 4
+        # the tick-0 observation of env e alone into the LIVE buffers: the
+        # decision blocks with a skip row clear for env e only (the build's
+        # own cadence: its episode tick is the sim's tick, so it is due)
+        skip = np.ones(self.N, dtype=np.uint8)
+        skip[e] = 0
+        if self.reset_brk == "reset_ended":
+            skip[e] = 1                          # the kept latch skips it, as a real run would
+        self.reset_skip.set(skip)
+        saved = (self.ended, self.builds)
+        self.ended = self.reset_skip
+        try:
+            self.build()
+        finally:
+            self.ended, self.builds = saved
+        self.resets += 1
+        return {"ms": 1000.0 * (_time.perf_counter() - t0), "uploads": uploads + 1}
 
     # -- P8.2: who sees whom ---------------------------------------------------
     def vision(self, store_ptr=None) -> None:
@@ -1333,6 +1629,9 @@ class DeviceObservation:
         self.build_masks(store)
         # P8.5a: the windows (sees_target reads the list just built)
         self.build_windows(store)
+        # P8.6b: the order -- the route, the vector's order block, the far
+        # route and place planes (the list's order columns are the list's)
+        self.build_orders(store)
         # P8.6a: the decoder's columns (prev, prev_aim, on_next_tick) after the
         # vector, the list and the windows
         self.build_decoder_obs(store)
@@ -1409,8 +1708,54 @@ class DeviceObservation:
             c.charges.buffer, c.doors.buffer, c.door_tiles.buffer,
             int(c.fields["is_vacuum"].data.ptr), int(c.fields["is_ambient"].data.ptr),
             int(c.h), int(c.w), int(self.wired.data.ptr), int(self.wired_cap),
+            int(self.places.data.ptr), int(self.place_cap), int(self.places.shape[2]),
+            int(self.place_count.data.ptr),
             int(self.n_entries), int(b["list"].data.ptr), int(b["list_mask"].data.ptr),
             int(b["list_uid"].data.ptr), int(self.list_faults.data.ptr), int(self.list_brk))
+
+    def build_orders(self, store_ptr=None) -> None:
+        """P8.6b (part 1) for every env on its decision tick: THE ORDER the
+        soldier holds, read from the store's order columns (the conductor's
+        ORDER table writes them at slot 1b', its expiry clears them at 10'),
+        the room graph's device table and the map as it stands. THE ROUTE
+        (``obs_spec_v1.route``): per env one block; the tiles the route may
+        cross -- ``horde.walkable_tiles`` OR the rectangle of every opening
+        ``room_graph.opening_states`` calls openable NOW (a living CLOSED door,
+        not wired, not a hull door, holding every unwalkable tile of it), from
+        the resident material plane, the door tables and the wired flags --
+        then per distinct (place, footprint) of the env's ordered rows THE
+        horde flood (``horde_dev::flood_block``, the one device flood) seeded
+        at every passable anchor whose block centre lies in the place, its far
+        block minimum and per row the field at its anchor and the compass's
+        step (``horde.candidates``: strictly lower, ties in the cell's parity
+        order). Recomputed every decision, never cached: the host's cache is
+        keyed on everything the field reads (the tile serial, the openings'
+        states), so a recompute IS its value. Then the vector's order block
+        (84-95) and the far ``route`` / ``place`` planes. Three launches on the
+        tick stream, no sync; faults into :attr:`order_faults`."""
+        c = self.c
+        b = self.buffers
+        store = int(c.store.device_ptr) if store_ptr is None else int(store_ptr)
+        hb, wb = self.block_shape
+        self.bp.obs_orders(
+            int(self.N), store, int(c.U), int(c.store.shape[2]), c.store.tables,
+            int(self.rowmap.data.ptr), int(self.n_rows), int(self.S), int(self.T),
+            int(self.table.data.ptr), int(self.table.shape[1]), int(c.trow.ptr),
+            int(self.params.data.ptr), int(self.ended.data.ptr),
+            int(c.fields["material"].data.ptr), int(c.fields["is_vacuum"].data.ptr),
+            int(c.fields["is_ambient"].data.ptr), int(c.h), int(c.w), c.doors.buffer,
+            c.door_tiles.buffer, int(self.wired.data.ptr), int(self.wired_cap),
+            int(self.has_graph.data.ptr), int(self.graph_place.data.ptr),
+            int(self.graph_grid.data.ptr), int(self.openings.data.ptr), int(self.open_cap),
+            int(self.openings.shape[2]), int(self.open_count.data.ptr),
+            int(self.open_prev.data.ptr), int(self.places.data.ptr), int(self.place_cap),
+            int(self.places.shape[2]), int(self.place_count.data.ptr),
+            int(self.route_ok.data.ptr), int(self.route_pass.data.ptr),
+            int(self.route_dist.data.ptr), int(self.route_q.data.ptr),
+            int(self.route_door.data.ptr), int(self.route_keys.data.ptr),
+            int(self.route_row.data.ptr), int(self.route_blocks.data.ptr), int(hb), int(wb),
+            int(b["vector"].data.ptr), int(b["far_f"].data.ptr), int(b["far_u"].data.ptr),
+            int(self.order_faults.data.ptr), int(self.order_brk))
 
     def build_masks(self, store_ptr=None) -> None:
         """P8.4c for every env on its decision tick: the four masks

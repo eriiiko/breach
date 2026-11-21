@@ -15,7 +15,7 @@
 // the launch's pointer table, in the order of the GENERATED applier_layout.h
 // (simulation/applier.PLANES), each in the GameMap field's own dtype and
 // shape -- the resident fields as ResidentBatch.buffers hold them, so the
-// device backend (P8b) hands its buffers unchanged. The float planes
+// device conductor (the env's device backend) hands its buffers unchanged. The float planes
 // (light_atten, heat_atten, conductivity, permeability, wave_absorb) are
 // written as their exact 32-bit patterns from the device tables (never a
 // float here). Every per-material value comes from the env's device tables

@@ -99,6 +99,15 @@ void UnitStoreDevice::upload(const int64_t* host) {
     us_check(cudaEventRecord(static_cast<cudaEvent_t>(staged_), tstream()), "record H2D");
 }
 
+void UnitStoreDevice::upload_env(int e, const int64_t* host) {
+    if (host == nullptr) throw std::invalid_argument("UnitStoreBuffer.upload_env: null rows");
+    if (e < 0 || e >= n_env_)
+        throw std::invalid_argument("UnitStoreBuffer.upload_env: env outside 0 .. n_env");
+    const size_t n = (size_t)n_units_ * width_;
+    us_check(cudaMemcpyAsync(d_ + (size_t)e * n, host, n * sizeof(int64_t),
+                             cudaMemcpyHostToDevice, tstream()), "H2D env store");
+}
+
 void UnitStoreDevice::download(int64_t* host) {
     if (host == nullptr) throw std::invalid_argument("UnitStoreBuffer.download: null out");
     stage_wait();
@@ -185,6 +194,14 @@ void UnitTablesDevice::upload(const int64_t* host) {
     us_check(cudaMemcpyAsync(d_, host, (size_t)n_env_ * width_ * sizeof(int64_t),
                              cudaMemcpyHostToDevice, tstream()), "H2D tables");
     us_check(counted_sync(tstream(), "cuda_unit_store.cu:178"), "tables sync");
+}
+
+void UnitTablesDevice::upload_env(int e, const int64_t* host) {
+    if (host == nullptr) throw std::invalid_argument("UnitTablesBuffer.upload_env: null row");
+    if (e < 0 || e >= n_env_)
+        throw std::invalid_argument("UnitTablesBuffer.upload_env: env outside 0 .. n_env");
+    us_check(cudaMemcpyAsync(d_ + (size_t)e * width_, host, (size_t)width_ * sizeof(int64_t),
+                             cudaMemcpyHostToDevice, tstream()), "H2D env tables");
 }
 
 void UnitTablesDevice::download(int64_t* host) {

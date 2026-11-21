@@ -314,6 +314,14 @@ _NOT_NAMEABLE: set = {"replay", "policy", "commander"}
 #: units hold orders. The door bots (#195 1j, ``DOOR_BOT_NAMES``) are not
 #: here: they carry their own brain and write their own orders.
 DOOR_CONTROLLERS = frozenset({"policy"})
+#: Who writes the orders of a team driven through the door (#29 P8.10a): the
+#: value names the REGISTERED controller :func:`create_match_controllers`
+#: builds beside such a team (``"bots"``: ``commander``, the bots' team
+#: layer; ``"none"``: no commander, so its units hold no orders). A run
+#: file's ``[run] commander`` picks it, on every backend through this one
+#: builder; the default is today's behaviour.
+COMMANDERS = {"bots": "commander", "none": None}
+DEFAULT_COMMANDER = "bots"
 
 
 def register_controller(name: str, factory, *, nameable: bool = True) -> None:
@@ -351,7 +359,8 @@ def create_controller(name: str, team: int, **options) -> "ControlSource":
     return factory(team, **options)
 
 
-def create_match_controllers(sim, spec, *, recording=None) -> list:
+def create_match_controllers(sim, spec, *, recording=None,
+                             commander: str = DEFAULT_COMMANDER) -> list:
     """THE one way a match's controllers are built (#122): one per
     ``[[team]]`` row (team i -> its ``controller``), then the horde's
     (``spec.zombie_controller`` for ``ZOMBIE_TEAM``) -- after handing the
@@ -369,9 +378,13 @@ def create_match_controllers(sim, spec, *, recording=None) -> list:
     A team whose row names a :data:`DOOR_CONTROLLERS` controller gets the
     ``commander`` after the team rows, on a level whose room graph is at
     the map's shape (#195 1f); a replay re-issues its recorded orders
-    instead."""
+    instead. ``commander`` (a :data:`COMMANDERS` key, #29 P8.10a) names
+    which registered controller that is (``"none"``: none at all)."""
     from simulation.factions import ZOMBIE_TEAM
     from simulation.match import DEFAULT_ZOMBIE_CONTROLLER
+    if commander not in COMMANDERS:
+        raise ValueError(f"commander {commander!r} is not one of "
+                         f"{sorted(COMMANDERS)}")
     if recording is not None:
         sim.hand_zombies_to_controller()
         return [create_controller("replay", None, recording=recording)]
@@ -384,8 +397,8 @@ def create_match_controllers(sim, spec, *, recording=None) -> list:
     # #195 1f: a team driven through the door gets the commander (orders on
     # the room graph) -- only where an order can name a place.
     from simulation.unit_orders import graph_of
-    if graph_of(sim) is not None:
-        controllers += [create_controller("commander", team)
+    if graph_of(sim) is not None and COMMANDERS[commander] is not None:
+        controllers += [create_controller(COMMANDERS[commander], team)
                         for team, row in enumerate(spec.teams)
                         if row.controller in DOOR_CONTROLLERS]
     sim.hand_zombies_to_controller()

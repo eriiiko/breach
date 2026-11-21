@@ -42,7 +42,9 @@ recorder (``tools/run_match.run_match(record=True)``, the bots driving),
 replayed: the reference by the ``replay`` controller (verifying the
 recording's checkpoints), the conductor from the recording's intent rows.
 PART PINNED (S3) -- the two pinned ship_demo matches (``bots``, ``bots_v1``,
-``tests/_pinned_matches``) recorded and replayed to their end.
+``tests/_pinned_matches``) recorded and fed to the conductor to their end,
+whatever tick that is; the recording play itself is the reference
+(:func:`live_gate`: each match played ONCE on the host).
 PART SYNCS (S4) -- the host syncs of a conductor tick counted (see
 :func:`count_syncs`).
 
@@ -513,13 +515,53 @@ def part_match():
 PINNED_RESULT: dict = {}
 
 
+def live_gate(name, which=None, seed=None):
+    """A ship_demo match RECORDED through the game's recorder path
+    (``MatchSession.record``, the bots driving, as ``run_match(record=True)``
+    records it) and fed to the conductor from the recording's intent rows AS
+    THEY ARE WRITTEN: the recording play itself is the reference, so the
+    match is played ONCE on the host (DEVICE CHECK PLAYS; part MATCH keeps
+    the other reference, the replay controller re-simulating a recording).
+    Runs until the match ends, however long it is (the clock bounds it).
+    Returns (ticks equal, refused or None, the ending tick or None)."""
+    import _pinned_matches as pm
+    from simulation.match_session import MatchSession
+    level = pm.ship_demo()
+    spec = pm.spec_of(level, which) if which else None
+    t0 = time.perf_counter()
+    ref_s = MatchSession(level, spec, seed=seed, breach_physics=bp)
+    twin_s = MatchSession(level, spec, seed=seed, breach_physics=bp)
+    ref_s.record()
+    rec = ref_s._recorder.recording
+    limit = int(round(float(ref_s.spec.time_limit_s) * int(ref_s.sim._tps)))
+
+    def step_ref(k):
+        ref_s.tick()
+        return ref_s.is_terminal()
+
+    # the bound is a hang guard past the clock, never the match's length
+    n, refused = run_gate(name, ref_s.sim, twin_s.sim, limit + 2,
+                          intents_of=lambda t: rec.intents.get(t, ()), step_ref=step_ref)
+    end = int(ref_s.sim.tick) if ref_s.is_terminal() else None
+    if end is not None:
+        ref_s.finish()
+    print(f"  {name}: recorded and gated live, {n} ticks, ended at {end} "
+          f"({time.perf_counter() - t0:.1f} s, one host play)")
+    return n, refused, end
+
+
 def part_pinned(which=("bots", "bots_v1")):
+    """The pinned matches to their end, whatever tick that is: every tick
+    equal, the match ENDED (its ending tick the reference's), or refused by
+    name."""
     for w in which:
-        level, rec = record_match(None if w == "bots" else w)
-        n, refused, end = replay_gate(w, level, rec)
+        n, refused, end = live_gate(w, None if w == "bots" else w)
         PINNED_RESULT[w] = (n, refused, end)
         if refused:
-            fail(f"pinned {w}: REFUSED after {n} equal ticks of {end}: {refused}")
+            fail(f"pinned {w}: REFUSED after {n} equal ticks: {refused}")
+        elif end is None:
+            if not FAILS:
+                fail(f"pinned {w}: the match did not end within its clock ({n} ticks)")
         elif n < end:
             fail(f"pinned {w}: ran {n} of {end} ticks")
         else:
@@ -661,16 +703,19 @@ PARTS = {"scenes": part_scenes, "resident": part_resident, "match": part_match,
 
 
 def main(parts=None) -> int:
+    """Run ``parts`` (default: all) in ONE process, each judged alone
+    (``_check_parts.run_parts``: its own FAILS, a crash failing that part
+    only); ``scene:<name>`` runs one hand scene."""
+    import _check_parts
     from simulation import physics_runner as pr
     pr.set_residency(False)               # the reference runs the CPU path (the oracle)
     t0 = time.perf_counter()
-    for name in (parts or list(PARTS)):
+    names = list(parts or list(PARTS))
+    table = dict(PARTS)
+    for name in names:
         if isinstance(name, str) and name.startswith("scene:"):
-            print(f"PART scene {name[6:]}")
-            part_scenes([name[6:]])
-            continue
-        print(f"PART {name}")
-        PARTS[name]()
+            table[name] = (lambda _n=name[6:]: part_scenes([_n]))
+    _check_parts.run_parts(names, table, FAILS, PINNED_RESULT.clear)
     print(f"{time.perf_counter() - t0:.1f} s")
     print("CONDUCTOR_RESULT:", "PASS" if not FAILS else f"FAIL ({len(FAILS)})")
     return 0 if not FAILS else 1

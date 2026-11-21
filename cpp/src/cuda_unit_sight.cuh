@@ -15,7 +15,8 @@
 // never, and a tile outside the grid stops nothing. Held equal to
 // GameMap.has_los on random pairs over real maps, in a batch of different
 // maps, by tests/cuda_unit_kit_check.py part SIGHT (cuda_unit_kit_probe.cu).
-// The bulk form (sight_lines.cpp's rays_clear, the observation's) stays P8b's.
+// The bulk form (sight_lines.cpp's rays_clear, the observation's) is
+// cuda_obs_sight.cuh's (#29 P8.2).
 //
 // An endpoint outside +-COORD_MAX sets *bad (the caller FAULTS; the walk would
 // still be exact, but no map is that wide and the bound keeps 2 * err in

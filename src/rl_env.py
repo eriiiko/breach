@@ -3,8 +3,11 @@
 ``BatchedEnv(run, backend="cpu_farm")`` advances N matches per call and
 returns observations, rewards and terminals with a leading N axis. A trainer
 touches nothing else: never a ``Simulation``, a controller or a kernel. One
-API, two backends; P1a builds ``cpu_farm`` only (the ``device`` backend is
-P5..P9) and refuses any other name.
+API, two backends: ``cpu_farm`` (below; THE reference) and ``device`` (#29
+P8.10a, ``src/rl_env_device.py``: one device conductor of N envs with the
+observation, books and decoder on the card, its arrays torch tensors there;
+held equal to the farm step by step by ``tests/cuda_env_check.py``). Any
+other name is refused.
 
 THE RUN FILE (``run.toml``, kept OUTSIDE the repo tree, any path; its sha256
 is :attr:`BatchedEnv.run_sha256` for the later run manifest). Nothing about a
@@ -25,6 +28,14 @@ missing key or a mistyped value (:func:`load_run`)::
                                   # (absolute, or relative to the run file;
                                   # refused INSIDE the checkout): the run
                                   # manifest goes there
+    commander = "bots"            # OPTIONAL (#29 P8.10a): who writes the
+                                  # orders of a team on "policy":
+                                  # "bots" (default: the bots' team layer,
+                                  # control_source.COMMANDERS) or "none"
+    checkpoint_every_ticks = 60   # OPTIONAL (#29 P8.10a): the checkpoint
+                                  # cadence of info["checkpoints"] (default
+                                  # [replay] checkpoint_every_ticks); 0 =
+                                  # no checkpoints at all
     [obs]
     spec = "crop"                 # OPTIONAL: the observation spec (#195 1g):
                                   # "crop" (default, the placeholder rows
@@ -152,6 +163,16 @@ rollout buffer is that copy). A fresh ~10 MB array per step cost the driver
 1.8 to 2.3 ms at 64 envs in page faults, with every worker idle meanwhile
 (#29, 2026-11-11). Every other returned array is a fresh copy.
 
+THE BACKEND ``device`` (#29 P8.10a; ``rl_env_device``'s module doc): the same
+keys, shapes and dtypes, everything the card builds a torch tensor on the
+card (the observation the env's own buffers, the rest fresh device copies),
+the small info arrays host numpy; every marine team ``policy``, the horde
+``zombies`` / ``idle``, ``[run] commander = "none"``, a named reward
+profile, spec v1, one batch-compatible level set -- anything else refused by
+name at the build. COVERAGE (:meth:`BatchedEnv.coverage`, both backends):
+per head the options chosen, per mask the options legal, per counter the
+cells that moved, the endings.
+
 SNAPSHOTS AND THE RUN MANIFEST (#29 P1b, residency design §6). A training run
 on a snapshot calls :func:`require_snapshot` (``BatchedEnv(...,
 snapshot=tag)`` does): an ANNOTATED tag whose commit is HEAD, a tree clean
@@ -159,7 +180,9 @@ INCLUDING untracked files under ``src/``, ``levels/``, ``config.toml`` and
 ``cpp/``, ``simulation`` and ``breach_physics`` imported from this checkout's
 own ``src/`` and ``cpp/build*/``, the module's build-time ``build_id()``
 equal to HEAD, and the run file's sha256 recorded; the ``device`` backend
-also needs an empty twin debt ledger (``tools/twin_debt.py``). Each check is
+also needs an empty twin debt ledger (``tools/twin_debt.py``), the CPU
+build's id at HEAD as well, every compiled layout fingerprint this
+checkout's and a passed pre-flight (``rl_env_device.preflight``). Each check is
 its own function taking the repo path. The farm needs no ledger and trains
 at any tag. With ``[run] out_dir`` the env writes :data:`RUN_MANIFEST`
 there (:func:`write_run_manifest`: commit, tag, build id, run and bank
@@ -192,7 +215,8 @@ ROOT = Path(__file__).resolve().parent.parent
 CPU_BUILD = ROOT / "cpp" / "build" / "Release"
 DEFAULT_LEVELS_DIR = ROOT / "levels"
 
-BACKENDS = ("cpu_farm",)
+#: The built backends (#29 P8.10a: ``device``, ``src/rl_env_device.py``).
+BACKENDS = ("cpu_farm", "device")
 #: The Philox stream salt of the episode draw ("EPIS"): the one salt
 #: enum's (``simulation.rng_salts.Salt.EPISODE``, #29 P3b).
 EPISODE_SALT = int(_Salt.EPISODE)
@@ -263,6 +287,35 @@ def episode_draw(run_seed: int, env: int, k: int, n_levels: int) -> tuple:
     return w[0] | (w[1] << 32), philox32_below(w[2], n_levels)
 
 
+def episode_match(run, levels, env: int, k: int) -> tuple:
+    """``(match_seed, level_index, level, spec)`` of episode ``k`` of env
+    ``env``: :func:`episode_draw`, then the level's match.toml with the seed
+    replaced, every team's controller set by ``[run] policy`` and the run
+    file's sight rule. THE one episode build both backends use (the farm's
+    ``EnvRunner.reset``, the device backend's host build)."""
+    from dataclasses import replace
+    seed, li = episode_draw(run.seed, env, k, len(levels))
+    level = levels[li]
+    base = level.match
+    ctrls = run.team_controllers(len(base.teams), level.name)
+    spec = replace(base, seed=seed, teams=tuple(
+        replace(t, controller=c) for t, c in zip(base.teams, ctrls)))
+    if run.sight is not None:          # #195 1a: the run file's rule wins;
+        spec = replace(spec, sight=run.sight)   # the recorder keeps it
+    return seed, li, level, spec
+
+
+def checkpoint_every(run) -> int:
+    """The run's checkpoint cadence in ticks: ``[run]
+    checkpoint_every_ticks`` when given, else ``[replay]
+    checkpoint_every_ticks``; 0 = no checkpoints (#29 P8.10a)."""
+    if run.checkpoint_every is not None:
+        return int(run.checkpoint_every)
+    from config import CFG
+    import match_replay
+    return int(match_replay.replay_settings(CFG))
+
+
 # ---------------------------------------------------------------------------
 # The run file door
 # ---------------------------------------------------------------------------
@@ -292,6 +345,9 @@ class RunConfig:
     reward_terms: tuple = ()    # ((term, weight), ...): the profile's table
                                 # with the run file's overrides; () under
                                 # "counters"
+    commander: str = "bots"     # [run] commander (#29 P8.10a)
+    checkpoint_every: int | None = None   # [run] checkpoint_every_ticks;
+                                # None = config's [replay] cadence, 0 = none
 
     def terms(self) -> dict:
         """The term weights of the books (#195 1i): the profile's table with
@@ -319,7 +375,8 @@ class RunConfig:
 
 _RUN_KEYS = {"seed": True, "n_envs": True, "decimation": True,
              "levels": True, "policy": True, "levels_dir": False,
-             "out_dir": False, "sight": False}
+             "out_dir": False, "sight": False, "commander": False,
+             "checkpoint_every_ticks": False}
 #: The ``[obs]`` keys per spec (#195 1g): the three crop keys belong to the
 #: ``"crop"`` placeholder alone; ``"v1"`` takes none (its layout is the spec).
 _OBS_KEYS = {"crop": {"spec": False, "channels": True, "crop_radius": True,
@@ -439,6 +496,15 @@ def parse_run(raw: dict, where: str = "run file",
                              f"the checkout {str(ROOT)!r}: run outputs go "
                              f"outside it (a snapshot's tree stays clean)")
         out_dir = str(p)
+    from control_source import COMMANDERS, DEFAULT_COMMANDER
+    commander = run.get("commander", DEFAULT_COMMANDER)
+    if not isinstance(commander, str) or commander not in COMMANDERS:
+        raise ValueError(f"{where}: [run] commander must be one of "
+                         f"{sorted(COMMANDERS)}, got {commander!r}")
+    checkpoint_every = None
+    if "checkpoint_every_ticks" in run:
+        checkpoint_every = _int_key(run, "run", "checkpoint_every_ticks",
+                                    where, 0)
     sight = None
     if "sight" in run:
         from simulation.match import check_sight
@@ -511,7 +577,8 @@ def parse_run(raw: dict, where: str = "run file",
                      vector=vector, reward=reward, out_dir=out_dir,
                      sight=sight, spec=spec, full_view=full_view,
                      action_spec=action_spec, reward_profile=profile,
-                     reward_terms=reward_terms)
+                     reward_terms=reward_terms, commander=commander,
+                     checkpoint_every=checkpoint_every)
 
 
 def load_run(path) -> RunConfig:
@@ -726,18 +793,18 @@ class EnvRunner:
     def __init__(self, env: int, run: RunConfig, layout: Layout, levels,
                  *, breach_physics=None, checkpoint_every_ticks=None,
                  record: bool = False):
-        from config import CFG
-        import match_replay
         from simulation.events import UnitHitEvent, UnitKilledEvent
         self.env = int(env)
         self.run = run
         self.layout = layout
         self.levels = list(levels)
         self.bp = breach_physics
-        self.every = (match_replay.replay_settings(CFG)
-                      if checkpoint_every_ticks is None
+        self.every = (checkpoint_every(run) if checkpoint_every_ticks is None
                       else int(checkpoint_every_ticks))
         self.record = bool(record)
+        if self.record and self.every < 1:
+            raise ValueError(f"env {env}: recording needs a checkpoint "
+                             f"cadence >= 1, got {self.every}")
         self.last_recording = None
         self._hit, self._kill = UnitHitEvent, UnitKilledEvent
         self._vec = [VECTOR_FIELDS[v] for v in layout.vector]
@@ -761,23 +828,16 @@ class EnvRunner:
     def reset(self) -> list:
         """Start the env's next episode (k + 1): draw its level and seed,
         build the match. Returns its checkpoints so far (tick 0)."""
-        from dataclasses import replace
         from control_policy import AgentPolicy
         from simulation.match_session import MatchSession
         from simulation.sensor_accessor import EntityFieldAccessor
         self.k += 1
-        seed, li = episode_draw(self.run.seed, self.env, self.k,
-                                len(self.levels))
-        level = self.levels[li]
-        base = level.match
-        ctrls = self.run.team_controllers(len(base.teams), level.name)
-        spec = replace(base, seed=seed, teams=tuple(
-            replace(t, controller=c) for t, c in zip(base.teams, ctrls)))
-        if self.run.sight is not None:      # #195 1a: the run file's rule wins;
-            spec = replace(spec, sight=self.run.sight)   # the recorder keeps it
+        seed, li, level, spec = episode_match(self.run, self.levels,
+                                              self.env, self.k)
         self.seed, self.level_index = seed, li
         self.session = MatchSession(level, spec, seed=seed,
-                                    breach_physics=self.bp)
+                                    breach_physics=self.bp,
+                                    commander=self.run.commander)
         if self.record:
             self.session.record(self.every)
         sim = self.session.sim
@@ -806,7 +866,7 @@ class EnvRunner:
             self.act_tables = action_tables(sim, S)
             for pol in self.policies.values():
                 pol.configure("v1", self.act_tables)
-        return [(self.k, 0, *self.session.digests())]
+        return ([(self.k, 0, *self.session.digests())] if self.every else [])
 
     def step(self, actions) -> dict:
         """One decimation step on ``actions`` ``(U, A)``: each policy team's
@@ -852,7 +912,7 @@ class EnvRunner:
             count_events(sim.tick_events, team_before, id_row, ci, old,
                          frozen=ended if named and ended.any() else None)
             books.end(sim)
-            if sim.tick % self.every == 0:
+            if self.every and sim.tick % self.every == 0:
                 cps.append((self.k, int(sim.tick), *s.digests()))
             if s.is_terminal():
                 break
@@ -870,7 +930,7 @@ class EnvRunner:
                "team_outcome": books.outcome.copy(),
                "rows_ended": books.rows_ended.copy()}
         if terminal:
-            if not cps or cps[-1][1] != int(sim.tick):
+            if self.every and (not cps or cps[-1][1] != int(sim.tick)):
                 cps.append((self.k, int(sim.tick), *s.digests()))
             out["ended"] = True
             if named:                   # 6.5: the clock is an ending
@@ -1053,6 +1113,93 @@ def count_events(events, team_before, id_row, ci, counters,
 
 
 # ---------------------------------------------------------------------------
+# The coverage counters (#29 P8.10a; design §5.5, critique 19): what a run
+# exercised, counted the same way on both backends (``xp`` numpy or CuPy)
+# ---------------------------------------------------------------------------
+def coverage_init(xp, layout) -> dict:
+    """The coverage counters of a run, zero (int64 arrays of ``xp``): per
+    head of action spec v1 how often each option was CHOSEN on a valid row
+    (``chosen_<head>``), per served mask how often each option was LEGAL on
+    a valid row (``legal_<mask>``) -- both ``"v1"`` actions only --, per
+    counter how many (row, step) cells moved (``counters_moved``), the
+    endings (``ended_terminated`` / ``ended_truncated``) and the steps."""
+    cov = {"steps": xp.zeros((), dtype=xp.int64),
+           "counters_moved": xp.zeros((len(layout.counters),), dtype=xp.int64),
+           "ended_terminated": xp.zeros((), dtype=xp.int64),
+           "ended_truncated": xp.zeros((), dtype=xp.int64)}
+    if layout.action_spec == "v1":
+        from simulation.action_spec_v1 import HEADS
+        for h, n in zip(HEADS, layout.head_sizes):
+            cov[f"chosen_{h}"] = xp.zeros((n,), dtype=xp.int64)
+        for k in layout.mask_keys:
+            n = layout.obs_shapes()[k][0][-1]
+            cov[f"legal_{k}"] = xp.zeros((n,), dtype=xp.int64)
+    return cov
+
+
+def coverage_actions(xp, cov, layout, actions, obs) -> None:
+    """A step's decision into the counters: ``actions`` ``(N, U, A)`` and
+    the served observation ``obs`` they answer (its ``valid`` and masks).
+    Device-side on CuPy: no transfer, no sync."""
+    cov["steps"] += 1
+    if layout.action_spec != "v1":
+        return
+    from simulation.action_spec_v1 import HEADS
+    v = obs["valid"].astype(bool)[..., None]
+    for i, (h, n) in enumerate(zip(HEADS, layout.head_sizes)):
+        hit = (actions[..., i, None] == xp.arange(n)) & v
+        cov[f"chosen_{h}"] += hit.sum(axis=(0, 1))
+    for k in layout.mask_keys:
+        cov[f"legal_{k}"] += (obs[k].astype(bool) & v).sum(axis=(0, 1))
+
+
+def coverage_step(xp, cov, counters, terminated, truncated) -> None:
+    """A step's outcome into the counters (the served ``counters``,
+    ``terminated``, ``truncated``)."""
+    cov["counters_moved"] += (counters != 0).sum(axis=(0, 1))
+    cov["ended_terminated"] += terminated.astype(bool).sum()
+    cov["ended_truncated"] += truncated.astype(bool).sum()
+
+
+def unexercised(run, cov: dict) -> list:
+    """The run's WEIGHTED reward terms none of whose counters moved over
+    ``cov`` (host arrays), by name -- a feature of the run's config with
+    zero exercise (the pre-flight's list)."""
+    from simulation.reward_v1 import _COUNTER_TERMS
+    if run.reward_profile == "counters":
+        return []
+    terms = run.terms()
+    moved = dict(zip(COUNTER_NAMES, np.asarray(cov["counters_moved"])))
+    out = []
+    for term, w in sorted(terms.items()):
+        if float(w) == 0.0:
+            continue
+        cs = [c for c, (_g, t, _s) in _COUNTER_TERMS.items() if t == term]
+        if cs and not any(moved.get(c, 0) for c in cs):
+            out.append(f"term {term!r} (weight {w}; counters {cs} never moved)")
+    return out
+
+
+def _pick(rng, mask):
+    """Per leading index one option drawn uniformly among ``mask``'s ones
+    (the last axis; every row has at least one)."""
+    r = rng.random(mask.shape)
+    r[np.asarray(mask) == 0] = -1.0
+    return r.argmax(axis=-1)
+
+
+def random_legal_actions(rng, obs) -> np.ndarray:
+    """``(N, U, 5)`` int32: per row each head of action spec v1 drawn
+    uniformly among its legal options in ``obs``'s (host) masks, the
+    argument among the realised ``arg_mask`` -- the v1 trainer stub
+    (``tools/rl_smoke.py``'s, the gates')."""
+    from simulation.action_spec_v1 import MASK_KEYS, arg_mask
+    cols = [_pick(rng, obs[k]) for k in MASK_KEYS]
+    cols.append(_pick(rng, arg_mask(cols[3], cols[1])))
+    return np.stack(cols, axis=-1).astype(np.int32)
+
+
+# ---------------------------------------------------------------------------
 # The worker process
 # ---------------------------------------------------------------------------
 def _worker_paths() -> None:
@@ -1161,8 +1308,18 @@ def _worker_main(conn, task: dict) -> None:
 # ---------------------------------------------------------------------------
 # Snapshots (#29 P1b, residency design §6)
 # ---------------------------------------------------------------------------
-#: The backends require_snapshot knows ("device" refuses until P8b exists).
+#: The backends require_snapshot knows.
 SNAPSHOT_BACKENDS = ("cpu_farm", "device")
+#: The compiled layouts the device backend runs on (#29 P8.10a): module ->
+#: the CUDA module's layout function (``fingerprint`` key), each against the
+#: Python module's ``layout().fingerprint``; the two attribute fingerprints
+#: (observation, swarm tables) against their module's ``fingerprint()``.
+DEVICE_LAYOUTS = (("unit_store", "unit_store_layout"), ("unit_events", "unit_events_layout"),
+                  ("unit_requests", "unit_requests_layout"), ("applier", "applier_layout"),
+                  ("object_tables", "object_tables_layout"),
+                  ("unit_draws", "unit_draws_layout"))
+DEVICE_ATTR_LAYOUTS = (("device_obs", "OBS_LAYOUT_FINGERPRINT"),
+                       ("swarm_tables", "SWARM_TABLES_FINGERPRINT"))
 #: Where an UNTRACKED file makes a snapshot dirty (anywhere else -- art,
 #: notes -- it may stay). A modified tracked file is dirty anywhere.
 #: ``agents/`` and ``tools/`` since rung 2 patch 2d.2: a stray module there
@@ -1336,6 +1493,53 @@ def check_twin_debt(repo) -> None:
                 "debt: " + "; ".join(f"{n} ({r})" for n, r in rows))
 
 
+def device_layouts(bp) -> dict:
+    """``name -> (compiled, expected)`` fingerprint of every layout the
+    device backend runs on (:data:`DEVICE_LAYOUTS`, :data:`DEVICE_ATTR_LAYOUTS`)
+    for the CUDA module ``bp``."""
+    import importlib
+    out = {}
+    for mod, fn in DEVICE_LAYOUTS:
+        m = importlib.import_module(f"simulation.{mod}")
+        f = getattr(bp, fn, None)
+        out[mod] = (None if f is None else f()["fingerprint"], m.layout().fingerprint)
+    for mod, attr in DEVICE_ATTR_LAYOUTS:
+        m = importlib.import_module(f"simulation.{mod}")
+        out[mod] = (getattr(bp, attr, None), m.fingerprint())
+    return out
+
+
+def check_device_layouts(layouts: dict) -> dict:
+    """Refuses unless every compiled layout fingerprint is this checkout's
+    (``layouts`` from :func:`device_layouts`); returns ``name ->
+    fingerprint``."""
+    bad = [f"{n} (compiled {str(c)[:12]}, source {str(w)[:12]})"
+           for n, (c, w) in sorted(layouts.items()) if c != w]
+    if bad:
+        _refuse("layouts", "the CUDA module's generated layouts are not this checkout's "
+                "(run the generators, commit, rebuild cpp/build_cuda): " + "; ".join(bad))
+    return {n: w for n, (_c, w) in sorted(layouts.items())}
+
+
+def cpu_module_probe(repo) -> dict:
+    """The CPU build's ``breach_physics`` file and build id in ``repo``
+    (``cpp/build/Release``), read in a SUBPROCESS (the device process holds
+    the CUDA module; one process never loads both)."""
+    path = Path(repo) / "cpp" / "build" / "Release"
+    code = ("import json, sys; sys.path.insert(0, sys.argv[1]); import breach_physics as bp; "
+            "f = getattr(bp, 'build_id', None); "
+            "print(json.dumps({'bp_file': bp.__file__, 'build_id': f() if f else None}))")
+    try:
+        r = subprocess.run([sys.executable, "-c", code, str(path)], capture_output=True,
+                           text=True, timeout=120, cwd=str(repo))
+    except (OSError, subprocess.SubprocessError) as e:
+        _refuse("cpu build", f"could not import the CPU build at {path}: {e}")
+    if r.returncode != 0 or not r.stdout.strip():
+        _refuse("cpu build", f"could not import the CPU build at {path}: "
+                f"{(r.stderr or '').strip()[-400:]}")
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
 def module_probe() -> dict:
     """``simulation`` / ``breach_physics`` as imported in THIS process: their
     files and the module's build id (the default probe)."""
@@ -1347,19 +1551,28 @@ def module_probe() -> dict:
 
 
 def require_snapshot(tag: str, backend: str, run, *, repo=None,
-                     probe: dict | None = None) -> dict:
+                     probe: dict | None = None, preflight=None) -> dict:
     """THE training door (residency design §6): refuses
     (:class:`SnapshotRefused`, naming the failed check) unless ``tag`` is an
     annotated tag, HEAD is its commit, the tree is clean (untracked files
     included under :data:`SNAPSHOT_PATHS`), ``simulation`` and
     ``breach_physics`` come from this checkout, the module's build id is
     HEAD and ``run`` (a run file path or a :class:`RunConfig` loaded from
-    one) has its sha256 recorded. ``backend="device"`` also needs an empty
-    twin debt ledger, then refuses: no device backend exists yet (P8b).
+    one) has its sha256 recorded. ``backend="device"`` (#29 P8.10a) also
+    needs an empty twin debt ledger, the CPU build's build id at HEAD too
+    (``probe["cpu_build_id"]`` / ``["cpu_bp_file"]``, else
+    :func:`cpu_module_probe`; the reference every device twin is held
+    equal to), every compiled layout fingerprint this checkout's
+    (``probe["layouts"]``, else :func:`device_layouts` of the imported CUDA
+    module) and a passed PRE-FLIGHT (``preflight(run)``, default
+    ``rl_env_device.preflight``: random episodes on both backends compared
+    at every step), in that order, the costly one last.
 
     ``repo`` defaults to this checkout; ``probe`` (``simulation_file``,
     ``bp_file``, ``build_id``) to :func:`module_probe` -- the farm passes its
-    workers'. Returns ``{tag, commit, build_id, run_sha256, backend}``."""
+    workers'. Returns ``{tag, commit, build_id, run_sha256, backend}`` (and
+    under ``device`` a ``"device"`` record: the CPU build id, the layout
+    fingerprints, the pre-flight's steps / endings / zero-exercise list)."""
     if backend not in SNAPSHOT_BACKENDS:
         _refuse("backend", f"{backend!r} is not a backend (known: "
                 f"{list(SNAPSHOT_BACKENDS)})")
@@ -1372,11 +1585,38 @@ def require_snapshot(tag: str, backend: str, run, *, repo=None,
                        probe.get("bp_file"))
     check_build_id(repo, probe.get("build_id"))
     run_sha = check_run_recorded(repo, run)
+    rec = {"tag": tag, "commit": commit, "build_id": probe.get("build_id"),
+           "run_sha256": run_sha, "backend": backend}
     if backend == "device":
         check_twin_debt(repo)
-        _refuse("backend", "no device backend yet (P5..P9; P8b makes it)")
-    return {"tag": tag, "commit": commit, "build_id": probe.get("build_id"),
-            "run_sha256": run_sha, "backend": backend}
+        if "cpu_build_id" in probe:
+            cpu = {"bp_file": probe.get("cpu_bp_file"), "build_id": probe["cpu_build_id"]}
+        else:
+            cpu = cpu_module_probe(repo)
+        check_module_paths(repo, probe.get("simulation_file"), cpu.get("bp_file"))
+        try:
+            check_build_id(repo, cpu.get("build_id"))
+        except SnapshotRefused as e:
+            _refuse("cpu build", str(e).split(": ", 2)[-1])
+        if "layouts" in probe:
+            layouts = probe["layouts"]
+        else:
+            import breach_physics as bp
+            layouts = device_layouts(bp)
+        fps = check_device_layouts(layouts)
+        cfg = run if isinstance(run, RunConfig) else load_run(run)
+        if preflight is None:
+            from rl_env_device import preflight
+        try:
+            pre = preflight(cfg)
+        except Exception as e:
+            _refuse("pre-flight", f"{type(e).__name__}: {e}")
+        rec["device"] = {"cpu_build_id": cpu.get("build_id"), "layouts": fps,
+                         "preflight": {"steps": pre.get("steps"),
+                                       "endings": pre.get("endings"),
+                                       "unexercised": (unexercised(cfg, pre["coverage"])
+                                                       if "coverage" in pre else [])}}
+    return rec
 
 
 # ---------------------------------------------------------------------------
@@ -1431,17 +1671,21 @@ def environment_versions() -> dict:
 
 def run_manifest_record(*, run_sha256: str, build_id, backend: str,
                         tag: str | None = None, bank_sha256=None,
-                        repo=None) -> dict:
+                        repo=None, device=None) -> dict:
     """The manifest's content: format, backend, the snapshot tag (None off a
     snapshot) and the commit run (HEAD; the tag's commit on a snapshot), the
     module's build id, the run file's and the bank's sha256 (the bank is
-    P8a's: None until then), and :func:`environment_versions`."""
+    P8a's: None until then), and :func:`environment_versions`; under the
+    ``device`` backend (#29 P8.10a) ``device``: the CPU build's id and the
+    compiled layout fingerprints (a resume refuses a change of either)."""
     repo = Path(repo) if repo is not None else ROOT
     rc, commit = _git(repo, "rev-parse", "HEAD")
     rec = {"format": RUN_MANIFEST_FORMAT, "backend": backend, "tag": tag,
            "commit": commit if rc == 0 and commit else None,
            "build_id": build_id, "run_sha256": run_sha256,
            "bank_sha256": bank_sha256}
+    if device is not None:
+        rec["device"] = device
     rec.update(environment_versions())
     return rec
 
@@ -1485,8 +1729,11 @@ class BatchedEnv:
     """N matches stepped together (see the module doc). ``run`` is the run
     file's path or a :class:`RunConfig`; it is the one source of the levels,
     ``n_envs``, the decimation, the policy, the observation and the reward
-    rows (so its sha256 describes the run). ``backend`` must be
-    ``"cpu_farm"`` in P1a. ``n_workers`` (default ``min(n_envs,
+    rows (so its sha256 describes the run). ``backend``: ``"cpu_farm"``
+    (THE reference) or ``"device"`` (#29 P8.10a, ``rl_env_device``: one
+    device conductor of N envs in THIS process, which must have imported the
+    CUDA build; the same API, its arrays torch tensors on the card -- see
+    that module). ``n_workers`` (farm only; default ``min(n_envs,
     os.cpu_count() - 1)``) processes share the envs in contiguous blocks --
     a machine property, not the run's: results do not depend on it. Each
     worker starts with :data:`WORKER_ENV` (one BLAS thread).
@@ -1500,25 +1747,40 @@ class BatchedEnv:
     def __init__(self, run, backend: str = "cpu_farm", *,
                  n_workers: int | None = None, snapshot: str | None = None):
         if backend not in BACKENDS:
-            raise ValueError(f"backend {backend!r} is not built (P1a builds "
-                             f"{list(BACKENDS)}; the 'device' backend is "
-                             f"P5..P9)")
+            raise ValueError(f"backend {backend!r} is not built (the built "
+                             f"backends: {list(BACKENDS)})")
         self.run = run if isinstance(run, RunConfig) else load_run(run)
         self.backend = backend
         self.levels = load_levels(self.run)
         self.layout = make_layout(self.run, self.levels)
         n = self.run.n_envs
+        self._dev = None
+        self._closed = False
+        self._shm, self._a = {}, {}
+        self._procs, self._conns = [], []
+        self._started = np.zeros(n, dtype=bool)
+        self.snapshot = None
+        self.manifest_path = None
+        if backend == "device":
+            self.n_workers = 0
+            from rl_env_device import check_run
+            check_run(self.run, self.levels)     # refused by name before the card
+            try:
+                from rl_env_device import DeviceEnv
+                self._dev = DeviceEnv(self.run, self.layout, self.levels)
+                self._doors(snapshot, module_probe())
+            except BaseException:
+                self.close()
+                raise
+            return
+        self.cov = coverage_init(np, self.layout)
         if n_workers is None:
             n_workers = max(1, min(n, (os.cpu_count() or 2) - 1))
         if not 1 <= int(n_workers) <= n:
             raise ValueError(f"n_workers must be in [1, n_envs={n}], got "
                              f"{n_workers}")
         self.n_workers = int(n_workers)
-        self._shm, self._a = {}, {}
-        self._procs, self._conns = [], []
         self._owner = [None] * n
-        self._started = np.zeros(n, dtype=bool)
-        self._closed = False
         try:
             for key, (shape, dtype) in self.layout.shapes().items():
                 nbytes = max(1, int(np.prod(shape)) * np.dtype(dtype).itemsize)
@@ -1564,26 +1826,42 @@ class BatchedEnv:
                 self._conns.append(parent)
             for c in self._conns:
                 self._recv(c)
-            self.snapshot = None
-            self.manifest_path = None
             if snapshot is not None or self.run.out_dir:
-                probe = self._module_probe()
-                if snapshot is not None:
-                    self.snapshot = require_snapshot(
-                        snapshot, backend, self.run, probe=probe)
-                if self.run.out_dir:
-                    kw = dict(run_sha256=self.run.sha256,
-                              build_id=probe["build_id"], backend=backend,
-                              tag=snapshot)
-                    path = Path(self.run.out_dir) / RUN_MANIFEST
-                    if path.exists():
-                        check_run_manifest(path, **kw)
-                    else:
-                        write_run_manifest(path, **kw)
-                    self.manifest_path = str(path)
+                self._doors(snapshot, self._module_probe())
         except BaseException:
             self.close()
             raise
+
+    def _doors(self, snapshot, probe) -> None:
+        """The training doors at construction: :func:`require_snapshot` on
+        ``snapshot`` (over ``probe``, the modules this backend runs), then
+        the run manifest under ``[run] out_dir`` (written, or on a resume
+        checked). The device backend records its CPU build id and layout
+        fingerprints in the manifest."""
+        if snapshot is None and not self.run.out_dir:
+            return
+        backend = self.backend
+        if snapshot is not None:
+            self.snapshot = require_snapshot(snapshot, backend, self.run, probe=probe)
+        if self.run.out_dir:
+            device = None
+            if backend == "device":
+                if self.snapshot is not None:
+                    d = self.snapshot["device"]
+                    device = {"cpu_build_id": d["cpu_build_id"], "layouts": d["layouts"]}
+                else:
+                    import breach_physics as bp
+                    device = {"cpu_build_id": cpu_module_probe(ROOT).get("build_id"),
+                              "layouts": {n: w for n, (_c, w)
+                                          in sorted(device_layouts(bp).items())}}
+            kw = dict(run_sha256=self.run.sha256, build_id=probe["build_id"],
+                      backend=backend, tag=snapshot, device=device)
+            path = Path(self.run.out_dir) / RUN_MANIFEST
+            if path.exists():
+                check_run_manifest(path, **kw)
+            else:
+                write_run_manifest(path, **kw)
+            self.manifest_path = str(path)
 
     # -- plumbing ---------------------------------------------------------
     @property
@@ -1597,6 +1875,15 @@ class BatchedEnv:
 
     def worker_pids(self) -> list:
         return [p.pid for p in self._procs]
+
+    def coverage(self) -> dict:
+        """The run's coverage counters so far (:func:`coverage_init`), host
+        numpy on both backends: what a run exercised (every verb chosen,
+        every mask option legal, every counter moved, the endings)."""
+        self._check_open()
+        if self._dev is not None:
+            return self._dev.coverage()
+        return {k: np.array(v, copy=True) for k, v in self.cov.items()}
 
     def _recv(self, conn):
         kind, payload = conn.recv()
@@ -1616,7 +1903,9 @@ class BatchedEnv:
     def probe(self) -> list:
         """Each worker's pid, the breach_physics and simulation files it
         loaded, the module's build id and any renderer / CUDA module it
-        imported (a gate reads it)."""
+        imported (a gate reads it). The device backend has no workers."""
+        if self._dev is not None:
+            return []
         return [self._broadcast({w: ("probe", None)})
                 for w in range(self.n_workers)]
 
@@ -1713,6 +2002,10 @@ class BatchedEnv:
         if mask.shape != (n,) or mask.dtype != bool:
             raise ValueError(f"reset mask must be a ({n},) bool array, got "
                              f"{mask.shape} {mask.dtype}")
+        if self._dev is not None:
+            out = self._dev.reset(mask)
+            self._started |= mask
+            return out
         per = {}
         for e in np.flatnonzero(mask):
             per.setdefault(self._owner[int(e)], []).append(int(e))
@@ -1735,6 +2028,8 @@ class BatchedEnv:
             raise RuntimeError("step() before reset(): envs "
                                f"{np.flatnonzero(~self._started).tolist()} "
                                f"have no episode")
+        if self._dev is not None:
+            return self._dev.step(actions)
         actions = np.asarray(actions)
         want = self._a["actions"].shape
         if actions.shape != want or not np.issubdtype(actions.dtype,
@@ -1750,10 +2045,12 @@ class BatchedEnv:
             check_actions(actions, self.layout.head_sizes)
             masked = masked_choices(actions, {k: self._a[k]
                                               for k in self.layout.mask_keys})
+        coverage_actions(np, self.cov, self.layout, actions, self._a)
         self._a["actions"][...] = actions
         got = self._broadcast({w: ("step", None)
                                for w in range(self.n_workers)})
         a = self._a
+        coverage_step(np, self.cov, a["counters"], a["terminated"], a["truncated"])
         n = self.n_envs
         ended = np.array([got[e]["ended"] for e in range(n)], dtype=bool)
         info = self._info_arrays()
@@ -1786,6 +2083,9 @@ class BatchedEnv:
         if self._closed:
             return
         self._closed = True
+        if self._dev is not None:
+            self._dev.close()
+            self._dev = None
         for c in self._conns:
             try:
                 c.send(("close", None))
@@ -1823,7 +2123,10 @@ class BatchedEnv:
 
 __all__ = [
     "BatchedEnv", "EnvRunner", "RunConfig", "Layout", "load_run",
-    "parse_run", "make_layout", "load_levels", "episode_draw",
+    "parse_run", "make_layout", "load_levels", "episode_draw", "episode_match",
+    "checkpoint_every", "coverage_init", "coverage_actions", "coverage_step",
+    "unexercised", "random_legal_actions", "device_layouts", "check_device_layouts",
+    "cpu_module_probe", "DEVICE_LAYOUTS",
     "COUNTER_NAMES", "N_OLD_COUNTERS", "VECTOR_FIELDS", "BACKENDS", "EPISODE_SALT",
     "require_snapshot", "SnapshotRefused", "check_annotated_tag",
     "check_head_at_tag", "check_clean_tree", "check_module_paths",

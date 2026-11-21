@@ -478,21 +478,302 @@ def part_fault(k=2, n=4):
               f"is refused")
 
 
+# ---------------------------------------------------------------------------
+# #29 P8.9a -- PART RESET: env e reset mid-batch == env e built alone
+# ---------------------------------------------------------------------------
+def play_resets(slots, ticks, resets, label, after_build=None):
+    """One conductor over ``slots`` (the episode each env starts with) for
+    ``ticks`` ticks; ``resets`` maps a run tick t to ``[(env, Env), ...]``,
+    each applied BETWEEN ticks t - 1 and t through ``DeviceConductor.reset_env``
+    (the new episode's sim built by its ``make``: ``MatchSession`` for a
+    match). An env's intents are its CURRENT episode's, at its episode's own
+    tick. Returns (per-env fingerprints every tick, refusal or None, the
+    resets' host work)."""
+    cur = list(slots)
+    c = cd.DeviceConductor([e.make() for e in cur], bp=bp)
+    if after_build is not None:
+        after_build(c)
+    start = [0] * len(cur)
+    out = [[] for _ in cur]
+    works = []
+    for t in range(ticks):
+        for e, env in resets.get(t, ()):
+            t0 = time.perf_counter()
+            sim = env.make()
+            build_ms = 1000.0 * (time.perf_counter() - t0)
+            try:
+                w = c.reset_env(e, sim)
+            except Exception as ex:
+                print(f"  {label}: the reset of env {e} at tick {t} REFUSED "
+                      f"({type(ex).__name__}: {ex})")
+                return out, ex, works
+            works.append(dict(w, build_ms=build_ms, env=e, tick=t))
+            cur[e], start[e] = env, t
+        for k, env in enumerate(cur):
+            c.latch(env.intents(t - start[k], int(c.sims[k].tick)), env=k)
+        try:
+            c.tick()
+        except Exception as ex:
+            print(f"  {label}: tick {t} REFUSED ({type(ex).__name__}: {ex})")
+            return out, ex, works
+        c.download()
+        for k in range(len(cur)):
+            out[k].append(fingerprint(c, k))
+    return out, None, works
+
+
+def reset_gate(name, slots, ticks, resets, after_build=None) -> bool:
+    """THE GATE: the batch with ``resets`` against (a) the SAME batch without
+    them for every env's episode that was not reset (the other envs at the
+    reset tick and every tick after; a reset env before its first reset) and
+    (b) for each new episode, a FRESH N = 1 conductor of the same (level,
+    seed) run as many ticks, at every tick: ``(field_digest, tick_digest)``,
+    the state in no digest, the swarm death events."""
+    base, ex = play_resets(slots, ticks, {}, f"{name} without resets")[:2]
+    if ex is not None:
+        fail(f"{name}: the batch without resets was refused: {ex}")
+        return False
+    got, ex, works = play_resets(slots, ticks, resets, f"{name} with resets",
+                                 after_build=after_build)
+    if ex is not None:
+        fail(f"{name}: the batch with resets was refused at tick {len(got[0])}: {ex}")
+        return False
+    n_cmp = 0
+    for k in range(len(slots)):
+        segs = [(0, slots[k])] + sorted(((t, env) for t, lst in resets.items()
+                                         for e, env in lst if e == k), key=lambda x: x[0])
+        for i, (t0, env) in enumerate(segs):
+            t1 = segs[i + 1][0] if i + 1 < len(segs) else ticks
+            ref = base[k] if i == 0 else solo(env, ticks - t0)
+            off = 0 if i == 0 else t0
+            for t in range(t0, t1):
+                if got[k][t] != ref[t - off]:
+                    what = "the batch without resets" if i == 0 else \
+                        f"{env.name} built alone (N = 1), its tick {t - off}"
+                    fail(f"{name}: env {k} at run tick {t} (episode {i}) differs from "
+                         f"{what}: {_what_differs(ref[t - off], got[k][t])}")
+                    return False
+                n_cmp += 1
+    print(f"  {name}: {len(works)} resets, every env equal every tick ({n_cmp} env-ticks "
+          f"compared, N = {len(slots)}); restage ms "
+          f"{[round(w['ms'], 2) for w in works]}, host build ms "
+          f"{[round(w['build_ms'], 1) for w in works]}")
+    return True
+
+
+def match_env_capped(which, seed, max_ticks) -> Env:
+    """A ship_demo match recorded through the game's recorder, its time limit
+    cut to ``max_ticks`` (the bots drive; zombies live); its sim built through
+    ``MatchSession`` as the env builds an episode."""
+    from simulation.match_session import MatchSession
+    level, rec = cc.record_match(which, seed=seed, max_ticks=max_ticks)
+
+    def make():
+        return MatchSession(level, rec.spec, seed=rec.seed, replay=rec, breach_physics=bp).sim
+    return Env(f"{which or 'bots'}@{seed}", make,
+               lambda t, tick, _r=rec: _r.intents.get(tick, ()) if tick < _r.end_tick else ())
+
+
+def _reset_break(c):
+    """THE BREAKS of PART RESET (``CONDUCTOR_BATCH_BREAK``): ``reset_table``
+    -- the door table left unstaged by a reset; ``reset_key`` -- the tick
+    row's draw key left at the old episode's seed; ``reset_neighbour`` -- the
+    restage also writes row 0 of the NEXT env's store slice."""
+    import cupy as cp
+    from simulation import unit_draws
+    if BREAK == "reset_table":
+        orig = c._table_records
+        c._table_records = lambda s: [(t, r) for t, r in orig(s) if t is not c.doors]
+    elif BREAK == "reset_key":
+        orig_w = c.trow.write_env
+
+        def keep_key(e, row):
+            old = c.trow.buf[int(e)].get()
+            row = np.array(row, dtype=np.int64)
+            k0 = unit_draws.TICK_ROW_KEY
+            row[k0:k0 + unit_draws.KEY_W] = old[k0:k0 + unit_draws.KEY_W]
+            orig_w(e, row)
+        c.trow.write_env = keep_key
+    elif BREAK == "reset_neighbour":
+        orig_u = c.store.upload_env
+
+        def spill(e, rows, tables=None):
+            orig_u(e, rows, tables=tables)
+            nb = (int(e) + 1) % c.N
+            c._rows[nb, 0] = cp.asarray(np.ascontiguousarray(rows)[0])
+        c.store.upload_env = spill
+
+
+RESET_TICKS = int(os.environ.get("CONDUCTOR_RESET_TICKS", "220"))
+
+
+def part_reset(n_list=(2, 4)):
+    """ship_demo (bots and zombies) and larva_studio (swarm units alive):
+    resets at different ticks for different envs, the same env twice, a
+    reset on the tick after another env's reset."""
+    H = RESET_TICKS
+    brk = _reset_break if BREAK.startswith("reset_") else None
+    seeds = [(None, 11), ("bots_v1", 12), (None, 13), ("bots_v1", 14)]
+    slots = [match_env_capped(w, s, H) for w, s in seeds]
+    new = [match_env_capped(w, s, H) for w, s in ((None, 21), ("bots_v1", 22), (None, 23),
+                                                  ("bots_v1", 24))]
+    plans = {2: {50: [(0, new[0])], 51: [(1, new[1])], 120: [(0, new[2])]},
+             4: {40: [(1, new[0])], 41: [(3, new[1])], 130: [(1, new[2])],
+                 170: [(0, new[3])]}}
+    for n in n_list:
+        reset_gate(f"ship_demo reset N={n}", slots[:n], H, plans[n], after_build=brk)
+    _SOLO.clear()
+    from simulation import physics_runner as pr
+    pr.set_residency(False)
+    lar = [Env(f"larva@{s}", (lambda _s=s: _larva_sim(_s)), lambda t, tick: ())
+           for s in (1, 2, 3, 4, 7, 8, 9, 10)]
+    lplans = {2: {30: [(1, lar[4])], 31: [(0, lar[5])], 90: [(1, lar[6])]},
+              4: {30: [(1, lar[4])], 31: [(0, lar[5])], 60: [(3, lar[7])], 90: [(1, lar[6])]}}
+    for n in n_list:
+        reset_gate(f"larva_studio reset N={n}", lar[:n], min(H, SWARM_TICKS), lplans[n],
+                   after_build=brk)
+    _SOLO.clear()
+
+
+def _room_level(name="range_door"):
+    """A training room (``tools/gen_training_rooms.py``), written to a temp
+    folder as ``tests/cuda_obs_check.py`` writes it."""
+    import tempfile
+    import gen_training_rooms as TR
+    import level_loader
+    d = tempfile.mkdtemp(prefix="reset_rooms_")
+    for dr in TR.drafts():
+        if dr.name == name:
+            TR.write(dr, d)
+    return level_loader.load(name, d)
+
+
+def part_reset_refusals():
+    """A sim that does not fit the batch (another grid: a training room into
+    a ship_demo batch; more units than U) is refused BY NAME before anything
+    is written: the batch then runs on equal to itself without the attempt."""
+    import _pinned_matches as pm
+    from simulation.match_session import MatchSession
+    level = pm.ship_demo()
+    room = _room_level()
+    mk = [lambda s=s: MatchSession(level, None, seed=s, breach_physics=bp).sim for s in (3, 4)]
+
+    def run(attempts):
+        c = cd.DeviceConductor([m() for m in mk], bp=bp)
+        fps = []
+        for t in range(12):
+            if t == 5:
+                for bad in attempts:
+                    try:
+                        c.reset_env(1, bad())
+                    except cd.ConductorRefused as ex:
+                        print(f"  refused by name: {ex}")
+                    else:
+                        fail("reset refusals: an unfit sim was accepted")
+            c.tick()
+            c.download()
+            fps.append([fingerprint(c, k) for k in range(2)])
+        return fps
+
+    def crowded():
+        s = MatchSession(level, None, seed=9, breach_physics=bp).sim
+        s.units.extend(s.units[:1] * 64)       # more rows than the batch's U
+        return s
+    a = run([])
+    b = run([lambda: MatchSession(room, None, seed=1, breach_physics=bp).sim, crowded])
+    if a != b:
+        fail("reset refusals: a refused reset changed the batch")
+    else:
+        print("  reset refusals: the batch unchanged by two refused resets (12 ticks)")
+
+
+def part_reset_cost(n_list=(4, 64)):
+    """The cost of a reset at N = 4 and 64 on ship_demo: the host build of the
+    next episode (``MatchSession``; also a training room's), the restage
+    (``reset_env``: ms, uploads, host syncs) and the tick after it (its host
+    syncs against a steady tick's)."""
+    import gc
+    import _pinned_matches as pm
+    from simulation.match_session import MatchSession
+    level = pm.ship_demo()
+    room = _room_level()
+    for lv, name in ((level, "ship_demo"), (room, "range_door")):
+        ms = []
+        for s in range(5):
+            t0 = time.perf_counter()
+            MatchSession(lv, None, seed=100 + s, breach_physics=bp)
+            ms.append(1000.0 * (time.perf_counter() - t0))
+        print(f"  MatchSession build {name}: {np.median(ms):.1f} ms median "
+              f"({[round(x, 1) for x in ms]})")
+    for n in n_list:
+        c = cd.DeviceConductor([MatchSession(level, None, seed=1 + e, breach_physics=bp).sim
+                                for e in range(n)], bp=bp)
+        for _ in range(3):
+            c.tick()
+        sc = cc.SyncCount()
+        gc.collect()
+        gc.disable()
+        try:
+            res = []
+            for k in range(3):
+                e = (5 * k) % n
+                t0 = time.perf_counter()
+                sim = MatchSession(level, None, seed=500 + k, breach_physics=bp).sim
+                build = 1000.0 * (time.perf_counter() - t0)
+                sc.py = []
+                bp.host_sync_log_begin()
+                t1 = time.perf_counter()
+                w = c.reset_env(e, sim)
+                restage = 1000.0 * (time.perf_counter() - t1)
+                rlog = list(bp.host_sync_log_end()) + sc.py
+                sc.py = []
+                bp.host_sync_log_begin()
+                c.tick()
+                tlog = list(bp.host_sync_log_end()) + sc.py
+                sc.py = []
+                bp.host_sync_log_begin()
+                c.tick()
+                slog = list(bp.host_sync_log_end()) + sc.py
+                res.append((build, restage, w["uploads"], len(rlog), len(tlog), len(slog)))
+        finally:
+            gc.enable()
+            sc.close()
+        for b, r, u, rs, ts, ss in res:
+            print(f"  reset cost N={n}: host build {b:.1f} ms, restage {r:.2f} ms "
+                  f"({u} uploads, {rs} host syncs), the tick after {ts} syncs, a steady "
+                  f"tick {ss}")
+        if any(ts != ss for *_x, ts, ss in res):
+            print(f"  NOTE N={n}: the tick after a reset makes other syncs than a steady one")
+        del c
+        gc.collect()
+
+
 PARTS = {"scenes": part_scenes, "matches": part_matches, "swarm": part_swarm,
-         "swap": part_swap, "syncs": part_syncs, "fault": part_fault}
+         "swap": part_swap, "syncs": part_syncs, "fault": part_fault,
+         "reset": part_reset, "reset_refusals": part_reset_refusals,
+         "reset_cost": part_reset_cost}
 
 
 def main(parts=None) -> int:
+    """Run ``parts`` (default: all) in ONE process, each judged alone
+    (``_check_parts.run_parts``: its own FAILS, the device solo plays
+    ``_SOLO`` cleared before each part as a fresh process has them, a crash
+    failing that part only); the host references of the scenes
+    (``_HOST_INTENTS``) are shared; ``group:<name>`` runs one scene group."""
+    import _check_parts
     from simulation import physics_runner as pr
     pr.set_residency(False)               # the host references run the CPU path
     t0 = time.perf_counter()
-    for name in (parts or list(PARTS)):
+    names = list(parts or list(PARTS))
+    table = dict(PARTS)
+    for name in names:
         if isinstance(name, str) and name.startswith("group:"):
-            print(f"PART scenes {name[6:]}")
-            part_scenes([name[6:]])
-            continue
-        print(f"PART {name}")
-        PARTS[name]()
+            table[name] = (lambda _n=name[6:]: part_scenes([_n]))
+
+    def reset():
+        _SOLO.clear()
+        pr.set_residency(False)           # every part starts on the CPU path, as main sets it
+    _check_parts.run_parts(names, table, FAILS, reset)
     print(f"{time.perf_counter() - t0:.1f} s")
     print("CONDUCTOR_BATCH_RESULT:", "PASS" if not FAILS else f"FAIL ({len(FAILS)})")
     return 0 if not FAILS else 1

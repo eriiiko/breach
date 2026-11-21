@@ -217,6 +217,7 @@ amends the rule file, never this line's length.
 | Affected tests | `tools/affected_tests.py` | THE change-based tier for work in progress: the tests a change can reach, read from the source; may over-select, never under-select; never the merge gate |
 | Affected card checks | `tools/affected_cuda.py` | THE change-based tier for card checks: the `cuda_*` checks a change can reach (Python closure, the bindings it calls, the C++ definitions those run); may over-select, never under-select; never the merge gate |
 | Pinned match plays | `tests/_pinned_matches.py` (`watch`, `pinned_play`, `WHICH`) | The two pinned ship_demo matches (`bots`, `bots_v1`) are played ONCE per pytest process and shared (#205): a test that only WATCHES one of them hangs its observer on `watch(which, on_tick)`, never a fresh `run_match`; a test that changes the match in any way (monkeypatch, spec, seed, level, a mutated unit) plays its own. Observers never write to a view. Self-checking: the bots_v1 G8p pin and the ship_demo controller pin compare the shared play's outcome and per-tick unit stream with their pins |
+| Device check plays | `tests/_check_parts.py` + the session fixtures of `tests/test_cuda_obs.py` / `test_cuda_conductor.py` / `test_cuda_conductor_batch.py` | A device check plays each match of its corpus ONCE per subprocess and every part reads that play; its wrapper tests share ONE subprocess run, each judged on its own part; never a per-test subprocess that re-plays a shared corpus |
 
 ### Render / UI
 
@@ -301,7 +302,7 @@ amends the rule file, never this line's length.
 | Team picture | `src/simulation/team_picture.py` | What a team knows of the enemy lives in ONE place, updated once per tick; never a second picture |
 | Match recording / replay | `src/match_replay.py` + `Simulation.attach_intent_log` | Replay is re-simulation through ONE intent tap; `main.py --replay` is the only playback path |
 | MatchSession + the `policy` controller | `src/simulation/match_session.py` + `src/control_policy.py` | THE steppable match; a policy drives units only as this controller |
-| Batched environment | `src/rl_env.py` | THE one env; a trainer never touches a Simulation or a kernel |
+| Batched environment | `src/rl_env.py` + `src/rl_env_device.py` | THE one env; a trainer never touches a Simulation or a kernel |
 | Observation spec | `src/simulation/obs_spec_v1.py` + `EntityFieldAccessor.observe` | A named, versioned spec behind THE WALL; a new idea is a new spec |
 | Full view | `obs_spec_v1.FullView` | The value network's privileged view, never a key of `obs` |
 | Device observation | `src/simulation/device_obs.py` + `cpp/src/cuda_obs.*` + generated `cpp/src/obs_layout.h` | THE device form of observation spec v1 and the full view, built in the conductor tick into env-owned buffers; the host builders stay the reference; never a second observation |
@@ -324,6 +325,7 @@ amends the rule file, never this line's length.
 | Vision / engagements / cover | `src/simulation/vision.py`, `engagement.py`, `cover_system.py`, `line_of_fire.py` | One sight oracle (`has_los`, never `solid` alone); the match's sight rule decides who sees whom |
 | Sight for many tiles | `cpp/src/sight_lines.cpp` + `vision.rays_clear` / `window_clear` | THE sight test in bulk, held equal to `has_los`; nothing walks its own lines |
 | Room graph | `level_loader.RoomGraph` + `src/simulation/room_graph.py` | ONE map from tile to room and ONE list of openings; never a second |
+| Room graph (device) | `device_obs.room_graph_values` + `cpp/src/cuda_obs_orders.cu` | THE device form of the level's room graph and openings, staged per env; the observation's route reads it; never a second graph |
 | A* | `pathfinding.py::astar` | THE host pathfinder; never the horde's |
 | Planted charge | `Simulation.plant_charge_intent` + `src/simulation/charges.py` | A planted charge is a `PlantedCharge` and nothing else; one driver per path |
 | Verb gates | `src/simulation/verb_gates.py` | Whether a hand verb would act is ONE pure read, called by the verb and the masks; a new hand verb brings its gate |

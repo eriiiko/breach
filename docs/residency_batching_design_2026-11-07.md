@@ -4033,6 +4033,460 @@ before it, a fragility of the check, reported, not fixed here. No golden
 re-baselined; no host value moved;
 `.claude/rules/device-units.md` never stated the bound (unchanged).
 
+**P8.9a AS-BUILT (2026-11-21, branch `29-p89-obs-reset`, stacked on P8.8b's
+head `f14f1ce5`).** THE PER-ENV RESET OF THE SIM SIDE is ONE entry,
+`DeviceConductor.reset_env(e, sim, spec=None)`, called between ticks: `sim` is
+env e's next episode at its tick 0, built on the host through `MatchSession`
+(decision 4: equal to the reference by construction; brood levels included,
+the broods already spawned for the seed), and env e's slice of every structure
+the build stages is restaged from it, the others untouched and never paused.
+THE WORK LIST (each with how): the resident planes and the swarm store /
+planes -- `ResidentBatch.reset_env` (a new `check_reset` compares the new sim
+with the slot's occupant and every buffer's shape / dtype: at N = 1 the old
+check compared the sim with itself); the non-resident ripple pair -- CuPy
+slice writes; the store slice and its device tables -- `DeviceStore.upload_env`
+(new C++ `UnitStoreDevice::upload_env`, `UnitTablesDevice::upload_env`); the
+tick row (tick, the episode's draw key, the tile serial) --
+`TickRow.write_env`; every object and entity table (rounds, noise, blast log,
+grenades, charges, doors + tiles, ducts + vents, sources + tiles, timed
+charges, heat sources, the eight signal tables) -- ONE list,
+`DeviceConductor._table_records(sim)`, which the build now reads for every env
+and the reset for one, through the record list's new per-env upload
+(`UnitRecordList::upload_env` behind `DeviceTable.env_rows` (checked) /
+`stage_env_rows`): the ONE table mechanism, no second; the horde cache --
+`DeviceHordeCache.stage_env`; the edit door -- `reset_env(e, seq)` with the new
+episode's queue seq (C++ `EditDoor::reset_env` took a seq); the host latches
+(`_cols` of env e dropped, its order table, its zombie request set), the row
+maps, the `Z-` tracking, the 9e gates (recomputed over the envs: a class no env
+holds any more turns its face off, as a fresh batch would), the spray box bound
+(raised, never lowered: it is a scratch bound), the swarm death rows, the
+ended-now flag. The record lists that live one tick (ring, request list, the
+three effect lists, cell buffer, claims) need nothing: their next `begin`
+restarts them. THE REFUSALS, each by name before the first write: the build's
+(`_refuse`, `shooting_door`, `refuse_wego`), another grid / gas table / tilt /
+tick rate / buffer shape (`ConductorRefused` from `check_reset`), another stamp
+path, more units than U, a plane's shape, a device-tables range
+(`unit_tables.values`), a table's capacity (`ObjectTableOverflow`), the horde
+cache's capacity or map. NO SYNC: every per-env copy is enqueued on the tick
+stream (a pageable source is staged before `cudaMemcpyAsync` returns) or a CuPy
+write on the legacy stream. THE PRE-BUILT EPISODE: the host build is a plain
+call (`MatchSession(level, spec, seed)` / `EnvRunner.reset`) the device backend
+(P8.10a) makes for env e while its current episode runs, then hands the sim to
+`reset_env` at the ending; no thread here. Thread-safety, as read: a
+`Simulation` build rebuilds PROCESS-WIDE tables (`weapons.get_tables()`, the
+loadout tables, `combat.weapon_tables()`), so it is not safe beside another
+build or a host reference stepping in the same process; the conductor's walk
+reads only device state and each twin's own scalars, so a build beside a tick
+is safe as far as read (unmeasured under the GIL); `reset_env` itself is
+conductor-thread only, between ticks. Gates (`tests/cuda_conductor_batch_check.py`
+parts RESET and RESET_REFUSALS): env e reset mid-batch then run equal to a
+FRESH N = 1 conductor of the same (level, seed) at every tick, and every other
+env equal to the same batch run WITHOUT the resets at the reset tick and after
+(`(field_digest, tick_digest)`, the no-digest records, swarm deaths):
+ship_demo bots matches (zombies alive) N = 2 (resets env 0 at tick 50, env 1 at
+51, env 0 again at 120: 440 env-ticks) and N = 4 (env 1 at 40, env 3 at 41, env
+1 again at 130, env 0 at 170: 880), larva_studio (swarm units alive, seeds
+differing) N = 2 (3 resets, 400) and N = 4 (4 resets, 800); all equal on the
+first run. Refusals: a training room into a ship_demo batch and a sim with 76
+units into U = 12, both refused by name, the batch equal to itself without the
+attempts. Breaks, each red: `reset_table` (the door table left unstaged: ship
+N = 2 at the reset tick), `reset_key` (the tick row's key left at the old seed:
+red on larva_studio at the reset tick + 1; GREEN on the ship_demo runs, whose
+220 recorded ticks draw nothing a key moves), `reset_neighbour` (the store
+upload also writes row 0 of the next env: ship N = 4 env 0 at tick 41). Cost
+(part RESET_COST, ship_demo, the card shared): a `MatchSession` build 17.6 ms
+(range_door 12.3 ms), the sim-side restage 13 ms of host time at N = 4 and at
+N = 64 (94 uploads, 0 host syncs; its host packing -- `pack`, `values`, the
+record functions -- is most of it and can move into the pre-build), the tick
+after a reset 2 syncs like a steady tick. No golden re-baselined; no host
+value moved.
+
+**P8.9b AS-BUILT (2026-11-21, the same branch).** THE PER-ENV RESET OF THE
+OBSERVATION SIDE rides the same entry: with an observation attached
+`reset_env` takes the episode's `spec` and calls
+`DeviceObservation.reset_prepare(e, sim, spec)` among its refusals (the new
+`ObsContext`, obs table and team rows, the row map from the roster, the cover /
+wired / place rows, the picture's block -- `block_from_form(host_form(the new
+sim's tick-0 picture))`, P8.3's seam -- and the decoder's rows; refused by name:
+more teams than T, a roster past S, another lane cell, a cover / door / place
+count past the batch's capacity, other heat dials, other head sizes, a team
+not `policy`, a horde controller with no device form), then after the sim side
+`DeviceObservation.reset_env`: the per-env rows and parameter row (the episode
+starts at the sim's tick), THE ENDED LATCH CLEARED, the stand-in aim cleared,
+who sees whom retaken (every env: a pure function of state nothing moved since
+the tick's own), `DevicePicture.reset_env` (its PARAM row and the block),
+`DeviceBooks.reset_env` (the row set to the constructor's start, then the
+books kernel's constructor for env e alone: the kernel took `only_env`), the
+decoder's `reset_env` (the slot state zero with `aimed` -1, the pending
+decision, due flag, masked choices and faults zero, its drive row, horde mode,
+table row, the conductor's decoder-driven units and horde request set), then
+THE TICK-0 OBSERVATION AND FULL VIEW built into the LIVE buffers for env e
+alone: the decision blocks under a skip row clear for env e only (P8.8b's
+mechanism the other way round). What the trainer is handed matches the farm:
+at an ending step the terminal observation in `final_` (P8.8b, built at the
+ending tick, untouched by the reset), the new episode's tick 0 live. Choices
+where the design was silent: the reset entry is the conductor's (the sim and
+the observation in one call, refusals of both before any write); the books
+are re-born by their own kernel rather than a host form converted to a block
+(no second conversion to keep equal); vision is retaken for every env rather
+than per env (idempotent, one launch); the books' words are read at the reset
+(the reset's one sync). Gates (`tests/cuda_obs_check.py` part RESET, `PATCH =
+"P8.9b"`; P8.9a / P8.9b own no column, so the owners table's landing order
+puts them before P8.6b): the references are host `EnvRunner`s (the farm
+worker's calls; every team `policy`; masked-random decisions; the commander's
+orders fed through the tap), the device's episodes built by a second
+`EnvRunner` per env with the same `episode_draw`. Training room range_door N =
+4: every env auto-reset at its own ending, episodes ended per env 6 / 3 / 3 / 4
+(16 resets), 3246 env-decisions compared (2345 after a reset) over 3240 ticks;
+ship_demo N = 2 with resets forced mid-match (env 1 after its 15th step, env 0
+after its 41st) and one ending: 3 resets, 181 env-decisions (125 after a
+reset). At every decision every owned observation key, mask and the full view
+raw-bit equal, the picture's whole state, the books' whole state and every slot
+state equal; at every step end the served reward / counters / team blocks /
+rows_ended / terminated / truncated raw-bit equal; at every ending the
+terminal observation equal and unchanged by the reset; at every reset every
+other env's live buffers unchanged (51 env-resets held). All equal on the first
+run. Breaks, each red at the first decision after the first reset:
+`reset_picture` (the old picture kept: `full_list`), `reset_books` (the books
+differ at `units`), `reset_decoder` (the slot state kept: `vector` `prev[0]`),
+`reset_ended` (the latch kept: `list_mask` / `valid`, the env never rebuilt).
+Cost (part RESET_COST, ship_demo, every team `policy`, the card shared): the
+host build of the next episode (`EnvRunner.reset`: `MatchSession`,
+`ObsContext`, the books, the tables) 25 to 28 ms; `reset_env` with the
+observation 21 to 25 ms of host time at N = 4 and N = 64 alike (the
+observation side 2 to 7 ms, 17 uploads, ONE host sync: the books' words); the
+tick after a reset 2 syncs. At the inventory's 0.16 to 0.85 resets per tick at
+N = 256 that is 3 to 21 ms of host work per tick for the restage and as much
+again for the build: the bank file of §4.6 is not needed by this number;
+moving the restage's host packing into the pre-build halves it. No golden
+re-baselined; no host value moved; no table column added.
+
+**P8.6b (part 1) AS-BUILT (2026-11-21, branch `29-p86b-obs-orders`, stacked on
+P8.9b's `21a9c97d`).** THE ORDER, READ FROM THE CARD: with it every served key
+and column of the policy observation is built on the card (`device_obs.BUILT`
+covers the whole spec; `tests/test_device_obs.py` fails on a served key or
+column left unbuilt). Nothing of the order was host-only: the four order
+columns are store columns the conductor's ORDER table writes at `1b'` and its
+expiry clears at `10'`; the room graph is static per episode. THE ROOM GRAPH
+(device) (`device_obs.room_graph_values`: `obs_spec_v1.place_plane`, the room
+grid, the openings in the graph's order) is staged per env at the build and
+restaged by `reset_prepare` / `reset_env` (an opening count past the batch's
+capacity refused by name). `DeviceObservation.build_orders` (after the
+windows; `cpp/src/cuda_obs_orders.cu`, bound as `bp.obs_orders`) is three
+launches on the tick stream, no sync: `k_route` (one block per env: the tiles
+`horde.walkable_tiles` from the resident material plane OR the rectangle of
+every opening `room_graph.opening_states` calls openable NOW -- not walkable,
+every unwalkable tile in the span of a living CLOSED door that is not wired
+and not a hull door, from the door tables, the wired flags and
+`obs_rows::door_hull` (lifted out of the list); per distinct (place,
+footprint) of the env's ordered rows, in row order, `horde_dev::flood_block`
+seeded at every passable anchor whose block centre is in the place; the far
+block minima; per row the field at its anchor `(tile_y, tile_x)` and the
+compass step in `horde.candidates`' parity order), `k_order_vector` (columns
+84-95 in the kit's float64, `_place_centre` through the place table) and
+`k_order_planes` (far `route` / `place`). The list's order columns (47-51)
+are `order_tail` (moved above `k_list`, called after `mate_entry`; the full
+view's call unchanged). RECOMPUTED every decision, no cache: the host's route
+cache is keyed on the tile serial and the openings' openable flags, i.e. on
+everything the field reads, so a recompute IS the cached value; a BFS's
+distances do not depend on the frontier's visiting order, so the flood equals
+`horde.flood` whatever the device's order. What the host shows, learned and
+reproduced: a closed ORDINARY door counts as openable, so shutting or opening
+one never changes a route; only a wall destroyed, a hull or wired door, or a
+door no longer closed-and-eligible does (a hull door opened); the compass is
+read at the soldier's anchor tile, `inside` / the place direction at its
+centre tile; an unreachable place shows `route_len` -1, compass 0 0, the
+route plane -1 everywhere and the place plane still drawn. Gates
+(`tests/cuda_obs_check.py`, `PATCH = "P8.6b"`, landing after P8.9b in the
+owners table): THE ORDER HAND MATCH (ship_demo, both teams idle, 160 ticks:
+door D between team 0's room and its east neighbour made a hull door, a room
+off the start room sealed by wiring its doors; go to / hold with a target /
+clear an opening with a limit / fall back to with a limit that expires off the
+cadence / an unreachable room / a replaced and a cleared order / a soldier
+with none; A opens D at tick 30 and walks through it from 48 to 84, so its
+route runs 2, 1, 0 and its compass points east; B opens and shuts an ordinary
+door of the start room at 10 / 21), the list hand match, corpus (c) with the
+commander on, and a batch of three order hand matches (seeds 81 / 83 / 85)
+beside the list hand match. Part GATE: 2264 env-decisions equal over the
+whole corpus (41 of the order hand match, 7 of the list hand match, 330 of
+corpus (c)); the batch of orders 48 (N = 2) and 130 (N = 4) env-decisions,
+envs ending at 160 / 24 / 160 / 160. Order coverage (rows at decisions, over
+the order and list hand matches and corpus (c)): no order 256, go to 654,
+hold 70, clear 17, fall back to 748, a room 1451 and an opening 38 as the
+place, a limit 34 and none 1455, a target 778 and none 711, inside 307, route
+0 / 1 / more 301 / 4 / 1131, unreachable 53, a route changed with the order
+held 12, expired 3, replaced 7, a team with and without orders 74, a mate
+with the same place 992, a sideways compass 421. Every owned row raw-bit equal
+at every decision, every order row non-constant over the corpus; all equal on the
+first run of the device code (the work was the scene). THE WALL (part WALL,
+every marine latched a go-to order with a target at tick 0): perturbing an
+unseen enemy's row moves no order row, 7 (cone) and 6 (all_round) (team,
+tick) cases with orders held. Across resets (part
+RESET, the commander's orders through the tap): 19 resets every one of an env
+showing orders, 5498 order rows shown after a reset, every order row equal
+from the new episode's tick 0. Breaks, each red: `ord_prev` (the route over the openings of
+the env's previous build) at tick 24, the first decision after the ordinary
+door shut (`compass_dy`: a hull door opening moves no openable flag, so the
+shut ordinary door is what reaches this break); `ord_tie` at tick 4
+(`compass_dx`); `ord_place` at tick 4 (`place_dx`); `ord_expiry` (the
+conductor's `10'` expiry skipped) at tick 24 (the full view's order tail
+first). Bench (`tools/bench_conductor.py --obs --orders`, every marine an
+order to its own room: one flood per soldier, 8 per env; GPU ms per decision for all N envs): the
+order 8.85 / 10.0 / 22.9 ms at N = 1 / 64 / 256, the whole per decision
+(observation + full view + books + decoder) 12.0 / 16.2 / 38.6 ms; with no
+order held the order is 0.18 / 0.20 / 0.47 ms and the whole 3.7 / 6.4 / 16.1
+ms. The floods run one block per env, its keys one after another, so at small
+N the card idles (about 1.1 ms a flood at N = 1); a grid over (key, env)
+would take the worst case down where N is small, and the commander's one
+order per team means 2 floods per env, not 8. A tick that LATCHES an order
+intent costs a third host sync (the ORDER table's input staging wait,
+`cuda_unit_store.cu:135`, P8.6a's path): 2 syncs on a steady tick, 3 on every
+tick of the bench's every-tick re-latch. The commander measured
+on corpus (c) (host, the six ship_demo runs, 842 env-ticks, two commanders
+per env; the card shared with another agent's runs): 246 order intents (29.2 per env per 100 ticks), from 78 commander decisions
+that changed the team's order (9.3 per env per 100 ticks); the crowd runs
+(every unit packed together, 78 to 145 ticks) churn, the uncrowded ship_demo
+run gives 8 intents in 308 ticks (2.6 per env per 100). `BotCommander.
+handle_frame` costs 0.088 ms per call on the host (0.006 ms on a tick it does
+not decide; 0.49 ms mean, 0.28 ms median, 2.9 ms max on its deciding tick,
+every `team_period_ticks`), 0.18 ms per env per tick for the env's two
+commanders: at N = 256 that is about 45 ms of host time per tick, plus the
+host view of the sim it would need on the device path. Choices where
+the design was silent: recompute rather than a per-env cache (equal by
+construction, cost above); the flood's keys deduplicate (place, footprint)
+per env, so soldiers sharing a place share a flood; the opening's
+openable test walks the env's door rows per unwalkable tile (openings are
+few and small). PART 2 (who writes orders on the training path: the bots'
+team layer as a host bridge, a device commander, or nothing) is Erik's
+decision; what it needs from this part: orders reach the card only as the
+store's four order columns (written by the ORDER table from `order_intent`,
+the one intent the tap still carries beside the decoder); whatever writes
+them, these blocks read them at the next decision with no change. No golden
+re-baselined; no host value moved.
+
+**DEVICE CHECK PLAYS AS-BUILT (2026-11-21, branch `29-obs-check-plays`, stacked
+on P8.6b part 1).** A TEST-TIME patch, no product code. Each match of a device
+check's corpus is PLAYED ONCE per subprocess and read by every part that needs
+it; each wrapper module's tests share ONE subprocess run (a session fixture),
+each test judged on its own part's verdict. The mechanism is
+`tests/_check_parts.py` (`run_parts` inside the check: every part with its own
+FAILS, the check's per-run tallies cleared before it so a judge counts only
+its own gate runs, a crash failing that part only, a `PART_VERDICT` line per
+part; `shared_run` / `split` / `assert_parts` on the pytest side, the
+`run_cuda_script` named in each wrapper so `_suite_kinds.is_device` still sees
+a device test; a process that dies inside a part fails that part and the
+parts after it run again in a fresh process). The obs check's plays are
+read-only after `play` (`_freeze`; the `constant` break now copies its dict
+instead of writing into the shared reference). What is played once: every
+obs corpus match (`_PLAYED`: the pinned pair, the rooms, the hand matches,
+corpus (c), the batch seeds), read by GATE, DEC_GATE, BOOKS, WALL, DECODER,
+BATCH, HANDOVER, SYNCS, ENDED, RESTAGE and RANGE_SCENES; the batch check's
+scene references (`_HOST_INTENTS`, already shared inside a process, now across
+SCENES / SWAP / SYNCS / FAULT); the conductor's PINNED matches, gated LIVE
+against their own recording play (`live_gate`: the conductor fed the
+recording's intent rows as they are written) instead of record + replay.
+Still their own: WALL's twin (it adds orders and perturbs the store), BOOKS'
+twins (another device reward profile), RESET (its own `EnvRunner`s), the batch
+check's device solo plays (`_SOLO`, cleared per part as a fresh process has
+them), the conductor's MATCH (it IS the replay-controller reference, the S2
+property, short) and SYNCS, and every break run. Duplicates: obs DEC_GATE vs
+GATE -- the same `gate_c` (corpus (c) at N = 1, a refusal failing its run
+only) and `judge_decoder`; GATE adds the census, which only counts what
+passed. FOLDED: in the shared run (no break) DEC_GATE reads GATE's runs'
+failures and DECSTATS and judges the decoder itself; alone or under a break it
+gates them. Conductor MATCH vs PINNED: NOT folded -- MATCH is the only gate
+whose reference is the replay controller re-simulating a recording and whose
+match ends on the CLOCK; PINNED now holds the live reference and the
+elimination endings. Obs WALL: capped at its sixth case (nothing after it was
+compared or counted: equal by construction; 7 / 6 cases before and after).
+Length assumptions: none pinned a tick in the checks touched (the books' and
+the terminal observation's elimination / clock cases are read off each
+match's own ending); conductor PINNED now runs to the match's own end
+(bounded by its clock, the ending tick asserted to be the reference's);
+`cuda_unit_verbs_check.part_done`'s elimination case sets the arena's clock
+past the run's horizon, so only an elimination ends it (it ends at tick 41
+today). WHAT IS PROVED, before / after: every count line of every part (the
+env-decisions per match, every coverage dict, every census, the terminal
+observation's cases, the books' results, the wall's cases, the batch's
+frozen env-ticks, the reset's env-ticks) is identical but the timings; two
+reported, unjudged lines moved (the syncs parts' WARM-UP tick, 11 -> 5 and
+6 -> 5 syncs: the scratch was grown by an earlier part). TIME, Home Desktop,
+before = one subprocess per test at `5fdd7f33` (the same parts and
+timeouts), after = `pytest tests/test_cuda_obs.py tests/test_cuda_conductor.py
+tests/test_cuda_conductor_batch.py -q`:
+
+| test file | before (s) | after (s) | host ticks before -> after |
+|---|---:|---:|---|
+| `test_cuda_obs.py` (14 tests) | 1114 (gate 271, batch 241, reset 182, dec_gate 101, wall 102, books 91, decoder 55, range 31, restage 20, small 20) | 767 (gate 250, batch 235, reset 187, books 30, range 30, wall 12, restage 6, decoder 3, dec_gate 0.3, small 8) | 17021 -> 9153 (33 plays; reset's own references unchanged) |
+| `test_cuda_conductor.py` (5) | 303 (pinned 158) | 272 (pinned 122) | 4242 -> 2621 |
+| `test_cuda_conductor_batch.py` (7) | 1243 | 1273 | unchanged (no play shared across its parts but the scene references) |
+| **total** | **2660** | **2313** | |
+
+Peak RSS of the shared obs process 3.7 GB (1.4 GB for the largest single
+part before): it holds every play of the corpus at once.
+BREAKS re-run by hand after the restructure, each red at the same kind of
+place: `dec_every` (GATE and DEC_GATE, both at `(c) policy crowd 102` tick 1,
+pending_throw), `dec_next_uid` (DEC_GATE, tick 0, live_aim), `constant`
+(GATE's census guard on `near_u/wall`), `bk_weight` (GATE `(a) bots` tick 419
+and BOOKS `books range bots` tick 422, d_balance), `term_other` and
+`bk_freeze` (BATCH ship_demo N = 2, ticks 300 / 301), `anchor`, `term_early`,
+`full_vis`, `list_cap` (GATE `(a) bots` tick 4), `ord_prev` (GATE order_hand
+tick 24), `early_picture` (GATE bots_v1 tick 271), `CONDUCTOR_BREAK=slot`
+(PINNED, the live gate, bots tick 428). Not re-run: GATE's other breaks
+(cone, early, cover, stale, divisor, lane_*, list_tie, mask_*, win_*, dmg_order,
+lifetime, serial_row, full_tie, full_cap, term_next, bk_order, bk_late,
+ord_tie, ord_place, ord_expiry: device-side switches inside the same `gate()`
+over the same read-only references) and RESET's (its plays are its own).
+INDEPENDENCE: the three wrapper files run under one-part breaks
+(`OBS_BREAK=forms`, `CONDUCTOR_BREAK=restage`, `CONDUCTOR_BATCH_BREAK=index`)
+failed exactly SIGHT, RESIDENT and SWAP, each with its own message; every
+other test passed.
+
+**P8.10a AS-BUILT (2026-11-21, branch `29-p810a-device-backend`, stacked on
+P8.9b's head `21a9c97d`).** THE DEVICE BACKEND OF THE BATCHED ENVIRONMENT is
+`BatchedEnv(run, backend="device")`, ONE API with `cpu_farm`: `rl_env`
+dispatches to `rl_env_device.DeviceEnv` (`src/rl_env_device.py`, imported
+only on that backend), one `DeviceConductor` of N envs with the device
+observation, picture, books and decoder attached. WHAT A STEP RETURNS: the
+observation, `info["full_view"]` and the `final_` sets are torch tensors that
+ARE the env's device buffers (DLPack views made once; the `final_` set the
+backend's own buffers, this step's ended rows copied from
+`DeviceObservation.final`, the rows that ended last step zeroed: the farm's
+per-step semantics P8.8b left here); `reward`, `terminated`, `truncated`,
+`counters`, the team blocks, `rows_ended`, `masked_choices` fresh device
+copies (bool casts on the card), taken BEFORE any reset re-seeds the books;
+host numpy only for what the host holds anyway (`tick`, `episode`,
+`episode_seed`, `level`, `ticks`, `ended` from the books read's ended-now
+flags, `checkpoints`, `result` from one download of the books' scalars on an
+ending step only). Torch, not CuPy: the trainer's type, and the views are
+built once (no per-step DLPack). Actions arrive as torch / CuPy / numpy and go
+to `DeviceDecoder.set_decisions` (one device write). A steady step makes the
+conductor's two syncs per tick and nothing else (`terminated` costs nothing:
+a device tensor, its host twin `info["ended"]` rides the books read). STEP:
+the decision, `decimation` conductor ticks (each env's ending tick noted from
+`ended_now`, its later ticks not counted; the checkpoints of the envs due that
+tick from ONE `download` of them and the host digest), the served copies, the
+`final_` rows, the results, then the AUTO-RESET of every env that ended
+(`DeviceConductor.reset_env` with its next episode), so the returned live
+observation is the new episode's tick 0, as on the farm. EPISODES: both
+backends build an episode through the new `rl_env.episode_match` (the farm's
+`EnvRunner.reset` now calls it); the device builds `MatchSession(level, spec,
+seed, commander="none")`. THE PRE-BUILD (decision 4): the simplest form first
+(the build at the ending step, synchronous), measured: on the room at N = 256
+in steady state (100 measured steps after 40) the reset was 26 % of the step (build
+31 ms + restage 42 ms per step of 284 ms), so ONE optimisation was added:
+`DeviceConductor.tick(idle=)` runs host work once the walk is ENQUEUED and
+before the books read waits (no thread), and the env builds envs' NEXT
+episodes there while `cudaStreamQuery` says the tick stream is busy (the envs
+that ended in the step first, then the others in turn, at most N held), a
+pre-built episode taken by its env's next reset: room N = 256 896 -> 1085
+env-steps/s (+21 %, the build hidden in the card's time; the restage, 39 ms
+per step, stays synchronous), room N = 64 624 -> 638 (the idle window is
+small there), equality and the sync count unchanged with it on (the default).
+WHO DRIVES: `[run] commander` (new, `control_source.COMMANDERS` "bots" |
+"none", default "bots" = today) is honoured by `create_match_controllers`
+alone (`MatchSession(commander=)`) on both backends; the device backend
+refuses any value but "none" by name ("the commander has no device form yet
+(#29 P8.6b part 2)"); every marine team `policy`, the horde `zombies` /
+`idle`, a named profile ("counters" refused), spec v1, and a level set that
+cannot share one batch (`batch_signature`: grid, gas table, tilt, tick rate,
+U, doors, covers, places, listed per level) are refused by name at the build,
+before the card. THE CARRIED-OVER DOORS (critique 19): COVERAGE COUNTERS --
+`BatchedEnv.coverage()` on both backends, ONE set of functions over numpy or
+CuPy (`rl_env.coverage_*`): per head the options chosen on valid rows, per
+mask the options legal, per counter the cells that moved, the endings (no
+sync on the card); THE PRE-FLIGHT -- `rl_env_device.preflight(run)`: random
+episodes of the run's own levels on BOTH backends, compared at every step by
+the gate's own loop (`compare_backends`), coverage equal, and the run's
+weighted reward terms that never moved listed (`rl_env.unexercised`;
+REPORTED in the snapshot record, not refused: whether a zero is a fault -- a
+weighted zombie term on a room with no zombie, a clock never reached -- is the
+run's design); `require_snapshot`'s DEVICE BRANCH -- after the farm's checks:
+an empty twin ledger, the CPU build's id at HEAD (`cpu_module_probe`, a
+subprocess), every compiled layout fingerprint this checkout's
+(`DEVICE_LAYOUTS`: store, events, requests, applier, object tables, draws,
+observation, swarm tables), then the pre-flight (costly, last); the run
+manifest's `device` record (CPU build id, layout fingerprints) refused on a
+resume change; CHECKPOINTS -- `(episode, tick, field_digest, tick_digest)` at
+the farm's cadence (tick 0 from the fresh host sim, the cadence and the last
+tick from a download), and `[run] checkpoint_every_ticks` (new, both
+backends, default `[replay]`'s, 0 = none) because they are expensive (below);
+`masked_choices`, `RewardBooksMismatch` and every conductor fault surface as
+the farm's types and messages with `.env`, after which the backend refuses
+every call (`DeviceEnvFailed`). Stale "P8b" text made true in the rules
+(device-units, hand-verbs), `resident_batch.py`, `sensor_accessor.py`, four
+CUDA headers (comments only; the observation twin re-marked level) and
+`tests/test_applier_layout.py`'s docstring. GATES (`tests/cuda_env_check.py`
++ `tests/test_cuda_env.py`): EQUALITY on the room N = 1 (172 steps, 3
+episodes), N = 4 (714 steps, 19 endings at 19 distinct steps), N = 8 (540
+steps, 24 endings), ship_demo with zombies N = 1 (133 steps, 2 episodes) and
+N = 4 (130 steps, 8 endings at 7 distinct steps): 1 689 steps, 56 episodes
+ended, 31 918 env-ticks, every returned field raw-bit equal at every step,
+the masks shown identical before each draw, the coverage counters equal; NOT
+YET BUILT and named (served zeros, not gated, cells where the farm differs):
+far_f/route (11.6 M), vector/route_len (18 492) and the order / place /
+compass columns (zero on both sides with the commander off): P8.6b part 1's.
+REFUSALS each by name (a team on bots, commander "bots", room + ship_demo,
+"counters", an out-of-range hand: the host's `ValueError` "action out of
+range: env 1, row 1, head 'hand'" with `.env` 1, then `DeviceEnvFailed`).
+SYNCS 8 per steady step (decimation 4: 2 per tick, `max_n_sub` and the books
+read) at N = 1 and 2, actions handed over as a device array, counted after
+a warm-up with the collector run and held off. HANDOVER: every returned
+observation / full-view / final_ tensor pointer-identical to the env's
+buffers on every step. BREAKS, each red: `reset_late` (step 42, the live
+vector), `final_kept` (step 43, `final_obs` vector), `episode_env` (step 42,
+`episode_seed`), `decide_late` (step 0, the vector). COST (ship_demo, the
+card shared with a sibling agent's runs): a host episode build 26 / 27 ms
+and a restage 25 / 23 ms at N = 4 / 64; ONE checkpoint (download + digest of
+one env) 21.5 ms at N = 4, 74.9 ms at N = 64 -- the download moves every env's
+store and tables to land one (`DeviceConductor.download`), so at the default
+cadence the checkpoints cost 134 ms per step on the room and 544 ms per step
+(46 %) on ship_demo at N = 256. THROUGHPUT (`tools/rl_smoke.py`, now
+`--backend device` with torch draws on the card and the step split by part;
+the farm with 15 workers; seed 77, decimation 4, short windows of 10 to 55
+steps after 5 warm-up steps, synchronous builds, default checkpoint cadence
+unless "ckpt 0"; env-steps/s, soldier-decisions/s = every row of every
+env-step, room U = 2, ship_demo U = 12):
+
+| level | N | farm | device | device host ms / step: conductor ticks, checkpoints, resets, served + final_, coverage | device GPU ms / step: sim, observation + full view + books, decoder |
+|---|---|---|---|---|---|
+| room | 1 | 67.8 / 136 | 22.7 / 45 | 38.4, 0.5, 0.7, 1.1, 1.2 | 29.9, 0.92, 0.33 |
+| room | 16 | 349.9 / 700 | 296.7 / 593 | 43.3, 5.0, 1.0, 1.2, 1.2 | 37.3, 1.01, 0.24 |
+| room | 64 | 440.0 / 880 | 505.1 / 1010 | 89.5, 20.7, 8.8, 2.3, 1.5 | 74.3, 1.35, 1.10 |
+| room | 256 | 521.3 / 1043 | 727.8 / 1456 | 201.4, 134.0, 7.1, 2.9, 1.3 | 176.5, 3.36, 1.12 |
+| room, ckpt 0 | 256 | -- | 1349.4 / 2699 | 175.8, --, 6.3, 2.5, 1.2 | 158.1, 2.59, 0.32 |
+| room, ckpt 0, steady, sync / pre-built | 256 | -- | 896 / 1085 | 205 / 190, --, 73 / 39 (+28 hidden), 3.7, 1.3 | -- |
+| ship_demo | 1 | 8.3 / 100 | 16.0 / 192 | 55.2, 1.7, 1.1, 1.2, 1.2 | 43.0, 3.40, 1.13 |
+| ship_demo | 16 | 47.9 / 574 | 119.6 / 1435 | 96.4, 25.7, 5.8, 1.7, 1.3 | 89.3, 4.98, 0.45 |
+| ship_demo | 64 | 62.1 / 745 | 231.1 / 2773 | 212.4, 58.8, 0.0, 1.0, 1.5 | 193.0, 7.11, 1.82 |
+| ship_demo | 256 | (not run: 256 farm sims past the 16 GB) | 216.9 / 2603 | 628.1, 543.9, 0.0, 1.0, 1.4 | 586.5, 17.0, 0.51 |
+| ship_demo, ckpt 0 | 256 | -- | 421.3 / 5055 | 601.1, --, 0.0, 1.1, 1.4 | 547.1, 16.7, 0.38 |
+
+What limits each row: at N = 1 the conductor's walk (many small
+launches per tick, latency bound: the room's 2 units cost 30 ms of GPU per
+step) -- the farm's one process is faster there on the room; from N = 16 on
+the sim's GPU time (the physics and unit slots, the observation, full view
+and books only 1 to 3 %, the decoder below 1 %) and, at the default cadence,
+the checkpoint downloads (the largest addition: 46 % at ship_demo N = 256);
+on the room at N = 256 in steady state the reset's restage (17 % with the
+pre-build). The env's own Python (coverage, copies, final_) is 2 to 5 ms a
+step. ship_demo N = 64: 3.7x the farm; N = 256 with checkpoints off 6.8x the
+farm's best; the room 1.1x to 2.6x at N >= 64. Choices where the design was
+silent: torch (not CuPy) as the returned type; fresh device copies for the
+non-observation arrays (the farm's contract) rather than the books' served
+buffers; the result from the books' scalars (one download on an ending
+step); the pre-flight reports zero-exercise terms instead of refusing; the
+pre-build is built in the conductor's idle window (the brief's "between steps
+on the env's own thread", with a real overlap) and holds at most N episodes.
+WHAT P8.10b NEEDS: the obs dict / `team_rows` are torch views (copy into the
+rollout before the next step), actions as a CUDA tensor `(N, U, 5)` int, the
+reward / rows_ended / terminated as device tensors, `info["ended"]` host (the
+loop's control flow), `coverage()` for its live check. WHAT THE EPISODE RECORD
+(old P8c) NEEDS: per step `DeviceDecoder.decisions` and `.state` (the decoded
+rows, P8.6a) plus `episode`, `episode_seed`, `level` and the checkpoints
+`info` already carries -- no host tap. No golden re-baselined; no host value
+moved; no table column added.
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:

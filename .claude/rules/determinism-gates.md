@@ -39,6 +39,12 @@ the suite with this machine's breach env (`docs/dev_setup.md`).
 - `-m "not slow"` is the tier for work in progress and NEVER the merge gate: the full suite in its two halves (the merge gate, above), all determinism gates, stays it.
 - Under pytest-xdist (`-n N --dist loadgroup`) every test that drives the GPU or opens a window joins the one `device` group through `tests/_suite_kinds.py::is_device`, so no two run at once. A new kind of device launch is a pattern there, never a hand mark on a test. A plain run keeps collection order and reads no source.
 
+## Device check plays
+- A device check's host references (`cuda_obs_check._PLAYED`, `cuda_conductor_batch_check._HOST_INTENTS`) are played ONCE per subprocess and shared by every part that only READS them (the reference, its taps, its per-decision arrays). A part that changes the match in any way (a perturbation, a break switch, a reset, another spec, seed or level) plays its own; a part never writes to a cached play (the obs check makes its arrays read-only).
+- Every part is judged alone (`_check_parts.run_parts`): its own FAILS, the check's per-run tallies cleared before it (a judge counts only the gate runs of its own part, never another part's), a crash failing that part only. A new per-run tally joins the check's reset list in the same patch.
+- The wrappers run ONE subprocess per pytest session with the selected tests' parts (`_check_parts.shared_run`, its `run_cuda_script` named in the wrapper so `_suite_kinds.is_device` sees it); a new test is a `PARTS_OF` row. Under xdist the device group keeps them on one worker. The deliberate breaks are never in that run; by hand `main([...])` runs as before.
+- No check assumes a pinned match's length, ending tick or time limit: it asks for the property (an ending by elimination, a win, envs ending apart). *Incident: #217 moves the pinned bots match from 1349 ticks to about 741.*
+
 ## Affected tests
 - A test file runs when its dependency closure (its transitive in-repo imports, the scripts it launches in a subprocess, the native module for `cpp/`) holds a changed file. Read from the source, never a hand mark.
 - It may over-select, never under-select: anything the closure cannot see (conftest, pyproject, a deleted or renamed file, an unnamed data path) runs the FULL suite. Only `docs/` and scratch output are inert, never a whole file type: tests read textures, goldens, `slow_tests.txt`, CLAUDE.md and the rules.
