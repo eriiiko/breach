@@ -746,7 +746,7 @@ def corpus_round():
 
     import _pinned_matches as pm
     lv = ship_level()
-    spec = replace(pm.spec_of(lv, "bots"), sight="all_round")
+    spec = replace(lv.match, sight="all_round")       # the "bots" match is the level's own
     return [play("ship_all_round", lv, spec, 61, max_ticks=ROUND_TICKS)]
 
 
