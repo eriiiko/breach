@@ -108,7 +108,19 @@ def test_the_device_observation_equals_the_host_one_on_the_corpus():
     the decision cadence) and stay so, every env not ended holds zeros, and an
     off-cadence ending moves no live buffer; BREAKS IF the terminal
     observation is taken one tick early (OBS_BREAK=term_early) or at the next
-    decision tick (OBS_BREAK=term_next)."""
+    decision tick (OBS_BREAK=term_next). From P8.6b (part 1) the order --
+    the vector's order block, the list's order columns, the far route and
+    place planes -- is raw-bit equal at every decision tick on the order hand
+    match (every order kind by hand through the tap, a room and an opening as
+    the place, a limit and none, a priority target, an expiry, a replacement,
+    a hull door opened and an ordinary door shut between two decisions) and
+    corpus (c) (the commander on), every order coverage case reached (routes
+    of length 0, 1 and more, an unreachable place, a route that changed, the
+    same place as a mate, a sideways compass); BREAKS IF the route is read over
+    the openings of the PREVIOUS decision (OBS_BREAK=ord_prev), the compass
+    takes the last of equal lower neighbours (ord_tie), the place centre is
+    the next table row (ord_place) or an expired order is still shown
+    (ord_expiry)."""
     _run(["gate"], timeout=7200)
 
 
@@ -123,7 +135,9 @@ def test_each_env_of_a_batch_equals_its_own_reference():
     of an ended env move on (OBS_BREAK=bk_freeze); from P8.8b an env's
     terminal observation lands in ITS final_ slice alone, at its own ending
     tick, and stays while the others run. BREAKS IF the terminal observation
-    is written for an env that did not end (OBS_BREAK=term_other)."""
+    is written for an env that did not end (OBS_BREAK=term_other). From
+    P8.6b a batch of order hand matches beside the list hand match (orders
+    held in every env) is equal env by env."""
     _run(["batch"], timeout=7200)
 
 
@@ -187,7 +201,9 @@ def test_who_a_team_sees_depends_only_on_the_enemies_in_view():
     too) moves none of the team's fire lanes, lanes plane, aim_of answers,
     lines of fire or turns, from P8.4b no entry, mask or uid of its
     list, from P8.4c none of its four masks, and from P8.5a none of its
-    window planes, air block or felt temperature. BREAKS IF the visible table is indexed by the
+    window planes, air block or felt temperature, and from P8.6b (every
+    marine holding an order) none of its order block, the list's order
+    columns or the route / place planes. BREAKS IF the visible table is indexed by the
     wrong row or team, a target's own facing / hp decides whether it is
     seen, or an answer of the team reads a unit it does not see."""
     _run(["wall"])
@@ -268,7 +284,9 @@ def test_an_env_reset_mid_batch_observes_its_new_episode_as_the_farm_does():
     mask and the full view (raw bits), the team picture's whole state, the
     books, the decoder's slot states, the served reward arrays at every step
     end, the terminal observation in ``final_`` at every ending (still
-    there after the reset), and no other env's buffer moved by a reset.
+    there after the reset), and no other env's buffer moved by a reset;
+    from P8.6b the order rows equal from the new episode's tick 0 (resets of
+    an env showing the commander's orders occur, and orders after them).
     BREAKS IF a reset leaves the old episode's picture (OBS_BREAK=
     reset_picture), books (reset_books) or decoder slot state
     (reset_decoder), or keeps the ended latch (reset_ended)."""
