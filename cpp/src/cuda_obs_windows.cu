@@ -175,6 +175,11 @@ __device__ inline Den den_of(const int64_t* u, const int64_t* ot, int brk, bool*
     d.pd = of_bits(ot[OBS_TAB_POISON_MIN_DENSITY_BITS]);
     d.td = of_bits(ot[OBS_TAB_TEARGAS_BLIND_DENSITY_BITS]);
     d.sd = of_bits(ot[OBS_TAB_SMOKE_DENSE_BITS]);
+    if (brk == OBS_WIN_BREAK_WIN_DIVISOR) {                       // THE BREAK: the next rows
+        d.pd = of_bits(ot[OBS_TAB_TEARGAS_BLIND_DENSITY_BITS]);
+        d.td = of_bits(ot[OBS_TAB_SMOKE_DENSE_BITS]);
+        d.sd = of_bits(ot[OBS_TAB_POISON_MIN_DENSITY_BITS]);
+    }
     if (u[UNIT_COL_IS_ZOMBIE]) {
         d.resist = of_bits(ot[OBS_TAB_ZOMBIE_RESIST_POISON_BITS]);
     } else {

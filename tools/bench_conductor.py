@@ -49,7 +49,11 @@ Per (level, N):
   cells per window]). #29 P8.3: ``picture_ms`` the GPU time of one team
   picture update for all N envs (a tick's; the state put back after).
   #29 P8.4c: ``list_ms`` the GPU time of one decision's list and four masks
-  (``build_list`` + ``build_masks``) for all N envs. Every timed block runs
+  (``build_list`` + ``build_masks``) for all N envs. #29 P8.5a:
+  ``windows_ms`` the GPU time of one decision's windows (``build_windows``)
+  for all N envs, and the table's "whole observation" per decision: the
+  blocks (``obs_build_ms``, the windows included) plus ``decimation`` ticks
+  of vision and the team picture. Every timed block runs
   with each env DUE (the parameter row's decimation set to 1 for the timing
   and put back): the kernels skip an env off its decision tick, so a timing
   taken on such a tick measures early exits (``obs_due`` says whether the
@@ -148,7 +152,7 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         wall.append(time.perf_counter() - ts)
         syncs.append(list(bp.host_sync_log_end()))
     used1 = _device_used()
-    obs_ms = vision_ms = window_ms = window_shape = picture_ms = list_ms = None
+    obs_ms = vision_ms = window_ms = window_shape = picture_ms = list_ms = windows_ms = None
     obs_due = None
     if dev_obs is not None:
         import cupy as cp
@@ -173,6 +177,13 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         b.record(st)
         b.synchronize()
         list_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
+        # P8.5a: the windows (one decision's, every env)
+        a.record(st)
+        for _ in range(obs_builds):
+            dev_obs.build_windows()
+        b.record(st)
+        b.synchronize()
+        windows_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
         dev_obs.params[:, PARAM_DECIMATION] = saved_dec
         # P8.2: who sees whom (one launch, every env: the per-tick cost) and a
         # representative window call per decision (the `watched` shape: per
@@ -256,6 +267,8 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         "vision_ms": None if vision_ms is None else round(float(vision_ms), 4),
         "picture_ms": None if picture_ms is None else round(float(picture_ms), 4),
         "list_ms": None if list_ms is None else round(float(list_ms), 4),
+        "windows_ms": None if windows_ms is None else round(float(windows_ms), 4),
+        "decimation": decimation,
         "obs_due": obs_due,
         "window_ms": None if window_ms is None else round(float(window_ms), 4),
         "window_shape": window_shape,
@@ -305,7 +318,12 @@ def format_rows(rows) -> str:
                    + ("" if r.get("picture_ms") is None
                       else f", team picture {r['picture_ms']:.3f} ms per tick")
                    + ("" if r.get("list_ms") is None
-                      else f", list + masks {r['list_ms']:.3f} ms per decision"))
+                      else f", list + masks {r['list_ms']:.3f} ms per decision")
+                   + ("" if r.get("windows_ms") is None
+                      else f", windows {r['windows_ms']:.3f} ms per decision; the whole "
+                           f"observation {r['obs_build_ms'] + r['decimation'] * (r['vision_ms'] + r['picture_ms']):.3f}"
+                           f" ms per decision (blocks + {r['decimation']} ticks of vision and "
+                           f"picture)"))
     return "\n".join(out)
 
 

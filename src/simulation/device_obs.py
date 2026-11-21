@@ -557,11 +557,15 @@ MASK_BREAK_CODES = {"mask_swap": 1, "mask_reach": 2}
 #: PROFILE (a unit's environment row past the obs table's profile blocks).
 WIN_FAULT_BITS = {"SIGHT": 1, "FELT": 2, "PROFILE": 4}
 #: The check's breaks (``OBS_BREAK``): ``win_profile`` (every plane's profile
-#: read one row further in the obs table: the neighbouring row),
+#: read one row further in the obs table: the neighbouring row; today's config
+#: holds one env profile and one species with the same three floats, so it
+#: cannot turn red), ``win_divisor`` (each gas plane divided by the
+#: neighbouring density row of the obs table),
 #: ``win_anchor`` (the far window's block anchor one block off), ``win_half``
 #: (the float16 cast through float32: double rounding), ``win_argmax`` (the far
 #: wind's argmax takes the LAST largest load, the reduction in the other order).
-WIN_BREAK_CODES = {"win_profile": 1, "win_anchor": 2, "win_half": 3, "win_argmax": 4}
+WIN_BREAK_CODES = {"win_profile": 1, "win_anchor": 2, "win_half": 3, "win_argmax": 4,
+                   "win_divisor": 5}
 
 
 def wired_values(sim, cap: int) -> np.ndarray:

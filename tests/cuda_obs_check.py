@@ -118,7 +118,30 @@ P8.4c (the four masks: ``DeviceObservation.build_masks``) --
 - PART WALL extended: the unseen enemy's row perturbed moves no mask of the
   team.
 
-THE BREAKS (``OBS_BREAK``), each must turn a part red: ``mask_swap``,
+P8.5a (the windows: ``DeviceObservation.build_windows``) --
+- inside every GATE / BATCH run: the eight physics planes of ``near_f`` and
+  ``far_f``, ``near_u`` watched / sees_target, ``far_u`` mates / enemies /
+  records and the vector's ``air`` block and ``felt_temp`` raw-bit equal, no
+  window fault; ``sees_target`` FROM the window TO the aimed entry's recorded
+  centre with the aims of :func:`aim_rule` (the decoder's stand-in, given to
+  the reference's ``observe_rows`` and written into
+  ``DeviceObservation.aimed`` before the tick that builds); the coverage
+  (:data:`WIN_CASES`: a watched tile, a tile that sees the target, a near
+  window over each edge of the map, a far block straddling the map's edge, a
+  far cell off the block grid, an aimed entry found and not found), counted
+  off the reference, each > 0 else FAIL; the cells past the squash's knee per
+  float plane printed (none at all FAILS); the fire hand match
+  (:func:`corpus_fire`) for the fire plane;
+- PART WALL extended: the unseen enemy's row perturbed moves no window plane
+  of the team, nor its air block or felt temperature.
+
+THE BREAKS (``OBS_BREAK``), each must turn a part red: ``win_divisor``,
+``win_anchor``, ``win_half``, ``win_argmax`` (P8.5a, part GATE: each gas plane
+divided by the neighbouring density row; the far window's block anchor one
+block off; the float16 cast through float32; the far wind's argmax taking the
+last largest load) and ``win_profile`` (the profile read one row further:
+today's config holds one env profile and one species with equal floats, so
+it CANNOT turn red; it is run to show it); ``mask_swap``,
 ``mask_reach`` (P8.4c, part GATE: the reload and shove bits' gates swapped;
 the use mask's reach one tile wider); ``list_tie``,
 ``list_cap`` (P8.4b, part GATE: the sort ties by the higher id; the door

@@ -73,7 +73,18 @@ def test_the_device_observation_equals_the_host_one_on_the_corpus():
     does not fix both set and clear over the corpus, the wind-up's KEEP-only
     aim, an aimable entry, a door in use reach and a default row reached;
     BREAKS IF two hand bits' gates are swapped (OBS_BREAK=mask_swap) or the
-    use mask's door reach is one tile wider (OBS_BREAK=mask_reach)."""
+    use mask's door reach is one tile wider (OBS_BREAK=mask_reach). From
+    P8.5a the windows (the eight physics planes of both windows, watched,
+    sees_target with the check's aims, the far unit planes, the vector's air
+    block and felt temperature) are raw-bit equal, every coverage case
+    reached (a watched tile, a tile seeing the aimed target, a near window
+    over each map edge, a far block straddling the edge, a far cell off the
+    grid, an aimed entry found and not found) and some float plane served
+    past the squash's knee; BREAKS IF a gas plane is divided by the
+    neighbouring density row (OBS_BREAK=win_divisor), the far block anchor
+    is one block off (OBS_BREAK=win_anchor), the float16 cast goes through
+    float32 (OBS_BREAK=win_half) or the far wind takes the last largest load
+    (OBS_BREAK=win_argmax)."""
     _run(["gate"], timeout=7200)
 
 
@@ -144,7 +155,8 @@ def test_who_a_team_sees_depends_only_on_the_enemies_in_view():
     From P8.4a the same perturbation of the unseen enemy (its trigger flipped
     too) moves none of the team's fire lanes, lanes plane, aim_of answers,
     lines of fire or turns, from P8.4b no entry, mask or uid of its
-    list, and from P8.4c none of its four masks. BREAKS IF the visible table is indexed by the
+    list, from P8.4c none of its four masks, and from P8.5a none of its
+    window planes, air block or felt temperature. BREAKS IF the visible table is indexed by the
     wrong row or team, a target's own facing / hp decides whether it is
     seen, or an answer of the team reads a unit it does not see."""
     _run(["wall"])

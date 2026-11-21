@@ -14,7 +14,7 @@
 
 namespace obs_layout {
 
-constexpr const char* OBS_LAYOUT_FINGERPRINT = "a528b03fc11ebfb39c7fa5595ac18cda1a09a24e5ec7f06474d825dcd30b1ab7";
+constexpr const char* OBS_LAYOUT_FINGERPRINT = "0f4a785338972c30ae267a5e5ccbc5a110018d8cf63205b77eefcd2abffc0975";
 
 constexpr int OBS_WIN = 25;
 constexpr int OBS_HALF = 12;
@@ -421,6 +421,7 @@ constexpr int OBS_WIN_BREAK_WIN_PROFILE = 1;
 constexpr int OBS_WIN_BREAK_WIN_ANCHOR = 2;
 constexpr int OBS_WIN_BREAK_WIN_HALF = 3;
 constexpr int OBS_WIN_BREAK_WIN_ARGMAX = 4;
+constexpr int OBS_WIN_BREAK_WIN_DIVISOR = 5;
 
 // float16 bit patterns of k / (OBS_BLOCK * OBS_BLOCK), k = 0 .. OBS_BLOCK^2
 // (a __constant__ table's initialiser in the kernel's TU).
