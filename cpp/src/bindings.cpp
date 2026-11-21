@@ -899,6 +899,28 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("brk"),
           "#29 P8.5a: obs_spec_v1.build_windows' physics, sight and far unit planes and "
           "build_vector's air block and felt temperature for every env on its decision tick.");
+    // #29 P8.7: THE DEVICE BOOKS (cpp/src/cuda_obs_books.cu), on the tick
+    // stream, no sync.
+    m.def("obs_books", &breach_cuda::obs_books, py::arg("n_env"), py::arg("store"),
+          py::arg("n_units"), py::arg("store_w"), py::arg("ring"), py::arg("rowmap"),
+          py::arg("n_rows"), py::arg("n_slots"), py::arg("n_teams"), py::arg("obs_table"),
+          py::arg("table_w"), py::arg("tick_row"), py::arg("params"), py::arg("ended"),
+          py::arg("pic_state"), py::arg("pic_w"), py::arg("state"), py::arg("state_w"),
+          py::arg("reward"), py::arg("counters"), py::arg("team_balance"),
+          py::arg("team_uncredited"), py::arg("team_outcome"), py::arg("rows_ended"),
+          py::arg("terminated"), py::arg("truncated"), py::arg("words"), py::arg("first"),
+          py::arg("brk"),
+          "#29 P8.7: the reward books, the served reward groups, termination and the "
+          "ended latch for every env; returns whether the words were deferred into the "
+          "conductor's books read.");
+    m.def("obs_books_layout", [](int n_teams, int n_units, int n_rows) {
+              py::dict d;
+              for (const auto& kv : breach_cuda::obs_books_layout(n_teams, n_units, n_rows))
+                  d[py::str(kv.first)] = kv.second;
+              return d;
+          },
+          py::arg("n_teams"), py::arg("n_units"), py::arg("n_rows"),
+          "#29 P8.7: the compiled books block's section offsets (int64 words).");
     m.def("obs_picture_layout", [](int n_teams, int n_units) {
               py::dict d;
               for (const auto& kv : breach_cuda::obs_picture_layout(n_teams, n_units))

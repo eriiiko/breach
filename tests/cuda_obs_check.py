@@ -199,7 +199,7 @@ FAILS: list = []
 BREAK = os.environ.get("OBS_BREAK", "")
 #: The patch this script's gates are at: every column owned by it or an
 #: earlier patch of the version-2 table is compared.
-PATCH = "P8.5a"
+PATCH = "P8.7"
 #: The decision cadence of the corpus (design 13.1's decimation, a run file's
 #: ``[run] decimation``; the device observation takes it as its argument).
 DECIMATION = 4
@@ -233,6 +233,13 @@ def owned(patch: str = PATCH) -> dict:
         if names:
             out[key] = names
     return out
+
+
+def owned_obs(patch: str = PATCH) -> dict:
+    """The owned keys that are OBSERVATION buffers (``DeviceObservation.buffers``);
+    the reward side (``device_obs.REWARD_KEYS``, P8.7) is compared by
+    :func:`books_equal` from ``DeviceBooks.served``."""
+    return {k: v for k, v in owned(patch).items() if k not in dobs.REWARD_KEYS}
 
 
 def _plane_index(key: str, name: str) -> int:
@@ -309,6 +316,14 @@ class Played:
         self.aimed = {}                       # tick -> (rows,) int32
         self.win_cov = {k: 0 for k in WIN_CASES}
         self.knee = {}                        # (key, plane) -> cells with |x| > 1
+        # P8.7: per named reward profile the reference books' normal form every
+        # tick, the served arrays at every step's end (decision or ending
+        # tick), whether the match ENDED (terminal, not cut), the coverage
+        self.books = {}                       # profile -> tick -> device_books.host_form
+        self.served = {}                      # profile -> tick -> served dict
+        self.terminal = False
+        self.result = None                    # (outcome, team, ticks) when terminal
+        self.book_cov = {}                    # profile -> case -> count
 
 
 _PLAYED: dict = {}
@@ -431,7 +446,8 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Pl
     T, S = len(sp.teams), max(rl_env._team_slots(level))
     p = Played(name, level, spec, seed, T, S, setup=setup)
     ctx = ObsContext.build(s.sim, sp, S, n_teams=T)
-    own = owned()
+    own = owned_obs()
+    ref = RefBooks(s, T, S)                   # P8.7: the env's books, per named profile
     tap = cc.Tap()
     s.sim.attach_intent_log(tap)
     t_obs = 0.0
@@ -464,11 +480,15 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Pl
     alive0 = [bool(c.alive) for c in (s.sim.cover or ())]
     see()
     observe()
+    ref.record(p, s, False)
     tap.take()                                # the setup's own calls are no intents
     while not s.is_terminal() and (max_ticks is None or int(s.sim.tick) < max_ticks):
         if script is not None:
             script(s.sim)
+        ref.before(s)
         s.tick()
+        ref.after(s)
+        ref.record(p, s, s.is_terminal())
         p.intents.append(tap.take())
         see()
         if int(s.sim.tick) % DECIMATION == 0:
@@ -478,6 +498,12 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Pl
     p.dmg_peak = cov.dmg_peak
     p.cover_alive = (alive0, [bool(c.alive) for c in (s.sim.cover or ())])
     p.end = int(s.sim.tick)
+    p.terminal = bool(s.is_terminal())
+    if p.terminal:
+        r_ = s.result()
+        p.result = (dpic_outcome(r_.outcome), -1 if r_.team is None else int(r_.team),
+                    int(r_.ticks))
+    p.book_cov = ref.coverage()
     _PLAYED[key] = p
     print(f"  played {name}@{seed}: {p.end} ticks, {len(p.obs)} decisions "
           f"({time.perf_counter() - t0:.1f} s, host observation {1000 * t_obs / len(p.obs):.1f} "
@@ -558,18 +584,23 @@ def bp_layout(name: str) -> int:
     return dict(dobs._constants())[name]
 
 
-def gate(label, played: list, census: Census | None = None) -> bool:
+def gate(label, played: list, census: Census | None = None, profile: str = "fireteam",
+         books_census: dict | None = None) -> bool:
     """The conductor over twins of ``played`` (one level), each env fed its
     tapped intents; every env's owned device arrays equal to its reference
-    at each of its decision ticks. Returns True when equal."""
-    own = owned()
+    at each of its decision ticks; P8.7: the books' whole state every tick
+    and the served reward side at every step's end, under the named reward
+    ``profile``. Returns True when equal."""
+    own = owned_obs()
     sessions = [twin(p) for p in played]
     c = cd.DeviceConductor([s.sim for s in sessions], bp=bp)
     T = max(p.T for p in played)
     S = max(p.S for p in played)
     obs = dobs.DeviceObservation(c, [s.spec for s in sessions], S, DECIMATION, n_teams=T,
                                  picture_from_host=[e for e, p in enumerate(played)
-                                                    if p.setup is not None])
+                                                    if p.setup is not None],
+                                 reward_profile=profile)
+    _books_breaks(obs)
     _picture_breaks(obs)
     if BREAK == "anchor":                          # from the first decision after tick 0
         _anchor_break(obs)
@@ -592,6 +623,9 @@ def gate(label, played: list, census: Census | None = None) -> bool:
     t0 = time.perf_counter()
     for k in range(end + 1):
         tick = int(c.sims[0].tick)
+        # P8.7: the books every tick (an ended env's frozen at its final state)
+        if not books_equal(label, obs, played, tick, profile, books_census):
+            return False
         # the picture first: its break (early_picture) moves vision with it
         if not picture_equal(label, obs, played, tick):
             return False
@@ -1460,6 +1494,281 @@ def judge_picture(played) -> None:
             fail(f"picture coverage: the case {k!r} is never reached over the corpus (vacuous)")
 
 
+# ---------------------------------------------------------------------------
+# P8.7: THE DEVICE BOOKS (reward, termination, the ended latch)
+# ---------------------------------------------------------------------------
+def book_profiles() -> tuple:
+    """The named profiles the reference books keep: every one of
+    ``reward_v1.PROFILES`` (the device weighs with the obs table's rows of the
+    gate's profile)."""
+    from simulation.reward_v1 import PROFILES
+    return tuple(PROFILES)
+
+
+#: The coverage cases of the books (fireteam): each term's counters moved
+#: (the served counters non-zero in some (row, step)), the two ends, a hit
+#: past the unit's health (the clip that makes the walk's order matter).
+BOOK_CASES = ("won", "eliminated", "clock", "bars_enemy", "bars_lost", "kills_enemy", "died",
+              "bars_zombie", "share_bars", "share_enemy_bars", "share_alive",
+              "share_enemy_alive", "share_zombie_bars", "bars_team", "team_kills",
+              "end_elimination", "end_clock", "overkill")
+BOOKSTATS: dict = {}
+#: The served reward keys' census over part GATE's corpus: key -> (non-default
+#: values, distinct raw values seen, capped).
+BOOK_CENSUS: dict = {}
+
+
+def dpic_outcome(outcome: str) -> int:
+    from simulation import device_books as dbk
+    return int(dbk.OUTCOME_CODES[outcome])
+
+
+class RefBooks:
+    """THE REFERENCE BOOKS of a played match, as ``rl_env.EnvRunner.step``
+    drives them (its loop body, line for line): per named profile one
+    ``RewardBooks`` and the step's old counters; ``start_step`` on a step's
+    first tick, ``begin`` before the tick, ``count_events`` (the rows whose
+    records ended frozen) and ``end`` after it, ``finish`` with the result at
+    the end; the served arrays (``EnvRunner._reward``, the shared memory's
+    float32 / uint8 casts) at every step's end."""
+
+    def __init__(self, session, T, S):
+        import rl_env
+        from simulation import reward_v1 as rv
+        sim, spec = session.sim, session.spec
+        self.T, self.S = T, S
+        self.ci = {n: i for i, n in enumerate(rl_env.COUNTER_NAMES)}
+        self.k0 = rl_env.N_OLD_COUNTERS
+        self.id_row = {}
+        for t in range(len(spec.teams)):
+            for u in sim.roster(t):
+                self.id_row[u.id] = (t, t * S + u.slot)
+        self.books, self.old, self.G = {}, {}, {}
+        for prof in book_profiles():
+            terms = rv.profile_terms(prof)
+            self.books[prof] = rv.RewardBooks(sim, spec, S, terms, n_teams=T)
+            self.old[prof] = np.zeros((T * S, self.k0), dtype=np.float32)
+            self.G[prof] = rv.group_weights(terms, rl_env.COUNTER_NAMES)
+        self.cov = {k: 0 for k in BOOK_CASES}
+        self.team_before = {}
+
+    def before(self, s) -> None:
+        sim = s.sim
+        if int(sim.tick) % DECIMATION == 0:          # a step's first tick
+            for prof in self.books:
+                self.books[prof].start_step()
+                self.old[prof].fill(0.0)
+        self.team_before = {u.id: int(u.team) for u in sim.units}
+        for b in self.books.values():
+            b.begin(sim)
+
+    def after(self, s) -> None:
+        import rl_env
+        sim = s.sim
+        term = s.is_terminal()
+        res = s.result() if term else None
+        for prof, b in self.books.items():
+            ended = b.ended
+            rl_env.count_events(sim.tick_events, self.team_before, self.id_row, self.ci,
+                                self.old[prof], frozen=ended if ended.any() else None)
+            b.end(sim)
+            if term:
+                b.finish(res)
+        if term:
+            self.cov["end_elimination" if len(s.rules.living_teams(sim)) < 2
+                     else "end_clock"] += 1
+
+    def record(self, p, s, term: bool) -> None:
+        import rl_env
+        from simulation import device_books as dbk
+        tick = int(s.sim.tick)
+        for prof, b in self.books.items():
+            old = self.old[prof]
+            p.books.setdefault(prof, {})[tick] = dbk.host_form(b, old)
+            if tick > 0 and (tick % DECIMATION == 0 or term):
+                counters = np.concatenate([old.astype(np.float64), b.counters], axis=1)
+                reward = rl_env.EnvRunner._reward(SimpleNamespace(_G=self.G[prof]), old,
+                                                  counters)
+                p.served.setdefault(prof, {})[tick] = {
+                    "reward": np.asarray(reward).astype(np.float32),
+                    "counters": counters.astype(np.float32),
+                    "team_balance": b.d_balance.astype(np.float32),
+                    "team_uncredited": b.rest.astype(np.float32),
+                    "team_outcome": b.outcome.astype(np.float32),
+                    "rows_ended": b.rows_ended.astype(np.uint8),
+                    "terminated": np.array([1 if term else 0], dtype=np.uint8),
+                    "truncated": np.array([0], dtype=np.uint8),
+                }
+                if prof == "fireteam":
+                    for name in BOOK_CASES:
+                        if name in self.ci:
+                            self.cov[name] += int(np.count_nonzero(counters[:, self.ci[name]]))
+
+    def coverage(self) -> dict:
+        st = self.books["fireteam"].stats
+        out = dict(self.cov)
+        out["overkill"] = int(st["overkill_hits"])
+        out["_stats"] = dict(st)
+        return out
+
+
+def _books_breaks(obs) -> None:
+    """THE P8.7 BREAKS: ``bk_order`` (the tick's events walked in reverse),
+    ``bk_freeze`` (the books not frozen at the end), ``bk_late`` (termination
+    one tick late) -- the kernel's switches -- and ``bk_weight`` (the terms
+    read one row further in the obs table: each term's weight from the
+    neighbouring row)."""
+    import cupy as cp
+    from simulation import device_books as dbk
+    if BREAK in dbk.BREAK_CODES and BREAK:
+        obs.books.brk = dbk.BREAK_CODES[BREAK]
+    if BREAK == "bk_weight":
+        off = {n: o for n, o, _ in dobs.table_layout()}["BOOK_TERMS"]
+        n = len(dbk.TERM_NAMES)
+        t = obs.table.get()
+        t[:, off:off + n] = np.roll(t[:, off:off + n], -1, axis=1)
+        obs.table = cp.asarray(t)
+
+
+def books_equal(label, obs, played, tick, profile="fireteam", census=None) -> bool:
+    """Every env's device books equal to its reference's at ``tick`` (the
+    whole state, floats as raw bits; an env whose match ENDED compared, from
+    its ending tick on, with its FINAL books: frozen), the ended latch set
+    exactly from the ending tick, the ending tick and the result on the card,
+    and at every step's end the served arrays raw-bit equal (an ended env's
+    stay the ending step's)."""
+    from simulation import device_books as dbk
+    from simulation import device_picture as dpic
+    forms = obs.books.forms()
+    sc = obs.books.scalars()
+    served = obs.books.host_served()
+    latch = obs.ended.get()
+    S_ = {f: i for i, f in enumerate(dbk.SCALAR_FIELDS)}
+    for e, p in enumerate(played):
+        if tick <= p.end:
+            at = tick
+        elif p.terminal:
+            at = p.end
+        else:
+            continue
+        where = f"{label}: tick {tick}, env {e} ({p.name}@{p.seed})"
+        d = dpic.first_difference(p.books[profile][at], forms[e])
+        if d is not None:
+            path, a, b = d
+            if isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
+                i = next(i for i in range(len(a)) if a[i] != b[i])
+                path, a, b = path + (i,), a[i], b[i]
+            fail(f"{where}: the books differ at {'/'.join(str(x) for x in path)}: "
+                 f"reference {a!r} device {b!r}")
+            return False
+        ended_ref = p.terminal and tick >= p.end
+        if bool(latch[e]) != ended_ref:
+            fail(f"{where}: the ended latch is {int(latch[e])}, the reference "
+                 f"{'ended' if ended_ref else 'runs'} (end {p.end}, terminal {p.terminal})")
+            return False
+        if ended_ref:
+            got = (int(sc[e, S_["ENDED_TICK"]]), int(sc[e, S_["RES_OUTCOME"]]),
+                   int(sc[e, S_["RES_TEAM"]]), int(sc[e, S_["RES_TICKS"]]),
+                   int(sc[e, S_["TERMINATED"]]), int(sc[e, S_["TRUNCATED"]]))
+            want = (p.end,) + tuple(p.result) + (1, 0)
+            if got != want:
+                fail(f"{where}: (ending tick, outcome, team, ticks, terminated, truncated) "
+                     f"device {got}, reference {want}")
+                return False
+        st = BOOKSTATS.setdefault(label, {"env_ticks": 0, "served": 0, "frozen": 0})
+        st["env_ticks"] += 1
+        if tick > p.end:
+            st["frozen"] += 1
+        sv = p.served.get(profile, {}).get(at)
+        if sv is None or not (tick == at or ended_ref):
+            continue
+        for k, w in sv.items():
+            g = served[k][e]
+            g = g.reshape(w.shape) if g.size == w.size else g
+            if w.shape != g.shape or not np.array_equal(raw(w), raw(g)):
+                idx = np.argwhere(raw(w) != raw(g)) if w.shape == g.shape else []
+                at_ = tuple(int(x) for x in idx[0]) if len(idx) else "shape"
+                fail(f"{where}: served {k}: {len(idx)} value(s) differ, first at {at_}: "
+                     f"reference {w[tuple(idx[0])] if len(idx) else w.shape} device "
+                     f"{g[tuple(idx[0])] if len(idx) else g.shape}")
+                return False
+            if census is not None and tick == at:
+                n_, vs = census.get(k, (0, set()))
+                r_ = raw(w).ravel()
+                if len(vs) < 4:
+                    vs.update(int(x) for x in np.unique(r_)[:4])
+                census[k] = (n_ + int(np.count_nonzero(r_)), vs)
+        st["served"] += 1
+    return True
+
+
+def judge_books(played, census) -> None:
+    """The books' census: per gate the env-ticks compared (frozen included)
+    and the steps served; per case its count over the corpus, each > 0 (a case
+    never reached FAILS); every served reward key non-constant over the corpus
+    but ``truncated`` (0 under every named profile: the clock is an ending,
+    design 6.5 -- exempt by name)."""
+    for label, st in sorted(BOOKSTATS.items()):
+        print(f"    books {label}: {st['env_ticks']} env-ticks equal (whole state; "
+              f"{st['frozen']} frozen after the end), {st['served']} steps served equal")
+    total = {k: 0 for k in BOOK_CASES}
+    stats = {}
+    for p in played:
+        for k, n in p.book_cov.items():
+            if k == "_stats":
+                for kk, vv in n.items():
+                    stats[kk] = stats.get(kk, 0) + vv
+            else:
+                total[k] += n
+    print("    books coverage: " + ", ".join(f"{k} {n}" for k, n in total.items()))
+    print("    books stats: " + ", ".join(f"{k} {n}" for k, n in sorted(stats.items())))
+    outcomes = {}
+    for p in played:
+        if p.terminal:
+            outcomes[p.result[0]] = outcomes.get(p.result[0], 0) + 1
+    print(f"    books results (outcome code: matches): {outcomes}")
+    for k, n in total.items():
+        if n == 0:
+            fail(f"books coverage: the case {k!r} is never reached over the corpus (vacuous)")
+    for k in dobs.REWARD_KEYS:
+        n_, vs = census.get(k, (0, set()))
+        print(f"    books census {k}: {n_} non-default values, {len(vs)}"
+              f"{'+' if len(vs) >= 4 else ''} distinct")
+        if k != "truncated" and len(vs) <= 1:
+            fail(f"books census: the served key {k!r} is constant over its corpus")
+
+
+#: P8.7's clock hand match: the room with a door, both teams idle (nothing
+#: shoots), its match's time limit cut to CLOCK_S seconds: the match ends by
+#: the CLOCK (a draw with both teams standing: the clock term, termination by
+#: the limit), which no played match reaches.
+CLOCK_SEED = 79
+CLOCK_S = 2.0
+
+
+def corpus_clock():
+    from dataclasses import replace
+    lv = room_level()
+    spec = replace(lv.match, time_limit_s=CLOCK_S,
+                   teams=tuple(replace(t, controller="idle") for t in lv.match.teams))
+    return [play("clock_hand", lv, spec, CLOCK_SEED)]
+
+
+def part_books():
+    """P8.7 beyond part GATE: the "range" profile (zombie / friendly-fire
+    terms written 0) gated on (a) bots, (b) and the clock match as "fireteam"
+    is; the "counters" profile refused by name on the device."""
+    from simulation import device_books as dbk
+    for p in corpus_a()[:1] + corpus_b() + corpus_clock():
+        gate(f"books range {p.name}", [p], profile="range")
+    try:
+        dbk.profile_terms("counters")
+    except dbk.BooksRefused as ex:
+        print(f"  books: 'counters' refused by name ({str(ex)[:90]}...)")
+    else:
+        fail("books: the 'counters' profile was not refused")
+
+
 def corpus_a():
     lv = ship_level()
     import _pinned_matches as pm
@@ -1789,24 +2098,27 @@ def corpus_fire():
 
 def part_gate():
     ca, cb, cdn = Census(), Census(), Census()
+    bc = BOOK_CENSUS
     for p in corpus_a():
-        gate(f"(a) {p.name}", [p], ca)
+        gate(f"(a) {p.name}", [p], ca, books_census=bc)
     for p in corpus_b():
-        gate(f"(b) {p.name}", [p], cb)
+        gate(f"(b) {p.name}", [p], cb, books_census=bc)
     for p in corpus_d():
-        gate(f"(d) {p.name}", [p], cdn)
+        gate(f"(d) {p.name}", [p], cdn, books_census=bc)
     for p in corpus_cover():
-        gate(f"(b/d cover) {p.name}", [p], cb)
+        gate(f"(b/d cover) {p.name}", [p], cb, books_census=bc)
     for p in corpus_round():
-        gate(f"(d all_round) {p.name}", [p], cdn)
+        gate(f"(d all_round) {p.name}", [p], cdn, books_census=bc)
     for p in corpus_door():
-        gate(f"(d door) {p.name}", [p], cdn)
+        gate(f"(d door) {p.name}", [p], cdn, books_census=bc)
     for p in corpus_turn():
-        gate(f"(d turn) {p.name}", [p], cdn)
+        gate(f"(d turn) {p.name}", [p], cdn, books_census=bc)
     for p in corpus_list():
-        gate(f"(d list) {p.name}", [p], cdn)
+        gate(f"(d list) {p.name}", [p], cdn, books_census=bc)
     for p in corpus_fire():
-        gate(f"(d fire) {p.name}", [p], cdn)
+        gate(f"(d fire) {p.name}", [p], cdn, books_census=bc)
+    for p in corpus_clock():
+        gate(f"(d clock) {p.name}", [p], cdn, books_census=bc)
     ca.judge("census (a)", strict=False)
     cb.judge("census (b)", strict=False)
     cdn.judge("census (d)", strict=False)
@@ -1827,6 +2139,9 @@ def part_gate():
                 + corpus_door() + corpus_turn() + corpus_list())
     judge_windows(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                   + corpus_door() + corpus_turn() + corpus_list() + corpus_fire())
+    judge_books(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
+                + corpus_door() + corpus_turn() + corpus_list() + corpus_fire()
+                + corpus_clock(), BOOK_CENSUS)
     for p in corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round():
         a0, a1 = p.cover_alive
         if a0 != a1:
@@ -1939,7 +2254,8 @@ def part_ended():
     sessions = [twin(p), twin(p)]
     c = cd.DeviceConductor([x.sim for x in sessions], bp=bp)
     obs = dobs.DeviceObservation(c, [x.spec for x in sessions], p.S, DECIMATION, n_teams=p.T)
-    keep = {k: obs.buffers[k][1].copy() for k in dobs.BUILT}
+    keep = {k: obs.buffers[k][1].copy() for k in dobs.BUILT if k in obs.buffers}
+    books_kept = obs.books.state[1].copy()       # P8.7: a set latch freezes the books too
     obs.ended[1] = 1
     moved = False
     n_dec = 0
@@ -1957,6 +2273,8 @@ def part_ended():
                 return
             if any(not bool(cp.array_equal(obs.buffers[k_][1], keep[k_])) for k_ in keep):
                 moved = True
+    if not bool(cp.array_equal(obs.books.state[1], books_kept)):
+        fail("ended: the books of the env whose ended latch is set moved")
     if moved:
         fail("ended: the env whose ended latch is set was rebuilt")
     else:
@@ -2421,7 +2739,8 @@ def part_restage():
 
 PARTS = {"gate": part_gate, "batch": part_batch, "handover": part_handover,
          "syncs": part_syncs, "ended": part_ended, "floatkit": part_floatkit,
-         "sight": part_sight, "wall": part_wall, "restage": part_restage}
+         "sight": part_sight, "wall": part_wall, "restage": part_restage,
+         "books": part_books}
 
 
 def main(parts=None) -> int:

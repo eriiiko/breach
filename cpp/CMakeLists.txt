@@ -227,6 +227,11 @@ if(BREACH_CUDA)
         # resident planes; float64 through the observation's float kit, one cast
         # per value. Class T.
         src/cuda_obs_windows.cu
+        # #29 P8.7: the device books (src/simulation/device_books.py): the reward
+        # books, the served reward groups, termination and the ended latch, one
+        # thread per env in the reference's event order; float64 through the
+        # observation's float kit, one cast per served value. Class T.
+        src/cuda_obs_books.cu
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like

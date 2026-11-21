@@ -233,6 +233,34 @@ void obs_planes(int n_env, std::uintptr_t store, int n_units, int store_w,
                 std::uintptr_t near_u, std::uintptr_t far_f, std::uintptr_t far_u,
                 std::uintptr_t vector, std::uintptr_t faults, int brk);
 
+// ---------------------------------------------------------------------------
+// #29 P8.7: THE DEVICE BOOKS (cpp/src/cuda_obs_books.cu; src/simulation/
+// device_books.py). The reward books of profile v1, the old counters, the
+// served reward groups, termination and the ended latch, ONE THREAD PER ENV
+// over the tick's event ring in emission order, on the tick stream, after the
+// team picture (`pic_state`: its bars) and the observation's blocks. `state`:
+// (N, state_w) int64, one block per env; the served arrays reward (N, n_rows,
+// OBS_BK_GROUPS) / counters (N, n_rows, OBS_BK_K) / team_* (N, n_teams)
+// float32, rows_ended (N, n_rows) / terminated / truncated (N,) uint8 written
+// on a decision tick and on the ending tick; `ended` (N,) uint8 the ended
+// latch, set at the ending tick (a set env's books are frozen). `words`
+// (3, N) int64: the RewardBooksMismatch count, the fault bits
+// (OBS_BK_FAULT_*), ended this tick. `first`: the books' constructor (the
+// snapshot, the standing, the living teams). `brk`: the check's breaks
+// (OBS_BK_BREAK_*), 0 in every real run. Returns true when the words were
+// deferred into the conductor's books read.
+bool obs_books(int n_env, std::uintptr_t store, int n_units, int store_w, UnitEventRing& ring,
+               std::uintptr_t rowmap, int n_rows, int n_slots, int n_teams,
+               std::uintptr_t obs_table, int table_w, std::uintptr_t tick_row,
+               std::uintptr_t params, std::uintptr_t ended, std::uintptr_t pic_state, int pic_w,
+               std::uintptr_t state, int state_w, std::uintptr_t reward, std::uintptr_t counters,
+               std::uintptr_t team_balance, std::uintptr_t team_uncredited,
+               std::uintptr_t team_outcome, std::uintptr_t rows_ended, std::uintptr_t terminated,
+               std::uintptr_t truncated, std::uintptr_t words, bool first, int brk);
+// The compiled books block's section offsets for (n_teams, n_units, n_rows).
+std::vector<std::pair<std::string, int64_t>> obs_books_layout(int n_teams, int n_units,
+                                                              int n_rows);
+
 // The compiled layout's fingerprint (obs_layout.h): what device_obs checks.
 const char* obs_layout_fingerprint();
 
