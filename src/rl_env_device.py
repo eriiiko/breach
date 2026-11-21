@@ -193,7 +193,9 @@ class DeviceEnv:
         self.N = N = run.n_envs
         self.every = rl_env.checkpoint_every(run)
         self.brk = ""
-        self.timing = {}
+        self.timing = {}                # host wall seconds per part of a step
+        self.profile = False            # the bench's: each tick's GPU time per call line
+        self.prof = {}                  # call line -> GPU ms summed (profile on)
         self._failed = None
         if len(self.levels) > 1:
             probes = [self._session(lv, lv.match.seed, self._policy_spec(lv)) for lv in
@@ -344,8 +346,12 @@ class DeviceEnv:
         cps = [[] for _ in range(N)]
         for i in range(self.run.decimation):
             t0 = time.perf_counter()
-            c.tick()
+            c.tick(profile=self.profile)
             self._time("conductor ticks", t0)
+            if self.profile:
+                for label, g, _h in c.last_profile:
+                    if g is not None:
+                        self.prof[label] = self.prof.get(label, 0.0) + float(g)
             if i == 0 and self.brk == "decide_late":   # THE BREAK: after the first tick
                 dec.set_decisions(a)
             now = np.asarray(c.ended_now, dtype=bool) & active
