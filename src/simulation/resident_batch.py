@@ -26,8 +26,8 @@ space maps only (the sky exchange is the host's: ACCEPTED GAP), no light
 (render state until #81). The templates, seeds and states differ per env.
 
 This is the P5 driver G1 measures ("NO units, the ship's entities ON, device
-vs farm") -- not the ``device`` backend of ``BatchedEnv`` (refused until
-P8b). It needs the CUDA build and CuPy; ``physics_runner.set_residency``
+vs farm") -- not the ``device`` backend of ``BatchedEnv`` (``src/rl_env_device.py``,
+the device conductor over these buffers, #29 P8.10a). It needs the CUDA build and CuPy; ``physics_runner.set_residency``
 must be on (the runner's step would otherwise take the host path).
 """
 from __future__ import annotations

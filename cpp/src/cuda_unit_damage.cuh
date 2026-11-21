@@ -5,7 +5,7 @@
 // door's mitigation, the exposure scale between the snap's halves, the hit
 // points, the kill exactly once, every death clear, the exposure raise), the
 // event sinks of the ring (cuda_unit_events.h), the felt temperature
-// (exchange.felt_temperature_q -- the heat row's AND, from P8b, the
+// (exchange.felt_temperature_q -- the heat row's AND the device
 // observation's ONE read), the credit claims (damage.TickCredit as a per-tick
 // table), the footprint reduction (exchange.reduce_max). Integer for integer
 // the Python it names; a change lands in the Python first.

@@ -3,8 +3,11 @@
 ``BatchedEnv(run, backend="cpu_farm")`` advances N matches per call and
 returns observations, rewards and terminals with a leading N axis. A trainer
 touches nothing else: never a ``Simulation``, a controller or a kernel. One
-API, two backends; P1a builds ``cpu_farm`` only (the ``device`` backend is
-P5..P9) and refuses any other name.
+API, two backends: ``cpu_farm`` (below; THE reference) and ``device`` (#29
+P8.10a, ``src/rl_env_device.py``: one device conductor of N envs with the
+observation, books and decoder on the card, its arrays torch tensors there;
+held equal to the farm step by step by ``tests/cuda_env_check.py``). Any
+other name is refused.
 
 THE RUN FILE (``run.toml``, kept OUTSIDE the repo tree, any path; its sha256
 is :attr:`BatchedEnv.run_sha256` for the later run manifest). Nothing about a
@@ -160,6 +163,16 @@ rollout buffer is that copy). A fresh ~10 MB array per step cost the driver
 1.8 to 2.3 ms at 64 envs in page faults, with every worker idle meanwhile
 (#29, 2026-11-11). Every other returned array is a fresh copy.
 
+THE BACKEND ``device`` (#29 P8.10a; ``rl_env_device``'s module doc): the same
+keys, shapes and dtypes, everything the card builds a torch tensor on the
+card (the observation the env's own buffers, the rest fresh device copies),
+the small info arrays host numpy; every marine team ``policy``, the horde
+``zombies`` / ``idle``, ``[run] commander = "none"``, a named reward
+profile, spec v1, one batch-compatible level set -- anything else refused by
+name at the build. COVERAGE (:meth:`BatchedEnv.coverage`, both backends):
+per head the options chosen, per mask the options legal, per counter the
+cells that moved, the endings.
+
 SNAPSHOTS AND THE RUN MANIFEST (#29 P1b, residency design §6). A training run
 on a snapshot calls :func:`require_snapshot` (``BatchedEnv(...,
 snapshot=tag)`` does): an ANNOTATED tag whose commit is HEAD, a tree clean
@@ -167,7 +180,9 @@ INCLUDING untracked files under ``src/``, ``levels/``, ``config.toml`` and
 ``cpp/``, ``simulation`` and ``breach_physics`` imported from this checkout's
 own ``src/`` and ``cpp/build*/``, the module's build-time ``build_id()``
 equal to HEAD, and the run file's sha256 recorded; the ``device`` backend
-also needs an empty twin debt ledger (``tools/twin_debt.py``). Each check is
+also needs an empty twin debt ledger (``tools/twin_debt.py``), the CPU
+build's id at HEAD as well, every compiled layout fingerprint this
+checkout's and a passed pre-flight (``rl_env_device.preflight``). Each check is
 its own function taking the repo path. The farm needs no ledger and trains
 at any tag. With ``[run] out_dir`` the env writes :data:`RUN_MANIFEST`
 there (:func:`write_run_manifest`: commit, tag, build id, run and bank

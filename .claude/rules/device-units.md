@@ -31,8 +31,8 @@ paths:
 
 Fires on contact with these files. CLAUDE.md's index says what each system is
 and who must use it; this file holds the constraints the code cannot say. Every
-system here is Class T: NOT part of the played tick until the `device` backend
-(P8b). Which slots are ported is the twin manifest's to say.
+system here is Class T: NOT part of the played tick; the `device` backend of the
+batched environment (`src/rl_env_device.py`) runs it. Which slots are ported is the twin manifest's to say.
 
 ## Unit store
 - A unit is a ROW: the schema's group-S columns in schema order, then `valid`. Row r is the r-th unit of `sim.units` (id order, the laws' order); `(team, slot)` are columns, never the row order; a batch pads to the largest U with all-zero rows. Built only through `pack` / `unpack` over the schema's own `encode_unit` / `decode_into`.
@@ -59,11 +59,11 @@ system here is Class T: NOT part of the played tick until the `device` backend
 ## Device unit library
 - A function two slot kernels need lands HERE, never a copy in a slot TU; a slot's own law stays in its TU. Integer for integer the Python it names, held equal on synthetic rows over the whole range through TEST-ONLY probes (`cpp/src/cuda_unit_lib_probe.cu`, `cpp/src/cuda_unit_movement_probe.cu`, `cpp/src/cuda_unit_verbs_probe.cu`).
 - A row whose operands leave the proved range FAULTS and is left unchanged; `put` marks a row changed only when it changes.
-- The verb gates' device forms are `src/simulation/verb_gates.py`'s; P8b's mask kernel calls them too, never its own copy.
-- THE DEVICE DAMAGE PIPELINE `cpp/src/cuda_unit_damage.cuh`: `apply_packet` is `damage.apply_packet` integer for integer, on any row it is handed, its events through the sink it is given, all or nothing. Every slot that hurts calls it: never a second packet law in a slot TU. Its `felt_temperature_q` is the heat row's and, from P8b, the observation's one read.
+- The verb gates' device forms are `src/simulation/verb_gates.py`'s; the device observation's masks (`DeviceObservation.build_masks`) call them too, never their own copy.
+- THE DEVICE DAMAGE PIPELINE `cpp/src/cuda_unit_damage.cuh`: `apply_packet` is `damage.apply_packet` integer for integer, on any row it is handed, its events through the sink it is given, all or nothing. Every slot that hurts calls it: never a second packet law in a slot TU. Its `felt_temperature_q` is the heat row's and the device observation's one read.
 - The exposure landing is a MODE of that one `apply_packet` (an `ExposureLanding` handed in, landed by `land_exposure` at the walk's end), chosen by the CALLER per (stage, kind): a HIT in a stage that lands (`applier.STAGES`), never a packet's own choice and never a second packet law. Every other caller keeps the immediate form; a blast packet inside a resolve is immediate (the reference's `exchange.apply_blast_damage`).
 - #215: the device `apply_packet` is also THE device stress producer (the damage row, before the death check) and clears stress and the body at death; the heat kernel carries the body law (`body_air` / `body_step` with the profile's absorption row, faulting past `BODY_MAX`), and `clearing_drain` is THE device clearing step (poison and the stress tick in slot 9c3's kernel): a change to `stress.produce`, `stress.tick`, `body_temp.air_read` / `step_q` or `clearing.drain` lands there in the same patch; `tests/cuda_unit_damage_check.py` is the guard.
-- `impulse_add` / `angular_q` are THE device `unit_impulse.add` (the shove and the applier's PUSH both call them); `can_melee`, `melee_adjacent`, `melee_arc_target` are the melee verb's, also P8b's mask kernel's.
+- `impulse_add` / `angular_q` are THE device `unit_impulse.add` (the shove and the applier's PUSH both call them); `can_melee`, `melee_adjacent`, `melee_arc_target` are the melee verb's, also the device masks'.
 - `mag_settle` / `reload_begin` are THE device magazine law (`combat.mag_settle` / `reload_begin`): slot 1b's reload and slot 4's trigger both call them; a change to the Python magazine law lands here in the same patch.
 - The falloffs (`falloff_floor_q` / `falloff_round_q`) are `FP_HD` kit twins in `cpp/src/fixed_point.h` (the Fixed-point kits' rule): a deposit weight, a blast's damage or its wall damage on the device calls them, never a re-derived root; a -1 is a FAULT. The kit's probes are `cpp/src/cuda_unit_kit_probe.cu` (draws, sight, falloffs), gated by `tests/cuda_unit_kit_check.py`.
 
