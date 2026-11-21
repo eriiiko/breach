@@ -16,7 +16,10 @@ the rows' units, the team picture the session keeps). Kept: the tick's
 intents and the OWNED arrays of each decision. (a) the pinned ship_demo
 matches ``bots`` and ``bots_v1`` (``tests/_pinned_matches``); (b) a training
 room (``tools/gen_training_rooms.py``'s ``range_door``, written to a temp
-folder: a door, cover, ``all_round``); and, for the batch, more seeds of both.
+folder: a door, cover, ``all_round``); (d) the hand match (P8.1: a ship_demo
+bots match cut at :data:`HAND_TICKS` with a hand state at tick 0 and hand
+intents, :func:`hand_setup` / :func:`hand_script`, for the owned columns (a)
+and (b) never move); and, for the batch, more seeds of (a) and (b).
 
 OWNERSHIP (``tests/obs_column_owners.toml``, the column-to-patch table): a
 gate compares exactly the columns / planes owned by :data:`PATCH` and every
@@ -31,7 +34,7 @@ decision tick of every env its owned device arrays compared with the
 reference's, raw bits (``view`` as unsigned ints: -0.0 and NaN count); the
 first difference printed (tick, env, key, plane, index) and FAILS.
 
-PART GATE (P8.0) -- corpus (a) and (b) at N = 1.
+PART GATE (P8.0) -- corpus (a), (b) and (d) at N = 1.
 PART BATCH (P8.0) -- N = 2 and 4 of ship_demo and of the training room,
 different seeds per env (envs end apart): every env equal to ITS reference
 at every one of its decision ticks (so equal to itself alone).
@@ -46,10 +49,19 @@ count at N = 1 and 2, and the blocks were built during the count.
 PART ENDED (P8.0) -- an env whose ended latch is set keeps its buffers (the
 blocks skip it) while its neighbour is rebuilt.
 
+PART FLOATKIT (P8.1) -- the observation's float kit on the card
+(``cpp/src/cuda_obs_float.cuh``): double -> float16 exhaustively equal to
+numpy, double -> float32 equal to numpy, a*b + c never contracted, the
+squash's served float32 equal to the host's (CUDA's log; the float64
+difference count is printed).
+
 THE BREAKS (``OBS_BREAK``), each must turn a part red: ``anchor`` (the
 blocks read the units one tile off: the window's anchor wrong), ``stale``
 (the blocks are not rebuilt after tick 0), ``constant`` (an owned column
-forced constant on both sides: the constancy guard).
+forced constant on both sides: the constancy guard), ``divisor`` (P8.1: the
+obs table's weapon block shifted one row, so ``rounds`` / ``range`` / ...
+divide by the neighbouring row), ``half_f32`` (P8.1: double -> float16 via
+float32, double rounding), ``fused`` (P8.1: the kit's a*b + c as an fma).
 
 PROPERTY: the device observation IS the host observation, value for value,
 on every owned column, at every decision tick, in a batch as alone; the

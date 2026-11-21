@@ -11,6 +11,7 @@ paths:
   - "tools/obs_body_imprint.py"
   - "src/simulation/device_obs.py"
   - "cpp/src/cuda_obs.*"
+  - "cpp/src/cuda_obs_float.cuh"
   - "cpp/src/obs_layout.h"
   - "tools/gen_obs_layout.py"
   - "tests/cuda_obs_check.py"
@@ -52,6 +53,10 @@ and who must use it; this file holds the constraints the code cannot say. The
 - THE device form of observation spec v1, its masks and the full view (`src/simulation/device_obs.py`, `cpp/src/cuda_obs.*`): built on the card in the device conductor's walk (its last call line) into env-owned CuPy buffers with exactly the served keys, shapes and dtypes (and a `final_` set), handed to torch by DLPack. The host builders stay THE reference; never a second observation, never a host copy between the card and the trainer.
 - Every column and plane has ONE owning P8 patch in `tests/obs_column_owners.toml`; a block lands with its owner rows and its `device_obs.BUILT` entry in the same patch. Each gate compares what its patch and the earlier ones own, as RAW BITS, at every decision tick, and fails on an owned column constant over its corpus. ONE check script, `tests/cuda_obs_check.py`, a part per patch: never a second script.
 - A spec constant reaches a kernel only through the generated `cpp/src/obs_layout.h` (`tools/gen_obs_layout.py`), read from the spec's own tables: never a literal in a kernel, never a kernel argument. The observation's device code is its own TU and headers, never `cpp/src/cuda_unit_lib.cuh`; it writes no synced buffer and adds no host sync to the tick.
+- THE OBS TABLE (`device_obs.table_values` / `team_values`): every value a block reads that is not unit state is ONE row of it, read from the reference's OWN object (the episode's `ObsContext`, the sim's weapon rows, the loadout and env-profile tables, the species registry), its offsets only from the generated header. A float the host reads as a float is carried as its own float64 bit pattern, never a Q16 row of the device tables (inventory K4). A config row that moves a block's width (a loadout, weapon, env profile, species or hand-grenade kind) means `tools/gen_obs_layout.py --write`, commit, rebuild.
+- The observation's float arithmetic is `cpp/src/cuda_obs_float.cuh` alone: float64 in the reference's operation order through the never-fused intrinsics, ONE cast per value into the served dtype (float16 only through the kit's hand conversion: never `__double2half`, never through float32). `log` / `log1p` are CUDA's own: a served value they move fails the gate, and is the trigger for the shared log module (the lead's call), never a tolerance.
+- The integer reads a block shares with the unit kernels (`mag_status`, `composed_flags`, `handling_ticks`, `scaled`, `wrap_q16`) are the unit library's, called with the device tables: never a copy in the observation's TU.
+- An owned column the corpus cannot move gets a case in the check's hand match (corpus (d): a hand state at tick 0 given to the reference and the twin alike, hand intents through the tap), never a weakened census.
 - An env is built on ITS decision ticks (its episode start and the run's decimation, read on the card) and skipped while its ended latch is set.
 - The hand-over's ordering rests on the BLOCKING tick stream and CuPy / torch on the legacy default stream: a change to either is a change to the hand-over, held by the check's handover part.
 

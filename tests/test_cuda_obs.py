@@ -26,13 +26,15 @@ def _run(parts, timeout=3600):
 
 
 def test_the_device_observation_equals_the_host_one_on_the_corpus():
-    """PROPERTY: on the pinned ship_demo matches and a training room, at
-    every decision tick, every column / plane owned so far (the column-to-
-    patch table) equals the host observation as raw bits, and no owned
-    column is constant over the corpus. BREAKS IF a block reads the wrong
-    anchor (OBS_BREAK=anchor), is not rebuilt on a decision tick
-    (OBS_BREAK=stale), or the gate compares a column that never moves
-    (OBS_BREAK=constant)."""
+    """PROPERTY: on the pinned ship_demo matches, a training room and the
+    hand match (corpus (d): the cases the others never reach), at every
+    decision tick, every column / plane owned so far (the column-to-patch
+    table; from P8.1 the float32 vector columns of the store and the
+    tables) equals the host observation as raw bits, and no owned column is
+    constant over the corpus. BREAKS IF a block reads the wrong anchor
+    (OBS_BREAK=anchor), is not rebuilt on a decision tick (OBS_BREAK=stale),
+    the gate compares a column that never moves (OBS_BREAK=constant), or a
+    column divides by a neighbouring table row (OBS_BREAK=divisor)."""
     _run(["gate"], timeout=7200)
 
 
@@ -68,3 +70,16 @@ def test_an_ended_env_keeps_its_observation():
     (its buffers unchanged) while its neighbour is rebuilt and equal to its
     reference. BREAKS IF a block ignores the latch."""
     _run(["ended"])
+
+
+def test_the_observation_float_kit_rounds_like_the_host():
+    """PROPERTY: the device observation's float kit (cpp/src/cuda_obs_float.cuh)
+    converts double -> float16 exactly as numpy does on EVERY float16
+    rounding case (each half, each midpoint and its float64 neighbours, the
+    overflow and underflow edges, signed zeros, NaNs), double -> float32 as
+    numpy does, never contracts a*b + c into an FMA, and serves the squash
+    (CUDA's log) as the host's float32 on a dense sweep. BREAKS IF the half
+    conversion rounds twice through float32 (OBS_BREAK=half_f32), the kit's
+    arithmetic is fused (OBS_BREAK=fused), or CUDA's log moves a served
+    squashed value (then the shared log module is due)."""
+    _run(["floatkit"])

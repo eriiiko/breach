@@ -242,3 +242,17 @@ def test_every_integer_the_obs_table_carries_is_the_reference_value():
     for i, team in enumerate(ses.spec.teams):
         assert int(teams[i, 0]) == int(team.n)
         assert int(teams[i, 1]) == us.table_row("loadouts", team.loadout)
+
+
+def test_the_float_dtype_lists_are_the_served_float_keys():
+    """Property: ``device_obs.FLOAT16_KEYS`` / ``FLOAT32_KEYS`` (which cast
+    of the float kit a key's values take) name exactly the served keys of
+    that dtype. Breaks when a served key changes its float dtype, or a new
+    float key lands without saying which cast it takes."""
+    import numpy as np
+    lay = _v1_layout()
+    got = device_obs.served_shapes(lay.n_envs, lay.n_teams, lay.n_slots, lay.n_kinds)
+    assert {k for k, (_, dt) in got.items() if np.dtype(dt) == np.float16} == \
+        set(device_obs.FLOAT16_KEYS)
+    assert {k for k, (_, dt) in got.items() if np.dtype(dt) == np.float32} == \
+        set(device_obs.FLOAT32_KEYS)
