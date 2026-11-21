@@ -100,6 +100,97 @@ New generated constants: `OBS_NEAR_U_LANES`, `OBS_AIM_NONE`,
 - The host computes the per-enemy columns only for the first caps[1] (16)
   seen enemies after the sort; the device buffers hold every seen enemy.
 
-## Part b (P8.4b): (to be written by part b)
+## Part b (P8.4b): the list, list_mask, list_uid -- DONE
+
+### What exists
+
+`DeviceObservation.build_list(store_ptr=None)` (called by `build()` after
+`aims()`; ONE launch on the tick stream, no sync) over `bp.obs_list`
+(`cpp/src/cuda_obs_list.cu`, declared in `cpp/src/cuda_obs.h`): one thread
+per (env, row, block), every env on its decision tick with its ended latch
+clear. It writes the served `list` / `list_mask` / `list_uid`; a row that is
+not valid reads 0 / 0 / -1. Columns of later patches are written 0:
+`on_next_tick`, `prev_aim` (P8.6a), the order block 47-51 (P8.6b).
+
+- THE SORT: every block's key is (squared centre distance, id) with the id
+  unique within the block (unit id, object uid, door ordinal), so the order
+  is total; the card takes successive minima (`next_min`, `key_less`) up to
+  the block's capacity = the host's sort then `[:cap]`.
+- Inputs: the store, device tables, obs table + team rows, `visible`,
+  `sees`, the picture block (REC, UNIT, SEEN list, SIDE_G / SIDE_C serials),
+  P8.4a's `aim` / `lof` / `ttw` / `lane_own`, the grenade / charge / door /
+  door-tile tables, the `is_vacuum` / `is_ambient` planes (hull), and
+  `DeviceObservation.wired` ((N, wired_cap) uint8 per door table row, from
+  `device_obs.wired_values(sim, cap)`: the level wires, static).
+- Obs table: a new AMMO block (`device_obs.AMMO_FIELDS` = OBJ_KIND, RADIUS,
+  TRAVEL_SPEED_BITS per `[ammo.*]` row in the schema's order; CPU test
+  `test_the_ammo_rows_are_what_the_list_reads`).
+- Generated constants (obs_layout.h): `OBS_F`, `OBS_L_<column>`,
+  `OBS_TYPE_*`, `OBS_CAP_SEEN/RECORD/OBJECT/DOOR`, `OBS_ENTRIES_BEYOND_SLOTS`,
+  `OBS_DOOR_UID_BASE`, `OBS_THROW_NO_REACH`, `OBS_NO_TIMER`,
+  `OBS_THROTTLE_ONE`, `OBS_KINETIC`, `OBS_LIST_FAULT_OBJECT`,
+  `OBS_LIST_BREAK_LIST_TIE/CAP` (`device_obs.LIST_FAULT_BITS`,
+  `LIST_BREAK_CODES`). Faults: `DeviceObservation.list_faults` (N,) int32
+  (a seen object whose serial is on no live row), checked by the gate at
+  every decision; not on the books read.
+- NEW HEADER `cpp/src/cuda_obs_rows.cuh` (namespace `obs_rows`): `env_due`,
+  `is_mate`, `is_seen` -- the ONE copy; `cuda_obs.cu`, `cuda_obs_picture.cu`
+  and `cuda_obs_list.cu` use it (P8.4a's copies and the picture's `env_due`
+  moved there). `cuda_obs_picture.cuh` gained `bar_of`, `hp_over_bar`,
+  `motion_of` (the picture vector uses them too).
+- CMake: `src/cuda_obs_list.cu`; twin manifest: the observation row's slot
+  TU list and device list name the new files; `files` regenerated; the
+  row's `level_at` stamp is NOT re-marked (part c).
+
+### What part c must know
+
+- `in_reach` is RESTATED in `cuda_obs_list.cu::door_entry` (footprint + one
+  ring, from `verb_gates._reach_key`). When you lift `use_door`'s geometry
+  into `cpp/src/cuda_unit_lib.cuh`, make `door_entry` call the lifted
+  function and delete the restatement (one copy; marked "NOTE for P8.4c" in
+  the code).
+- The masks can reuse `View` / `next_min` only if they live in
+  `cuda_obs_list.cu`; `env_due` / `is_mate` / `is_seen` are in
+  `cuda_obs_rows.cuh`.
+- Coverage counted in the check: `LIST_CASES` (`ListTap` wraps
+  `obs_spec_v1._candidates` to count overflows; `count_list` counts entry
+  kinds off the host arrays; `judge_list` in part GATE).
+- New corpus (d) match `list_hand` (`corpus_list`): ship_demo all_round,
+  teams idle, 24 ticks; a door made hull (a wall tile beside its span marked
+  `is_vacuum`) and wired (a fake level wire on a copy of `sim.level`: the
+  door drive table is built at load), a remote charge, an order with a
+  priority target, half throttle, the frag radius. No corpus level has a
+  hull door or a wired door, the bots never set throttle > 0, never take an
+  order, never plant a remote charge, and no seen enemy ever comes within the
+  frag radius (2) of a mate.
+- `PATCH = "P8.4b"`; BUILT["list"] = every list column but on_next_tick,
+  prev_aim and the order block.
+
+### Part b's gate evidence (2026-11-21)
+
+- Short gate `pytest tests/test_cuda_obs.py tests/test_device_obs.py
+  tests/test_device_picture.py -q`: 26 passed (361 s) at ``7a9841e1` (code as at `ad2313b6`; the manifest commit after it changes no code)`.
+- Part GATE (N = 1, raw bits, every decision tick; list, list_mask, list_uid
+  with every earlier column): bots 338, bots_v1 69, range_door 51, hand 81,
+  range_hall 9, hall_cover 7, ship_all_round 121, door_grenade 38,
+  slow_turn 11, list_hand 7 env-decisions. Equal on the FIRST run (no
+  fix-up needed). Census over (a)+(b)+(d): every owned list column
+  non-constant (e.g. type 21 975 non-default cells, dist_c 32 734, hp
+  14 150, list_mask 32 987, list_uid 291 412 incl. the -1 default's
+  complement, aims_at 2 052, ticks_to_on 2 105, lof_solid 823, age 855,
+  me_in_its_lane / it_in_my_lane 121, open 4 939, in_reach 1 628).
+- Coverage: mate 11 180, seen 3 222, record 855, grenade 1 043, charge 352,
+  door in reach 1 656, out of reach 15 211, overflow 4 207 (doors 4 167,
+  objects 40; no seen / record block overflowed).
+- Batches: ship_demo N = 2 / 4 (493 / 805 env-decisions), room N = 2 / 4
+  (112 / 220), all equal. Syncs 2.00 per steady tick at N = 1 and 2 (list
+  built in the count). WALL: cone 7, all_round 6 (team, tick) cases: the
+  unseen enemy's row perturbed (trigger flipped) moves no list entry, mask
+  or uid of the team.
+- Breaks, each red at its first decision: `list_tie` (bots tick 4, row 0
+  entry 0: list_uid 1 vs 2; hand tick 4 likewise; range_door stays green:
+  1 v 1, no ties); `list_cap` (bots tick 4, row 0 entry 38: list_mask 1 vs
+  0; hand likewise).
+
 
 ## Part c (P8.4c): (to be written by part c)
