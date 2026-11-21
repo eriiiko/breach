@@ -3126,12 +3126,19 @@ DEC_RUNS = (("policy crowd 102", "ship_demo", 102, 600, True),
             ("policy crowd 116", "ship_demo", 116, 600, True),
             ("policy ship_demo 133", "ship_demo", 133, 600, False),
             ("policy room 83", ROOM, 83, 400, False), ("policy room 87", ROOM, 87, 400, False))
-#: Run seeds are chosen: a seed whose play opens or closes a door beside gas
-#: a blast heated past the topology seam's proved range (|T_abs| < 2^28,
-#: cpp/src/cuda_topology.cuh) is refused by the device DOORS stage
-#: (ApplierFault at '9e(d) doors') on the tap path as well -- a finding of
-#: P8.6a (e.g. crowd 100, ship_demo 81), not the decoder's; 11 of 30 seeds
-#: scanned hit it.
+#: Run seeds are chosen clear of P8.6a's finding (a door opened or closed
+#: beside gas a blast heated past the topology seam's OLD proved range,
+#: |T_abs| < 2^28, refused by the device DOORS stage); #29 TOPOLOGY RANGE
+#: moved the refusal to the term bound (cpp/src/cuda_topology.cuh) and
+#: :data:`RANGE_RUNS` (part RANGE_SCENES) holds the scenes that found it.
+#: (Adding runs here moves part DECODER's sync count at N = 1 -- a
+#: measurement that depends on what was played before it; kept apart.)
+#: Part RANGE_SCENES: corpus (c) runs that open or close a door beside gas a
+#: blast heated past |T_abs| < 2^28: the pre-#29-TOPOLOGY-RANGE device
+#: refused them (ApplierFault at '9e(d) doors', crowd 100 at tick 112,
+#: ship_demo 100 at tick 48; 11 of 30 seeds scanned in P8.6a).
+RANGE_RUNS = (("policy crowd 100", "ship_demo", 100, 600, True),
+              ("policy ship_demo 100", "ship_demo", 100, 600, False))
 #: The decision kit at tick 0 (the runner's session and the twin alike): the
 #: hand loadout with these counts of every hand-grenade kind, in every
 #: marine's hands, so every throw kind with every reach occurs.
@@ -3721,10 +3728,26 @@ def part_dec_gate():
     judge_decoder(corpus_c())
 
 
+def part_range_scenes():
+    """#29 TOPOLOGY RANGE: :data:`RANGE_RUNS` played and gated like corpus
+    (c): every decision and digest equal, no refusal (the old seam faulted
+    at '9e(d) doors' on both)."""
+    for label, lvname, run_seed, cap, crowd in RANGE_RUNS:
+        lv = ship_level()
+        d = PolicyDriver(lv, run_seed)
+        p = play(label, lv, d.session.spec, d.seed, setup=dec_crowd if crowd else dec_kit,
+                 max_ticks=cap, driver=d)
+        try:
+            gate(f"(range) {p.name}", [p])
+        except Exception as ex:                    # a refusal names its slot
+            fail(f"(range) {p.name}: {type(ex).__name__}: {ex}")
+
+
 PARTS = {"gate": part_gate, "batch": part_batch, "handover": part_handover,
          "syncs": part_syncs, "ended": part_ended, "floatkit": part_floatkit,
          "sight": part_sight, "wall": part_wall, "restage": part_restage,
-         "books": part_books, "decoder": part_decoder, "dec_gate": part_dec_gate}
+         "books": part_books, "decoder": part_decoder, "dec_gate": part_dec_gate,
+         "range_scenes": part_range_scenes}
 
 
 def main(parts=None) -> int:

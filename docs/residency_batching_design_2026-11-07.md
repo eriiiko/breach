@@ -3971,6 +3971,67 @@ the decoder) 3.176 / 6.196 / 15.606 ms against the conductor's 11.4 / 49.9 /
 60 doors by successive minima, a sight walk per enemy entry) dominate it, not yet
 profiled further. No golden re-baseline; no host value moved; no table column,
 ring record or unit kernel added.
+**TOPOLOGY RANGE AS-BUILT (2026-11-21, branch `29-topology-range`, stacked on
+P8.6a's).** P8.6a's finding closed: the device topology seam
+(`cpp/src/cuda_topology.cuh`) refused a seal or an unseal beside gas past a
+moving cell's |T_abs| < 2^28 (about 4096 game degrees), where the host's
+Python ints carry on; blast-heated gas is legally hotter (reproduced at the
+pre-patch build: corpus (c)'s crowd 100 at tick 112 and ship_demo 100 at
+tick 48, ApplierFault at '9e(d) doors'; ship_demo 81 as named in the finding
+did not reproduce on this stack). THE BOUND: the refusal moved from the
+temperature to the product a moved parcel is priced with: a moving cell (a
+sealed tile; an unseal's donor) must have N * (|T_abs| + 1) < 2^60
+(`TERM_BOUND`), computed exactly in uint64 (N < 2^32, two non-negative
+int32 planes; |T_abs| + 1 <= 2^31 + 2^28). Temperature itself is not
+bounded at all: T is whatever the int32 plane holds (a seam write refreshes
+the mirror without the rails, so between recoveries a mirror can sit above
+T_MAX_PHYS; only the dtype's range holds unconditionally), |T_AMB| < 2^28
+as before. Where the physics sits: after the recovery's rails |T_abs| <=
+(T_MAX_PHYS + T_AMB_K) raw = (16000 + 290) * 2^16 < 2^30, and the engine's
+own per-cell range is n_bulk < 2^30 (`bulk_transport.h`), so a cell at the
+ceiling with the largest bulk is inside the bound (`T_ABS_PHYS_MAX`, a
+static_assert at the current, PROVISIONAL dial); a mirror past the ceiling
+up to the int32 top passes with N < 2^28.8 (hundreds of times the ambient
+bulk). THE PROOF'S SHAPE: every term a cell gives in the call is < 2^60, a
+cell takes at most four terms in and its own out, |E| < 2^61 (pre-checked
+as before), a born-at-ambient E is < 2^60, so every store and sum fits
+int64 and is the same integer as Python's. NOTHING WAS RESTATED: no
+expression needed a 128-bit intermediate or a reordering; only the
+pre-pass's admission test changed. THE RE-READ DONOR (a hole of the old
+proof, found while re-deriving it): unseal reads a donor's T_abs live at
+each span tile it borders and refreshes its mirror after each drain, which
+can RAISE it (by the remainder of E / N over the smaller N); when the
+donor's mirror is its energy (the iron rule's state) every later term is <
+N0 * (|T_abs0| + 1), so the one product covers it; an accountable donor that
+borders two or more span tiles and is NOT a mirror of its energy is bounded
+by the plane's range, N0 * (2^31 + |T_AMB| + 1) < 2^60 (the old check let
+such a donor through with any N < 2^32, where a later read could overflow:
+red at the pre-patch build, the device wrote where it must refuse). The
+gas-N primitives (inject / extract / transfer) keep `T_BOUND` = 2^28 on
+T_abs: the vents' proof (`cuda_unit_vents.cuh`, the sibling branch's) leans
+on the extraction's; destroy_wall and on_tile_changed never had a
+temperature bound (no T_abs product; the solid books' product is checked in
+128 bits). The host is pure Python (`GameMap`): no C++ CPU twin carries the
+bound. GATE: `tests/cuda_unit_doors_check.py` part RANGE (both door scenes,
+every door): seal and unseal with the moving cells heated through the energy
+field at the old edge, just past it, T_MAX_PHYS, twice it, the int32 top
+and bottom and six random draws over the plane's range, each op and its way
+back equal to the host on every plane and book; bulk at its maximum on the
+term edge (hot and cold) equal, just past it refused by name with nothing
+written while the host carries on; the L span's re-read donor (a mirror
+with the largest remainder at the plane's top and bottom and at max bulk:
+equal; not a mirror: small bulk equal, bulk 2^30 refused); destroy_wall +
+on_tile_changed beside cells at the extremes equal. Red at the pre-patch
+build (the old admission test: dozens of refusals the host does not make,
+and the re-read donor's write). `tests/cuda_obs_check.py` part RANGE_SCENES
+(its own pytest test) plays crowd 100 and ship_demo 100 through the gate
+(decisions and digests equal every tick). They are NOT in `DEC_RUNS`:
+appending runs there moved part DECODER's sync count at N = 1 (64 syncs on
+one steady tick, allocation sites; red with the two runs, green without, the
+seam's build unchanged): that measurement depends on what the process played
+before it, a fragility of the check, reported, not fixed here. No golden
+re-baselined; no host value moved;
+`.claude/rules/device-units.md` never stated the bound (unchanged).
 
 ### 4.6 Reset and the bank
 

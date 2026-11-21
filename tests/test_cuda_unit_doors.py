@@ -11,8 +11,10 @@ the occupancy test, external destruction by the whole-door rule, the hp copy
 at the open and the restamp at the close) and slot 1b's USE is the latch's
 flip; in a batch of differing envs as alone, padding rows untouched, every
 capacity refused by name, and the chained twin (the tables landed back on the
-door runtimes) equal to the untouched reference every tick. Breaks if a seal
-or unseal plane family, the trace saturation, an energy move, the close-T
+door runtimes) equal to the untouched reference every tick; seal / unseal
+equal over the whole int32 temperature range and refused by name only past
+the moved-energy term bound. Breaks if a seal or unseal plane family, the
+term bound's admission test, the trace saturation, an energy move, the close-T
 mean, a refusal, a primitive's split, the occupancy test, the ordinal order,
 the whole-door rule, the hp copy or restamp, the use write or the batch
 indexing differs from the law.
