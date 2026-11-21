@@ -760,8 +760,9 @@ def main():
             static_rows.append(frame_lights.cone_rows(
                 static_specs, grid_w, grid_h, light_fine_bits))
         dyn = assemble_lights().specs
-        # PROTOTYPE (#97 reassessment, item 3): the lamps' mirror glints
-        renderer.water_pass.set_lamp_specs((*static_specs, *dyn))
+        # #97: the lamps' own glints on the water read the SAME two lists
+        # the cone rows are built from (the static one cached by identity)
+        renderer.water_pass.set_lamp_specs(static_specs, dyn)
         return np.ascontiguousarray(np.vstack([
             static_rows[0],
             frame_lights.cone_rows(dyn, grid_w, grid_h, light_fine_bits)]))

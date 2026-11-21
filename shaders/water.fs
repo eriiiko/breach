@@ -29,18 +29,28 @@
 // Using Halftoning", GAMEON-NA 2011), OVER the water, lit as the floor is;
 // it darkens the floor beneath it and hides the glint. It replaced the old
 // gradient foam (foam_threshold / foam_intensity, deleted).
-// WATER W4 (#97): SHARP CAUSTICS. The fine surface's CURVATURE (since W1b
-// the exact second derivatives of the same sines, summed as the slope:
-// waveSum / hexWaves) gives the Jacobian of the refraction
-// map x -> x + depth (1 - 1/n) grad h, and the floor's source light is
-// multiplied by min(1/|det J|, caustic_max) (signed: darker where the light
-// spreads, brighter where it focuses). The law and spec is the twin's
-// water_surface.py caustic_det / caustic_gain / caustic_term; the GL check
-// tests/gl_water_caustic_check.py holds the two equal. Credit: Evan Wallace,
-// "WebGL Water" (2011, MIT; madebyevan.com/webgl-water) -- the area method:
-// a patch of light's area on the surface over its area on the floor; here
-// its analytic limit, the Jacobian determinant, in gather form. It replaced
-// the Laplacian caustic and its procedural detail (caustic_scale, u_time).
+// WATER W4 (#97; landed form of 2026-11-21, Erik: "I'd like scatter, Snell,
+// lamp glint"): THE REFRACTION MAP x -> x + depth (1 - 1/n) grad h of the
+// WHOLE surface slope (rippleSlope + detailSurface: the slope the normal is
+// built from) serves two terms. THE FLOOR BEND: the floor is read where the
+// map sends the (vertical) view ray -- Snell's law at small slopes (e.g.
+// Hecht, "Optics", 5th ed., 2017, sec. 4.4); it replaced refract_strength.
+// THE CAUSTIC in Wallace's SCATTER form (Evan Wallace, "WebGL Water", 2011,
+// MIT; madebyevan.com/webgl-water; archived
+// docs/papers/wallace2011_webgl_water_renderer.js): a slope pass
+// (shaders/water_scatter_slope.glsl, appended to this file) and the scatter
+// (shaders/water_scatter.vs/.fs) rasterise the moved surface grid into a
+// light image E (incident light 1, the mean conserved), read here at the bent
+// floor point: the floor's source light x (1 + (E - 1) caustic_strength). It
+// replaced the gather form (1/|det J| from the surface's Hessian, capped).
+// The twin: water_surface.py ripple_slope / floor_offset / scatter_light /
+// caustic_gain; tests/gl_water_caustic_check.py holds the two equal.
+// THE LAMPS' OWN GLINTS (lamp_glint): each mounted lamp of THE light
+// assembly (water_surface.lamp_table) adds its GGX glint from its true
+// position lamp_height_m up, the lamp a sphere (Brian Karis, "Real Shading
+// in Unreal Engine 4", SIGGRAPH 2013 course notes: alpha' = alpha + r / 2d,
+// renormalised), times the field's light here; the twin is
+// water_surface.lamp_glint.
 // The light this pass reads gets the smoke's cast shadow and the light curve
 // through lit3d's ONE copy, spliced at the SMOKE_SHADOW marker by
 // renderer/water.py::load_water_fs (raw, without the splices, this file does
@@ -74,7 +84,6 @@
 //   u_roughness_base       GGX roughness floor (still puddles glint sharp)
 //   u_roughness_agitation  added roughness per unit local ripple energy
 //   u_fog_density          Beer-Lambert extinction (depth tint rate)
-//   u_refract_strength     normal-driven floor-warp magnitude (UV units)
 //   u_r0                   Fresnel reflectance at normal incidence (~0.02)
 //   u_water_color          deep-water tint colour (the volume colour at depth)
 //   u_light_z              light-direction z (shared with lighting.fs)
@@ -101,16 +110,18 @@
 //   u_debug_view           0 = the picture, 1 = (slope x, slope y,
 //                          sqrt(k_ripples^2 + k_swell^2), 1),
 //                          2 = (foam amount, foam cover, 0, 1),
-//                          3 = (hxx, hxy, hyy, caustic gain) (W4)
-//   u_caustic              (caustic_strength, caustic_max, 1 - 1/n, form)
-//                          (W4; form 0 = gather, 1 = scatter: the #97
-//                          reassessment's PROTOTYPE, branch 97-reassess)
+//                          3 = (floor bend x, y m, the light E at the bent
+//                          floor point, caustic gain) (W4)
+//   u_caustic              (caustic_strength, 0, 1 - 1/n, 0) (W4)
 //   u_caustic_img          the scatter's light image (unit 7; R = light,
-//                          incident 1; G = coverage), read only in scatter
+//                          incident 1; G = coverage)
 //   u_caustic_box          (origin x, y tiles, cells per tile / image w, / h)
-//   u_floor_bend           0 = legacy (refract_strength, map UV), 1 = snell
-//                          (the caustic's own map; the reassessment's
-//                          PROTOTYPE)
+//   u_caustic_lim          the image's written rect (w, h) in texture units;
+//                          (0, 0) = no image this frame (no caustic)
+//   u_lamps[32]            per lamp i (the nearest LAMP_GLINT_MAX mounted
+//                          lamps): [2i] = (x m, y m, share intensity, cos
+//                          half-spread), [2i+1] = (beam dir x, y, 0, 0)
+//   u_lamp                 (lamp_glint, lamp_height_m, lamp_radius_m, count)
 //   u_foam_on              1 once the foam image exists (W2)
 //   u_foam_a               (small bubble period m, large period m,
 //                           foam_cover, foam_shadow)
@@ -150,7 +161,6 @@ uniform sampler2D u_height;
 uniform float u_roughness_base;
 uniform float u_roughness_agitation;
 uniform float u_fog_density;
-uniform float u_refract_strength;
 uniform float u_r0;
 uniform vec3  u_water_color;
 uniform float u_light_z;
@@ -186,17 +196,15 @@ uniform float u_glint_strength;
 uniform float u_alpha_scale;
 uniform float u_alpha_min;
 uniform float u_alpha_max;
-// --- W4: the caustic (strength, max, the refraction law's 1 - 1/n, 0) ------
+// --- W4: the caustic (strength, 0, the refraction law's 1 - 1/n, 0) and the
+// scatter's light image, its placement and its written rect ----------------
 uniform vec4 u_caustic;
-// --- PROTOTYPE (#97 reassessment): the scatter's light image + floor bend ---
 uniform sampler2D u_caustic_img;
 uniform vec4 u_caustic_box;
-uniform int u_floor_bend;
-// --- PROTOTYPE (#97 reassessment, item 3): the lamps' own mirror glints ----
-// (x m, y m, intensity, 0) per lamp (the nearest LAMP_GLINT_MAX omni lamps),
-// u_lamp = (lamp_glint, lamp_height_m, lamp_radius_m, count); the twin is
-// renderer/water_surface.py::lamp_glint.
-uniform vec4 u_lamps[16];
+uniform vec2 u_caustic_lim;
+// --- the lamps' own mirror glints (water_surface.lamp_glint) -------------
+const int LAMP_GLINT_MAX = 16;
+uniform vec4 u_lamps[32];
 uniform vec4 u_lamp;
 // --- Phase 2 (mood pass) uniforms ------------------------------------------
 // Chromatic aberration (subtle polish): the floor refraction r/g/b are sampled
@@ -285,11 +293,9 @@ float swellDirection(vec2 v) {
 }
 
 // ONE wave set's sum (water_surface.py::wave_sum): layer L's waves read at
-// q (metres, in the set's own frame), Finch's sharpness K: the slope, and
-// with curv the exact Hessian (hxx, hxy, hyy) in 1/m, in that frame.
-vec2 waveSum(int L, vec2 q, float K, bool curv, out vec3 hess) {
+// q (metres, in the set's own frame), Finch's sharpness K: the slope.
+vec2 waveSum(int L, vec2 q, float K) {
     vec2 sl = vec2(0.0);
-    vec3 hs = vec3(0.0);
     bool plain = K - 1.0 < 1e-6;
     int n = int(u_wave_n[L]);
     for (int i = 0; i < n; ++i) {
@@ -301,12 +307,7 @@ vec2 waveSum(int L, vec2 q, float K, bool curv, out vec3 hess) {
         float upk = plain ? 1.0 : pow(max(u, 0.0), K - 1.0);
         float aKu = w.w * K * upk;
         sl += (aKu * c_) * w.xy;
-        if (curv) {
-            float g2 = aKu * (2.0 * (K - 1.0) * (1.0 - u) - s_);
-            hs += g2 * vec3(w.x * w.x, w.x * w.y, w.y * w.y);
-        }
     }
-    hess = hs;
     return sl;
 }
 
@@ -315,9 +316,8 @@ vec2 waveSum(int L, vec2 q, float K, bool curv, out vec3 hess) {
 // at each of its three taps every layer's set read in its own frame (turned
 // and shifted by the layer's own hashes), each layer's taps blended by
 // Mikkelsen's (1 - c + c |s|) w^7 -- a tap under HEX_SKIP of the largest
-// w^7 is not evaluated. The slopes in sl[L], the Hessians in hs[L].
-void hexWaves(vec2 p, float K, bool curv, bvec2 on, out vec2 sl[2],
-              out vec3 hs[2]) {
+// w^7 is not evaluated. The slopes in sl[L].
+void hexWaves(vec2 p, float K, bvec2 on, out vec2 sl[2]) {
     float cell = u_wave.x;
     vec2 sts = p / cell;                  // st x HEX_SCALE
     vec2 sk = vec2(sts.x - 0.57735027 * sts.y, 1.15470054 * sts.y);
@@ -334,7 +334,6 @@ void hexWaves(vec2 p, float K, bool curv, bvec2 on, out vec2 sl[2],
     ivec2 verts[3] = ivec2[3](bi + ivec2(si, si), bi + ivec2(si, 1 - si),
                               bi + ivec2(1 - si, si));
     vec2 acc[2] = vec2[2](vec2(0.0), vec2(0.0));
-    vec3 hacc[2] = vec3[2](vec3(0.0), vec3(0.0));
     float wsum[2] = float[2](0.0, 0.0);
     for (int i = 0; i < 3; ++i) {
         if (w7[i] < HEX_SKIP * wmax) continue;
@@ -353,26 +352,18 @@ void hexWaves(vec2 p, float K, bool curv, bvec2 on, out vec2 sl[2],
                    * cell;
             float c = cos(th);
             float sn = sin(th);
-            // the set's own frame: R^T (p - c) + o; back: R s, R H R^T
+            // the set's own frame: R^T (p - c) + o; back: R s
             vec2 q = vec2(c * d.x + sn * d.y, -sn * d.x + c * d.y) + o;
-            vec3 h;
-            vec2 g = waveSum(L, q, K, curv, h);
+            vec2 g = waveSum(L, q, K);
             float wi = (1.0 - HEX_FALLOFF_CONTRAST
                         + HEX_FALLOFF_CONTRAST * length(g)) * w7[i];
             acc[L] += wi * vec2(c * g.x - sn * g.y, sn * g.x + c * g.y);
-            if (curv) {
-                float cc = c * c, cs = c * sn, ss = sn * sn;
-                hacc[L] += wi * vec3(cc * h.x - 2.0 * cs * h.y + ss * h.z,
-                                     cs * h.x + (cc - ss) * h.y - cs * h.z,
-                                     ss * h.x + 2.0 * cs * h.y + cc * h.z);
-            }
             wsum[L] += wi;
         }
     }
     for (int L = 0; L < 2; ++L) {
         float inv = wsum[L] > 0.0 ? 1.0 / wsum[L] : 0.0;
         sl[L] = acc[L] * inv;
-        hs[L] = hacc[L] * inv;
     }
 }
 
@@ -399,14 +390,12 @@ FlowLayers flowLayers(vec2 world_uv, float tileDepth) {
 }
 
 // THE fine surface (water_surface.py::detail_surface): its slope (y south)
-// in .xy and its RMS strength sqrt(k_ripples^2 + k_swell^2) in .z; with
-// curv (W4) its exact Hessian in 1/m in hess. Each layer is read at the two
-// flow layers' advected points and cross-faded, or once where both slides
-// are 0 (still water).
-vec3 detailSurface(FlowLayers L, float agit, bool curv, out vec3 hess) {
+// in .xy and its RMS strength sqrt(k_ripples^2 + k_swell^2) in .z. Each
+// layer is read at the two flow layers' advected points and cross-faded, or
+// once where both slides are 0 (still water).
+vec3 detailSurface(FlowLayers L, float agit) {
     float sat = clamp(max(length(L.v) / u_flow_lim.w,
                           agit / u_agit_ref), 0.0, 1.0);
-    hess = vec3(0.0);
     bvec2 on = bvec2(u_detail.x > 0.0 || u_detail.y > 0.0,
                      u_swell.x > 0.0 || u_swell.y > 0.0);
     if (!any(on)) return vec3(0.0);
@@ -416,13 +405,11 @@ vec3 detailSurface(FlowLayers L, float agit, bool curv, out vec3 hess) {
     vec2 d0 = L.d0 * fs;
     vec2 d1 = L.d1 * fs;
     vec2 s0[2], s1[2];
-    vec3 h0[2], h1[2];
-    hexWaves(L.p_m - d0, K, curv, on, s0, h0);
+    hexWaves(L.p_m - d0, K, on, s0);
     if (!all(equal(d0, d1))) {
-        hexWaves(L.p_m - d1, K, curv, on, s1, h1);
+        hexWaves(L.p_m - d1, K, on, s1);
         for (int j = 0; j < 2; ++j) {
             s0[j] = mix(s1[j], s0[j], L.w0);
-            h0[j] = mix(h1[j], h0[j], L.w0);
         }
     }
     vec2 slope = vec2(0.0);
@@ -432,21 +419,32 @@ vec3 detailSurface(FlowLayers L, float agit, bool curv, out vec3 hess) {
         vec2 ks = j == 0 ? u_detail.xy : u_swell.xy;
         float k = (ks.x + (ks.y - ks.x) * sat) * u_detail.z;
         slope += s0[j] * k;
-        hess += h0[j] * k;
         k2 += k * k;
     }
     return vec3(slope, sqrt(k2));
 }
 
-// --- the caustic (W4; water_surface.py::caustic_det / caustic_gain) --------
-// det J of x -> x + a grad h, a = depth (1 - 1/n): exact for J = I + a H.
-float causticDet(vec3 H, float depth) {
-    float a = depth * u_caustic.z;
-    return 1.0 + a * (H.x + H.z) + a * a * (H.x * H.z - H.y * H.y);
+// The simulated tile ripple's share of the surface slope
+// (water_surface.py::ripple_slope): u_water's R one tile either side,
+// bilinear, x ripple_scale / 2. N ~ normalize(-dh/dx, -dh/dy, 1) of this
+// plus the fine surface; the floor bend and the caustic read the same sum.
+vec2 rippleSlope(vec2 uv) {
+    vec2 tx = vec2(u_texel.x, 0.0);
+    vec2 ty = vec2(0.0, u_texel.y);
+    return vec2(texture(u_water, uv + tx).r - texture(u_water, uv - tx).r,
+                texture(u_water, uv + ty).r - texture(u_water, uv - ty).r)
+         * (0.5 * u_ripple_scale);
 }
-// (min(1/|det|, caustic_max) - 1) x strength: signed, 0 on a flat surface.
-float causticGain(float det) {
-    return (1.0 / max(abs(det), 1.0 / u_caustic.y) - 1.0) * u_caustic.x;
+
+// The scatter's light E at a floor point (world UV): the light image
+// (bilinear, held inside its written rect), incident light 1; 1 with no
+// image (the caustic off or nothing drawn this frame).
+float causticLight(vec2 uv) {
+    if (u_caustic_lim.x <= 0.0) return 1.0;
+    vec2 half_t = 0.5 / vec2(textureSize(u_caustic_img, 0));
+    vec2 uvc = (uv / u_texel - u_caustic_box.xy) * u_caustic_box.zw;
+    uvc = clamp(uvc, half_t, u_caustic_lim - half_t);
+    return texture(u_caustic_img, uvc).r;
 }
 
 // --- the foam's draw (W2; water_foam.py::draw_cover) ------------------------
@@ -476,11 +474,6 @@ float foamCover(FlowLayers L, float amount) {
     float c0 = lace(bubbleAt(L.p_m - L.d0 - drift), t);
     float c1 = lace(bubbleAt(L.p_m - L.d1 - drift), t);
     return mix(f, mix(c1, c0, L.w0), u_detail.z);
-}
-
-// The ripple height (R) of the water texture at a world UV.
-float surfaceHeight(vec2 uv) {
-    return texture(u_water, uv).r;
 }
 
 void main() {
@@ -537,21 +530,11 @@ void main() {
     vec4 wtex = texture(u_water, world_uv);
     float energy = abs(wtex.r) + abs(wtex.g);
 
-    // W1: the fine surface that flows (the twin's detail_slope); W4: its
-    // curvature, read only when the caustic is on (or drawn).
+    // W1: the fine surface that flows (the twin's detail_surface).
     FlowLayers flayers = flowLayers(world_uv, tileDepth);
-    vec3 hess;
-    bool scatter = u_caustic.w > 0.5;
-    bool wantCurv = (u_caustic.x > 0.0 && !scatter) || u_debug_view == 3;
-    vec3 detail = detailSurface(flayers, wtex.a, wantCurv, hess);
+    vec3 detail = detailSurface(flayers, wtex.a);
     if (u_debug_view == 1) {
         finalColor = vec4(detail.xy, detail.z, 1.0);
-        return;
-    }
-    // the caustic's gain here (W4): the fine surface's refraction map
-    float cGain = wantCurv ? causticGain(causticDet(hess, depthPos)) : 0.0;
-    if (u_debug_view == 3 && !scatter) {
-        finalColor = vec4(hess, cGain);
         return;
     }
     // W2: the foam here (its amount; its drawn cover).
@@ -564,19 +547,12 @@ void main() {
 
     // --- A. perturbed surface normal -------------------------------------
     // Height-field normal from neighbour taps of the simulated ripple (the
-    // tile-scale waves) plus the fine surface's slope (W1).
+    // tile-scale waves, rippleSlope) plus the fine surface's slope (W1).
     // N ≈ normalize(-∂h/∂x, -∂h/∂y, 1) (height-field convention, §3).
     // u_ripple_scale converts metres-of-height to a slope gain that reads on
     // screen (the ripples are millimetric vs a 1-unit UV).
-    vec2 tx = vec2(u_texel.x, 0.0);
-    vec2 ty = vec2(0.0, u_texel.y);
-    float hL = surfaceHeight(world_uv - tx);
-    float hR = surfaceHeight(world_uv + tx);
-    float hD = surfaceHeight(world_uv - ty);
-    float hU = surfaceHeight(world_uv + ty);
-    float dhdx = (hR - hL) * 0.5 * u_ripple_scale + detail.x;
-    float dhdy = (hU - hD) * 0.5 * u_ripple_scale + detail.y;
-    vec3 N = normalize(vec3(-dhdx, -dhdy, 1.0));
+    vec2 grad = rippleSlope(world_uv) + detail.xy;
+    vec3 N = normalize(vec3(-grad, 1.0));
 
     // --- D. view direction — top-down constant ---------------------------
     vec3 V = vec3(0.0, 0.0, 1.0);
@@ -604,20 +580,16 @@ void main() {
     vec3 L = normalize(vec3(light_dir_unit, u_light_z));
 
     // --- REFRACTION branch (head-on; dominates top-down) -----------------
-    // Warp the floor sample by the surface tilt, scaled by depth so the
-    // shoreline (depth->0) doesn't swim. Re-light the UNLIT diffuse in-shader
-    // with the reused light buffer at the refracted UV (§4-F) — NEVER sample
-    // the world RT this pass draws into (read-while-write feedback).
-    vec2 off = N.xy * u_refract_strength * clamp(depthPos, 0.0, 1.0);
-    // PROTOTYPE (#97 reassessment): the floor read where the caustic's own
-    // refraction map sends the (vertical) view ray -- depth (1 - 1/n) grad h,
-    // metres (the twin's floor_offset_snell) -- in world UV (offW) and art
-    // UV (off). Legacy: one offset for both, as it always was.
-    vec2 offW = off;
-    if (u_floor_bend == 1) {
-        offW = vec2(dhdx, dhdy) * (depthPos * u_caustic.z) / u_grid_m;
-        off = offW * u_art_uv_rect.zw;
-    }
+    // THE FLOOR BEND (Snell; the twin's floor_offset): the floor is read
+    // where the refraction map sends the vertical view ray, depth (1 - 1/n)
+    // grad h metres along the slope -- 0 at the shoreline (depth -> 0) --
+    // in world UV (offW: the light, the caustic, the foam) and art UV (off:
+    // the diffuse). Re-light the UNLIT diffuse in-shader with the reused
+    // light buffer at the bent UV (§4-F) — NEVER sample the world RT this
+    // pass draws into (read-while-write feedback).
+    vec2 bend_m = grad * (depthPos * u_caustic.z);
+    vec2 offW = bend_m / u_grid_m;
+    vec2 off = offW * u_art_uv_rect.zw;
     // --- chromatic aberration (subtle polish, phase 2) ------------------
     // Sample the floor diffuse r/g/b at slightly different refraction offsets
     // (the offset scaled by 1 ± u_ca_amount per channel) — a faint prismatic
@@ -640,22 +612,18 @@ void main() {
     vec3 floorL = texture(u_light_a, world_uv + offW).rgb * u_light_gain
                 * smoke_sh;
     floorL *= lightCurveGain(floorL);
-    // PROTOTYPE (#97 reassessment): the SCATTER form -- the light image
-    // (shaders/water_scatter.vs, the twin's scatter_light) at the floor point
-    // this pixel shows; the gain the gather's with E for 1/|det|.
-    if (scatter && u_caustic.x > 0.0) {
-        vec2 uvc = ((world_uv + offW) / u_texel - u_caustic_box.xy)
-                 * u_caustic_box.zw;
-        vec2 ec = texture(u_caustic_img, uvc).rg;
-        cGain = (min(ec.r, u_caustic.y) - 1.0) * u_caustic.x;
-        if (u_debug_view == 3) {
-            finalColor = vec4(ec, 0.0, cGain);
-            return;
-        }
+    // W4: THE CAUSTIC -- the scatter's light E (shaders/water_scatter.vs,
+    // the twin's scatter_light) at the floor point this pixel shows, its
+    // gain (E - 1) x caustic_strength (the twin's caustic_gain) riding the
+    // source light the floor takes (caustic_term = floorL x cGain): spread
+    // light darkens it, focused light brightens it, no light none; the
+    // ambient is not refracted light.
+    float cE = causticLight(world_uv + offW);
+    float cGain = (cE - 1.0) * u_caustic.x;
+    if (u_debug_view == 3) {
+        finalColor = vec4(bend_m, cE, cGain);
+        return;
     }
-    // W4: the CAUSTIC rides the source light the floor takes (the twin's
-    // caustic_term = floorL x cGain): spread light darkens it, focused light
-    // brightens it, no light none; the ambient is not refracted light.
     vec3 floorC = lightCurveAlbedo(floorDiffuse, floorL)
                 * (u_ambient + floorL * (1.0 + cGain));
     // W2: the foam's soft shadow on the floor beneath it (its amount where
@@ -692,20 +660,25 @@ void main() {
     float ggx = a2 / max(3.14159265 * d * d, 1e-6);
     float NdotL = max(dot(N, L), 0.0);
     vec3 glint = ggx * NdotL * lightRGB * u_glint_strength;
-    // PROTOTYPE (#97 reassessment): each omni lamp's TRUE direction, the lamp
-    // a sphere (Karis 2013: alpha' = alpha + r / 2d, renormalised), weighted
-    // by its unoccluded share of the light here, x the field's light here.
+    // THE LAMPS' OWN GLINTS (water_surface.lamp_glint): each mounted lamp's
+    // TRUE direction, the lamp a sphere (Karis 2013: alpha' = alpha + r / 2d,
+    // renormalised), weighted by its unoccluded share of the light here (a
+    // beam's only inside its wedge), x the field's light here.
     if (u_lamp.x > 0.0 && u_lamp.w > 0.5) {
         vec2 pm = world_uv * u_grid_m;
         float gsum = 0.0;
         float wsum = 0.0;
         int nl = int(u_lamp.w);
-        for (int i = 0; i < 16; ++i) {
+        for (int i = 0; i < LAMP_GLINT_MAX; ++i) {
             if (i >= nl) break;
-            vec3 dv = vec3(u_lamps[i].xy - pm, u_lamp.y);
+            vec4 lp = u_lamps[2 * i];
+            vec2 bv = pm - lp.xy;                 // the bearing lamp -> here
+            float rh = length(bv);
+            bool lit = rh < 1e-6 || dot(bv, u_lamps[2 * i + 1].xy) >= lp.w * rh;
+            vec3 dv = vec3(-bv, u_lamp.y);
             float dist = length(dv);
             vec3 Li = dv / dist;
-            float wi = u_lamps[i].z * Li.z / (dist * dist);
+            float wi = lit ? lp.z * Li.z / (dist * dist) : 0.0;
             vec3 Hi = normalize(Li + V);
             float ap = min(a + u_lamp.z / (2.0 * dist), 1.0);
             float nh = max(dot(N, Hi), 0.0);

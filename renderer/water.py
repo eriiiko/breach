@@ -43,12 +43,28 @@ THE CLOCK is the SIM clock ``(tick + alpha) / tps`` through the pass's own
 never wall time (critique B2). Its fixed step is the foam's (W2,
 ``foam_step_s``): each frame owes the foam the steps due on that clock.
 
-W4 (#97): SHARP CAUSTICS. The floor's source light is multiplied by the
-fine surface's focusing, ``min(1/|det J|, caustic_max)`` of the refraction
-map (Wallace's area method as an analytic Jacobian; the twin's
-``water_surface.caustic_term``), from the exact Hessian of the same sines
-(W1b; W4 read a curvature bake). It replaced the Laplacian
-caustic, its procedural detail and the last ``u_time``.
+W4 (#97; landed form of 2026-11-21, Erik: "I'd like scatter, Snell, lamp
+glint"): THE REFRACTION MAP ``x -> x + depth (1 - 1/n) grad h`` of the whole
+surface slope serves the FLOOR BEND (the floor read where the map sends the
+view ray: Snell, ``water_surface.floor_offset``) and THE CAUSTIC in
+Wallace's SCATTER form -- :meth:`WaterPass.scatter_caustic`, before the
+scene RT: a SLOPE pass (``shaders/water.fs`` with its main swapped for
+``shaders/water_scatter_slope.glsl``: THE surface, sampled on a grid of
+``SCATTER_CELLS_PER_TILE`` per tile over the drawn water) and the SCATTER
+(``shaders/water_scatter.vs/.fs``: the grid moved by the map and rasterised
+additively into a light image, its mean the incident light), both in ONE
+``core.PingPong`` (the slope image, then the light image), allocated on the
+first frame that draws a caustic (never on a dry map); the draw reads the
+light image at the bent floor point (the twin's ``scatter_light`` /
+``caustic_term``). It replaced the gather form (``1/|det J|`` from the
+surface's Hessian, capped at ``caustic_max``) and ``refract_strength``.
+
+THE LAMPS' OWN GLINTS: :meth:`WaterPass.set_lamp_specs` takes the frame's
+lights as THE one assembly's ``LightSpec`` lists (``renderer/frame_lights.py``;
+main.py and ``tools/lighting_demo.py`` hand it the lists their cone rows are
+built from); the mounted lamps' rows (``water_surface.lamp_table``, cached per
+list) nearest the drawn water go to the shader, which adds each one's glint
+from its true position (``water_surface.lamp_glint``).
 
 W2 (#97): FOAM WITH A LIFE. A foam amount per cell (``foam_cells_per_tile``
 per tile) in its own :class:`core.PingPong` image, allocated LAZILY on the
@@ -60,19 +76,6 @@ goes back (a replay seek) and when the map dries out; a level load builds a
 new pass. Its law is ``renderer/water_foam.py`` (the twin). The draw reads it
 bilinear and thresholds a bubble raft (``noise_bake.bake_foam_rgba``) into
 lace. Picture state only: never synced, never read by the simulation.
-
-PROTOTYPES (#97 reassessment, branch 97-reassess, NOT merged; Erik
-decides by eye): ``caustic_form = "scatter"`` computes the caustic in
-Wallace's own form -- :meth:`WaterPass.scatter_caustic`, before the scene
-RT: a SLOPE pass (``shaders/water.fs`` with its main swapped for
-``shaders/water_scatter_slope.glsl``: THE fine surface, sampled on a grid of
-``SCATTER_CELLS_PER_TILE`` per tile over the view's water) and the SCATTER
-(``shaders/water_scatter.vs/.fs``: the grid moved by the refraction map and
-rasterised additively into a light image), both in ONE ``core.PingPong``
-(the slope image, then the light image); the draw reads the light image in
-place of the per-pixel Jacobian. ``floor_bend = "snell"`` reads the floor
-where that map sends the view ray. Defaults ("gather", "legacy") render
-as before.
 
 Every dial is ``[graphics.water]``, read every frame through
 ``water_surface.water_settings`` (the one refusing door) and pushed to the
@@ -92,25 +95,25 @@ import pyray as rl
 from . import core
 from . import water_foam
 from .lighting import art_src_and_uv_rect
-from .water_surface import (CAUSTIC_K, LAYERS, MAX_WAVES,
+from .water_surface import (CAUSTIC_K, LAMP_GLINT_MAX, LAYERS, MAX_WAVES,
                             SCATTER_CELLS_PER_TILE, SCATTER_OFFSET,
                             SCATTER_RATIO_MAX, FlowFrame,
-                            WaterSettings, flow_frame, pack_flow,
-                            relative_agitation, swell_dir0, wave_uniforms,
-                            wet_box)
+                            WaterSettings, flow_frame, lamp_select,
+                            lamp_table, pack_flow, relative_agitation,
+                            swell_dir0, wave_uniforms, wet_box)
 
 
 SHADERS_DIR = Path(__file__).resolve().parent.parent / "shaders"
 
 # Sampler units beyond raylib's batch (which binds texture0 + 4): the smoke's
-# cast product, the flow texture, the foam image, the bubble bake
-# (render-effects rule: samplers from unit 5 up). The foam step's own
-# direct-GL block binds 8..10 (the water, the flow, the foam front).
+# cast product, the flow texture, the caustic's light image, the foam image,
+# the bubble bake (render-effects rule: samplers from unit 5 up). The foam
+# step's own direct-GL block binds 8..10 (the water, the flow, the foam
+# front); the caustic's slope pass 8..10 (the water, the flow, the height),
+# its scatter 8 (the slope image).
 _UNIT_SMOKE, _UNIT_FLOW = 5, 6
 _UNIT_FOAM, _UNIT_BUBBLES = 8, 9
 _STEP_UNITS = {"u_water": 8, "u_flow": 9, "u_foam": 10}
-# PROTOTYPE (#97 reassessment): the scatter's light image in the draw, and
-# the units of its two direct-GL passes
 _UNIT_CAUSTIC = 7
 _SLOPE_UNITS = {"u_water": 8, "u_flow": 9, "u_height": 10}
 _GL_CULL_FACE = 0x0B44
@@ -145,7 +148,7 @@ def _bubble_texture() -> rl.Texture:
 
 
 def load_scatter_slope_fs() -> str:
-    """PROTOTYPE (#97 reassessment): the scatter's SLOPE pass program --
+    """The scatter caustic's SLOPE pass program --
     :func:`load_water_fs` with its ``main`` renamed (dead code) and
     ``shaders/water_scatter_slope.glsl``'s main appended, so the slope it
     writes is THE fine surface the draw shows. Pure text, no GL."""
@@ -253,18 +256,22 @@ class WaterPass:
         self._splat_dabs = np.zeros((0, water_foam.SPLAT_COLS))
         self.splats_last_frame = 0
 
-        # PROTOTYPE (#97 reassessment): the scatter caustic -- its PingPong
-        # (allocated on the first scatter frame, sized to the view's water),
-        # its two programs, the image's placement for the draw, and every
-        # uniform the draw program was given (replayed into the slope
+        # W4: the scatter caustic -- its PingPong (allocated on the first
+        # frame that draws a caustic, grown to the drawn water), its two
+        # programs, the image's placement and written rect for the draw, and
+        # every uniform the draw program was given (replayed into the slope
         # program, which reads the same surface uniforms)
         self.caustic: Optional[core.PingPong] = None
         self.caustic_on = False
         self.caustic_rect: Optional[tuple] = None
         self._caustic_box = (0.0, 0.0, 1.0, 1.0)
-        # PROTOTYPE (#97 reassessment, item 3): the frame's lamp specs
-        self._lamp_specs: tuple = ()
-        self._lamp_view_m = None
+        self._caustic_lim = (0.0, 0.0)
+        # the lamps' glints: the frame's LightSpec lists (set_lamp_specs),
+        # each one's lamp_table cached by the list's identity, and the rows
+        # last sent
+        self._lamp_groups: tuple = ()
+        self._lamp_cache: dict = {}
+        self._lamp_rows = np.zeros((0, 6))
         self._lamp_sent = None
         self._slope_shader = None
         self._scatter_shader = None
@@ -369,24 +376,20 @@ class WaterPass:
             return
         self.settings = s
         for name in ("roughness_base", "roughness_agitation", "fog_density",
-                     "refract_strength", "r0", "ripple_scale",
+                     "r0", "ripple_scale",
                      "glint_strength", "alpha_scale", "alpha_min",
                      "alpha_max", "ca_amount",
                      "height_scale", "height_edge", "height_floor"):
             uname = {"roughness_base": "u_roughness_base",
                      "roughness_agitation": "u_roughness_agitation",
                      "fog_density": "u_fog_density",
-                     "refract_strength": "u_refract_strength",
                      "glint_strength": "u_glint_strength",
                      "ca_amount": "u_ca_amount"}.get(name, "u_" + name)
             self._set_f(uname, getattr(s, name))
         self._set_vec("u_water_color", s.water_color)
-        # W4: the caustic (strength, max, the refraction law's 1 - 1/n)
-        self._set_vec("u_caustic", (s.caustic_strength, s.caustic_max,
-                                    CAUSTIC_K,
-                                    1.0 if s.caustic_form == "scatter"
-                                    else 0.0))
-        self._set_i("u_floor_bend", 1 if s.floor_bend == "snell" else 0)
+        # W4: the caustic's strength and the refraction law's 1 - 1/n (the
+        # floor bend's and the caustic's one map)
+        self._set_vec("u_caustic", (s.caustic_strength, 0.0, CAUSTIC_K, 0.0))
         self._push_lamps()
         self._set_f("u_agit_ref", s.agitation_ref)
         # W1b: the swell (strengths, spread), the lattice and the sharpness,
@@ -434,7 +437,7 @@ class WaterPass:
         self._set_vec("u_flow_lim", (s.flow_max_offset_m, s.flow_edge_depth_m,
                                      s.flow_phase_noise_m, s.flow_speed_ref))
 
-    # ---- PROTOTYPE (#97 reassessment): the scatter caustic --------------
+    # ---- W4: the lamps' glints and the scatter caustic --------------------
 
     def _pass_set(self, gp, prog, name: str, *v) -> None:
         """A uniform of a bound direct-GL program (location cached)."""
@@ -454,20 +457,40 @@ class WaterPass:
         else:
             gl.Uniform4fv(loc, 1, gl.floats(v))
 
-    def set_lamp_specs(self, specs) -> None:
-        """PROTOTYPE (#97 reassessment, item 3): the frame's lights as THE
-        assembly's ``LightSpec``s (``frame_lights.frame_light_specs``), for
-        the lamps' own mirror glints (``lamp_glint``; read only when > 0)."""
-        self._lamp_specs = tuple(specs)
+    def set_lamp_specs(self, *groups) -> None:
+        """The frame's lights as THE one assembly's ``LightSpec`` lists
+        (``frame_lights.frame_light_specs(...).specs``, or main.py's static
+        list and its per-tick list: the lists the sweep's cone rows are built
+        from), for the lamps' own mirror glints. Each list's mounted lamps
+        (``water_surface.lamp_table``) are cached by the list's identity and
+        length, so a static list handed every tick is read once."""
+        cache = {}
+        tables = []
+        for g in groups:
+            key = (id(g), len(g))
+            t = self._lamp_cache.get(key)
+            if t is None or t[0] is not g:
+                t = (g, lamp_table(g, self.tile_size_m))
+            cache[key] = t
+            tables.append(t[1])
+        self._lamp_cache = cache
+        self._lamp_groups = groups
+        self._lamp_rows = (np.concatenate(tables) if tables
+                           else np.zeros((0, 6)))
 
-    def _push_lamps(self) -> None:
+    def _push_lamps(self, rect: Optional[tuple] = None) -> None:
+        """The lamps' uniforms: the ``LAMP_GLINT_MAX`` mounted lamps nearest
+        the drawn rect (tiles; ``water_surface.lamp_select``), re-sent only
+        when they or the dials changed."""
         s = self.settings
         if s is None:
             return
-        from .water_surface import LAMP_GLINT_MAX, lamp_rows
-        rows = (lamp_rows(self._lamp_specs, self._lamp_view_m,
-                          self.tile_size_m) if s.lamp_glint > 0.0
-                else np.zeros((0, 3)))
+        rows = np.zeros((0, 6))
+        if s.lamp_glint > 0.0 and self._lamp_rows.shape[0]:
+            ts = self.tile_size_m
+            rect_m = (None if rect is None
+                      else tuple(float(v) * ts for v in rect))
+            rows = lamp_select(self._lamp_rows, rect_m)
         key = (s.lamp_glint, s.lamp_height_m, s.lamp_radius_m,
                rows.tobytes())
         if key == self._lamp_sent:
@@ -475,13 +498,16 @@ class WaterPass:
         self._lamp_sent = key
         self._set_vec("u_lamp", (s.lamp_glint, s.lamp_height_m,
                                  s.lamp_radius_m, float(rows.shape[0])))
-        buf = np.zeros((LAMP_GLINT_MAX, 4), np.float32)
-        buf[:rows.shape[0], :3] = rows
+        buf = np.zeros((2 * LAMP_GLINT_MAX, 4), np.float32)
+        n = rows.shape[0]
+        buf[0:2 * n:2, :] = rows[:, 0:4]
+        buf[1:2 * n:2, 0:2] = rows[:, 4:6]
         loc = self._loc("u_lamps")
         if loc >= 0:
             rl.set_shader_value_v(
                 self.shader, loc, rl.ffi.cast("void *", rl.ffi.from_buffer(buf)),
-                rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4, LAMP_GLINT_MAX)
+                rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4,
+                2 * LAMP_GLINT_MAX)
 
     def _sync_slope_uniforms(self) -> None:
         """Replay into the slope program every draw-program uniform that
@@ -518,12 +544,12 @@ class WaterPass:
 
     def scatter_caustic(self, view_tiles: Optional[Sequence[float]] = None
                         ) -> bool:
-        """PROTOTYPE (#97 reassessment): the caustic in SCATTER form for
-        this frame, when ``caustic_form = "scatter"`` (else nothing): over
-        the draw's rect (the wet box x the view) dilated one tile, at
+        """THE caustic for this frame, in Wallace's SCATTER form (nothing
+        when ``caustic_strength`` is 0 or nothing is drawn): over the draw's
+        rect (the wet box x the view) dilated one tile, at
         ``SCATTER_CELLS_PER_TILE`` cells per tile, (1) the SLOPE pass writes
-        the fine surface's slope and depth per sample into the PingPong's
-        back, (2) the other buffer is cleared over the rect, (3) the SCATTER
+        the surface's slope (the tile ripple's + the fine surface's, the
+        normal's own) and depth per sample into the PingPong's back, (2) the other buffer is cleared over the rect, (3) the SCATTER
         draws the grid's triangles moved by the refraction map into it,
         additively (blend ONE, ONE; no culling: a folded triangle is turned
         over, not gone). The light image is then the PingPong's front, read
@@ -531,8 +557,7 @@ class WaterPass:
         :meth:`simulate`). Returns whether it ran."""
         s = self.settings
         self.caustic_on = False
-        if (s is None or s.caustic_form != "scatter"
-                or s.caustic_strength <= 0.0):
+        if s is None or s.caustic_strength <= 0.0:
             return False
         rect = self.draw_rect(view_tiles)
         if rect is None:
@@ -608,6 +633,7 @@ class WaterPass:
         rl.end_blend_mode()
         self._caustic_box = (float(x0), float(y0), R / float(pp.width),
                              R / float(pp.height))
+        self._caustic_lim = (cw / float(pp.width), ch / float(pp.height))
         self.caustic_rect = (x0, y0, x1, y1)
         self.caustic_on = True
         return True
@@ -897,17 +923,14 @@ class WaterPass:
         its uniforms; None = no shadow), ``light_curve`` the lighting pass's
         ``curve_uniforms`` (None = off), ``light_gain`` its exposure.
 
-        Samplers beyond raylib's four are bound on their own units (5, 6, 7)
+        Samplers beyond raylib's four are bound on their own units (5-9)
         through rlgl, inside BeginShaderMode (raylib gotcha: a
         SetShaderValueTexture before BeginShaderMode can target the wrong
         shader -- LightingPass.draw_lit_world)."""
         rect = self.draw_rect(view_tiles)
         if rect is None:
             return False
-        if view_tiles is not None:
-            ts = self.tile_size_m
-            self._lamp_view_m = tuple(float(v) * ts for v in view_tiles)
-        self._push_lamps()
+        self._push_lamps(rect)
         from .lit3d import set_light_curve_uniforms, set_smoke_shadow_uniforms
         cover = None
         if smoke_cast is not None:
@@ -961,7 +984,12 @@ class WaterPass:
         # W2: the foam image (none yet: the flow texture stands in and
         # u_foam_on = 0 never reads it) and the bubble bake
         self._set_i("u_foam_on", 1 if self.foam is not None else 0)
+        # W4: the caustic's light image, where it lies and what it covers
+        # ((0, 0): none this frame, the caustic reads E = 1)
         self._set_vec("u_caustic_box", self._caustic_box)
+        self._set_vec("u_caustic_lim", self._caustic_lim
+                      if (self.caustic is not None and self.caustic_on)
+                      else (0.0, 0.0))
         units = ((_UNIT_SMOKE, "u_smoke_cover", cover),
                  (_UNIT_CAUSTIC, "u_caustic_img",
                   self.caustic.front if (self.caustic is not None

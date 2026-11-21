@@ -1,14 +1,15 @@
-// water_scatter_slope.glsl -- PROTOTYPE (#97 reassessment, branch
-// 97-reassess): the SLOPE PASS of the scatter caustic. Appended to
-// shaders/water.fs with that file's main renamed
-// (renderer/water.py::load_scatter_slope_fs), so the fine surface it writes
-// is THE one the water draws (detailSurface, its flow map, its waves) --
-// never a copy of the wave law. A direct-GL pass (pass_quad.vs's rects,
-// the PingPong convention: GL row j = data row j, texels by gl_FragCoord).
-// Each texel of the light image is one surface sample, at (cell +
-// u_sgrid.w) cells from the image's origin (the twin's SCATTER_OFFSET), and
-// writes (dh/dx, dh/dy, the per-pixel depth m, 1): the input of
-// shaders/water_scatter.vs, which moves each sample by the refraction map.
+// water_scatter_slope.glsl -- THE SLOPE PASS of the scatter caustic (#97 W4,
+// landed 2026-11-21). Appended to shaders/water.fs with that file's main
+// renamed (renderer/water.py::load_scatter_slope_fs), so the slope it writes
+// is THE surface the water draws (rippleSlope + detailSurface: its flow map,
+// its waves) -- never a copy of the wave law. A direct-GL pass
+// (pass_quad.vs's rects, the PingPong convention: GL row j = data row j,
+// texels by gl_FragCoord). Each texel of the light image is one surface
+// sample, at (cell + u_sgrid.w) cells from the image's origin (the twin's
+// SCATTER_OFFSET), and writes (dh/dx, dh/dy, the per-pixel depth m, 1): the
+// input of shaders/water_scatter.vs, which moves each sample by the
+// refraction map (the twin: water_surface.py ripple_slope + detail_surface,
+// scatter_disp). A dry sample writes 0 (it does not move).
 
 uniform vec4 u_sgrid;   // (origin x, y in tiles, cells per tile, sample offset in cells)
 
@@ -27,7 +28,6 @@ void main() {
     float depthPos = max(tileDepth - relief_term * u_height_scale, 0.0);
     vec4 wtex = texture(u_water, world_uv);
     FlowLayers fl = flowLayers(world_uv, tileDepth);
-    vec3 hess;
-    vec3 detail = detailSurface(fl, wtex.a, false, hess);
-    finalColor = vec4(detail.xy, depthPos, 1.0);
+    vec3 detail = detailSurface(fl, wtex.a);
+    finalColor = vec4(rippleSlope(world_uv) + detail.xy, depthPos, 1.0);
 }

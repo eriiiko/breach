@@ -1,7 +1,9 @@
-"""Water W4 gate (pytest) -- the water pass's caustic GL checks (#97: the
-fine surface's Hessian and the caustic's gain equal the numpy twin per pixel;
-a flat surface and an unlit floor leave the picture bit-identical to the
-caustic off; under light the caustic darkens and brightens within its cap).
+"""Water W4 gate (pytest) -- the water pass's refraction-map and lamp-glint
+GL checks (#97, landed form of 2026-11-21: the scatter caustic's slope pass
+and light image equal the numpy twin; the Snell floor bend and the image's
+read per pixel; a flat surface and an unlit floor leave the picture
+bit-identical to the caustic off; a dry map runs no scatter; the lamps'
+glints equal the twin's, and a flashlight draws none).
 
 Runs ``tests/gl_water_caustic_check.py`` in an ISOLATED subprocess with a hidden
 raylib window (a GL context never enters the pytest process -- the

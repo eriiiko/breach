@@ -1,11 +1,13 @@
 """THE fine water surface (water look arc #97, patches W1 and W1b;
 docs/water_look_design_2026-11-19.md W1, W1b + the critique §9): the law's
 numpy TWIN, the ``[graphics.water]`` settings door and the per-tick
-packing. Pure numpy, pyray-free: ``shaders/water.fs`` mirrors
-:func:`detail_surface` and is GL-checked against it
-(``tests/gl_water_flow_check.py``, ``tests/gl_water_caustic_check.py``);
-the properties are asserted here (``tests/test_water_flow_detail.py``,
-``tests/test_water_caustic.py``).
+packing. Pure numpy, pyray-free: ``shaders/water.fs`` (and the scatter's
+``shaders/water_scatter*``) mirror :func:`detail_surface`,
+:func:`scatter_light`, :func:`floor_offset` and :func:`lamp_glint` and are
+GL-checked against them (``tests/gl_water_flow_check.py``,
+``tests/gl_water_caustic_check.py``); the properties are asserted here
+(``tests/test_water_flow_detail.py``, ``tests/test_water_caustic.py``,
+``tests/test_water_lamp_glint.py``).
 
 WHAT IT IS (W1b, 2026-11-20: Erik -- "those texture waves just don't look
 as good as sines do, sines in x and y morph differently all the time"). A
@@ -66,15 +68,34 @@ texture lost.
   * ZOOM FADE (critique M8): ``k`` fades to 0 below ``detail_zoom_zero``
     screen px per tile (``heat_shimmer.zoom_fade``, the one fade).
 
-THE CAUSTIC (W4). The Hessian of the same sum -- EXACT, the second
-derivatives of the same sines (each tap's ``a g'' k' k'^T``), blended with
-the slope's weights, cross-faded with ``w0``, x ``k_L``, summed over the
-layers -- gives the Jacobian of the refraction map ``x -> x + depth (1 -
-1/n) grad h``; the floor's source light is multiplied by ``min(1/|det J|,
-caustic_max)`` (signed: :func:`caustic_det`, :func:`caustic_gain`,
-:func:`caustic_term`). The weights' and the slide's own gradients (a tile or
-more in scale, the seams of ``w^7``) are dropped: the surface is a blend of
-honest wave sums, each differentiated exactly.
+THE REFRACTION MAP (#97 W4, landed form of 2026-11-21 -- Erik: "I'd like
+scatter, Snell, lamp glint"). Under the small-slope Snell law a vertical ray
+through the surface lands on the floor at ``x + depth (1 - 1/n) grad h``
+(``CAUSTIC_K = 1 - 1/1.333``), ``grad h`` the WHOLE surface slope the
+normal is built from (:func:`ripple_slope` of the simulated tile ripple +
+this fine surface). ONE map serves two terms:
+  * THE FLOOR BEND (:func:`floor_offset`): the floor a pixel shows is read
+    where the map sends the view ray -- by reciprocity, where that surface
+    point's light lands. It replaced ``refract_strength`` (a bend in map UV
+    with the opposite sign).
+  * THE CAUSTIC (:func:`scatter_light`, :func:`caustic_gain`,
+    :func:`caustic_term`): Wallace's SCATTER form -- a grid of surface
+    samples, each moved by the map onto the floor, each grid triangle
+    rasterised additively with the ratio of its area before and after, into
+    a light image ``E`` (incident light 1); the floor's source light is
+    multiplied by ``1 + (E - 1) x caustic_strength``. Every bit of light
+    lands somewhere, so over a period the mean of ``E`` is the incident
+    light; there is no per-cell cap (``SCATTER_RATIO_MAX`` only bounds one
+    degenerate triangle). It replaced W4's gather form (``1/|det J|`` of ONE
+    preimage per pixel, from the surface's Hessian, capped at
+    ``caustic_max``), which brightened past small slopes and darkened past
+    the first focus (W4 finding 1).
+
+THE LAMPS' OWN GLINTS (:func:`lamp_glint`). The light field gives every
+source one elevation (``light_z``), so still water never mirrors a lamp; the
+level's mounted lamps (THE one light assembly's ``LightSpec`` rows of kind
+lamp / spot / beacon, :func:`lamp_table`) add their GGX glint at their true
+position ``lamp_height_m`` up, the lamp a sphere, times the field's light.
 
 THE CLOCK. The SIM clock ``(tick + alpha) / tps`` through a
 ``fire_vfx.SimClock`` the pass owns (idle when paused, re-anchored when the
@@ -93,9 +114,17 @@ Credits (repo rule -- cite what a file implements):
     lattice and its weights, here over a wave set instead of a texture
     (reference: docs/papers/README_water_2026-11.md).
   - Evan Wallace, "WebGL Water" (2011, MIT; madebyevan.com/webgl-water) --
-    the caustic's area method (a patch of light's area before and after the
-    surface bends it), here as its analytic limit, the Jacobian determinant
-    (archived: docs/papers/wallace2011_webgl_water_renderer.js).
+    the caustic in scatter form: a surface grid moved by the refraction map
+    and rasterised additively with each triangle's area ratio (archived:
+    docs/papers/wallace2011_webgl_water_renderer.js).
+  - Snell's law of refraction, ``n1 sin t1 = n2 sin t2``, in its vector
+    form (e.g. E. Hecht, "Optics", 5th ed., Pearson 2017, sec. 4.4); at small
+    slopes a vertical ray is deflected by ``(1 - 1/n) grad h`` -- the floor
+    bend and the caustic's map.
+  - Brian Karis, "Real Shading in Unreal Engine 4", SIGGRAPH 2013 course
+    "Physically Based Shading in Theory and Practice" -- the sphere light's
+    widened GGX lobe, ``alpha' = alpha + r / (2 d)`` renormalised by
+    ``(alpha / alpha')^2`` (reference: docs/papers/README_water_2026-11.md).
 """
 from __future__ import annotations
 
@@ -162,7 +191,6 @@ class WaterSettings:
     roughness_base: float
     roughness_agitation: float
     fog_density: float
-    refract_strength: float
     r0: float
     ripple_scale: float
     water_color: Tuple[float, float, float]
@@ -171,14 +199,6 @@ class WaterSettings:
     alpha_min: float
     alpha_max: float
     caustic_strength: float
-    caustic_max: float
-    # #97 reassessment prototypes (branch 97-reassess, not merged): the
-    # caustic's FORM ("gather": the analytic Jacobian per pixel, W4;
-    # "scatter": Wallace's grid of light rasterised onto the floor) and the
-    # floor's BEND ("legacy": refract_strength in map UV; "snell": the floor
-    # read where the caustic's own refraction map sends the view ray)
-    caustic_form: str
-    floor_bend: str
     ca_amount: float
     height_scale: float
     height_edge: float
@@ -231,7 +251,7 @@ class WaterSettings:
     wake_gain: float
     splash_foam: float
     splash_radius_m: float
-    # PROTOTYPE (#97 reassessment): the lamps' own mirror glints (0 = off)
+    # the lamps' own mirror glints (#97, 2026-11-21: :func:`lamp_glint`)
     lamp_glint: float
     lamp_height_m: float
     lamp_radius_m: float
@@ -241,14 +261,9 @@ class WaterSettings:
 _INT_KEYS = ("debug_view", "foam_cells_per_tile", "wave_count",
              "swell_wave_count")
 _VEC_KEYS = {"water_color": 3, "foam_bubble_m": 2}
-# the string dials and the values each may take (the first is the default
-# the shipped look renders with)
-CAUSTIC_FORMS = ("gather", "scatter")
-FLOOR_BENDS = ("legacy", "snell")
-_STR_KEYS = {"caustic_form": CAUSTIC_FORMS, "floor_bend": FLOOR_BENDS}
 # 0 = the picture; 1 = (slope x, slope y, RMS strength, 1); 2 = (foam
-# amount, foam cover, 0, 1); 3 = (hxx, hxy, hyy, caustic gain) -- the
-# caustic (W4)
+# amount, foam cover, 0, 1); 3 = (floor bend x, y m, the scatter's light E
+# at the floor point, caustic gain) -- the refraction map's two terms
 DEBUG_VIEWS = (0, 1, 2, 3)
 FOAM_CELLS_MAX = 8          # foam cells per tile (per axis), the door's top
 FOAM_STEP_MAX_S = 0.1       # a foam step longer than this is refused
@@ -273,8 +288,6 @@ def water_settings(cfg) -> WaterSettings:
         v = getattr(sec, name)
         if name in _INT_KEYS:
             ok = isinstance(v, int) and not isinstance(v, bool)
-        elif name in _STR_KEYS:
-            ok = isinstance(v, str) and v in _STR_KEYS[name]
         elif name in _VEC_KEYS:
             ok = (isinstance(v, (list, tuple)) and len(v) == _VEC_KEYS[name]
                   and all(isinstance(c, (int, float))
@@ -333,10 +346,6 @@ def water_settings(cfg) -> WaterSettings:
                          f"{s.foam_shadow}")
     if s.caustic_strength < 0.0:
         raise ValueError("[graphics.water] caustic_strength must be >= 0")
-    if s.caustic_max <= 1.0:
-        raise ValueError(f"[graphics.water] caustic_max must be > 1 (the "
-                         f"most a focus multiplies the light): "
-                         f"{s.caustic_max}")
     if not 0.0 <= s.waterline_strength <= 1.0:
         raise ValueError(f"[graphics.water] waterline_strength must be in "
                          f"[0, 1]: {s.waterline_strength}")
@@ -733,20 +742,17 @@ def grid_flow_fn(flow_packed: np.ndarray, water_packed: np.ndarray,
     return fn
 
 
-def wave_sum(table: WaveTable, q: np.ndarray, k_sharp,
-             hessian: bool = True):
+def wave_sum(table: WaveTable, q: np.ndarray, k_sharp):
     """ONE wave set's sum, exact, at ``q`` (..., 2) metres in the set's own
     frame, with Finch's sharpness ``k_sharp`` (...,) -> ``(h, slope (...,
-    2), hess (..., 3) or None)`` in metres and 1/m. ``h`` is the analytic
-    height whose gradient and Hessian the other two ARE
-    (``tests/test_water_flow_detail.py`` holds them to finite
+    2))`` in metres. ``h`` is the analytic height whose gradient the slope
+    IS (``tests/test_water_flow_detail.py`` holds it to finite
     differences)."""
     q = np.asarray(q, np.float64)
     K = np.asarray(k_sharp, np.float64)
     plain = K - 1.0 < 1e-6
     h = np.zeros(q.shape[:-1])
     sl = np.zeros(q.shape)
-    hs = np.zeros(q.shape[:-1] + (3,)) if hessian else None
     for (kx, ky), ph, am in zip(table.k, table.phase, table.amp):
         psi = kx * q[..., 0] + ky * q[..., 1] + ph
         sn = np.sin(psi)
@@ -758,12 +764,7 @@ def wave_sum(table: WaveTable, q: np.ndarray, k_sharp,
         h += a * (2.0 * u * upk - 1.0)
         sl[..., 0] += g1 * kx
         sl[..., 1] += g1 * ky
-        if hessian:
-            g2 = a * K * upk * (2.0 * (K - 1.0) * (1.0 - u) - sn)
-            hs[..., 0] += g2 * (kx * kx)
-            hs[..., 1] += g2 * (kx * ky)
-            hs[..., 2] += g2 * (ky * ky)
-    return h, sl, hs
+    return h, sl
 
 
 def turn_slope(sl: np.ndarray, c, sn) -> np.ndarray:
@@ -773,44 +774,31 @@ def turn_slope(sl: np.ndarray, c, sn) -> np.ndarray:
                      sn * sl[..., 0] + c * sl[..., 1]], axis=-1)
 
 
-def turn_hessian(hs: np.ndarray, c, sn) -> np.ndarray:
-    """A Hessian ``(hxx, hxy, hyy)`` from a tap's own frame to the world:
-    ``R H R^T``."""
-    a, b, d = hs[..., 0], hs[..., 1], hs[..., 2]
-    cc, cs, ss = c * c, c * sn, sn * sn
-    return np.stack([cc * a - 2.0 * cs * b + ss * d,
-                     cs * a + (cc - ss) * b - cs * d,
-                     ss * a + 2.0 * cs * b + cc * d], axis=-1)
-
-
 def hex_waves(p: np.ndarray, tables, k_sharp, s: WaterSettings,
-              flow_fn: Optional[FlowFn] = None, hessian: bool = True,
+              flow_fn: Optional[FlowFn] = None,
               want_height: bool = False, layers=LAYERS):
     """The hex-tiled wave sums of ``layers`` at the (advected) points ``p``
     (..., 2) metres, ``tables`` the frame's per-layer :class:`WaveTable`s ->
-    ``{layer: (slope (..., 2), hess or None, h or None)}``.
+    ``{layer: (slope (..., 2), h or None)}``.
 
     ONE lattice for both layers (a vertex every ``wave_cell_m``: the
     triangle and its weights are found once per point): at each of its
     three taps every layer's set is read in its own frame ``R^T (p - c_v) +
     o_v`` (turned by the layer's angle about the vertex centre, shifted by
-    the layer's offset -- hashed with the layer's own salts; the slope and
-    the Hessian turned back, ``R s`` and ``R H R^T``), and each layer's taps
+    the layer's offset -- hashed with the layer's own salts; the slope
+    turned back, ``R s``), and each layer's taps
     are blended by Mikkelsen's ``(1 - c + c |s_i|) w_i^7`` with its own
     ``|s_i|``. A tap whose ``w^7`` is under ``HEX_SKIP`` of the largest
     carries weight 0 and is not evaluated. The ripples' angle is hashed (any
     turn); the swell's is its direction at the vertex centre
     (:func:`swell_direction` of ``flow_fn(c_v)``; still water where
-    ``flow_fn`` is None) jittered by +-``swell_spread_deg / 2``. The weights
-    are held fixed in the Hessian (their gradient lives on the narrow
-    ``w^7`` seams): a blend of honest sums."""
+    ``flow_fn`` is None) jittered by +-``swell_spread_deg / 2``."""
     p = np.asarray(p, np.float64)
     cell = float(s.wave_cell_m)
     w, verts = triangle_grid(p / (cell * HEX_SCALE))
     w7 = np.maximum(w, 0.0) ** HEX_EXP
     wmax = w7.max(axis=-1)
     acc = {L: np.zeros(p.shape) for L in layers}
-    hacc = {L: np.zeros(p.shape[:-1] + (3,)) for L in layers}
     hh = {L: np.zeros(p.shape[:-1]) for L in layers}
     wsum = {L: np.zeros(p.shape[:-1]) for L in layers}
     for i, v in enumerate(verts):
@@ -834,18 +822,15 @@ def hex_waves(p: np.ndarray, tables, k_sharp, s: WaterSettings,
             q = np.stack([c * d[..., 0] + sn * d[..., 1] + o[..., 0],
                           -sn * d[..., 0] + c * d[..., 1] + o[..., 1]],
                          axis=-1)
-            h, sl, hs = wave_sum(tables[L], q, k_sharp, hessian)
+            h, sl = wave_sum(tables[L], q, k_sharp)
             lum = np.sqrt(sl[..., 0] ** 2 + sl[..., 1] ** 2)
             wi = np.where(live, (1.0 - HEX_FALLOFF_CONTRAST
                                  + HEX_FALLOFF_CONTRAST * lum)
                           * w7[..., i], 0.0)
             acc[L] += wi[..., None] * turn_slope(sl, c, sn)
-            if hessian:
-                hacc[L] += wi[..., None] * turn_hessian(hs, c, sn)
             hh[L] += wi * h
             wsum[L] += wi
     return {L: (acc[L] / wsum[L][..., None],
-                hacc[L] / wsum[L][..., None] if hessian else None,
                 hh[L] / wsum[L] if want_height else None)
             for L in layers}
 
@@ -865,12 +850,11 @@ def wave_slides(d0, d1, v, s: WaterSettings):
 
 
 def detail_surface(x_m, y_m, vel, depth, agitation, frame: FlowFrame,
-                   s: WaterSettings, flow_fn: Optional[FlowFn] = None,
-                   hessian: bool = True):
-    """THE fine surface's slope (dh/dx, dh/dy; y south) and, with
-    ``hessian``, its Hessian ``(hxx, hxy, hyy)`` in 1/m (W4's caustic) at
-    world positions in metres -> ``(slope (..., 2), hess (..., 3) or
-    None)``: the module docstring's law. ``vel`` (..., 2) the bilinear flow
+                   s: WaterSettings, flow_fn: Optional[FlowFn] = None
+                   ) -> np.ndarray:
+    """THE fine surface's slope (dh/dx, dh/dy; y south) at world positions
+    in metres -> (..., 2): the module docstring's law. ``vel`` (..., 2) the
+    bilinear flow
     in m/s, ``depth`` m, ``agitation`` the bilinear relative agitation
     (:func:`relative_agitation`, ``u_water``'s A) m/s, ``flow_fn`` the
     effective flow anywhere (:func:`grid_flow_fn`; the swell's vertices read
@@ -879,40 +863,31 @@ def detail_surface(x_m, y_m, vel, depth, agitation, frame: FlowFrame,
     The layers are evaluated at the two flow layers' advected points (the
     waves' slides, :func:`wave_slides`) and cross-faded with ``w0`` -- or
     ONCE where both slides are equal (still water: both points are the
-    same), the result taken as it is. Their Hessian is the exact one of each
-    tap's sum, blended and cross-faded with the same weights, x ``k_L``, the
-    layers summed. A layer whose strengths are both 0 is not evaluated."""
+    same), the result taken as it is. A layer whose strengths are both 0 is
+    not evaluated."""
     x = np.asarray(x_m, np.float64)
     y = np.asarray(y_m, np.float64)
     d0, d1, w0, v = layer_slides(x, y, vel, depth, frame, s)
     d0, d1 = wave_slides(d0, d1, v, s)
     p = np.stack([x, y], axis=-1)
     slope = np.zeros(p.shape)
-    hess = np.zeros(p.shape[:-1] + (3,)) if hessian else None
     on = tuple(L for L in LAYERS if layer_on(L, s))
     if not on:
-        return slope, hess
+        return slope
     same = np.all(d0 == d1, axis=-1)[..., None]
     K = sharpness(v, agitation, s)
     w = w0[..., None]
-    r0 = hex_waves(p - d0, frame.waves, K, s, flow_fn, hessian, layers=on)
-    r1 = hex_waves(p - d1, frame.waves, K, s, flow_fn, hessian, layers=on)
+    r0 = hex_waves(p - d0, frame.waves, K, s, flow_fn, layers=on)
+    r1 = hex_waves(p - d1, frame.waves, K, s, flow_fn, layers=on)
     for L in on:
-        (s0, h0, _), (s1, h1, _) = r0[L], r1[L]
+        s0, s1 = r0[L][0], r1[L][0]
         k = strength(v, agitation, frame, s, L)[..., None]
         slope = slope + np.where(same, s0, s1 * (1.0 - w) + s0 * w) * k
-        if hessian:
-            hess = hess + np.where(same, h0, h1 * (1.0 - w) + h0 * w) * k
-    return slope, hess
+    return slope
 
 
-def detail_slope(x_m, y_m, vel, depth, agitation, frame: FlowFrame,
-                 s: WaterSettings, flow_fn: Optional[FlowFn] = None
-                 ) -> np.ndarray:
-    """THE fine surface's slope alone (:func:`detail_surface` without the
-    Hessian; the same numbers)."""
-    return detail_surface(x_m, y_m, vel, depth, agitation, frame, s,
-                          flow_fn, hessian=False)[0]
+# The name W1's tests and GL checks call THE fine surface by (one law).
+detail_slope = detail_surface
 
 
 def wave_uniforms(frame: FlowFrame) -> np.ndarray:
@@ -942,70 +917,53 @@ def rms_strength(v: np.ndarray, agitation, frame: FlowFrame,
 
 
 # ---------------------------------------------------------------------------
-# The caustic (W4): the area method, analytic, in gather form
+# The refraction map (W4, landed form of 2026-11-21): the floor bend (Snell)
+# and the caustic (Wallace's scatter)
 # ---------------------------------------------------------------------------
 
 # Water's index of refraction (a constant of the medium, not a look dial)
 # and the small-slope refraction law it gives: a vertical ray through a
 # surface of slope ``g`` leaves at the horizontal rate ``(1 - 1/n) g``
-# (Snell, to first order in the slope), so it lands on the floor ``depth``
-# below, displaced by ``depth x CAUSTIC_K x g``.
+# (Snell's law in vector form, to first order in the slope), so it lands on
+# the floor ``depth`` below, displaced by ``depth x CAUSTIC_K x g``.
 WATER_IOR = 1.333
 CAUSTIC_K = 1.0 - 1.0 / WATER_IOR
 
 
-def caustic_det(hess: np.ndarray, depth) -> np.ndarray:
-    """``det J`` of the refraction map ``X(x) = x + a grad h(x)``, ``a =
-    depth x CAUSTIC_K``: the ratio of the floor area a patch of light lands
-    on to the surface area it passed (Wallace's area method -- his ratio of
-    a projected triangle's areas -- as the analytic Jacobian of the map).
-    ``J = I + a H`` (H the Hessian), so ``det J = 1 + a (hxx + hyy) + a^2
-    (hxx hyy - hxy^2)``, exact for that map; the only approximations are the
-    small-slope refraction law and a vertical light (the light field's one
-    elevation does not shear the pattern: accepted, v1)."""
-    hs = np.asarray(hess, np.float64)
-    a = np.asarray(depth, np.float64) * CAUSTIC_K
-    hxx, hxy, hyy = hs[..., 0], hs[..., 1], hs[..., 2]
-    return 1.0 + a * (hxx + hyy) + a * a * (hxx * hyy - hxy * hxy)
+def ripple_slope(ripple, x_tiles, y_tiles, s: WaterSettings) -> np.ndarray:
+    """The simulated tile ripple's share of the surface slope at positions
+    in tiles -> (..., 2): ``u_water``'s R (``ripple``, (H, W) m, the packed
+    plane) read bilinear (CLAMP) one tile either side, ``(h(+1) - h(-1)) / 2
+    x ripple_scale`` -- the shader's ``rippleSlope``. The whole surface slope
+    the normal, the floor bend and the caustic read is this plus
+    :func:`detail_surface`."""
+    from .heat_shimmer import bilinear_tiles
+    r = np.asarray(ripple, np.float64)
+    xt = np.asarray(x_tiles, np.float64)
+    yt = np.asarray(y_tiles, np.float64)
+    gx = (bilinear_tiles(r, xt + 1.0, yt) - bilinear_tiles(r, xt - 1.0, yt))
+    gy = (bilinear_tiles(r, xt, yt + 1.0) - bilinear_tiles(r, xt, yt - 1.0))
+    return np.stack([gx, gy], axis=-1) * (0.5 * s.ripple_scale)
 
 
-def caustic_gain(det, s: WaterSettings) -> np.ndarray:
-    """The SIGNED caustic gain ``(min(1 / |det|, caustic_max) - 1) x
-    caustic_strength``: negative where the light spreads (|det| > 1),
-    positive where it focuses, never above ``(caustic_max - 1) x strength``,
-    never below ``-strength``. ``|det|``: past a focus (det < 0) the beam is
-    inverted, not dark, and carries ``E / |det|`` -- so the bright lines are
-    the folds (det = 0) and the floor between them keeps its light (the
-    brief's ``clamp(1/det, 0, max)`` would black out every folded patch).
-    Exactly 0 on a flat surface (det == 1)."""
-    d = np.abs(np.asarray(det, np.float64))
-    g = 1.0 / np.maximum(d, 1.0 / s.caustic_max) - 1.0
-    return g * s.caustic_strength
+def floor_offset(slope, depth) -> np.ndarray:
+    """THE FLOOR BEND: where the floor a pixel shows lies, metres from the
+    pixel (..., 2) -- a vertical view ray refracted by a surface of
+    ``slope`` (the whole one, :func:`ripple_slope` + :func:`detail_surface`)
+    lands ``depth x CAUSTIC_K x slope`` away, along the slope (Snell). The
+    same map moves the caustic's light (:func:`scatter_disp`): the floor
+    seen through a point is where that point's light lands. Zero on a flat
+    surface or at no depth."""
+    return (np.asarray(slope, np.float64)
+            * (np.asarray(depth, np.float64) * CAUSTIC_K)[..., None])
 
 
-def caustic_term(light, det, s: WaterSettings) -> np.ndarray:
-    """THE caustic: the light ADDED to (signed: taken from) the floor's
-    source light where the fine surface focuses (spreads) it -- ``light``
-    (..., 3) the light at the floor as the floor takes it (exposed,
-    smoke-shadowed, curved) times :func:`caustic_gain`. No light, no
-    caustic; the ambient is not refracted light and is never modulated.
-    The picture is the floor's albedo times it, like any light."""
-    return (np.asarray(light, np.float64)
-            * caustic_gain(det, s)[..., None])
-
-
-# ---------------------------------------------------------------------------
-# PROTOTYPE (#97 reassessment, branch 97-reassess): the caustic in SCATTER
-# form and the Snell floor bend
-# ---------------------------------------------------------------------------
-#
-# Wallace's own form (WebGL Water, 2011): a fine grid over the water surface,
-# each grid point moved by the refraction map X(x) = x + a grad h (the same
-# map as the gather's, a = depth x CAUSTIC_K) onto the floor, each grid
+# THE CAUSTIC in Wallace's SCATTER form: a fine grid over the water surface,
+# each grid point moved by the refraction map X(x) = x + a grad h (a = depth
+# x CAUSTIC_K, :func:`floor_offset`'s map) onto the floor, each grid
 # triangle rasterised ADDITIVELY into a light image with the ratio of its
 # area before and after (the light density it carries). Every bit of light
-# lands somewhere: over a period the image's mean is the incident light
-# (the gather's per-pixel 1/|det J| of ONE preimage is not: W4 finding 1).
+# lands somewhere: over a period the image's mean is the incident light.
 # The GL face is shaders/water_scatter.vs/.fs over the slope image the
 # water shader writes in its slope pass (shaders/water_scatter_slope.glsl).
 #
@@ -1014,10 +972,18 @@ def caustic_term(light, det, s: WaterSettings) -> np.ndarray:
 # its anti-diagonal: on a flat surface every cell centre then lies strictly
 # inside exactly one triangle (no tie for the rasteriser to break), so a
 # flat surface gives exactly 1 everywhere -- exactly no caustic.
+#
+# NO CAP on the image (the gather's ``caustic_max`` lost the light of every
+# focus above it: -18 % of the mean at the tank's 1.2 m). SCATTER_RATIO_MAX
+# bounds ONE degenerate triangle (a sliver at a fold: its expected light is
+# its share whatever its ratio, but one cell centre it covers would take it
+# all) so a cell stays far inside the world RT's half floats; at the shots'
+# depths and strengths it changes no mean measurably
+# (``tests/test_water_caustic.py``).
 
 SCATTER_CELLS_PER_TILE = 24          # light-image cells per tile, per axis
 SCATTER_OFFSET = 0.25                # a sample's place in its cell (cells)
-SCATTER_RATIO_MAX = 1.0e4            # one triangle's density cap (a fold)
+SCATTER_RATIO_MAX = 1.0e3            # one triangle's density bound (a fold)
 # the two triangles of quad (i, j): corners as (di, dj), anti-diagonal split
 _SCATTER_TRIS = (((0, 0), (1, 0), (0, 1)), ((1, 0), (1, 1), (0, 1)))
 
@@ -1027,12 +993,13 @@ def scatter_light(disp, periodic: bool = False) -> np.ndarray:
     image (ny, nx) a unit-density light makes on the floor after each grid
     sample moved by ``disp`` (ny, nx, 2: x, y in CELLS). Grid sample (j, i)
     sits at ``(i, j) + SCATTER_OFFSET`` before the move; triangle t of quad
-    (i, j) deposits ``area_before / area_after`` (capped at
+    (i, j) deposits ``area_before / area_after`` (bounded by
     SCATTER_RATIO_MAX) into every cell whose CENTRE it covers (the GL
-    rasteriser's sampling). ``periodic``: the grid wraps (one period of a
-    surface; the image wraps too); otherwise one extra row and column of
-    samples, clamped to the last, so every centre has a quad over it, and
-    light moved off the image is lost."""
+    rasteriser's sampling; a turned-over triangle counts as it is, never
+    culled). ``periodic``: the grid wraps (one period of a surface; the
+    image wraps too); otherwise one extra row and column of samples,
+    clamped to the last, so every centre has a quad over it, and light
+    moved off the image is lost."""
     d = np.asarray(disp, np.float64)
     ny, nx = d.shape[:2]
     jj, ii = np.mgrid[0:ny + 1, 0:nx + 1]
@@ -1082,78 +1049,131 @@ def scatter_light(disp, periodic: bool = False) -> np.ndarray:
 
 
 def scatter_disp(slope, depth, cell_m: float) -> np.ndarray:
-    """The refraction map's move of each grid sample, in CELLS: ``depth x
-    CAUSTIC_K x slope / cell_m`` (the gather's map, x -> x + a grad h)."""
-    return (np.asarray(slope, np.float64)
-            * (np.asarray(depth, np.float64) * CAUSTIC_K / cell_m)[..., None])
+    """The refraction map's move of each grid sample, in CELLS:
+    :func:`floor_offset` / ``cell_m`` (``depth x CAUSTIC_K x slope``)."""
+    return floor_offset(slope, depth) / float(cell_m)
 
 
-def scatter_gain(light_img, s: WaterSettings) -> np.ndarray:
-    """The scatter's caustic gain on the floor's source light: ``(min(E,
-    caustic_max) - 1) x caustic_strength``, E the light image (incident
-    light 1) -- the gather's :func:`caustic_gain` with E in place of
-    ``1 / |det|``. Exactly 0 where E == 1 (a flat surface)."""
+def caustic_gain(light_img, s: WaterSettings) -> np.ndarray:
+    """The caustic's SIGNED gain on the floor's source light: ``(E - 1) x
+    caustic_strength``, ``E`` the light image at the floor point (incident
+    light 1). Negative where the light spreads, positive where it focuses,
+    never below ``-strength``; exactly 0 where ``E == 1`` (a flat
+    surface). Its mean over the floor is ``strength x (<E> - 1)``: it moves
+    light, it does not make it."""
     e = np.asarray(light_img, np.float64)
-    return (np.minimum(e, s.caustic_max) - 1.0) * s.caustic_strength
+    return (e - 1.0) * s.caustic_strength
 
 
-def floor_offset_snell(slope, depth) -> np.ndarray:
-    """The floor point seen through the surface, metres from the pixel,
-    under ``floor_bend = "snell"``: a vertical view ray refracted by the
-    surface lands where the caustic's map sends the light, ``depth x
-    CAUSTIC_K x slope`` (the gather is then exact for the one preimage it
-    sees). ``"legacy"`` is ``-N.xy x refract_strength x min(depth, 1)`` in
-    MAP UV (the opposite sign, and a length that grows with the map)."""
-    return (np.asarray(slope, np.float64)
-            * (np.asarray(depth, np.float64) * CAUSTIC_K)[..., None])
+def caustic_term(light, light_img, s: WaterSettings) -> np.ndarray:
+    """THE caustic: the light ADDED to (signed: taken from) the floor's
+    SOURCE light (``light`` (..., 3): the field's light at the bent floor
+    point, exposed, smoke-shadowed, curved) -- ``light x``
+    :func:`caustic_gain`. No light, no caustic; the ambient is not
+    refracted light and is never modulated."""
+    return (np.asarray(light, np.float64)
+            * caustic_gain(light_img, s)[..., None])
 
 
 # ---------------------------------------------------------------------------
-# The waterline (W3, critique M12): a body seen through the water above it
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# PROTOTYPE (#97 reassessment, item 3): the lamps' own mirror glints
+# The lamps' own mirror glints (#97, 2026-11-21)
 # ---------------------------------------------------------------------------
 #
 # The light field gives every source ONE elevation (light_z 0.5, 26.6 deg):
 # a mirror glint then needs a slope of 0.62 everywhere, and still water (RMS
 # 0.08) shows no lamp at all. Real water seen from straight above shows a
 # ceiling lamp straight under itself, broken by the ripples into glitter out
-# to ~2 x height x slope. This term reads the frame's omni lamps (the ONE
-# assembly's LightSpecs, positions only) at ``lamp_height_m`` and adds, per
-# pixel, the GGX glint with each lamp's TRUE direction, the lamp a sphere of
-# ``lamp_radius_m`` (Karis's widening: alpha' = alpha + r / (2 d), the lobe
-# renormalised by (alpha / alpha')^2), weighted by the lamp's unoccluded
-# share of the light here, times the light the field delivers here (so walls
-# and smoke still occlude it). Credit: Brian Karis, "Real Shading in Unreal
-# Engine 4", SIGGRAPH 2013 course notes (the sphere-light roughness).
+# to ~2 x height x slope. This term reads the frame's MOUNTED lamps -- THE
+# one light assembly's LightSpecs (renderer/frame_lights.py, the rows the
+# sweep's cones are built from) of kind lamp, spot or beacon -- at
+# ``lamp_height_m`` above the water, and adds per pixel the GGX glint with
+# each lamp's TRUE direction, the lamp a sphere of ``lamp_radius_m`` (Karis
+# 2013: alpha' = alpha + r / (2 d), the lobe renormalised by
+# (alpha / alpha')^2), weighted by the lamp's unoccluded share of the light
+# here, times the light the field delivers here (so walls and smoke still
+# occlude it). A beam lamp (spot, beacon) lights only its wedge: the
+# horizontal bearing from the lamp inside its spread about its centre, its
+# share scaled by 2 pi / spread (the sweep puts a beam's power into its
+# spread, an omni lamp's into the whole turn).
+#
+# ACCEPTED GAP: the flashlight, the cursor lamp and the transients (muzzle
+# and blast flashes, jets) are not mounted lamps: their specs carry no
+# height (a flashlight's position is its lens tile, not the hand), and a low
+# source is what the field's one elevation already models -- their glint
+# stays the field's.
 
 LAMP_GLINT_MAX = 16           # lamps per frame the shader takes (nearest)
+LAMP_KINDS = ("lamp", "spot", "beacon")       # the mounted kinds
+_OMNI_COS = -2.0              # a cone test every bearing passes
+_ORDINATE_SPREAD = 2.0 * math.pi / 16.0       # the sweep's narrowest beam
+
+
+def lamp_table(specs, tile_size_m: float) -> np.ndarray:
+    """The mounted lamps of a frame's ``LightSpec`` list (THE assembly's,
+    ``frame_lights.frame_light_specs(...).specs``) as glint rows (k, 6):
+    ``(x m, y m, share intensity, cos half-spread, dir x, dir y)``. The
+    position is the lamp's cell centre (where the sweep injects it and the
+    field's light peaks), y the increasing row; an omni lamp's cone test is
+    ``_OMNI_COS`` (every bearing) and its share intensity its intensity; a
+    beam's is ``cos(spread / 2)`` about ``(cos, sin)(angle_center)`` (the
+    specs' screen convention) and ``intensity x 2 pi / spread``."""
+    rows = []
+    for sp in specs:
+        if getattr(sp, "kind", "") not in LAMP_KINDS:
+            continue
+        x = (math.floor(float(sp.x)) + 0.5) * tile_size_m
+        y = (math.floor(float(sp.y)) + 0.5) * tile_size_m
+        spread = float(sp.angle_spread)
+        inten = float(sp.intensity)
+        if spread >= 2.0 * math.pi - 0.01:            # the cone door's omni
+            rows.append((x, y, inten, _OMNI_COS, 1.0, 0.0))
+        else:
+            c = float(sp.angle_center)
+            rows.append((x, y,
+                         inten * 2.0 * math.pi / max(spread,
+                                                     _ORDINATE_SPREAD),
+                         math.cos(0.5 * spread), math.cos(c), math.sin(c)))
+    return np.asarray(rows, np.float64).reshape(len(rows), 6)
+
+
+def lamp_select(table, rect_m, n_max: int = LAMP_GLINT_MAX) -> np.ndarray:
+    """The ``n_max`` rows of :func:`lamp_table` nearest the drawn rect
+    (``rect_m`` = (x0, y0, x1, y1) m, the view x the wet box; 0 inside it),
+    the nearer first, ties in table order; all of them with no rect."""
+    t = np.asarray(table, np.float64).reshape(-1, 6)
+    if rect_m is None or t.shape[0] <= 1:
+        return t[:n_max]
+    x0, y0, x1, y1 = rect_m
+    dx = np.maximum(np.maximum(x0 - t[:, 0], t[:, 0] - x1), 0.0)
+    dy = np.maximum(np.maximum(y0 - t[:, 1], t[:, 1] - y1), 0.0)
+    return t[np.argsort(np.hypot(dx, dy), kind="stable")][:n_max]
 
 
 def lamp_glint(p_m, normal, lamps, s: WaterSettings, roughness) -> np.ndarray:
     """The lamps' mirror-glint factor at water points ``p_m`` (..., 2)
-    metres with unit ``normal`` (..., 3) (z up): ``sum_i w_i D_i' (N.L_i)
-    / sum_i w_i`` x ``lamp_glint``, ``lamps`` (n, 3) = (x m, y m,
-    intensity), ``w_i = I_i cos / r^2`` the lamp's unoccluded irradiance,
-    ``D'`` GGX at the sphere-widened roughness. The shader multiplies it by
-    the field's light here and ``glint_strength``. 0 with no lamp or the
-    dial 0."""
+    metres with unit ``normal`` (..., 3) (z up, view straight down):
+    ``sum_i w_i D_i' (N.L_i) / sum_i w_i x lamp_glint``, ``lamps`` the
+    :func:`lamp_table` rows, ``w_i = I_i cos / r^2 x [in its wedge]`` the
+    lamp's unoccluded irradiance, ``D'`` GGX at the sphere-widened
+    roughness (``roughness`` the shader's, ``alpha = roughness^2``). The
+    shader multiplies it by the field's light here and ``glint_strength``.
+    0 with no lamp lighting the point or the dial 0."""
     p = np.asarray(p_m, np.float64)
     N = np.asarray(normal, np.float64)
     out = np.zeros(p.shape[:-1])
-    lamps = np.asarray(lamps, np.float64).reshape(-1, 3)
+    lamps = np.asarray(lamps, np.float64).reshape(-1, 6)
     if s.lamp_glint <= 0.0 or lamps.shape[0] == 0:
         return out
     a = np.clip(np.asarray(roughness, np.float64), 0.02, 1.0) ** 2
     wsum = np.zeros_like(out)
-    for x, y, inten in lamps:
-        d = np.stack([x - p[..., 0], y - p[..., 1],
-                      np.full(out.shape, s.lamp_height_m)], -1)
+    for x, y, inten, cos_half, ux, uy in lamps:
+        bx, by = p[..., 0] - x, p[..., 1] - y          # the bearing lamp -> p
+        rh = np.hypot(bx, by)
+        lit = (rh < 1e-6) | (bx * ux + by * uy >= cos_half * rh)
+        d = np.stack([-bx, -by, np.full(out.shape, s.lamp_height_m)], -1)
         dist = np.linalg.norm(d, axis=-1)
         L = d / dist[..., None]
-        w = inten * L[..., 2] / (dist * dist)
+        w = np.where(lit, inten * L[..., 2] / (dist * dist), 0.0)
         H = L + np.array([0.0, 0.0, 1.0])
         H /= np.linalg.norm(H, axis=-1)[..., None]
         ap = np.minimum(a + s.lamp_radius_m / (2.0 * dist), 1.0)
@@ -1165,26 +1185,9 @@ def lamp_glint(p_m, normal, lamps, s: WaterSettings, roughness) -> np.ndarray:
     return out / np.maximum(wsum, 1e-12) * s.lamp_glint
 
 
-def lamp_rows(specs, view_m, tile_size_m: float,
-              n_max: int = LAMP_GLINT_MAX) -> np.ndarray:
-    """The frame's lamps for the glint, (k, 3) (x m, y m, intensity): the
-    OMNI specs of kind "lamp" (a beam would need its cone; not in the
-    prototype) at their cell's centre (where the field's light peaks), the
-    ``n_max`` nearest the view's centre (``view_m`` (x0, y0, x1, y1) m)."""
-    rows = [((int(np.floor(sp.x)) + 0.5) * tile_size_m,
-             (int(np.floor(sp.y)) + 0.5) * tile_size_m,
-             float(sp.intensity)) for sp in specs
-            if getattr(sp, "kind", "") == "lamp"]
-    if not rows:
-        return np.zeros((0, 3))
-    a = np.asarray(rows, np.float64)
-    if view_m is not None:
-        cx, cy = (view_m[0] + view_m[2]) / 2.0, (view_m[1] + view_m[3]) / 2.0
-        order = np.argsort(np.hypot(a[:, 0] - cx, a[:, 1] - cy),
-                           kind="stable")
-        a = a[order]
-    return a[:n_max]
-
+# ---------------------------------------------------------------------------
+# The waterline (W3, critique M12): a body seen through the water above it
+# ---------------------------------------------------------------------------
 
 def waterline_column(depth, height_m) -> np.ndarray:
     """The water column (m) above a fragment at world ``height_m`` metres
@@ -1269,10 +1272,14 @@ __all__ = [
     "smoothstep", "flow_slide", "edge_flow", "layer_slides", "drift_m",
     "layer_points", "relative_agitation", "strength_ratio", "strength_sat",
     "strength", "sharpness", "layer_on", "swell_dir0", "swell_direction",
-    "grid_flow_fn", "wave_sum", "turn_slope", "turn_hessian", "hex_waves",
+    "grid_flow_fn", "wave_sum", "turn_slope", "hex_waves",
     "wave_slides", "detail_surface", "detail_slope", "wave_uniforms",
     "rms_strength",
-    "WATER_IOR", "CAUSTIC_K", "caustic_det", "caustic_gain", "caustic_term",
+    "WATER_IOR", "CAUSTIC_K", "ripple_slope", "floor_offset",
+    "SCATTER_CELLS_PER_TILE", "SCATTER_OFFSET", "SCATTER_RATIO_MAX",
+    "scatter_light", "scatter_disp", "caustic_gain", "caustic_term",
+    "LAMP_GLINT_MAX", "LAMP_KINDS", "lamp_table", "lamp_select",
+    "lamp_glint",
     "waterline_column", "waterline_weight", "waterline_tint",
     "wet_box", "pack_flow",
 ]

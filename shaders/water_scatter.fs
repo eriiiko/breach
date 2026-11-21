@@ -1,5 +1,5 @@
 #version 330
-// water_scatter.fs -- PROTOTYPE (#97 reassessment): one scattered light
+// water_scatter.fs -- the scatter caustic (#97 W4): one scattered light
 // triangle's density, added (blend ONE, ONE) into the light image: R = the
 // light (incident 1), G = how many triangles covered this cell (diagnostic).
 flat in float v_ratio;

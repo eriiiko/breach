@@ -1,14 +1,15 @@
 #version 330
-// water_scatter.vs -- PROTOTYPE (#97 reassessment, branch 97-reassess): THE
-// SCATTER of the caustic, Wallace's own form (Evan Wallace, "WebGL Water",
-// 2011, MIT; madebyevan.com/webgl-water; archived
+// water_scatter.vs -- THE SCATTER of the caustic (#97 W4, landed 2026-11-21),
+// Wallace's own form (Evan Wallace, "WebGL Water", 2011, MIT;
+// madebyevan.com/webgl-water; archived
 // docs/papers/wallace2011_webgl_water_renderer.js): a grid over the water
 // surface, each sample moved by the refraction map x -> x + a grad h
-// (a = depth x (1 - 1/1.333), the gather's own map) onto the floor, each
-// grid triangle rasterised ADDITIVELY into the light image with the ratio of
-// its area before to after -- so every bit of light lands somewhere. The
-// twin is renderer/water_surface.py::scatter_light (the same grid, offset,
-// split and cap).
+// (a = depth x (1 - 1/1.333): Snell at small slopes, the floor bend's own
+// map) onto the floor, each grid triangle rasterised ADDITIVELY into the
+// light image with the ratio of its area before to after -- so every bit of
+// light lands somewhere. The twin is renderer/water_surface.py::scatter_light
+// (the same grid, offset, split and bound); tests/gl_water_caustic_check.py
+// holds the two equal.
 //
 // No vertex attributes: draw 6 x (quads) vertices with the empty VAO (the
 // PingPong's direct_pass). Quad q of the rect u_rect (x0, y0, w, h in cells)
@@ -20,7 +21,7 @@
 uniform sampler2D u_slope;    // (dh/dx, dh/dy, depth m, 1) per sample
 uniform vec4 u_rect;          // (x0, y0, w, h) cells
 uniform vec2 u_target;        // the image's size in texels
-uniform vec4 u_move;          // (CAUSTIC_K / cell m, sample offset, ratio cap, 0)
+uniform vec4 u_move;          // (CAUSTIC_K / cell m, sample offset, ratio bound, 0)
 
 flat out float v_ratio;
 

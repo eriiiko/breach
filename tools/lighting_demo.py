@@ -275,15 +275,17 @@ _WATER_DIALS = (
     ("roughness_base", 0.08, "Roughness", 0.02, 0.5),
     ("roughness_agitation", 0.6, "Rough agit", 0.0, 2.0),
     ("fog_density", 3.0, "Fog dens", 0.2, 12.0),
-    ("refract_strength", 0.02, "Refract", 0.0, 0.08),
     ("r0", 0.02, "R0 Fresnel", 0.0, 0.2),
     ("ripple_scale", 8.0, "Ripple scl", 0.0, 24.0),
     ("alpha_scale", 6.0, "Alpha scl", 0.0, 20.0),
     ("alpha_min", 0.15, "Alpha min", 0.0, 0.6),
     ("alpha_max", 0.95, "Alpha max", 0.4, 1.0),
-    # W4: the sharp caustic (the area method's contrast and its cap).
+    # W4: the caustic (the scatter's contrast; no cap: it conserves light).
     ("caustic_strength", 1.0, "Caustic", 0.0, 3.0),
-    ("caustic_max", 3.0, "Caust max", 1.05, 10.0),
+    # the lamps' own glints (#97, 2026-11-21): their gain, height and size
+    ("lamp_glint", 1.0, "Lamp glint", 0.0, 4.0),
+    ("lamp_height_m", 2.4, "Lamp hgt m", 0.5, 6.0),
+    ("lamp_radius_m", 0.15, "Lamp r m", 0.02, 0.6),
     # Phase 2 (mood pass): chromatic aberration.
     ("ca_amount", 0.012, "Chrom ab", 0.0, 0.06),
     # W1 + W1b: the fine surface that flows -- procedural travelling sines,
@@ -1076,7 +1078,10 @@ def demo_light_rows(lights_in, total_tick: int, sim_time_per_tick: float,
     plus the slider-driven mouse flashlight at ``mouse_f`` (a cursor-kind cone
     of ``flash_intensity`` and ``flash_angle_spread``, centred on +x like the
     old demo's), as the sweep's cone-emitter rows for ``Simulation.set_light``.
-    ``state=None`` is everything on and no flashlight (the --perf pass).
+    With ``renderer`` the same spec list reaches the water pass
+    (``set_lamp_specs``: the lamps' own glints), as main.py hands it the
+    game's. ``state=None`` is everything on and no flashlight (the --perf
+    pass).
     With ``renderer`` and ``gmap`` (graphics G4 P5) the live blast flashes ride
     too -- ``GameRenderer.blast_flash_light_specs`` at ``total_tick`` over the
     map's open mask, through the one transient cap -- so ``--shots`` sees the
@@ -1099,7 +1104,8 @@ def demo_light_rows(lights_in, total_tick: int, sim_time_per_tick: float,
         lights, total_tick=total_tick, sim_time_per_tick=sim_time_per_tick,
         extra=extra).specs
     if renderer is not None:
-        # PROTOTYPE (#97 reassessment, item 3): the lamps' mirror glints
+        # #97: the lamps' own glints read the list the cone rows are built
+        # from
         renderer.water_pass.set_lamp_specs(specs)
     return frame_lights.cone_rows(specs, grid_w, grid_h, int(bp.L_FINE_BITS))
 
@@ -1181,7 +1187,8 @@ def _run_perf_bench(renderer, sim, lights_in, light_sky,
         # the one assembly, once per sim tick, for the engine (main.py's order)
         total = monotonic_total_tick(sim.turn_number, ticks_per_round, sim.tick)
         sim.set_light(True, demo_light_rows(lights_in, total, sim_time_per_tick,
-                                            grid_w, grid_h), light_sky)
+                                            grid_w, grid_h, renderer=renderer),
+                      light_sky)
         _step_keep_running(sim)
 
     for _ in range(PERF_SCENE_WARMUP_TICKS):
@@ -1316,7 +1323,8 @@ def _run_spark_perf(renderer, sim, lights_in, light_sky,
                                      sim.tick)
         sim.set_light(True, demo_light_rows(lights_in, total,
                                             sim_time_per_tick, grid_w,
-                                            grid_h), light_sky)
+                                            grid_h, renderer=renderer),
+                      light_sky)
         if sim.is_paused():
             sim.set_paused(False)
         sim.step()
@@ -1413,8 +1421,8 @@ def _run_water_perf(renderer, sim, lights_in, light_sky,
     def lit_step():
         total = monotonic_total_tick(sim.turn_number, ticks_per_round,
                                      sim.tick)
-        # renderer: the lamps reach the water pass (the reassessment's
-        # lamp_glint prototype; no blast flashes without gmap)
+        # renderer: the lamps reach the water pass (its lamp glints; no
+        # blast flashes without gmap)
         sim.set_light(True, demo_light_rows(lights_in, total,
                                             sim_time_per_tick, grid_w,
                                             grid_h, renderer=renderer),
@@ -1486,10 +1494,9 @@ def _run_water_perf(renderer, sim, lights_in, light_sky,
         print(f"[water perf] foam step CPU ms {stat(a[:, 1])} ; GPU ms "
               f"{stat(a[:, 2])}")
     print(f"[water perf] draw GPU ms {stat(a[:, 3])}")
-    # PROTOTYPE (#97 reassessment): the scatter caustic's two passes (0
-    # under the default caustic_form = "gather")
-    print(f"[water perf] scatter caustic GPU ms {stat(a[:, 4])} "
-          f"(caustic_form = {wp.settings.caustic_form!r})")
+    # #97 W4: the scatter caustic's two passes (its slope pass and its
+    # scatter; 0 with caustic_strength 0)
+    print(f"[water perf] scatter caustic GPU ms {stat(a[:, 4])}")
     print(f"[water perf] TOTAL GPU ms "
           f"{(a[:, 2] + a[:, 3] + a[:, 4]).mean():6.3f}")
     print("OK -- water perf pass complete (--water-perf)")
@@ -1526,7 +1533,8 @@ def _run_debris_perf(renderer, sim, lights_in, light_sky,
                                      sim.tick)
         sim.set_light(True, demo_light_rows(lights_in, total,
                                             sim_time_per_tick, grid_w,
-                                            grid_h), light_sky)
+                                            grid_h, renderer=renderer),
+                      light_sky)
         if sim.is_paused():
             sim.set_paused(False)
         sim.step()
@@ -1621,7 +1629,8 @@ def _run_shock_perf(renderer, sim, lights_in, light_sky,
                                          sim.tick)
             sim.set_light(True, demo_light_rows(lights_in, total,
                                                 sim_time_per_tick, grid_w,
-                                                grid_h), light_sky)
+                                                grid_h, renderer=renderer),
+                          light_sky)
             if sim.is_paused():              # _step_keep_running, inline:
                 sim.set_paused(False)        # the step's events are read
             sim.step()                       # right after it (S3)
@@ -1722,7 +1731,8 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
     def _lit_step():
         total = monotonic_total_tick(sim.turn_number, ticks_per_round, sim.tick)
         sim.set_light(True, demo_light_rows(lights_in, total, sim_time_per_tick,
-                                            grid_w, grid_h), light_sky)
+                                            grid_w, grid_h, renderer=renderer),
+                      light_sky)
         _step_keep_running(sim)
 
     for _ in range(FIRE_VFX_PERF_WARMUP_TICKS):

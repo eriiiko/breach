@@ -114,16 +114,14 @@ def _q(n=60, span=1.3, x0=0.4, y0=0.7):
 @pytest.mark.parametrize("K", [1.0, 1.6, 3.0])
 def test_the_wave_derivatives_are_exact(settings, K):
     """Property (W1b): ``wave_sum``'s slope IS the gradient of its height
-    and its Hessian the gradient of its slope -- central differences agree
-    to 1e-6 of their scale, for the plain sine (K = 1) and sharpened crests.
-    Breaks if Finch's ``g'`` or ``g''`` is mis-derived (e.g. the trough's
-    ``u^(K-2)`` term dropped), a wave vector or an amplitude enters one of
-    them and not the others."""
+    -- central differences agree to 1e-6 of their scale, for the plain sine
+    (K = 1) and sharpened crests. Breaks if Finch's ``g'`` is mis-derived, a
+    wave vector or an amplitude enters one and not the other."""
     for layer in W.LAYERS:
         tab = _frame(settings).waves[layer]
         q = _q()
         Kq = np.full(q.shape[:-1], K)
-        h, sl, hs = W.wave_sum(tab, q, Kq)
+        h, sl = W.wave_sum(tab, q, Kq)
         e = 1e-6
 
         def at(dx, dy):
@@ -133,15 +131,6 @@ def test_the_wave_derivatives_are_exact(settings, K):
         scale = np.abs(sl).max()
         assert np.abs(hx - sl[..., 0]).max() < 1e-6 * scale + 1e-9
         assert np.abs(hy - sl[..., 1]).max() < 1e-6 * scale + 1e-9
-        sxp, sxm = at(e, 0)[1], at(-e, 0)[1]
-        syp, sym = at(0, e)[1], at(0, -e)[1]
-        hscale = np.abs(hs).max()
-        assert np.abs((sxp[..., 0] - sxm[..., 0]) / (2 * e)
-                      - hs[..., 0]).max() < 1e-5 * hscale
-        assert np.abs((sxp[..., 1] - sxm[..., 1]) / (2 * e)
-                      - hs[..., 1]).max() < 1e-5 * hscale
-        assert np.abs((syp[..., 1] - sym[..., 1]) / (2 * e)
-                      - hs[..., 2]).max() < 1e-5 * hscale
 
 
 def test_sharpness_one_is_a_plain_sine_sum(settings):
@@ -152,7 +141,7 @@ def test_sharpness_one_is_a_plain_sine_sum(settings):
     sharpens nothing."""
     tab = _frame(settings).waves[W.LAYER_DETAIL]
     q = _q(80, span=3.0)
-    h, sl, _hs = W.wave_sum(tab, q, np.ones(q.shape[:-1]))
+    h, sl = W.wave_sum(tab, q, np.ones(q.shape[:-1]))
     href = np.zeros(q.shape[:-1])
     sref = np.zeros(q.shape)
     for (kx, ky), ph, am in zip(tab.k, tab.phase, tab.amp):
@@ -168,7 +157,7 @@ def test_sharpness_one_is_a_plain_sine_sum(settings):
         a = a - a.mean()
         return float((a ** 3).mean() / (a ** 2).mean() ** 1.5)
     assert abs(skew(h)) < 0.15
-    hs, _s, _h = W.wave_sum(tab, q, np.full(q.shape[:-1], 3.0))
+    hs, _s = W.wave_sum(tab, q, np.full(q.shape[:-1], 3.0))
     assert skew(hs) > 0.2 and skew(hs) > abs(skew(h)) + 0.15
 
 
