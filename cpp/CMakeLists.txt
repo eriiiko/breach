@@ -218,6 +218,20 @@ if(BREACH_CUDA)
         # the walk's last stage; integer state, its one float sum and the
         # vector columns through the observation's float kit. Class T.
         src/cuda_obs_picture.cu
+        # #29 P8.4b: the list (obs_spec_v1.build_list's five blocks, sorted by
+        # integer keys), its mask and uids; float64 through the observation's
+        # float kit, one cast per value. Class T.
+        src/cuda_obs_list.cu
+        # #29 P8.5a: the windows (obs_spec_v1.build_windows' physics, sight and
+        # far unit planes, the vector's air block and felt temperature) from the
+        # resident planes; float64 through the observation's float kit, one cast
+        # per value. Class T.
+        src/cuda_obs_windows.cu
+        # #29 P8.7: the device books (src/simulation/device_books.py): the reward
+        # books, the served reward groups, termination and the ended latch, one
+        # thread per env in the reference's event order; float64 through the
+        # observation's float kit, one cast per served value. Class T.
+        src/cuda_obs_books.cu
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like

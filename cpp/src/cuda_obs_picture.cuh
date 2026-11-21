@@ -64,6 +64,31 @@ __device__ __forceinline__ const int64_t* unit_of(const int64_t* blk, const PicL
     return blk + L.unit + (int64_t)r * OBS_PIC_UNIT_W;
 }
 
+// TeamPicture.bars[uid] as the host reads it (TrackerView.bar: the float
+// bar, 0.0 when none was set), from store row r's trackers `m`.
+__device__ __forceinline__ double bar_of(const int64_t* m) {
+    return m[OBS_PIC_UNIT_BAR_SET] ? obs_f64::div((double)m[OBS_PIC_UNIT_BAR_Q], 65536.0) : 0.0;
+}
+
+// obs_spec_v1's hp column: squash(ratio(current_hp, bar)) -- float(hp_q) /
+// 65536 over the bar (exact Q16 views), 0 when the bar is 0. One reader for
+// the vector (P8.3) and the list's mate / seen entries (P8.4b).
+__device__ __forceinline__ double hp_over_bar(int64_t hp_q, const int64_t* m, double cap) {
+    const double x = obs_f64::div((double)hp_q, 65536.0);
+    const double d = bar_of(m);
+    return obs_f64::squash(d == 0.0 ? 0.0 : obs_f64::div(x, d), cap);
+}
+
+// TeamPicture.velocity_q(uid): the motion tracker's one-tick displacement
+// (Q16), (0, 0) before its second sample.
+__device__ __forceinline__ void motion_of(const int64_t* m, int64_t* vx, int64_t* vy) {
+    *vx = *vy = 0;
+    if (m[OBS_PIC_UNIT_MOTION_SET]) {
+        *vx = m[OBS_PIC_UNIT_NOW_X] - m[OBS_PIC_UNIT_PREV_X];
+        *vy = m[OBS_PIC_UNIT_NOW_Y] - m[OBS_PIC_UNIT_PREV_Y];
+    }
+}
+
 // TeamPicture.damage_last_s(team t, uid): the sum of the uid's entries of
 // team t's damage window IN ITS DEQUE'S ORDER (the FIFO's subsequence of the
 // uid), from 0, each damage float64(dq) / 65536 (exact), through the kit's

@@ -310,6 +310,7 @@ class DeviceConductor:
         self.last_profile = None
         self.swarm_death_rows = [None] * N
         self.obs = None                      # the device observation (P8.0), when attached
+        self.ended_now = np.zeros(len(self.sims), dtype=bool)   # P8.7: the envs that ended this tick
 
     def attach_observation(self, obs) -> None:
         """#29 P8.0: the device observation (``simulation.device_obs``) whose
@@ -733,6 +734,17 @@ class DeviceConductor:
                     names = [n for i, (n, _) in enumerate(FAULT_BITS) if bits & (1 << i)]
                     refuse(ConductorOverflow if over & set(names) else ConductorFault, e,
                            f"the team picture: {fault_text(bits)}")
+            elif kind == "reward_books":               # #29 P8.7: (3, N) words
+                # the mismatch count and fault bits raised by name; the
+                # envs whose match ended this tick (no third sync)
+                wv = v.reshape(3, N)
+                self.ended_now = wv[2].astype(bool)
+                if self.obs is not None:
+                    try:
+                        self.obs.books.check_words(wv)
+                    except Exception as ex:          # the env and the slot named
+                        ex.args = (f"device conductor ({where}): {ex.args[0]}",) + ex.args[1:]
+                        raise
             elif kind in ("door_counts", "object_counts"):
                 c = v.reshape(N, -1)
                 f_ = c[:, 1]

@@ -244,6 +244,41 @@ def test_every_integer_the_obs_table_carries_is_the_reference_value():
         assert int(teams[i, 1]) == us.table_row("loadouts", team.loadout)
 
 
+def test_the_ammo_rows_are_what_the_list_reads():
+    """Property (#29 P8.4b): the obs table's ammo block holds, per ``[ammo.*]``
+    row in the unit schema's row order (the grenade / charge tables'
+    ``ammo_name`` index), what ``obs_spec_v1._object_entry`` and
+    ``Projectile`` read for that round: its place in ``ObsContext.obj_rows``
+    (-1 when it is neither a hand nor a charge row), its payload radius (0
+    without a payload: the entry's KeyError) and its travel speed as its own
+    float64 bits. Breaks when the block follows another row order, a radius
+    is read from another payload, or the speed is re-quantized."""
+    import numpy as np
+    from simulation import unit_schema as us
+    ses, ctx, _ = _ship_session()
+    sim = ses.sim
+    t = device_obs.table_values(sim, ctx)
+    aw = len(device_obs.AMMO_FIELDS)
+    wt = sim.weapons_tables
+    bits = lambda x: int(np.array(float(x)).view(np.int64))  # noqa: E731
+    names = list(us.TABLES["ammo"]())
+    assert names, "no ammo rows"
+    kinds = set()
+    for name in names:
+        b = _row("AMMO") + us.table_row("ammo", name) * aw
+        want_kind = ctx.obj_rows.index(name) if name in ctx.obj_rows else -1
+        try:
+            want_r = int(wt.payload_for_ammo(name).radius)
+        except KeyError:
+            want_r = 0
+        assert int(t[b]) == want_kind, name
+        assert int(t[b + 1]) == want_r, name
+        assert int(t[b + 2]) == bits(wt.ammo.by_name[name].travel_speed_tiles_per_second), name
+        kinds.add(want_kind)
+    # every object row of the list is a row of the block
+    assert set(range(len(ctx.obj_rows))) <= kinds
+
+
 def test_the_float_dtype_lists_are_the_served_float_keys():
     """Property: ``device_obs.FLOAT16_KEYS`` / ``FLOAT32_KEYS`` (which cast
     of the float kit a key's values take) name exactly the served keys of
@@ -335,3 +370,166 @@ def test_a_team_without_a_visible_slot_is_refused():
     ses.sim.units[0].team = T + 3
     with pytest.raises(device_obs.DeviceObsRefused, match="neither a marine team"):
         device_obs.check_teams(ses.sim, T)
+
+
+# ---------------------------------------------------------------------------
+# #29 P8.5a: the windows' table values and sources
+# ---------------------------------------------------------------------------
+def test_the_window_rows_are_what_physics_value_reads():
+    """Property: the obs table's window rows are, bit for bit, what
+    ``obs_spec_v1.physics_value`` and ``FieldPlanes`` read for every unit:
+    its ``mitigation_for(u).resist_mult[POISON]`` (the zombie profile on
+    ``is_zombie``, else the species' row the table carries), the sim's
+    impulse table's ``wind_k_q``; and every constant the windows' kernel
+    divides by is the host dequantizes' own currency. Breaks when a resist
+    is read from another species or the neutral profile, re-quantized, the
+    wind dial is read from another table, or a currency drifts from its
+    ``*_fixed`` module."""
+    import numpy as np
+    from simulation import atmosphere_fixed, fire_fixed, gas_fixed
+    from simulation import unit_schema as us
+    from simulation.damage import POISON, mitigation_for
+    bits = lambda x: int(np.array(float(x)).view(np.int64))  # noqa: E731
+    ses, ctx, _ = _ship_session()
+    t = device_obs.table_values(ses.sim, ctx)
+    assert int(t[_row("WIND_K_Q")]) == int(ses.sim.impulse_table.wind_k_q)
+    seen_zombie = False
+    for u in ses.sim.units:
+        want = bits(mitigation_for(u).resist_mult[POISON])
+        if u.is_zombie:
+            seen_zombie = True
+            got = int(t[_row("ZOMBIE_RESIST_POISON_BITS")])
+        else:
+            got = int(t[_row("SPECIES_RESIST_POISON") + us.table_row("species", u.species_id)])
+        assert got == want, u.id
+    assert seen_zombie
+    k = dict(device_obs._constants())
+    assert k["OBS_Q16_ONE"] == gas_fixed._Q16_ONE_F
+    assert k["OBS_TRACE_ONE"] == gas_fixed._TRACE_ONE_F
+    assert k["OBS_FIRE_ONE"] == fire_fixed.FP_ONE_F
+    assert k["OBS_ATM_ONE"] == atmosphere_fixed.FP_ONE_F
+    assert k["OBS_WIND_SHIFT"] == atmosphere_fixed.FP_SHIFT
+
+
+def test_the_felt_dials_the_card_reads_are_the_episodes():
+    """Property: the windows' felt temperature runs the unit library's law
+    over the DEVICE TABLES' Q16 dials, and the build refuses a batch whose
+    dials are not ``exchange.heat_dials_q`` of the episode's ``ObsContext``
+    (the observation's own object): equal on a shipped match, refused by
+    name when the episode's dials differ. Breaks when the device tables'
+    heat rows stop being the observation's dials, or the refusal is
+    dropped."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    import pytest
+    ses, ctx, _ = _ship_session()
+    fields = {n: SimpleNamespace(dtype=dt) for n, dt in device_obs.WINDOW_PLANES.items()}
+    c = SimpleNamespace(fields=fields, sims=[ses.sim])
+    device_obs.check_window_sources(c, [ctx])
+    hot = replace(ctx, heat_dials=(ctx.heat_dials[0], ctx.heat_dials[1],
+                                   ctx.heat_dials[2] * 2.0, ctx.heat_dials[3]))
+    with pytest.raises(device_obs.DeviceObsRefused, match="heat dials"):
+        device_obs.check_window_sources(c, [hot])
+    del fields["rad_flux_sweep"]
+    with pytest.raises(device_obs.DeviceObsRefused, match="not resident"):
+        device_obs.check_window_sources(c, [ctx])
+
+
+# ---------------------------------------------------------------------------
+# #29 P8.7: the device books' host side (simulation.device_books)
+# ---------------------------------------------------------------------------
+def test_the_book_rows_are_the_profiles_own_terms_and_group_matrix():
+    """Property: the obs table's BOOK_TERMS / BOOK_G rows are, bit for bit,
+    every named profile's own terms (``reward_v1.profile_terms``, in
+    ``device_books.TERM_NAMES`` order) and ``reward_v1.group_weights`` over
+    ``rl_env.COUNTER_NAMES`` (the matrix ``EnvRunner._reward`` multiplies by),
+    a run file's override included. Breaks when a weight reaches the kernel
+    from anywhere but the reference's own profile objects, or a counter's
+    row moves."""
+    import numpy as np
+    import rl_env
+    from simulation import device_books, reward_v1
+    for name in reward_v1.PROFILES:
+        for over in (None, {"clock": -1.25}):
+            terms = device_books.profile_terms(name, over)
+            tb, gb = device_books.table_rows(terms)
+            want_t = reward_v1.profile_terms(name, over)
+            assert tb.view(np.float64).tolist() == [want_t[n] for n in device_books.TERM_NAMES]
+            g = reward_v1.group_weights(want_t, rl_env.COUNTER_NAMES)
+            assert np.array_equal(gb, g.reshape(-1).view(np.int64))
+    ses, ctx, _T = _ship_session()
+    terms = device_books.profile_terms("range")
+    tab = device_obs.table_values(ses.sim, ctx, terms)
+    tb, gb = device_books.table_rows(terms)
+    assert np.array_equal(tab[_row("BOOK_TERMS"):_row("BOOK_TERMS") + len(tb)], tb)
+    assert np.array_equal(tab[_row("BOOK_G"):_row("BOOK_G") + len(gb)], gb)
+
+
+def test_the_counters_profile_is_refused_by_name_on_the_device():
+    """Property: the device books refuse the ``"counters"`` reward profile
+    by name (its float32 fold is numpy's pairwise sum, which a serial kernel
+    cannot equal; design "P8 RE-CUT, VERSION 2") and an unknown profile.
+    Breaks when the device would serve a fold it cannot hold equal."""
+    import pytest
+    from simulation import device_books
+    with pytest.raises(device_books.BooksRefused, match="counters"):
+        device_books.profile_terms("counters")
+    with pytest.raises(ValueError):
+        device_books.profile_terms("no_such_profile")
+
+
+def test_the_named_fold_is_numpys_sequential_sum():
+    """Property: ``EnvRunner._reward``'s named-profile fold,
+    ``(counters[:, :, None] * G[None]).sum(axis=1)``, is a sequential sum of
+    the K products from +0.0 (k = 0 first) -- the order the device books
+    add in -- on random operands over many magnitudes, and a sum of -0.0
+    products is +0.0. Breaks when numpy changes that reduction's order (the
+    device fold would then differ in the last bit)."""
+    import numpy as np
+    rng = np.random.default_rng(87)
+    for _ in range(200):
+        c = rng.standard_normal((12, 32)) * 10.0 ** rng.integers(-3, 4, (12, 32))
+        G = rng.standard_normal((32, 5)) * 10.0 ** rng.integers(-2, 3, (32, 5))
+        got = (c[:, :, None] * G[None]).sum(axis=1)
+        p = c[:, :, None] * G[None]
+        seq = np.zeros((12, 5))
+        for k in range(32):
+            seq = seq + p[:, k, :]
+        assert np.array_equal(got.view(np.uint64), seq.view(np.uint64))
+    z = (np.ones((1, 2))[:, :, None] * np.full((2, 1), -0.0)[None]).sum(axis=1)
+    assert np.signbit(z).tolist() == [[False]]
+
+
+def test_the_old_counters_add_in_float32_after_one_cast():
+    """Property: the old counters' ``counters[r, c] += dmg`` (a float32
+    array, a Python float) is numpy 2's NEP 50 rule -- the damage cast to
+    float32 once, then a float32 add -- the arithmetic the device books do.
+    Breaks when numpy returns to adding in float64 and casting back."""
+    import numpy as np
+    rng = np.random.default_rng(7)
+    a = np.zeros((1, 1), dtype=np.float32)
+    for _ in range(20000):
+        acc = np.float32(rng.random() * 1000)
+        x = float(rng.integers(1, 1 << 30)) / 65536.0 * 1.37
+        a[0, 0] = acc
+        a[0, 0] += x
+        assert a[0, 0] == np.float32(acc) + np.float32(x)
+
+
+def test_the_books_layout_holds_every_section_once():
+    """Property: ``device_books.layout`` lays its sections end to end (no
+    overlap, no gap) and its width grows with the teams, the store rows and
+    the roster rows. Breaks when a section is added without its offset
+    following the one before (the compiled layout check then refuses)."""
+    from simulation import device_books
+    lay = device_books.layout(2, 12, 12)
+    import numpy as np
+    off = 0
+    for _n, o, shape in lay:
+        assert o == off
+        off += int(np.prod(shape))
+    assert off == device_books.width(2, 12, 12)
+    assert device_books.width(3, 12, 12) > device_books.width(2, 12, 12)
+    assert device_books.width(2, 13, 12) > device_books.width(2, 12, 12)
+    assert device_books.width(2, 12, 13) > device_books.width(2, 12, 12)
