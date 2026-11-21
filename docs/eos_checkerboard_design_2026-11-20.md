@@ -1523,3 +1523,186 @@ it. The build follows §8.6 with these values.
 | L2-9 | low | gate order missing | §8.9 "The gate order" |
 | L2-10 | low | rule amendments not planned | §8.13 (c) |
 | L2-11 | low | the merge unit | §8.12: U + §8 first, then (e), (d)+(a) |
+
+### 8.16 As-built (2026-11-21)
+
+Built on branch `217-eos-checkerboard` after the rulings (§8.14, Erik
+2026-11-21: "5 decisions: yes to all"). PROVED means measured on this
+build or read in its code; INFERENCE says so.
+
+**What was built.**
+
+- `34c1050a` the rulings recorded; `cbfa0afd` step 0: the named 0.333 m A/B
+  scene (`field_ab_harness.arena_vents_sim`) and `bench_conductor --stagger`;
+  the T6(b) baselines captured on the merged base `3ac5cfe9` before any code
+  commit (untracked dev pickles, golden 120 + arena 240 ticks).
+- `ae24fc24` the code, CPU and CUDA in one commit:
+  - `EOSSolver::step`: the entry part (resets, step 0, the cap² scan with the
+    ceiling, max|u| / max_du, `eos_kset_scan`, the k-rule, n_sub, dt_k, the
+    dt-folded rates at dt_k, cmask, coeffE/S) once; steps 1-7 in a loop of
+    `k_ticks`; the warm start of sub-tick ≥ 2 is `atmosphere`; σ << 2·log2 k
+    (`mg_build_levels(..., sigma_shift)`); `sponge_udamp` on the last
+    sub-tick; the counters reset once and accumulate.
+  - One FP_HD k-rule `eos_subtick_k` and n_sub rule `eos_subtick_n_sub`
+    (`eos_solver.h`), host helpers `eos_subtick_dt`, `eos_subtick_n_floor`,
+    `eos_budget_cap2_q32`, `eos_check_k_max` (out of line, `/fp:strict`),
+    one host k-set scan `eos_kset_scan` (step() and the per-call pre-stage),
+    its device twin `K_kset_scan` + `K_src_max`.
+  - The cap stage in all three kick loops (step(), the reference, the device
+    kernel): heat = min(removed, max(0, KE1 − max(KE0, KEc))) with
+    removed = −(bracket 4's dE), so heat + destroyed == HEAD's destroyed
+    exactly; `e_cap_heat_sum` (KICK slot 15, `KICK_CNT_SLOTS` 15 → 16).
+  - The per-call CUDA path loops the sub-ticks around its device substep
+    chain, host mid-stage, MG and the per-call kick / flux entries (counters
+    zeroed once, accumulated).
+  - The batched resident engine: the source staged before the pre-stage;
+    the (k, n_sub) fold table (4 × (N_SUB_MAX + 1) rows, every fold the one
+    function at dt_k, the key holding K_MAX and the switches); `K_pre_fold`
+    picks each env's row; `K_absorb` builds the absorb plane per env after
+    the fold; ONE 16-byte D2H (max n_sub, max k) at the one `max_n_sub`
+    sync; the loop `t < k_max` inside `eos_step_resident`; `tick_off(es, t)`
+    on every EOS kernel (mid-stage, the MG build at every level, every
+    V-cycle kernel through `MGLevelDev.{es, t}`, the kick, `K_store_atm`,
+    K3, the recovery); the substep kernels' `sub_off` reads the sub-tick from
+    the high bits of `sub_tick(t, s)` (one predicate for both loops).
+  - `K_MAX = 8` in `[physics.eos]`, bound in PhysicsRunner.
+- `da04717c` every Python transcription of the EOS group gains
+  `e_cap_heat_sum`; `--stability` gains k / Cupd / epsk / caph; the CUDA
+  checks follow (below). `bca7bc8e` `tests/test_eos_substep_whole_tick.py`
+  and the `dbg_last_kset` seam. `8141439c` the golden re-baselines.
+  `88c46b99` the rule amendments and the T7 legs.
+
+**Deviations from §8, each with its evidence.**
+
+1. **The ceiling is folded into the cap² plane at its one build (the scan),
+   not min'd in the kick loop.** The same values reach the kick (the plane is
+   trusted verbatim, D5), one site per backend instead of three kick loops.
+   `u_max_hits` counts only where U_MAX itself binds.
+2. **The k-set's max |S| covers the cells the source is applied to** (not
+   solid, vacuum or ring) and takes |S| (a negative source would also need
+   updates). On every shipped source S ≥ 0, so this is the design's term.
+3. **The substep kernels carry the sub-tick in the high bits of their
+   substep index** (`sub_tick(t, s) = t << 8 | s`), so the existing `sub_off`
+   predicate masks both loops; kernels without a substep index take
+   `(es, t)`. Equivalent to §8.6.7 item 3's masks, fewer parameters.
+4. **cuda_prestage_parity_check's coverage rule** is now "every n_sub AND
+   every k reached" with a fast-wind sweep for the k = 8 rows, since at
+   k = 2 the floor pins n_sub at 8 (F₂ = 8).
+5. **cuda_kick_check PART 2 replays one kick at k = 1** (`subtick_loop` off,
+   the ceiling and the cap heat on, the ceiling folded into its cap² rebuild):
+   a single-kick replay cannot reconstruct k kicks. The k > 1 CPU == GPU is
+   `cuda_eos_step_check` (k compared per tick, max k == K_MAX required) and
+   `cuda_s8a_check` PART 1h.
+6. **cuda_eos_step_check's hardness bar** reads the LAST sub-tick's p*
+   (9.2 atm on this scenario after k − 1 updates, ≥ 20 before): restated to
+   ≥ 5 atm plus max k == K_MAX, dated.
+
+**The §8.6.1 inventory, as built.** Re-folded at dt_k: `dt_q` (MG rhs),
+`Kdt_raw` (kick), `Kdt2dx2_raw` (MG operator), `absorb_dt_q`, `kd_q`, `kd2_q`
+with `rad_dead_q32`, `k_flux_q` / `flux_pu_cap`, the transport step
+`eos_transport_step_q(dt_k, n_sub, dx)`. At dt (entry): `dt_q` of the k-rule
+and n_adv, `Kdt_raw` of the max_du scan, `gdt_q = quantize(γ·dt)`,
+`cp_dx_q = quantize(dx)`, U_bud. Per-tick factor: `sponge_udamp`, last
+sub-tick. Per-tick term: σ << 2·log2 k. Entry only: p_prev / wave_p, the cap²
+plane and c_LOCAL, cmask, coeffE/S, k, n_sub, the k-set. Carried:
+`atmosphere` (the warm start), wind, temperature, gas_energy, gas. Books:
+reset once, accumulated. After the EOS: the trace tail, unchanged. The div
+source is subtracted every sub-tick at its rate S (k·S·dt_k = S·dt).
+
+**Findings (measured on this build).**
+
+1. **The k-rule lags the legacy studio charges by two ticks.** The studio's
+   legacy rows dump heat into p* with no divergence source, so k is chosen
+   from a calm entry state: k = 1, 1, then 2, 8 (ticks 25-28). Nmin falls to
+   0.042 there (T2's 0.02 floor holds). INFERENCE: a p* spike is the kick
+   increment the design refused as a k term (§8.6.2); a payload row with
+   `strength > 0` (the generic explosion) has a source and gets k = 8 on its
+   tick (the frag, the C4).
+2. **A 1 / 2 limit cycle in k.** After the frag (and in the quiet arena) k
+   alternates 1, 2, 1, 2: a k = 2 tick ends calm (u ≈ 4 m/s) so the next runs
+   k = 1, whose single kick lifts u to ≈ 12 m/s. T1 holds (the bound per
+   sub-tick is max(C_P, K_MAX/k)); the per-update Courant number of a k = 1
+   tick after such a kick is ≤ 2. INFERENCE: k from the entry state lags the
+   in-tick kick by one tick, which the design accepted (§8.6.2).
+3. **The quiet arena's fastest cell sits beside the ambient ring, outside the
+   k-set** (within R_K of the ring, by design): 14-18 m/s at (54, 3) while the
+   k-set max is 7-9 m/s. Over 30 s: winds 6-24 m/s (median of the per-tick
+   max 11.0), against 11.7-62.6 before and the 48-tps emulation's 2-8: the
+   design's inference (§8.8) is NOT met in full. Drift −0.39 K over 30 s
+   (−3.0 before). Residual for (d)+(a) and the ring's coupling.
+4. **The hull breach's k tail outlasts the drain.** range_hall's C4 breach
+   runs k = 8 for ≈ 1.5 s, then alternates 1 / 4 / 8 on residual pockets
+   (≥ 5 % N, > 2 tiles from the vacuum) for the rest of the 10 s run
+   (§8.6.2 measured on the pre-§8 trajectory: back to 1 after ≈ 9 s).
+5. **The cap heat is large where the legacy rows rail.** smoke_light_studio
+   over 3 s: the cap returned 123 % of E0 as heat (it destroyed it before),
+   the T_MAX_PHYS rail removed 708 % (the rows' `heat_amount`, by design);
+   the mass-weighted T ends +1145 K (it fell to −3 K before). On the frag (no
+   legacy rows) the cap returned 0.89 % of E0, destroyed ≈ 1e-7 of that
+   (the tripwire stays ~0), no T_MAX_PHYS hit, no rail.
+
+#### Drag after §8 (the units audit; report only, nothing changed)
+
+**The law, read term by term** (`eos_solver.cpp` kick loop, `cuda_kick_
+compression.cu` `kick_kernel`, the reference; the folds in `step()` and
+`kick_scalar_folds`):
+
+- Stage L, `u ← u·(1 − kd_q)` with `kd_q = quantize(k_drag·dt_k)`. `k_drag`
+  is 1/s, `dt_k` s: a per-second law, no tile length anywhere. PROVED.
+- Stage Q, `u ← u / (1 + kd2_q·|u|)` with `kd2_q = quantize(k_drag2·dt_k)`
+  and |u| in m/s (Q16): `k_drag2` is 1/m (a length scale L = 1/k_drag2 =
+  4.4 m at the shipped 0.225), `k_drag2·dt·|u|` dimensionless. No dx in the
+  fold, the product or the dead zone (`rad_dead_q32 = ceil(2^16/kd2_q)²`, a
+  speed below which the product truncates to 0). PROVED.
+- The heat (bracket 5) is `ke_energy(N, Δ|u|²)` at the derived k_ke: m/s in,
+  the gas_energy currency out, no dx. PROVED.
+- **So no drag term carries the tile-versus-metre bug patch U fixed in
+  transport**: the law is in metres and seconds at every dx, before and after
+  U. PROVED. The bug sat in what the drag was TUNED against: at 0.333 m the
+  transport moved air a third of the metres its wind said, so "how far a
+  puff coasts" (Erik's by-eye target, 2026-10-06, `smoke_light_studio`) was
+  judged on a plume moving at 1/3 speed. INFERENCE: for the same coast
+  distance in tiles, the honest value is about 3× larger in the linear
+  regime (x = ln(1 + k₂u₀t)/k₂, so less than 3× where the log saturates);
+  that is a look ruling for the drag session, not a units correction.
+- **Per-tick versus per-second with sub-ticks.** Stage Q's map is the exact
+  solution of du/dt = −k₂u² over dt_k, so k sub-ticks compose to the same
+  per-second law (§8.6.1 note); stage L differs at second order
+  ((1 − k₁dt/k)^k against 1 − k₁dt: 4e-8 relative at the shipped k₁dt).
+  PROVED (algebra). The one honest per-sub-tick effect is rounding:
+  `kd2_q` = 614.4 → 614 at k = 1 (−0.07 %) but 76.8 → 77 at k = 8 (+0.26 %),
+  and the dead zone rises from 0.0016 to 0.013 m/s. INFERENCE: negligible.
+- **The old "ceiling" was a step-size artefact, not a speed.** The implicit
+  map's supremum is 1/(k₂·dt): 106.7 m/s per 24-tps tick, the "~90 m/s
+  plateau" of §8.2.4. Per sub-tick it is 1/(k₂·dt_k), k× higher; the budget
+  ceiling (64 m/s at 0.333 m) binds long before it. PROVED (algebra) and
+  measured below.
+
+**Measured on this build** (`--stability`, sums of the per-tick columns, % of
+the scene's tick-0 thermal energy E0):
+
+| scene | k_drag2 | max wind (m/s) | drag heat | cap removal (all returned as heat) | k mean | runaway? |
+|---|---|---|---|---|---|---|
+| quiet arena, 30 s | 0.225 | 24.1 | 0.028 % | 0 (no clamp) | 1.48 | no |
+| quiet arena, 30 s | **0** | 24.7 | 0 | 0 (no clamp) | 2.00 | **no** (before §8: U_MAX 999.6 m/s in 4 s, §8.1) |
+| fire_studio frag, 5 s | 0.225 | 59.5 | 0.071 % | 0.89 % | 1.31 | no |
+| fire_studio frag, 5 s | 0 | 63.9 | 0 | 0.97 % | 1.61 | no |
+| smoke_light_studio, 3 s | 0.225 | 63.9 | 2.8 % | 123 % | 3.82 | no |
+| smoke_light_studio, 3 s | 0 | 63.9 | 0.003 % | 100 % | 4.29 | no |
+
+(Before §8, studio ticks 25-36: drag returned 16.0 % of E0 and the cap
+destroyed 19.2 %, §8.1.)
+
+**Reading.**
+
+- **Drag is no longer the limiter.** With `k_drag2 = 0` the quiet arena stays
+  at ≤ 24.7 m/s for 30 s and no scene runs away; the blast winds stop at the
+  budget ceiling (63.9 m/s), not at drag's step artefact. PROVED (the table).
+- **What drag still does** is physical-scale damping: 0.03 % of E0 in 30 s
+  of quiet arena, 0.07 % over a frag, 2.8 % over the studio's three legacy
+  charges (where the cap's removal is 40× larger). Turning it off raises the
+  quiet arena's median max wind from 11.0 to 12.3 m/s and k's mean from
+  1.48 to 2.00 (the cost of a calmer-looking room). INFERENCE: its value is
+  now a look and a cost question, Erik's drag session.
+- **No term is in the wrong units**; the honest-value question is the
+  tuning target (above), not the law.
