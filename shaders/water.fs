@@ -192,6 +192,12 @@ uniform vec4 u_caustic;
 uniform sampler2D u_caustic_img;
 uniform vec4 u_caustic_box;
 uniform int u_floor_bend;
+// --- PROTOTYPE (#97 reassessment, item 3): the lamps' own mirror glints ----
+// (x m, y m, intensity, 0) per lamp (the nearest LAMP_GLINT_MAX omni lamps),
+// u_lamp = (lamp_glint, lamp_height_m, lamp_radius_m, count); the twin is
+// renderer/water_surface.py::lamp_glint.
+uniform vec4 u_lamps[16];
+uniform vec4 u_lamp;
 // --- Phase 2 (mood pass) uniforms ------------------------------------------
 // Chromatic aberration (subtle polish): the floor refraction r/g/b are sampled
 // at slightly different offsets (scaled 1 ± u_ca_amount per channel). Tiny.
@@ -686,6 +692,32 @@ void main() {
     float ggx = a2 / max(3.14159265 * d * d, 1e-6);
     float NdotL = max(dot(N, L), 0.0);
     vec3 glint = ggx * NdotL * lightRGB * u_glint_strength;
+    // PROTOTYPE (#97 reassessment): each omni lamp's TRUE direction, the lamp
+    // a sphere (Karis 2013: alpha' = alpha + r / 2d, renormalised), weighted
+    // by its unoccluded share of the light here, x the field's light here.
+    if (u_lamp.x > 0.0 && u_lamp.w > 0.5) {
+        vec2 pm = world_uv * u_grid_m;
+        float gsum = 0.0;
+        float wsum = 0.0;
+        int nl = int(u_lamp.w);
+        for (int i = 0; i < 16; ++i) {
+            if (i >= nl) break;
+            vec3 dv = vec3(u_lamps[i].xy - pm, u_lamp.y);
+            float dist = length(dv);
+            vec3 Li = dv / dist;
+            float wi = u_lamps[i].z * Li.z / (dist * dist);
+            vec3 Hi = normalize(Li + V);
+            float ap = min(a + u_lamp.z / (2.0 * dist), 1.0);
+            float nh = max(dot(N, Hi), 0.0);
+            float di = nh * nh * (ap * ap - 1.0) + 1.0;
+            float Di = ap * ap / max(3.14159265 * di * di, 1e-6)
+                     * (a / ap) * (a / ap);
+            gsum += wi * Di * max(dot(N, Li), 0.0);
+            wsum += wi;
+        }
+        glint += lightRGB * (gsum / max(wsum, 1e-12) * u_lamp.x
+                             * u_glint_strength);
+    }
 
     // --- BASE: the see-through refraction + depth tint -------------------
     // The base is the refraction/Beer-Lambert term — the floor seen through

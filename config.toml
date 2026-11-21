@@ -1542,6 +1542,15 @@ wake_ring_rate = 0.15          # foam per second in the ring of a STANDING unit 
 wake_gain = 1.5                # extra foam per second per (m/s)^2 of the unit's speed (the wake)
 splash_foam = 0.5              # foam a landing droplet adds at its centre (amount)
 splash_radius_m = 0.1          # the radius of that dab, metres
+# PROTOTYPE of the #97 reassessment (item 3, branch 97-reassess, NOT merged):
+# the LAMPS' OWN MIRROR GLINTS. The light field gives every source one
+# elevation (light_z 0.5), so still water never shows a lamp; this adds, per
+# pixel, the glint of each omni lamp at its true position lamp_height_m up
+# (a sphere of lamp_radius_m), times the light the field delivers there.
+# 0 = off (the shipped look).
+lamp_glint = 0.0               # the lamps' glint gain (x glint_strength); 1 = physical share
+lamp_height_m = 2.4            # the lamps' height above the water, metres
+lamp_radius_m = 0.15           # a lamp's radius, metres (widens its mirror image)
 debug_view = 0                # 1 = draw (slope x, slope y, strength); 2 = (foam amount, foam cover, 0); 3 = (hxx, hxy, hyy, caustic gain)
 # --- Heightmap attenuation (alpha-only; graphics/water_rendering.md §2 §8) ---
 # An OPTIONAL per-level floor heightmap ([art.bare] height) attenuates the water

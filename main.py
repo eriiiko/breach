@@ -749,18 +749,22 @@ def main():
     beacons_in = [e for e in lights_in if e.kind == "beacon"]
     static_rows = []
 
+    static_specs = []
+
     def cone_rows_now():
         grid_h, grid_w = sim.gmap.solid.shape
         if not static_rows:
+            static_specs.extend(frame_lights.frame_light_specs(
+                statics_in, total_tick=0,
+                sim_time_per_tick=sim_time_per_tick).specs)
             static_rows.append(frame_lights.cone_rows(
-                frame_lights.frame_light_specs(
-                    statics_in, total_tick=0,
-                    sim_time_per_tick=sim_time_per_tick).specs,
-                grid_w, grid_h, light_fine_bits))
+                static_specs, grid_w, grid_h, light_fine_bits))
+        dyn = assemble_lights().specs
+        # PROTOTYPE (#97 reassessment, item 3): the lamps' mirror glints
+        renderer.water_pass.set_lamp_specs((*static_specs, *dyn))
         return np.ascontiguousarray(np.vstack([
             static_rows[0],
-            frame_lights.cone_rows(assemble_lights().specs, grid_w, grid_h,
-                                   light_fine_bits)]))
+            frame_lights.cone_rows(dyn, grid_w, grid_h, light_fine_bits)]))
 
     # Graphics G3 F4b: THE FIRE'S ROOM LIGHT -- the renderer's per-burning-
     # tile multiplier on the sweep's thermal light emission (the fire's light

@@ -262,6 +262,10 @@ class WaterPass:
         self.caustic_on = False
         self.caustic_rect: Optional[tuple] = None
         self._caustic_box = (0.0, 0.0, 1.0, 1.0)
+        # PROTOTYPE (#97 reassessment, item 3): the frame's lamp specs
+        self._lamp_specs: tuple = ()
+        self._lamp_view_m = None
+        self._lamp_sent = None
         self._slope_shader = None
         self._scatter_shader = None
         self._pass_locs: dict = {}
@@ -383,6 +387,7 @@ class WaterPass:
                                     1.0 if s.caustic_form == "scatter"
                                     else 0.0))
         self._set_i("u_floor_bend", 1 if s.floor_bend == "snell" else 0)
+        self._push_lamps()
         self._set_f("u_agit_ref", s.agitation_ref)
         # W1b: the swell (strengths, spread), the lattice and the sharpness,
         # the swell's still direction, the waves per layer
@@ -448,6 +453,35 @@ class WaterPass:
             gl.Uniform2f(loc, float(v[0]), float(v[1]))
         else:
             gl.Uniform4fv(loc, 1, gl.floats(v))
+
+    def set_lamp_specs(self, specs) -> None:
+        """PROTOTYPE (#97 reassessment, item 3): the frame's lights as THE
+        assembly's ``LightSpec``s (``frame_lights.frame_light_specs``), for
+        the lamps' own mirror glints (``lamp_glint``; read only when > 0)."""
+        self._lamp_specs = tuple(specs)
+
+    def _push_lamps(self) -> None:
+        s = self.settings
+        if s is None:
+            return
+        from .water_surface import LAMP_GLINT_MAX, lamp_rows
+        rows = (lamp_rows(self._lamp_specs, self._lamp_view_m,
+                          self.tile_size_m) if s.lamp_glint > 0.0
+                else np.zeros((0, 3)))
+        key = (s.lamp_glint, s.lamp_height_m, s.lamp_radius_m,
+               rows.tobytes())
+        if key == self._lamp_sent:
+            return
+        self._lamp_sent = key
+        self._set_vec("u_lamp", (s.lamp_glint, s.lamp_height_m,
+                                 s.lamp_radius_m, float(rows.shape[0])))
+        buf = np.zeros((LAMP_GLINT_MAX, 4), np.float32)
+        buf[:rows.shape[0], :3] = rows
+        loc = self._loc("u_lamps")
+        if loc >= 0:
+            rl.set_shader_value_v(
+                self.shader, loc, rl.ffi.cast("void *", rl.ffi.from_buffer(buf)),
+                rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4, LAMP_GLINT_MAX)
 
     def _sync_slope_uniforms(self) -> None:
         """Replay into the slope program every draw-program uniform that
@@ -870,6 +904,10 @@ class WaterPass:
         rect = self.draw_rect(view_tiles)
         if rect is None:
             return False
+        if view_tiles is not None:
+            ts = self.tile_size_m
+            self._lamp_view_m = tuple(float(v) * ts for v in view_tiles)
+        self._push_lamps()
         from .lit3d import set_light_curve_uniforms, set_smoke_shadow_uniforms
         cover = None
         if smoke_cast is not None:

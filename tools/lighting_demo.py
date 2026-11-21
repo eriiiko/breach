@@ -1070,6 +1070,9 @@ def demo_light_rows(lights_in, total_tick: int, sim_time_per_tick: float,
     specs = frame_lights.frame_light_specs(
         lights, total_tick=total_tick, sim_time_per_tick=sim_time_per_tick,
         extra=extra).specs
+    if renderer is not None:
+        # PROTOTYPE (#97 reassessment, item 3): the lamps' mirror glints
+        renderer.water_pass.set_lamp_specs(specs)
     return frame_lights.cone_rows(specs, grid_w, grid_h, int(bp.L_FINE_BITS))
 
 

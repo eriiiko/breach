@@ -135,3 +135,61 @@ def test_the_door_holds_the_prototype_dials(settings):
                 water=SimpleNamespace(**d))))
             assert (s.caustic_form, s.floor_bend) == (form, bend)
     assert dataclasses.replace(settings, caustic_form="scatter")
+
+
+# ---------------------------------------------------------------------------
+# PROTOTYPE (#97 reassessment, item 3): the lamps' own mirror glints
+# ---------------------------------------------------------------------------
+
+def test_flat_water_mirrors_a_lamp_straight_under_itself(settings):
+    """Property: on flat water seen from straight above, a lamp's glint is
+    brightest exactly under the lamp and falls off with the distance from
+    that point, and is gone a few lamp heights away -- the mirror image of
+    a ceiling lamp (what the field's one elevation, light_z, cannot give).
+    Breaks if the lamp's direction is taken from the field (one elevation:
+    no peak), or the lamp's height is dropped."""
+    s = dataclasses.replace(settings, lamp_glint=1.0)
+    lamp = np.array([[5.0, 5.0, 1.0]])
+    xs = np.linspace(5.0, 5.0 + 3 * s.lamp_height_m, 61)
+    p = np.stack([xs, np.full_like(xs, 5.0)], -1)
+    N = np.tile([0.0, 0.0, 1.0], (xs.size, 1))
+    g = W.lamp_glint(p, N, lamp, s, s.roughness_base)
+    assert g[0] == g.max() and g[0] > 1.0
+    assert np.all(np.diff(g) <= 1e-12)
+    assert g[-1] < 1e-3 * g[0]
+
+
+def test_a_tilted_ripple_throws_the_lamp_off_its_nadir(settings):
+    """Property: a ripple tilted toward the lamp by half the lamp's angle
+    from vertical mirrors the lamp where flat water would not (the glitter
+    out to ~2 x height x slope). Breaks if the normal does not enter the
+    glint (a flat-water disc)."""
+    s = dataclasses.replace(settings, lamp_glint=1.0)
+    lamp = np.array([[0.0, 0.0, 1.0]])
+    d = 0.6
+    half = np.arctan(d / s.lamp_height_m) / 2.0
+    p = np.array([[d, 0.0]])
+    tilted = np.array([[-np.sin(half), 0.0, np.cos(half)]])
+    flat = np.array([[0.0, 0.0, 1.0]])
+    gt = W.lamp_glint(p, tilted, lamp, s, s.roughness_base)[0]
+    gf = W.lamp_glint(p, flat, lamp, s, s.roughness_base)[0]
+    assert gt > 10.0 * gf
+
+
+def test_no_lamp_glint_when_off_or_without_lamps(settings):
+    """Property: the dial 0 (the shipped look) or no omni lamp gives exactly
+    0, and only omni LAMPS enter (a beam would need its cone). Breaks if the
+    term leaks into the default look, or a beacon or the flashlight is taken
+    as an omni lamp."""
+    p = np.zeros((4, 2))
+    N = np.tile([0.0, 0.0, 1.0], (4, 1))
+    off = dataclasses.replace(settings, lamp_glint=0.0)
+    assert np.all(W.lamp_glint(p, N, [[0.0, 0.0, 1.0]], off, 0.08) == 0.0)
+    on = dataclasses.replace(settings, lamp_glint=1.0)
+    assert np.all(W.lamp_glint(p, N, np.zeros((0, 3)), on, 0.08) == 0.0)
+    specs = [SimpleNamespace(x=3.2, y=4.7, intensity=2.0, kind="lamp"),
+             SimpleNamespace(x=1.0, y=1.0, intensity=5.0, kind="beacon"),
+             SimpleNamespace(x=2.0, y=2.0, intensity=5.0, kind="flashlight")]
+    rows = W.lamp_rows(specs, None, 0.5)
+    assert rows.shape == (1, 3)
+    assert np.allclose(rows[0], [3.5 * 0.5, 4.5 * 0.5, 2.0])

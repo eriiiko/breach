@@ -231,6 +231,10 @@ class WaterSettings:
     wake_gain: float
     splash_foam: float
     splash_radius_m: float
+    # PROTOTYPE (#97 reassessment): the lamps' own mirror glints (0 = off)
+    lamp_glint: float
+    lamp_height_m: float
+    lamp_radius_m: float
     debug_view: int
 
 
@@ -342,6 +346,11 @@ def water_settings(cfg) -> WaterSettings:
     for name in ("wake_ring_rate", "wake_gain", "splash_foam"):
         if getattr(s, name) < 0.0:
             raise ValueError(f"[graphics.water] {name} must be >= 0")
+    if s.lamp_glint < 0.0:
+        raise ValueError("[graphics.water] lamp_glint must be >= 0")
+    for name in ("lamp_height_m", "lamp_radius_m"):
+        if getattr(s, name) <= 0.0:
+            raise ValueError(f"[graphics.water] {name} must be > 0")
     if s.debug_view not in DEBUG_VIEWS:
         raise ValueError(f"[graphics.water] debug_view must be one of "
                          f"{DEBUG_VIEWS}: {s.debug_view}")
@@ -1102,6 +1111,80 @@ def floor_offset_snell(slope, depth) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # The waterline (W3, critique M12): a body seen through the water above it
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# PROTOTYPE (#97 reassessment, item 3): the lamps' own mirror glints
+# ---------------------------------------------------------------------------
+#
+# The light field gives every source ONE elevation (light_z 0.5, 26.6 deg):
+# a mirror glint then needs a slope of 0.62 everywhere, and still water (RMS
+# 0.08) shows no lamp at all. Real water seen from straight above shows a
+# ceiling lamp straight under itself, broken by the ripples into glitter out
+# to ~2 x height x slope. This term reads the frame's omni lamps (the ONE
+# assembly's LightSpecs, positions only) at ``lamp_height_m`` and adds, per
+# pixel, the GGX glint with each lamp's TRUE direction, the lamp a sphere of
+# ``lamp_radius_m`` (Karis's widening: alpha' = alpha + r / (2 d), the lobe
+# renormalised by (alpha / alpha')^2), weighted by the lamp's unoccluded
+# share of the light here, times the light the field delivers here (so walls
+# and smoke still occlude it). Credit: Brian Karis, "Real Shading in Unreal
+# Engine 4", SIGGRAPH 2013 course notes (the sphere-light roughness).
+
+LAMP_GLINT_MAX = 16           # lamps per frame the shader takes (nearest)
+
+
+def lamp_glint(p_m, normal, lamps, s: WaterSettings, roughness) -> np.ndarray:
+    """The lamps' mirror-glint factor at water points ``p_m`` (..., 2)
+    metres with unit ``normal`` (..., 3) (z up): ``sum_i w_i D_i' (N.L_i)
+    / sum_i w_i`` x ``lamp_glint``, ``lamps`` (n, 3) = (x m, y m,
+    intensity), ``w_i = I_i cos / r^2`` the lamp's unoccluded irradiance,
+    ``D'`` GGX at the sphere-widened roughness. The shader multiplies it by
+    the field's light here and ``glint_strength``. 0 with no lamp or the
+    dial 0."""
+    p = np.asarray(p_m, np.float64)
+    N = np.asarray(normal, np.float64)
+    out = np.zeros(p.shape[:-1])
+    lamps = np.asarray(lamps, np.float64).reshape(-1, 3)
+    if s.lamp_glint <= 0.0 or lamps.shape[0] == 0:
+        return out
+    a = np.clip(np.asarray(roughness, np.float64), 0.02, 1.0) ** 2
+    wsum = np.zeros_like(out)
+    for x, y, inten in lamps:
+        d = np.stack([x - p[..., 0], y - p[..., 1],
+                      np.full(out.shape, s.lamp_height_m)], -1)
+        dist = np.linalg.norm(d, axis=-1)
+        L = d / dist[..., None]
+        w = inten * L[..., 2] / (dist * dist)
+        H = L + np.array([0.0, 0.0, 1.0])
+        H /= np.linalg.norm(H, axis=-1)[..., None]
+        ap = np.minimum(a + s.lamp_radius_m / (2.0 * dist), 1.0)
+        nh = np.maximum((N * H).sum(-1), 0.0)
+        dd = nh * nh * (ap * ap - 1.0) + 1.0
+        D = ap * ap / np.maximum(np.pi * dd * dd, 1e-6) * (a / ap) ** 2
+        out += w * D * np.maximum((N * L).sum(-1), 0.0)
+        wsum += w
+    return out / np.maximum(wsum, 1e-12) * s.lamp_glint
+
+
+def lamp_rows(specs, view_m, tile_size_m: float,
+              n_max: int = LAMP_GLINT_MAX) -> np.ndarray:
+    """The frame's lamps for the glint, (k, 3) (x m, y m, intensity): the
+    OMNI specs of kind "lamp" (a beam would need its cone; not in the
+    prototype) at their cell's centre (where the field's light peaks), the
+    ``n_max`` nearest the view's centre (``view_m`` (x0, y0, x1, y1) m)."""
+    rows = [((int(np.floor(sp.x)) + 0.5) * tile_size_m,
+             (int(np.floor(sp.y)) + 0.5) * tile_size_m,
+             float(sp.intensity)) for sp in specs
+            if getattr(sp, "kind", "") == "lamp"]
+    if not rows:
+        return np.zeros((0, 3))
+    a = np.asarray(rows, np.float64)
+    if view_m is not None:
+        cx, cy = (view_m[0] + view_m[2]) / 2.0, (view_m[1] + view_m[3]) / 2.0
+        order = np.argsort(np.hypot(a[:, 0] - cx, a[:, 1] - cy),
+                           kind="stable")
+        a = a[order]
+    return a[:n_max]
+
 
 def waterline_column(depth, height_m) -> np.ndarray:
     """The water column (m) above a fragment at world ``height_m`` metres
