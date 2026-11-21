@@ -12,6 +12,7 @@
 #include <cuda_runtime.h>
 
 #include "cuda_obs_picture.cuh"
+#include "cuda_unit_lib.cuh"
 #include "obs_layout.h"
 #include "unit_draws_layout.h"
 #include "unit_store_layout.h"
@@ -45,6 +46,22 @@ __device__ __forceinline__ bool is_mate(const int64_t* m, int64_t t) {
 __device__ __forceinline__ bool is_seen(const uint8_t* vis_t, const int64_t* blk,
                                         const obs_pic::PicLayout& L, int U, int t, int q) {
     return vis_t[q] && obs_pic::rec_of(blk, L, U, t, q)[OBS_PIC_REC_PRESENT];
+}
+
+// #29 P8.6a: a soldier's own turning dials as the observation reads them
+// (the _Aimer's a / w / dw: Simulation.unit_turn_accel_q16 /
+// unit_turn_rate_q16 through the TURN hook, unit_impulse.pending_dw =
+// imp_l / inertia, truncating) -- ticks_to_within's (P8.4a) and
+// on_next_tick's (P8.6a) one copy.
+__device__ __forceinline__ void turn_dials(const int64_t* me, const int64_t* tab, int64_t* a,
+                                           int64_t* w, int64_t* dw) {
+    using namespace unit_store;
+    *a = unit_lib::scaled(me, unit_tables::UNIT_HOOK_TURN,
+                          tab[unit_tables::UNIT_TAB_TURN_ACCEL_CLASS_Q16]);
+    *w = unit_lib::scaled(me, unit_tables::UNIT_HOOK_TURN,
+                          tab[unit_tables::UNIT_TAB_TURN_RATE_CLASS_Q16]);
+    const int64_t l = me[UNIT_COL_IMP_L];
+    *dw = l ? l / tab[unit_tables::UNIT_TAB_IMPULSE_INERTIA_G] : 0;   // div_trunc
 }
 
 }  // namespace obs_rows

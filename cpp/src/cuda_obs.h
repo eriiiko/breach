@@ -261,6 +261,45 @@ bool obs_books(int n_env, std::uintptr_t store, int n_units, int store_w, UnitEv
 std::vector<std::pair<std::string, int64_t>> obs_books_layout(int n_teams, int n_units,
                                                               int n_rows);
 
+// ---------------------------------------------------------------------------
+// #29 P8.6a: THE DEVICE DECODER (cpp/src/cuda_obs_decoder.cu; src/simulation/
+// device_decoder.py), on the tick stream, no sync. obs_dec_check: once per
+// decision, the (N, n_rows, 5) int32 decisions of the envs `due` ((N,)
+// uint8) range-checked into `faults` ((N, OBS_DEC_FAULT_W) int64), counted
+// against the served masks into `masked` ((N, n_rows) uint8), resolved
+// against `list_uid` ((N, n_rows, n_entries) int32) into the decision part of
+// `state` ((N, n_rows, OBS_DEC_S_W) int64). obs_decode: every tick at the
+// conductor's tick head, the latch columns of every decoder-driven row
+// (`drive` (N, n_teams) uint8) written into the store, the slot part of
+// `state`, `aimed` ((N, n_rows) int32); returns whether `faults` was deferred
+// into the conductor's books read. obs_dec_horde: per env whose `mode` ((N,)
+// int32) is the card's, the HORDE stage's latch row ((N, row_w) int64: mode,
+// a flag per store row) of every living zombie. obs_dec_obs: on a decision
+// tick, the vector's prev block and the list's prev_aim / on_next_tick.
+// obs_dec_probe (TEST-ONLY): per offset (qx, qy, none, onto reach) into out
+// (n, 4) int64; `div_brk` the check's break.
+void obs_dec_check(int n_env, int n_rows, int n_slots, std::uintptr_t decisions,
+                   std::uintptr_t due, std::uintptr_t list_uid, int n_entries,
+                   std::uintptr_t mask_feet, std::uintptr_t mask_aim, std::uintptr_t mask_trigger,
+                   std::uintptr_t mask_hand, int n_kinds, std::uintptr_t dec_table,
+                   std::uintptr_t state, std::uintptr_t masked, std::uintptr_t faults);
+bool obs_decode(int n_env, std::uintptr_t store, int n_units, int store_w,
+                const UnitTablesDevice& tables, std::uintptr_t rowmap, int n_rows, int n_slots,
+                int n_teams, std::uintptr_t obs_table, int table_w, std::uintptr_t tick_row,
+                std::uintptr_t ended, std::uintptr_t pic_state, int pic_w, std::uintptr_t dec_table,
+                std::uintptr_t drive, std::uintptr_t state, std::uintptr_t aimed,
+                std::uintptr_t faults, int brk);
+void obs_dec_horde(int n_env, std::uintptr_t store, int n_units, int store_w,
+                   std::uintptr_t mode, std::uintptr_t rows, int row_w);
+void obs_dec_obs(int n_env, std::uintptr_t store, int n_units, int store_w,
+                 const UnitTablesDevice& tables, std::uintptr_t rowmap, int n_rows, int n_slots,
+                 int n_teams, std::uintptr_t obs_table, int table_w, std::uintptr_t tick_row,
+                 std::uintptr_t params, std::uintptr_t ended, std::uintptr_t pic_state, int pic_w,
+                 std::uintptr_t state, std::uintptr_t aimed, std::uintptr_t list_mask,
+                 std::uintptr_t list_uid, int n_entries, std::uintptr_t list,
+                 std::uintptr_t vector);
+void obs_dec_probe(int n, std::uintptr_t dx, std::uintptr_t dy, std::uintptr_t out, int div_brk);
+
 // The compiled layout's fingerprint (obs_layout.h): what device_obs checks.
 const char* obs_layout_fingerprint();
 

@@ -683,12 +683,8 @@ __global__ void k_lof(const int64_t* store, int U, const int32_t* rowmap, int n_
     // -- col 27's ticks: the soldier's own turn toward the record's centre
     const int64_t* tab = tables + (size_t)e * unit_tables::UNIT_TABLES_W;
     const int64_t want = bearing_q16(ex - cx, ey - cy, &bad);
-    const int64_t a = unit_lib::scaled(me, unit_tables::UNIT_HOOK_TURN,
-                                       tab[unit_tables::UNIT_TAB_TURN_ACCEL_CLASS_Q16]);
-    const int64_t wq = unit_lib::scaled(me, unit_tables::UNIT_HOOK_TURN,
-                                        tab[unit_tables::UNIT_TAB_TURN_RATE_CLASS_Q16]);
-    const int64_t l = me[UNIT_COL_IMP_L];
-    const int64_t dw = l ? l / tab[unit_tables::UNIT_TAB_IMPULSE_INERTIA_G] : 0;  // div_trunc
+    int64_t a, wq, dw;
+    obs_rows::turn_dials(me, tab, &a, &wq, &dw);
     const int64_t wr = me[UNIT_COL_WEAPON_ID];
     const int64_t spread = wr >= 0 ? unit_lib::scaled(me, unit_tables::UNIT_HOOK_SPREAD,
                                                       ot[OBS_TAB_WEAPON + wr * OBS_WEAPON_W +

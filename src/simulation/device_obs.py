@@ -760,6 +760,10 @@ def _constants() -> list:
     # -- P8.7: the device books (counters' columns, fields, terms, codes)
     from simulation import device_books
     out += device_books.constants()
+    # -- P8.6a: the device decoder (the action spec's head sizes, the state
+    # record, the table, the horde latch's layout, faults and breaks)
+    from simulation import device_decoder
+    out += device_decoder.constants()
     return out
 
 
@@ -767,6 +771,11 @@ def _cname(name: str) -> str:
     """A column name as a C identifier tail (``status_left[3]`` ->
     ``STATUS_LEFT_3``)."""
     return name.upper().replace("[", "_").replace("]", "")
+
+
+def _compass() -> str:
+    from simulation import device_decoder
+    return device_decoder.compass_init()
 
 
 def _share_halves() -> list:
@@ -781,6 +790,7 @@ def _share_halves() -> list:
 def _layout_text() -> str:
     lines = [f"{k}={int(v)}\n" for k, v in _constants()]
     lines.append("WALL_SHARE_HALF=" + ",".join(str(x) for x in _share_halves()) + "\n")
+    lines.append("DEC_COMPASS=" + _compass() + "\n")
     return "".join(lines)
 
 
@@ -823,6 +833,9 @@ def header_text() -> str:
         "// float16 bit patterns of k / (OBS_BLOCK * OBS_BLOCK), k = 0 .. OBS_BLOCK^2",
         "// (a __constant__ table's initialiser in the kernel's TU).",
         f"#define OBS_WALL_SHARE_HALF_INIT {{{halves}}}",
+        "",
+        "// P8.6a: action_spec_v1.COMPASS_Q16 as (x, y) pairs, direction d at 2d.",
+        f"#define OBS_DEC_COMPASS_INIT {{{_compass()}}}",
         "",
         "}  // namespace obs_layout",
         "",
@@ -1087,6 +1100,7 @@ class DeviceObservation:
         self.aimed = cp.full((N, self.n_rows), -1, dtype=cp.int32)
         self.win_faults = cp.zeros((N,), dtype=cp.int32)
         self.win_brk = 0                      # THE BREAK hook (the check's), 0 in a real run
+        self._null_decoder = None             # P8.6a: the decoder's columns with no decoder
         # -- P8.7: the device books (the reward, termination, the ended latch)
         self.books = device_books.DeviceBooks(self, self.reward_terms)
         c.attach_observation(self)
@@ -1207,7 +1221,23 @@ class DeviceObservation:
         self.build_masks(store)
         # P8.5a: the windows (sees_target reads the list just built)
         self.build_windows(store)
+        # P8.6a: the decoder's columns (prev, prev_aim, on_next_tick) after the
+        # vector, the list and the windows
+        self.build_decoder_obs(store)
         self.builds += 1
+
+    def build_decoder_obs(self, store_ptr=None) -> None:
+        """P8.6a: the vector's ``prev`` block and the list's ``prev_aim`` /
+        ``on_next_tick`` (``device_decoder.DeviceDecoder.build_obs``); with no
+        decoder attached, over a state where no slot was ever decoded (prev
+        reads -1) and :attr:`aimed` as it is (the check's stand-in feeds it)."""
+        dec = self.c.decoder
+        if dec is None:
+            if self._null_decoder is None:
+                from simulation.device_decoder import NullDecoderView
+                self._null_decoder = NullDecoderView(self)
+            dec = self._null_decoder
+        dec.build_obs(store_ptr)
 
     def aims(self, store_ptr=None) -> None:
         """P8.4a for every env on its decision tick: the fire lanes of every

@@ -232,6 +232,11 @@ if(BREACH_CUDA)
         # thread per env in the reference's event order; float64 through the
         # observation's float kit, one cast per served value. Class T.
         src/cuda_obs_books.cu
+        # #29 P8.6a: the device decoder (src/simulation/device_decoder.py): the
+        # decisions' check, the per-tick decode into the store's latch columns,
+        # the horde latch, the decoder's observation columns; float64 through
+        # the observation's float kit. Class T.
+        src/cuda_obs_decoder.cu
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like

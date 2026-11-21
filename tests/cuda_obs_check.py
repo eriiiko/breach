@@ -199,7 +199,7 @@ FAILS: list = []
 BREAK = os.environ.get("OBS_BREAK", "")
 #: The patch this script's gates are at: every column owned by it or an
 #: earlier patch of the version-2 table is compared.
-PATCH = "P8.7"
+PATCH = "P8.6a"
 #: The decision cadence of the corpus (design 13.1's decimation, a run file's
 #: ``[run] decimation``; the device observation takes it as its argument).
 DECIMATION = 4
@@ -324,6 +324,18 @@ class Played:
         self.terminal = False
         self.result = None                    # (outcome, team, ticks) when terminal
         self.book_cov = {}                    # profile -> case -> count
+        # P8.6a (corpus (c), a policy run): the driver, per decision tick the
+        # decisions, per tick the reference's latch columns / slot states /
+        # horde latch after the controllers' handle_frame and its digests after
+        # the step, the decoder's coverage
+        self.driver = None
+        self.decisions = {}                   # tick -> (rows, 5) int32
+        self.dec_obs = {}                     # tick -> {key: array} (list_uid, masks)
+        self.ref_latch = {}                   # tick -> (U, LW) int64
+        self.ref_slots = {}                   # tick -> {row: host_state_form}
+        self.ref_horde = {}                   # tick -> latch row
+        self.digests = {}                     # tick (after the step) -> digests
+        self.dec_cov = {}
 
 
 _PLAYED: dict = {}
@@ -377,19 +389,21 @@ def aim_rule(sim, units, tick: int) -> tuple:
     return aims, aimed
 
 
-def host_observation(session, ctx, T, S, aimed_out=None) -> dict:
+def host_observation(session, ctx, T, S, aimed_out=None, aims_of=None) -> dict:
     """The env's served observation of ``session`` now, built by THE
     reference (``EnvRunner.row_units`` / ``row_flags`` over the session,
     ``obs_spec_v1.observe_rows`` with :func:`aim_rule`'s aims), one env's
     ``(U, ...)`` arrays; ``aimed_out`` (a list) receives the rows' aimed
-    uids."""
+    uids. ``aims_of`` (P8.6a, corpus (c)): ``(sim, units) -> (aims, aimed)``
+    in place of :func:`aim_rule` (the policies' own ``aim_view``)."""
     import rl_env
     from simulation import obs_spec_v1 as o
     me = SimpleNamespace(session=session, layout=SimpleNamespace(n_slots=S, n_rows=T * S))
     shapes = o.shapes(1, T * S, S)
     out = {k: np.zeros(sh[1:], dtype=dt) for k, (sh, dt) in shapes.items()}
     units = rl_env.EnvRunner.row_units(me)
-    aims, aimed = aim_rule(session.sim, units, int(session.sim.tick))
+    aims, aimed = (aim_rule(session.sim, units, int(session.sim.tick)) if aims_of is None
+                   else aims_of(session.sim, units))
     if aimed_out is not None:
         aimed_out.append(aimed)
     o.observe_rows(session.sim, ctx, units, out, aims=aims)
@@ -425,13 +439,16 @@ def host_lof(sim):
     return out, cover
 
 
-def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Played:
+def play(name, level, spec, seed, setup=None, script=None, max_ticks=None,
+         driver=None) -> Played:
     """Play the match on the host once (cached): its intents per tick, the
     owned host observation at every decision tick. Corpus (d): ``setup``
     (session) puts the hand state in at tick 0 (the twin gets the same);
     ``script`` (sim) issues hand intents before each tick (the tap records
     them with the controllers', so the twin is fed them); ``max_ticks`` ends
-    the play early."""
+    the play early. ``driver`` (P8.6a, corpus (c)): a :class:`PolicyDriver`
+    whose ``EnvRunner`` session is played (its ``policy`` teams decoding the
+    driver's decisions; ``spec`` / ``seed`` are the session's)."""
     key = (name, seed)
     if key in _PLAYED:
         return _PLAYED[key]
@@ -439,12 +456,14 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Pl
     from simulation.match_session import MatchSession
     from simulation.obs_spec_v1 import ObsContext
     t0 = time.perf_counter()
-    s = MatchSession(level, spec, seed=seed, breach_physics=bp)
+    s = (MatchSession(level, spec, seed=seed, breach_physics=bp) if driver is None
+         else driver.session)
     if setup is not None:
         setup(s)
     sp = s.spec
     T, S = len(sp.teams), max(rl_env._team_slots(level))
-    p = Played(name, level, spec, seed, T, S, setup=setup)
+    p = Played(name, level, sp if driver is not None else spec, seed, T, S, setup=setup)
+    p.driver = driver
     ctx = ObsContext.build(s.sim, sp, S, n_teams=T)
     own = owned_obs()
     ref = RefBooks(s, T, S)                   # P8.7: the env's books, per named profile
@@ -457,8 +476,11 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Pl
         ts = time.perf_counter()
         aimed = []
         with AimTap(p.aim_cov) as at, ListTap(p.list_cov, ctx.caps):
-            host = host_observation(s, ctx, T, S, aimed)
+            host = host_observation(s, ctx, T, S, aimed,
+                                    None if driver is None else driver.aims_of)
         p.aimed[int(s.sim.tick)] = aimed[0]
+        if driver is not None:
+            driver.observed(p, s, host)
         count_windows(p, s, host)
         p.obs[int(s.sim.tick)] = owned_parts(host, own, False)
         count_list(p.list_cov, host, len(ctx.hand_rows))
@@ -485,15 +507,22 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None) -> Pl
     while not s.is_terminal() and (max_ticks is None or int(s.sim.tick) < max_ticks):
         if script is not None:
             script(s.sim)
+        if driver is not None:
+            driver.decide(p, s)
         ref.before(s)
-        s.tick()
+        if driver is None:
+            s.tick()
+        else:
+            driver.tick(p, s)
         ref.after(s)
         ref.record(p, s, s.is_terminal())
-        p.intents.append(tap.take())
+        p.intents.append(tap.take() if driver is None else driver.feed(tap.take()))
         see()
         if int(s.sim.tick) % DECIMATION == 0:
             observe()
     s.sim.attach_intent_log(None)
+    if driver is not None:
+        driver.finish(p, s)
     p.coverage = dict(cov.counts)
     p.dmg_peak = cov.dmg_peak
     p.cover_alive = (alive0, [bool(c.alive) for c in (s.sim.cover or ())])
@@ -602,6 +631,11 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
                                  reward_profile=profile)
     _books_breaks(obs)
     _picture_breaks(obs)
+    dec = None
+    if any(p.driver is not None for p in played):    # P8.6a: corpus (c), decoder-driven
+        if not all(p.driver is not None for p in played):
+            raise ValueError("gate: a batch mixes policy runs and tap-driven matches")
+        dec = decoder_for(obs, sessions)
     if BREAK == "anchor":                          # from the first decision after tick 0
         _anchor_break(obs)
     if BREAK == "stale":                           # nothing rebuilt after tick 0
@@ -689,6 +723,11 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
             break
         for e, p in enumerate(played):
             c.latch(p.intents[k] if k < len(p.intents) else (), env=e)
+        if dec is not None:
+            # P8.6a: the decisions handed over before the decision's first tick
+            if not decoder_tick(label, c, obs, dec, played, tick, k):
+                return False
+            continue
         if (tick + 1) % DECIMATION == 0:
             # P8.5a: the decoder's stand-in -- each env's rows aimed as its
             # reference was at that decision (aim_rule), before the tick builds
@@ -2119,11 +2158,15 @@ def part_gate():
         gate(f"(d fire) {p.name}", [p], cdn, books_census=bc)
     for p in corpus_clock():
         gate(f"(d clock) {p.name}", [p], cdn, books_census=bc)
+    ccn = Census()                                  # P8.6a: corpus (c), decoder-driven
+    for p in corpus_c():
+        gate(f"(c) {p.name}", [p], ccn, books_census=bc)
     ca.judge("census (a)", strict=False)
     cb.judge("census (b)", strict=False)
     cdn.judge("census (d)", strict=False)
     both = Census()
-    for src in (ca, cb, cdn):
+    ccn.judge("census (c)", strict=False)
+    for src in (ca, cb, cdn, ccn):
         for k, n in src.nondefault.items():
             both.nondefault[k] = both.nondefault.get(k, 0) + n
             both.values.setdefault(k, set()).update(src.values.get(k, set()))
@@ -2139,6 +2182,7 @@ def part_gate():
                 + corpus_door() + corpus_turn() + corpus_list())
     judge_windows(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                   + corpus_door() + corpus_turn() + corpus_list() + corpus_fire())
+    judge_decoder(corpus_c())
     judge_books(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                 + corpus_door() + corpus_turn() + corpus_list() + corpus_fire()
                 + corpus_clock(), BOOK_CENSUS)
@@ -2746,10 +2790,548 @@ def part_restage():
           f"picture equal to the reference over {n} ticks")
 
 
+# ---------------------------------------------------------------------------
+# P8.6a: THE DEVICE DECODER -- corpus (c), generated live (critique finding 9)
+# ---------------------------------------------------------------------------
+#: Corpus (c): (label, level, run seed, tick cap). An in-process
+#: ``rl_env.EnvRunner`` per run (both teams ``policy``, v1 actions, the
+#: commander on), its policies decoding seeded masked-random decisions.
+DEC_RUNS = (("policy ship_demo", "ship_demo", 81, 560), ("policy room", ROOM, 83, 400))
+#: The decision kit at tick 0 (the runner's session and the twin alike): the
+#: hand loadout with these counts of every hand-grenade kind, in every
+#: marine's hands, so every throw kind with every reach occurs.
+DEC_GRENADES = (9, 9, 9, 9, 9, 9)
+#: Per row and decision, the chance that one head is sent a random in-range
+#: index whatever its mask (a masked choice to count; the fallbacks).
+DEC_P_FORCE = 0.04
+#: The decoder's coverage cases (each > 0 over corpus (c), else FAIL).
+DEC_CASES = ("aim_seen", "aim_record", "aim_token", "aim_walk", "aim_keep", "trigger_0",
+             "trigger_1", "reload", "melee", "shove", "use",
+             *(f"throw{k}_arg{a}" for k in range(6) for a in range(5)),
+             *(f"plant{a}" for a in range(4)), "fb_flashlight", "fb_onto_noaim",
+             "fb_plant_onto", "throw_aim_held", "aim_lost", "aim_dead", "masked",
+             "zombie_dies", "zombie_rises", "horde_empty_tick")
+#: P8.6a's breaks: (OBS_BREAK, where) -- the kernels' codes, the late decode,
+#: the late horde latch, the next observation's list_uid.
+DEC_BREAKS = ("dec_every", "dec_div", "dec_late", "dec_horde_late", "dec_next_uid")
+
+
+def dec_kit(session):
+    """Corpus (c)'s state at tick 0: :func:`hand_kit`'s loadout row with
+    :data:`DEC_GRENADES`, and those grenades in every marine's hands."""
+    from dataclasses import replace
+    from config import CFG
+    from simulation.loadouts import get_tables
+    from simulation.weapons import get_tables as wt
+    by_name = get_tables().loadouts.by_name
+    name = str(CFG.marine.loadout)
+    rows = wt().hand_grenade_rows
+    by_name[name] = replace(by_name[name],
+                            grenades={r: DEC_GRENADES[k] for k, r in enumerate(rows)})
+    for lo in {str(t.loadout) for t in session.spec.teams}:
+        if lo in by_name:
+            by_name[lo] = replace(by_name[lo],
+                                  grenades={r: DEC_GRENADES[k] for k, r in enumerate(rows)})
+    for u in session.sim.units:
+        if not u.is_zombie:
+            u.grenade_counts = list(DEC_GRENADES[:len(rows)])
+
+
+def latch_cols() -> list:
+    """``(name, offset, width)`` of every store column ``LATCH_COLUMNS``
+    writes (the decoder's outputs), in a fixed order."""
+    from simulation import unit_store
+    lay = unit_store.layout()
+    names = []
+    for col, _ in cd.LATCH_COLUMNS.values():
+        if col not in names:
+            names.append(col)
+    return [(n, lay.column(n).offset, lay.column(n).width) for n in names]
+
+
+def ref_latch_array(sim) -> np.ndarray:
+    """Every unit's latch columns as the store encodes them (``sim.units``
+    order = store rows)."""
+    from simulation import unit_schema as us
+    out = []
+    for u in sim.units:
+        row = []
+        for n, _, w in latch_cols():
+            enc = us.COLUMN_BY_NAME[n].encode(getattr(u, n))
+            row += list(enc) if isinstance(enc, (tuple, list)) else [enc]
+        out.append(row)
+    return np.array(out, dtype=np.int64)
+
+
+def dev_latch_array(rows) -> np.ndarray:
+    """The same columns from a downloaded ``(U, W)`` store slice."""
+    return np.concatenate([rows[:, o:o + w] for _, o, w in latch_cols()], axis=1)
+
+
+class PolicyDriver:
+    """One corpus (c) run: an in-process ``EnvRunner`` (the real
+    ``AgentPolicy`` on v1 actions for every team, the commander, the horde),
+    reset once; the play drives its session tick by tick as
+    ``EnvRunner.step`` does (the decisions handed to each policy with the
+    ``list_uid`` they were drawn on, then the ticks), recording what the
+    gate compares."""
+
+    def __init__(self, level, run_seed: int):
+        import rl_env
+        raw = {"run": {"seed": int(run_seed), "n_envs": 1, "decimation": DECIMATION,
+                       "levels": [level.name], "policy": "policy",
+                       "levels_dir": tempfile.gettempdir()},
+               "obs": {"spec": "v1", "full_view": False},
+               "reward": {"profile": "fireteam"}, "action": {"spec": "v1"}}
+        run = rl_env.parse_run(raw, "corpus (c) run")
+        layout = rl_env.make_layout(run, [level])
+        self.runner = rl_env.EnvRunner(0, run, layout, [level], breach_physics=bp)
+        self.runner.reset()
+        self.session = self.runner.session
+        self.seed = self.runner.seed
+        self.policies = dict(self.runner.policies)
+        self.S, self.T = layout.n_slots, layout.n_teams
+        self.sizes = layout.head_sizes
+        self.rng = np.random.default_rng(int(run_seed))
+        self.host = None
+        self.cov = {k: 0 for k in DEC_CASES}
+        self.feet_seen = set()
+        self.pol_uids = set()
+
+    # -- the observation and the decision ------------------------------------
+    def aims_of(self, sim, units):
+        aims = {}
+        for c in self.session.controllers:
+            view = getattr(c, "aim_view", None)
+            if view is not None:
+                aims.update(view())
+        aimed = np.full(len(units), -1, dtype=np.int32)
+        for i, u in enumerate(units):
+            if u is not None:
+                aimed[i] = aims.get(int(u.id), (-1, None))[0]
+        return aims, aimed
+
+    def observed(self, p, s, host):
+        self.host = host
+        keep = ("list_uid",) + tuple(_aspec.MASK_KEYS)
+        d = {k: np.array(host[k], copy=True) for k in keep}
+        d["list_type"] = np.array(host["list"][:, :, 0], copy=True)
+        d["valid"] = np.array(host["valid"], copy=True)
+        p.dec_obs[int(s.sim.tick)] = d
+
+    def draw(self, host) -> np.ndarray:
+        """Masked-random decisions (``tools/rl_smoke.py``'s drawer: each head
+        uniform among its legal options, the argument among ``arg_mask``'s),
+        then per row with :data:`DEC_P_FORCE` one head forced to a random
+        in-range index."""
+        rng = self.rng
+        n = host["list_uid"].shape[0]
+        out = np.zeros((n, 5), dtype=np.int32)
+        for r in range(n):
+            for h, k in enumerate(_aspec.MASK_KEYS):
+                legal = np.flatnonzero(host[k][r])
+                out[r, (0, 1, 2, 3)[h]] = int(rng.choice(legal))
+            am = _aspec.arg_mask(out[r, 3], out[r, 1])
+            out[r, 4] = int(rng.choice(np.flatnonzero(am)))
+            if rng.random() < DEC_P_FORCE:
+                h = int(rng.integers(5))
+                out[r, h] = int(rng.integers(self.sizes[h]))
+        return out
+
+    def decide(self, p, s):
+        tick = int(s.sim.tick)
+        if tick % DECIMATION != 0:
+            return
+        a = self.draw(self.host)
+        _aspec.check_actions(a[None], self.sizes)
+        p.decisions[tick] = a
+        masks = {k: self.host[k][None] for k in _aspec.MASK_KEYS}
+        p.masked = getattr(p, "masked", {})
+        p.masked[tick] = _aspec.masked_choices(a[None], masks)[0]
+        self.cov["masked"] += int(np.count_nonzero(p.masked[tick]))
+        lu = self.host["list_uid"]
+        S = self.S
+        for team, pol in self.policies.items():
+            pol.set_decisions(a[team * S:(team + 1) * S], lu[team * S:(team + 1) * S])
+        # coverage of the decisions on the rows that decode them
+        typ = p.dec_obs[tick]["list_type"]
+        A = _aspec
+        for r in range(a.shape[0]):
+            if not p.dec_obs[tick]["valid"][r]:
+                continue
+            feet, aim, trig, hand, arg = (int(x) for x in a[r])
+            self.feet_seen.add(feet)
+            self.cov[f"trigger_{trig}"] += 1
+            if aim < A.AIM_WALK:
+                self.cov["aim_token"] += 1
+            elif aim == A.AIM_WALK:
+                self.cov["aim_walk"] += 1
+            elif aim == A.AIM_KEEP:
+                self.cov["aim_keep"] += 1
+            else:
+                ty = int(typ[r, aim - A.AIM_TOKENS])
+                if ty == 1:
+                    self.cov["aim_seen"] += 1
+                elif ty == 2:
+                    self.cov["aim_record"] += 1
+            unit_aim = (aim >= A.AIM_TOKENS and int(lu[r, aim - A.AIM_TOKENS]) >= 0
+                        and int(typ[r, aim - A.AIM_TOKENS]) in A.AIMABLE_TYPES)
+            if hand == A.HAND_FLASHLIGHT:
+                self.cov["fb_flashlight"] += 1
+            elif hand >= A.HAND_THROW0 and arg == A.ARG_ONTO and not unit_aim:
+                self.cov["fb_onto_noaim"] += 1
+            elif hand == A.HAND_PLANT and arg == A.ARG_ONTO:
+                self.cov["fb_plant_onto"] += 1
+
+    # -- the tick: MatchSession.tick, the reference's state taken between ----
+    def tick(self, p, s):
+        from simulation import device_decoder as ddec, horde_cache
+        sim = s.sim
+        tick = int(sim.tick)
+        zomb0 = {int(u.id) for u in sim.units if u.is_zombie}
+        living_z0 = {int(u.id) for u in sim.units if u.is_zombie and u.alive}
+        prey0 = any(u.alive and not u.is_zombie for u in sim.units)
+        for c in s.controllers:
+            c.handle_frame(sim, None)
+        p.ref_latch[tick] = ref_latch_array(sim)
+        S = self.S
+        p.ref_slots[tick] = {t * S + k: ddec.host_state_form(pol, k)
+                             for t, pol in self.policies.items() for k in range(S)}
+        p.ref_horde[tick] = horde_cache.latch_of(sim, len(sim.units))
+        first = tick % DECIMATION == 0
+        for t, pol in self.policies.items():
+            recs = sim.team_picture.records(t)
+            for k, st in pol._slot.items():
+                u = sim.roster(t)[k] if k < len(sim.roster(t)) else None
+                if u is None or not u.alive or u.team != t:
+                    continue
+                self.pol_uids.add(int(u.id))
+                if st.aimed_uid >= 0:
+                    if recs.get(st.aimed_uid) is None:
+                        self.cov["aim_lost"] += 1
+                    tgt = sim.get_unit(st.aimed_uid)
+                    if tgt is not None and not tgt.alive:
+                        self.cov["aim_dead"] += 1
+                if st.throw_aim is not None and not first:
+                    self.cov["throw_aim_held"] += 1
+                if first and st.prev is not None:
+                    hand, arg = int(st.prev[4]), int(st.prev[5])
+                    A = _aspec
+                    names = {A.HAND_RELOAD: "reload", A.HAND_MELEE: "melee",
+                             A.HAND_SHOVE: "shove", A.HAND_USE: "use"}
+                    if hand in names:
+                        self.cov[names[hand]] += 1
+                    elif hand == A.HAND_PLANT:
+                        self.cov[f"plant{arg}"] += 1
+                    elif hand >= A.HAND_THROW0:
+                        self.cov[f"throw{hand - A.HAND_THROW0}_arg{arg}"] += 1
+        if not living_z0 and prey0 and sim._zombie_requests is not None:
+            # a tick the controller's horde latch is EMPTY while the
+            # conductor's own call would still begin_tick (K8's difference)
+            self.cov["horde_empty_tick"] += 1
+        sim.step()
+        if s._recorder is not None:
+            s._recorder.after_step(sim)
+        p.digests[int(sim.tick)] = cc.digests(sim)
+        living_z1 = {int(u.id) for u in sim.units if u.is_zombie and u.alive}
+        self.cov["zombie_dies"] += len(living_z0 - living_z1)
+        self.cov["zombie_rises"] += len({int(u.id) for u in sim.units if u.is_zombie} - zomb0)
+
+    def feed(self, intents):
+        """The tap's intents the conductor is fed for a decoder-driven env:
+        only the commander's orders (the decoder writes the policy units'
+        columns, the card serves the horde)."""
+        out = []
+        for kind, args in intents:
+            if kind == "order_intent":
+                out.append((kind, args))
+            elif kind == "drive_zombies":
+                continue
+            elif kind in cd.LATCH_COLUMNS and int(args[0]) in self.pol_uids:
+                continue
+            else:
+                out.append((kind, args))
+        return out
+
+    def finish(self, p, s):
+        self.cov["feet_options"] = len(self.feet_seen)
+        p.dec_cov = dict(self.cov)
+
+
+def corpus_c():
+    """P8.6a's corpus: the policy runs of :data:`DEC_RUNS`, played once."""
+    out = []
+    for label, lvname, run_seed, cap in DEC_RUNS:
+        lv = ship_level() if lvname == "ship_demo" else room_level(lvname)
+        key = (label, -run_seed)
+        if key not in _PLAYED:
+            d = PolicyDriver(lv, run_seed)
+            play(label, lv, d.session.spec, d.seed, setup=dec_kit, max_ticks=cap, driver=d)
+            _PLAYED[key] = _PLAYED[(label, d.seed)]
+        out.append(_PLAYED[key])
+    return out
+
+
+def decoder_for(obs, sessions):
+    """The device decoder of a corpus (c) gate, with the check's break."""
+    from simulation import device_decoder as ddec
+    dec = ddec.DeviceDecoder(obs, [s.spec for s in sessions])
+    if BREAK in ddec.BREAK_CODES:
+        dec.brk = ddec.BREAK_CODES[BREAK]
+    dec.late = BREAK == "dec_late"
+    dec.horde_late = BREAK == "dec_horde_late"
+    dec.snapping = True
+    return dec
+
+
+#: Per gate label: ticks whose latch columns / slot states / horde latch /
+#: digests were compared equal, decisions handed over.
+DECSTATS: dict = {}
+
+
+def decoder_tick(label, c, obs, dec, played, tick, k) -> bool:
+    """One tick of a decoder-driven gate: the decisions handed over on a
+    decision tick (against the observation's own list_uid; ``dec_next_uid``:
+    the NEXT observation's), the conductor's tick, then per env the store's
+    latch columns after the decode, the slot states, the horde latch and the
+    digests after the tick equal to the reference's."""
+    from simulation import device_decoder as ddec
+    import cupy as cp
+    st = DECSTATS.setdefault(label, {"ticks": 0, "decisions": 0, "slots": 0, "horde": 0})
+    N, n_rows = len(played), obs.n_rows
+    if tick % DECIMATION == 0:
+        acts = np.zeros((N, n_rows, 5), dtype=np.int32)
+        due = np.zeros(N, dtype=bool)
+        lu = None
+        for e, p in enumerate(played):
+            a = p.decisions.get(tick)
+            if a is not None:
+                acts[e, :a.shape[0]] = a
+                due[e] = True
+        if BREAK == "dec_next_uid":
+            lu = obs.buffers["list_uid"].get()
+            for e, p in enumerate(played):
+                nxt = p.dec_obs.get(tick + DECIMATION)
+                if nxt is not None:
+                    lu[e, :nxt["list_uid"].shape[0]] = nxt["list_uid"]
+        if due.any():
+            dec.set_decisions(cp.asarray(acts), envs=due, list_uid=lu)
+            st["decisions"] += int(due.sum())
+            got = dec.masked.get()
+            for e, p in enumerate(played):
+                if due[e] and not np.array_equal(got[e, :p.decisions[tick].shape[0]],
+                                                 p.masked[tick]):
+                    fail(f"{label}: tick {tick}, env {e}: masked_choices "
+                         f"{got[e].tolist()} vs the host's {p.masked[tick].tolist()}")
+                    return False
+    c.tick()
+    rows = dec.snap.get()
+    state = dec.host_state()
+    hl = c.cache.latch.get()
+    for e, p in enumerate(played):
+        if k >= len(p.intents):
+            continue
+        want = p.ref_latch[tick]
+        got = dev_latch_array(rows[e, :want.shape[0]])
+        if not np.array_equal(want, got):
+            idx = np.argwhere(want != got)[0]
+            names = [n for n, _, w in latch_cols() for _ in range(w)]
+            fail(f"{label}: tick {tick}, env {e}: store latch column {names[idx[1]]} of row "
+                 f"{idx[0]} is {int(got[tuple(idx)])}, the reference's "
+                 f"{int(want[tuple(idx)])} (after the decode)")
+            return False
+        for r, hs in p.ref_slots[tick].items():
+            ds = ddec.state_form(state[e, r])
+            if hs != ds:
+                fail(f"{label}: tick {tick}, env {e}, row {r}: slot state {ds} vs the "
+                     f"reference's {hs}")
+                return False
+            st["slots"] += hs is not None
+        if e in dec.horde_envs:
+            hw = p.ref_horde[tick]
+            if not np.array_equal(hl[e, :len(hw)], hw) or hl[e, len(hw):].any():
+                fail(f"{label}: tick {tick}, env {e}: horde latch {hl[e].tolist()} vs the "
+                     f"zombie controller's {hw.tolist()}")
+                return False
+            st["horde"] += 1
+        c.download([e])
+        dg = cc.digests(c.sims[e])
+        if dg != p.digests[tick + 1]:
+            fail(f"{label}: tick {tick + 1}, env {e}: digests {dg} vs the reference's "
+                 f"{p.digests[tick + 1]} (the decoded match diverged)")
+            return False
+        st["ticks"] += 1
+    return True
+
+
+def judge_decoder(played) -> None:
+    """Corpus (c)'s coverage, each case > 0 (every feet option too)."""
+    tot = {k: 0 for k in DEC_CASES}
+    feet = 0
+    for p in played:
+        for k in DEC_CASES:
+            tot[k] += p.dec_cov.get(k, 0)
+        feet = max(feet, p.dec_cov.get("feet_options", 0))
+    print(f"    decoder coverage: {tot}, feet options seen {feet} of {_aspec.N_FEET}")
+    for k, n in tot.items():
+        if n == 0:
+            fail(f"decoder coverage: case {k!r} never occurred over corpus (c)")
+    if feet < _aspec.N_FEET:
+        fail(f"decoder coverage: {feet} of {_aspec.N_FEET} feet options occurred")
+    for label, s in sorted(DECSTATS.items()):
+        print(f"    decoder {label}: {s['ticks']} ticks equal (latch columns after the decode, "
+              f"digests), {s['slots']} slot-ticks, {s['horde']} horde latches, "
+              f"{s['decisions']} decisions")
+
+
+def part_decoder():
+    """P8.6a beyond part GATE: the refusals by name, an out-of-range decision
+    raised at the books read with the host's message, the host syncs with the
+    decoder (N = 1 and 2), the aim vector / onto reach sweep."""
+    import cupy as cp
+    from simulation import device_decoder as ddec
+    # -- a team the decoder does not drive is refused at the build
+    p = corpus_b()[0]
+    s = twin(p)
+    c = cd.DeviceConductor(s.sim, bp=bp)
+    obs = dobs.DeviceObservation(c, [s.spec], p.S, DECIMATION, n_teams=p.T)
+    try:
+        ddec.DeviceDecoder(obs, [s.spec])
+    except ddec.DecoderRefused as ex:
+        print(f"  decoder: a {s.spec.teams[0].controller!r} team refused by name ({str(ex)[:80]}...)")
+    else:
+        fail("decoder: a bots-driven team was not refused at the build")
+    # -- an out-of-range decision: the host's ValueError at the books read
+    q = corpus_c()[1]
+    s = twin(q)
+    c = cd.DeviceConductor(s.sim, bp=bp)
+    obs = dobs.DeviceObservation(c, [s.spec], q.S, DECIMATION, n_teams=q.T)
+    dec = ddec.DeviceDecoder(obs, [s.spec])
+    a = np.array(q.decisions[0], copy=True)
+    a[1, 3] = dec.sizes[3]                       # the hand head one past its size
+    try:
+        _aspec.check_actions(a[None], dec.sizes)
+    except ValueError as ex:
+        host_msg = str(ex)
+    dec.set_decisions(cp.asarray(a[None]))
+    try:
+        c.tick()
+    except ValueError as ex:
+        if host_msg in str(ex) and getattr(ex, "env", None) == 0:
+            print(f"  decoder: out of range raised at the books read: {str(ex)[:120]}")
+        else:
+            fail(f"decoder: out-of-range message {str(ex)!r} is not the host's {host_msg!r}")
+    else:
+        fail("decoder: an out-of-range decision was not refused at the books read")
+    # -- a tap column intent for a decoder unit is refused by name
+    s = twin(q)
+    c = cd.DeviceConductor(s.sim, bp=bp)
+    obs = dobs.DeviceObservation(c, [s.spec], q.S, DECIMATION, n_teams=q.T)
+    dec = ddec.DeviceDecoder(obs, [s.spec])
+    try:
+        c.latch([("set_aim", (int(s.sim.units[0].id), 65536, 0))], env=0)
+    except cd.ConductorRefused as ex:
+        print(f"  decoder: a tap intent for a decoder unit refused ({str(ex)[:80]}...)")
+    else:
+        fail("decoder: a tap column intent for a decoder-driven unit was accepted")
+    # -- the host syncs and H2D copies per steady tick, N = 1 and 2
+    counts = {}
+    h2d = {}
+    for n in (1, 2):
+        sessions = [twin(q) for _ in range(n)]
+        c = cd.DeviceConductor([x.sim for x in sessions], bp=bp)
+        obs = dobs.DeviceObservation(c, [x.spec for x in sessions], q.S, DECIMATION,
+                                     n_teams=q.T)
+        dec = ddec.DeviceDecoder(obs, [x.spec for x in sessions])
+        sc = cc.SyncCount()
+        per, ups = [], []
+        real_asarray = cp.asarray
+        up = []
+
+        def asarray(x, *k_, **kw):
+            if isinstance(x, (np.ndarray, list, tuple)):
+                up.append(1)
+            return real_asarray(x, *k_, **kw)
+        try:
+            for k in range(min(40, len(q.intents))):
+                tick = int(c.sims[0].tick)
+                if tick % DECIMATION == 0:
+                    dec.set_decisions(cp.asarray(np.stack([q.decisions[tick]] * n)))
+                orders = [x for x in q.intents[k] if x[0] == "order_intent"]
+                for e in range(n):
+                    c.latch(q.intents[k], env=e)
+                sc.py = []
+                up.clear()
+                cp.asarray = asarray
+                bp.host_sync_log_begin()
+                try:
+                    c.tick()
+                finally:
+                    log = list(bp.host_sync_log_end()) + sc.py
+                    cp.asarray = real_asarray
+                per.append((k, log, bool(orders)))
+                ups.append((k, len(up), bool(orders)))
+        finally:
+            sc.close()
+        steady = [lg for k, lg, o in per[1:] if not o]
+        names = sorted({x.partition(" | ")[2] for lg in steady for x in lg})
+        counts[n] = [len(lg) for lg in steady]
+        h2d[n] = [u for k, u, o in ups[1:] if not o]
+        print(f"  decoder syncs N={n}: {np.mean(counts[n]):.2f} host syncs per steady tick, "
+              f"named {names}; host-to-device uploads from Python per steady tick: "
+              f"{sorted(set(h2d[n]))} ({dec.decodes} decodes)")
+        extra = [x for x in names if x not in ("max_n_sub", "books_read")]
+        if extra:
+            fail(f"decoder syncs N={n}: a sync outside the conductor's named reads: {extra}")
+        if any(h2d[n]):
+            fail(f"decoder syncs N={n}: a steady tick uploaded from the host {h2d[n]}")
+    if counts[1] != counts[2]:
+        fail(f"decoder syncs: the per-tick count depends on N ({counts[1][:6]} vs {counts[2][:6]})")
+    # -- the floats: aim_vector / onto_reach_q on the card against the host's
+    # arithmetic over every offset a map of the corpus allows
+    R = max(int(x) for x in (ship_level().tilemap.shape))
+    ax = np.arange(-R, R + 1, dtype=np.int64)
+    dx, dy = (v.ravel() for v in np.meshgrid(ax, ax))
+    out = cp.zeros((len(dx), 4), dtype=cp.int64)
+    ddx, ddy = cp.asarray(dx), cp.asarray(dy)
+    bp.obs_dec_probe(len(dx), int(ddx.data.ptr), int(ddy.data.ptr), int(out.data.ptr),
+                     1 if BREAK == "dec_div" else 0)
+    got = out.get()
+    qx, qy, none = ddec.aim_vector_host(dx, dy)
+    import math
+    from simulation.unit_fixed import quantize_scalar
+    reach = np.array([quantize_scalar(math.sqrt(float(a * a + b * b)))
+                      for a, b in zip(dx[::97], dy[::97])], dtype=np.int64)
+    dqx, dqy, _ = ddec.aim_vector_host(dx, dy, divide=True)
+    alt = int(np.count_nonzero((dqx != qx) | (dqy != qy)))
+    bad = int(np.count_nonzero((got[:, 0] != qx) | (got[:, 1] != qy) | (got[:, 2] != none)))
+    bad_r = int(np.count_nonzero(got[::97, 3] != reach))
+    # the host arithmetic is aim_vector itself (a sample through the function)
+    from types import SimpleNamespace as NS
+    me = NS(center_tile_x=lambda: 0, center_tile_y=lambda: 0)
+    samp = [(int(a), int(b)) for a, b in zip(dx[::211], dy[::211])]
+    host_bad = sum(1 for (a, b), i in zip(samp, range(0, len(dx), 211))
+                   if (_aspec.aim_vector(me, (a, b)) or (0, 0)) != (int(qx[i]), int(qy[i])))
+    print(f"  decoder floats: {len(dx)} offsets (|dx|, |dy| <= {R}): aim vector differs on {bad}, "
+          f"the onto reach on {bad_r} of {len(reach)}; aim_vector itself vs its numpy form "
+          f"differs on {host_bad} of {len(samp)}; dx / mag in place of dx * (1 / mag) moves "
+          f"the quantized vector on {alt}")
+    if bad or bad_r or host_bad:
+        fail(f"decoder floats: the card's aim vector / reach differ from the host's "
+             f"({bad} / {bad_r} / {host_bad})")
+
+
+def part_dec_gate():
+    """P8.6a's corpus (c) alone (part GATE runs it too, with the census)."""
+    for p in corpus_c():
+        gate(f"(c) {p.name}", [p])
+    judge_decoder(corpus_c())
+
+
 PARTS = {"gate": part_gate, "batch": part_batch, "handover": part_handover,
          "syncs": part_syncs, "ended": part_ended, "floatkit": part_floatkit,
          "sight": part_sight, "wall": part_wall, "restage": part_restage,
-         "books": part_books}
+         "books": part_books, "decoder": part_decoder, "dec_gate": part_dec_gate}
 
 
 def main(parts=None) -> int:
