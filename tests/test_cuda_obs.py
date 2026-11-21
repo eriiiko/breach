@@ -95,7 +95,20 @@ def test_the_device_observation_equals_the_host_one_on_the_corpus():
     match) reached; BREAKS IF the tick's events are walked out of order
     (OBS_BREAK=bk_order), a term's weight is read from the neighbouring table
     row (OBS_BREAK=bk_weight) or termination is decided a tick late
-    (OBS_BREAK=bk_late)."""
+    (OBS_BREAK=bk_late). From P8.8 the full view (full_list, full_mask,
+    full_uid, full_match, full_watched over the rows' roster units, dead and
+    turned included) is raw-bit equal at every decision tick, every coverage
+    case reached (enemies seen / recorded / unknown, zombies, objects, doors, a
+    corpse row, a cut past the cap, the order block) and every full_match
+    column moved; BREAKS IF the full view is built from the team's visible set
+    (OBS_BREAK=full_vis), a block's sort ties by the higher id
+    (OBS_BREAK=full_tie) or the full list's room is one short
+    (OBS_BREAK=full_cap). From P8.8b every ended env's final_ columns equal
+    its terminal reference (the session right after its ending tick, on or off
+    the decision cadence) and stay so, every env not ended holds zeros, and an
+    off-cadence ending moves no live buffer; BREAKS IF the terminal
+    observation is taken one tick early (OBS_BREAK=term_early) or at the next
+    decision tick (OBS_BREAK=term_next)."""
     _run(["gate"], timeout=7200)
 
 
@@ -107,7 +120,10 @@ def test_each_env_of_a_batch_equals_its_own_reference():
     env whose match ended keeps its final books, served arrays and latch
     while the others run. BREAKS IF a block reads or writes another env's
     slice, the row map or cadence of one env leaks into another, or the books
-    of an ended env move on (OBS_BREAK=bk_freeze)."""
+    of an ended env move on (OBS_BREAK=bk_freeze); from P8.8b an env's
+    terminal observation lands in ITS final_ slice alone, at its own ending
+    tick, and stays while the others run. BREAKS IF the terminal observation
+    is written for an env that did not end (OBS_BREAK=term_other)."""
     _run(["batch"], timeout=7200)
 
 

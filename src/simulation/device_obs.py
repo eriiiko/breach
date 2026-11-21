@@ -614,6 +614,12 @@ FULL_FAULT_BITS = {"OVERFLOW": 1, "RANGE": 2, "LAW": 4}
 #: sort ties by the HIGHER id), ``full_cap`` (the full list's room one entry
 #: short).
 FULL_BREAK_CODES = {"full_vis": 1, "full_tie": 2, "full_cap": 3}
+#: P8.8b's breaks (``OBS_BREAK``, host side: who is built when): ``term_early``
+#: (the terminal observation taken one tick early: every tick's state is built
+#: for the envs not ended yet, the ending tick skipped), ``term_next`` (taken
+#: at the next decision tick instead of the ending tick), ``term_other``
+#: (written for the next env too, which did not end).
+TERM_BREAKS = ("term_early", "term_next", "term_other")
 #: A place-table row (int64): the order's place code (a room's id, or
 #: ``ORDER_OPENING_BASE`` + an opening's id), its centre tile (x, y).
 PLACE_FIELDS = ("WHERE", "X", "Y")
@@ -1116,6 +1122,7 @@ class DeviceObservation:
         params = np.zeros((N, PARAM_W), dtype=np.int64)
         params[:, PARAM_EPISODE_TICK] = self.episode_tick
         params[:, PARAM_DECIMATION] = self.decimation
+        self.params_host = params
         self.params = cp.asarray(params)
         self.ended = cp.zeros((N,), dtype=cp.uint8)
         self.door_plane = cp.zeros((N, c.h, c.w), dtype=cp.int32)
@@ -1191,6 +1198,13 @@ class DeviceObservation:
         self.full_aim = cp.full((N, 2, U), AIM_CODES["AIM_NONE"], dtype=cp.int32)
         self.full_faults = cp.zeros((N,), dtype=cp.int32)
         self.full_brk = 0                     # THE BREAK hook (the check's), 0 in a real run
+        # -- P8.8b: the terminal observation (the final_ buffers) --------------
+        self.term_params = cp.zeros((N, PARAM_W), dtype=cp.int64)
+        self.term_skip = cp.ones((N,), dtype=cp.uint8)
+        self.ended_host = np.zeros(N, dtype=bool)    # the envs whose terminal is built
+        self.terminals = 0                   # terminal builds (an ending tick of some env)
+        self.term_brk = ""                   # THE BREAK hook (TERM_BREAKS, the check's)
+        self._term_pending = np.zeros(N, dtype=bool)  # term_next's deferred envs
         # -- P8.7: the device books (the reward, termination, the ended latch)
         self.books = device_books.DeviceBooks(self, self.reward_terms)
         c.attach_observation(self)
@@ -1451,6 +1465,65 @@ class DeviceObservation:
             int(b["near_u"].data.ptr), int(b["far_f"].data.ptr), int(b["far_u"].data.ptr),
             int(b["vector"].data.ptr), int(self.win_faults.data.ptr), int(self.win_brk))
 
+    # -- P8.8b: the terminal observation ---------------------------------------
+    def terminal(self, ended_now) -> None:
+        """The conductor's call line after THE ONE BOOKS READ (``ended_now``:
+        the envs whose match ended this tick, from the books' words): their
+        terminal observation (:meth:`build_terminal`), on the tick's final
+        state. Nothing when no env ended (a steady tick launches nothing)."""
+        ended_now = np.asarray(ended_now, dtype=bool)
+        brk = self.term_brk
+        if brk == "term_early":              # THE BREAK: every tick's state, so one tick early
+            self.ended_host |= ended_now
+            mask = ~self.ended_host
+            if mask.any():
+                self.build_terminal(mask, mark=False)
+            return
+        if brk == "term_next":               # THE BREAK: at the next decision tick instead
+            due = np.array([(int(s.tick) - t0) % self.decimation == 0
+                            for s, t0 in zip(self.c.sims, self.episode_tick)])
+            go = self._term_pending & due & ~ended_now
+            self._term_pending = (self._term_pending & ~go) | ended_now
+            if go.any():
+                self.build_terminal(go)
+            return
+        if not ended_now.any():
+            return
+        if brk == "term_other":              # THE BREAK: written for the next env as well
+            ended_now = ended_now | np.roll(ended_now, 1)
+        self.build_terminal(ended_now)
+
+    def build_terminal(self, envs, mark: bool = True) -> None:
+        """P8.8b: THE TERMINAL OBSERVATION of the envs ``envs`` ``(N,)`` bool
+        -- every block (the observation, the masks, the row flags, the full
+        view) built ONCE, at their ending tick, into the ``final_`` buffers
+        (:attr:`final`), exactly the blocks of a decision tick
+        (:meth:`build`): ``EnvRunner``'s ``observe`` of the ended session,
+        before its reset. The live buffers are untouched (the reference fills
+        them with the next episode's tick 0: P8.9's). The blocks' own cadence
+        and latch decide who builds: here a parameter row whose episode tick
+        IS the env's tick (so the cadence test passes off the decimation's
+        phase too; the decimation itself kept, the masks read it) and a skip
+        row clear for exactly ``envs`` (the ended latch the books just set is
+        not read). The two rows are uploaded only on such a tick. An env's
+        ``final_`` buffers hold zeros before its first ending and its last
+        ending's terminal observation after it."""
+        cp = self.cp
+        envs = np.asarray(envs, dtype=bool)
+        p = self.params_host.copy()
+        p[:, PARAM_EPISODE_TICK] = [int(s.tick) for s in self.c.sims]
+        self.term_params.set(p)
+        self.term_skip.set(np.where(envs, 0, 1).astype(np.uint8))
+        saved = (self.buffers, self.params, self.ended, self.builds)
+        self.buffers, self.params, self.ended = self.final, self.term_params, self.term_skip
+        try:
+            self.build()
+        finally:
+            self.buffers, self.params, self.ended, self.builds = saved
+        if mark:
+            self.ended_host |= envs
+        self.terminals += 1
+
     def build_full(self, store_ptr=None) -> None:
         """P8.8 for every env on its decision tick: THE FULL VIEW
         (``obs_spec_v1.observe_full_rows``, the other side of the wall) --
@@ -1527,4 +1600,5 @@ __all__ = ["HEADER_REL", "GENERATOR", "BUILT", "DeviceObsRefused", "DeviceObserv
            "AMMO_FIELDS", "LIST_FAULT_BITS", "LIST_BREAK_CODES", "wired_values",
            "MASK_FAULT_BITS", "MASK_BREAK_CODES", "WIN_FAULT_BITS", "WIN_BREAK_CODES",
            "WINDOW_PLANES", "check_window_sources", "window_values", "FULL_KEYS",
-           "FULL_FAULT_BITS", "FULL_BREAK_CODES", "PLACE_FIELDS", "place_values"]
+           "FULL_FAULT_BITS", "FULL_BREAK_CODES", "PLACE_FIELDS", "place_values",
+           "TERM_BREAKS"]

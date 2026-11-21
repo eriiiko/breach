@@ -154,7 +154,36 @@ P8.6a (the device decoder: ``simulation.device_decoder``) --
   read with the host's message, the syncs and uploads per steady tick at N =
   1 and 2, the aim arithmetic over a square of offsets.
 
-THE BREAKS (``OBS_BREAK``), each must turn a part red: ``dec_every``,
+P8.8 (the full view: ``DeviceObservation.build_full``) --
+- inside every GATE / BATCH run: ``full_list``, ``full_mask``, ``full_uid``,
+  ``full_match``, ``full_watched`` raw-bit equal to ``obs_spec_v1.
+  observe_full_rows`` over the rows' ROSTER units (dead and turned rows
+  included) at every decision tick, no full-view fault; the coverage
+  (:data:`FULL_CASES`: mates, enemies the team sees / holds a record of /
+  does not know of, zombies, objects seen / known / unknown, doors, a corpse
+  row, a row whose candidates pass the cap, watched cells, the order block,
+  an aim on a unit), each > 0, and every ``full_match`` column moved;
+- PART WALL extended: the unseen enemy's row perturbed MOVES the team's full
+  view while it moves no policy value; PART HANDOVER: ``team_rows`` (the
+  policy feed) hands no full key.
+
+P8.8b (the terminal observation: ``DeviceObservation.terminal``) -- inside
+every GATE / BATCH run, at every decision tick and every ending tick: an env
+whose match ended has its owned ``final_`` columns raw-bit equal to ITS
+terminal reference (``Played.final``: ``host_observation`` of the session
+right after the ending tick, as ``EnvRunner``'s worker observes before the
+reset) at its ending tick and unchanged at every later check; an env that has
+not ended holds zeros; at an ending OFF the cadence every live buffer of every
+env is unchanged by the tick; the coverage (:data:`TERMSTATS`: endings on and
+off the cadence, by elimination and by the clock, zero and frozen checks, live
+buffers held), each > 0.
+
+THE BREAKS (``OBS_BREAK``), each must turn a part red: ``term_early``,
+``term_next``, ``term_other`` (P8.8b, parts GATE / BATCH: the terminal
+observation taken one tick early, at the next decision tick, written for the
+next env too); ``full_vis``, ``full_tie``, ``full_cap`` (P8.8, part GATE: the
+full view from the team's visible set, the sort's tie by the higher id, the
+room one short); ``dec_every``,
 ``dec_late``, ``dec_horde_late``, ``dec_next_uid`` (P8.6a, part DEC_GATE: the
 hand latch on every tick of a decision; the decode after the walk; the horde
 latch at the previous tick's end, before the conversion; the pointer against
@@ -224,7 +253,7 @@ FAILS: list = []
 BREAK = os.environ.get("OBS_BREAK", "")
 #: The patch this script's gates are at: every column owned by it or an
 #: earlier patch of the version-2 table is compared.
-PATCH = "P8.8"
+PATCH = "P8.8b"
 #: The decision cadence of the corpus (design 13.1's decimation, a run file's
 #: ``[run] decimation``; the device observation takes it as its argument).
 DECIMATION = 4
@@ -365,6 +394,10 @@ class Played:
         # distinct values of each full_match column (raw bits, capped)
         self.full_cov = {k: 0 for k in FULL_CASES}
         self.full_match_vals = {}
+        # P8.8b: the terminal observation (every served key, the reference's
+        # observe of the ended session before its reset), when the match ended
+        self.final = None
+        self.limit = 0                        # the match's time limit in ticks (the clock)
 
 
 _PLAYED: dict = {}
@@ -456,6 +489,22 @@ def host_observation(session, ctx, T, S, aimed_out=None, aims_of=None) -> dict:
     return out
 
 
+def terminal_aims(p, tick: int):
+    """P8.8b: the aims ``host_observation`` takes for the terminal observation
+    of a tap-driven match: what the twin's ``DeviceObservation.aimed`` holds at
+    ``tick`` -- the stand-in fed for the last decision tick at or before it
+    (:func:`aim_rule`'s answer there, per row)."""
+    d = tick - tick % DECIMATION
+
+    def aims_of(sim, units):
+        aimed = np.asarray(p.aimed.get(d, np.full(len(units), -1, dtype=np.int32)),
+                           dtype=np.int32)
+        aims = {int(u.id): (int(aimed[i]), None) for i, u in enumerate(units)
+                if u is not None and int(aimed[i]) >= 0}
+        return aims, aimed
+    return aims_of
+
+
 def host_lof(sim):
     """THE reference line of fire (``line_of_fire.solid_in_way_many``) from
     every unit's centre tile to every unit's (``sim.units`` order, dead and
@@ -500,6 +549,7 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None,
     p = Played(name, level, sp if driver is not None else spec, seed, T, S, setup=setup)
     p.driver = driver
     ctx = ObsContext.build(s.sim, sp, S, n_teams=T)
+    p.limit = int(ctx.limit_ticks)
     own = owned_obs()
     ref = RefBooks(s, T, S)                   # P8.7: the env's books, per named profile
     tap = cc.Tap()
@@ -556,6 +606,16 @@ def play(name, level, spec, seed, setup=None, script=None, max_ticks=None,
         see()
         if int(s.sim.tick) % DECIMATION == 0:
             observe()
+        if s.is_terminal():
+            # P8.8b: the terminal observation, as EnvRunner's worker takes it at
+            # the end of the step in which the match ended (r.observe into the
+            # final_ arrays, before the reset): the session's state after the
+            # ending tick, on or off the decision cadence; the aims are the
+            # ones the twin holds then (the policies' own view, or the stand-in
+            # fed at the last decision)
+            p.final = host_observation(s, ctx, T, S, None,
+                                       driver.aims_of if driver is not None
+                                       else terminal_aims(p, int(s.sim.tick)))
     s.sim.attach_intent_log(None)
     if driver is not None:
         driver.finish(p, s)
@@ -692,6 +752,10 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
     import cupy as cp
     n_cmp = 0
     end = max(p.end for p in played)
+    if BREAK in dobs.TERM_BREAKS:                  # P8.8b: one tick early, the next decision, another env
+        obs.term_brk = BREAK
+    endings = {p.end for p in played if p.terminal}
+    kept = {}                                      # env -> its final_ arrays at its ending
     t0 = time.perf_counter()
     for k in range(end + 1):
         tick = int(c.sims[0].tick)
@@ -761,8 +825,19 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
                     census.add(want, want[("valid", None)] if ("valid", None) in want
                                else np.ones(p.T * p.S, bool))
                 n_cmp += 1
+        # P8.8b: the final_ buffers at every decision tick and every ending
+        # tick: an env that ended equals ITS terminal reference at its ending
+        # tick and keeps it after; an env that has not ended holds zeros
+        if tick % DECIMATION == 0 or tick in endings:
+            if not finals_equal(label, obs, played, tick, kept):
+                return False
         if k == end:
             break
+        live_before = None
+        if (tick + 1) in endings and (tick + 1) % DECIMATION:
+            # an ending OFF the cadence: no live block runs, so the terminal
+            # build must leave every live buffer of every env as it was
+            live_before = {kk: v.copy() for kk, v in obs.buffers.items()}
         for e, p in enumerate(played):
             c.latch(p.intents[k] if k < len(p.intents) else (), env=e)
         if dec is not None:
@@ -782,10 +857,94 @@ def gate(label, played: list, census: Census | None = None, profile: str = "fire
                         feed[e, t_ * S + s_] = uid
             obs.aimed[...] = cp.asarray(feed)
         c.tick()
+        if live_before is not None and not live_untouched(label, obs, live_before, tick + 1):
+            return False
     print(f"  {label}: {n_cmp} env-decisions equal (N = {len(played)}, {end} ticks, "
           f"{obs.builds} block launches, {1000 * (time.perf_counter() - t0) / max(1, end):.1f} "
           f"ms per tick incl. the gate's downloads)")
     return True
+
+
+# ---------------------------------------------------------------------------
+# P8.8b: the terminal observation (the final_ buffers)
+# ---------------------------------------------------------------------------
+#: Per gate label: endings compared (on / off the decision cadence, by
+#: elimination / by the clock), env-ticks a final_ set was held at zeros or
+#: frozen after its ending, off-cadence endings whose live buffers were held.
+TERMSTATS: dict = {}
+
+
+def finals_equal(label, obs, played, tick, kept) -> bool:
+    """P8.8b at ``tick``: every env's owned ``final_`` columns -- ITS terminal
+    reference (``Played.final``) at its ending tick, the same arrays at every
+    later check (an ended env's terminal observation never moves), zeros
+    before (an env that has not ended was never written)."""
+    own = owned_obs()
+    st = TERMSTATS.setdefault(label, {"on_cadence": 0, "off_cadence": 0, "elimination": 0,
+                                      "clock": 0, "zero_checks": 0, "frozen_checks": 0,
+                                      "live_held": 0})
+    got = {kk: v.get() for kk, v in obs.final.items() if kk in own}
+    for e, p in enumerate(played):
+        mine = owned_parts({kk: v[e] for kk, v in got.items()}, own, False)
+        if p.terminal and tick == p.end:
+            want = owned_parts(p.final, own, False)
+            what = "its terminal reference"
+        elif p.terminal and tick > p.end:
+            want = kept[e]
+            what = "its terminal observation kept since tick %d" % p.end
+        else:
+            want = {kk: np.zeros_like(v) for kk, v in mine.items()}
+            what = "zeros (not ended)"
+        for kk, w in want.items():
+            g = mine[kk]
+            if w.shape != g.shape or not np.array_equal(raw(w), raw(g)):
+                idx = np.argwhere(raw(w) != raw(g)) if w.shape == g.shape else []
+                at = tuple(int(x) for x in idx[0]) if len(idx) else "shape"
+                fail(f"{label}: tick {tick}, env {e} ({p.name}@{p.seed}), final_{kk[0]}"
+                     f"{'' if kk[1] is None else ' column/plane ' + kk[1]}: {len(idx)} value(s) "
+                     f"differ from {what}, first at {at}: want "
+                     f"{w[tuple(idx[0])] if len(idx) else w.shape} device "
+                     f"{g[tuple(idx[0])] if len(idx) else g.shape}")
+                return False
+        if p.terminal and tick == p.end:
+            kept[e] = mine
+            st["off_cadence" if tick % DECIMATION else "on_cadence"] += 1
+            st["clock" if tick >= p.limit else "elimination"] += 1
+        elif p.terminal and tick > p.end:
+            st["frozen_checks"] += 1
+        else:
+            st["zero_checks"] += 1
+    return True
+
+
+def live_untouched(label, obs, before, tick) -> bool:
+    """P8.8b: an ending off the decision cadence builds the terminal
+    observation and nothing else: every live buffer of every env is as it was
+    before the tick."""
+    for kk, v in obs.buffers.items():
+        if not bool(obs.cp.array_equal(v, before[kk])):
+            fail(f"{label}: tick {tick}: the terminal build moved the LIVE buffer {kk!r}")
+            return False
+    TERMSTATS.setdefault(label, {})
+    TERMSTATS[label]["live_held"] = TERMSTATS[label].get("live_held", 0) + 1
+    return True
+
+
+def judge_terminal(labels_prefix=("(", "batch")) -> None:
+    """P8.8b's coverage over every gate run: an ending on a decision tick and
+    one off it, by elimination and by the clock, envs held at zeros, ended
+    envs held frozen, off-cadence endings whose live buffers were held."""
+    tot = {}
+    for label, st in TERMSTATS.items():
+        for kk, n in st.items():
+            tot[kk] = tot.get(kk, 0) + n
+    print(f"    terminal observation: {tot}")
+    # (an env held frozen after its ending needs a batch whose envs end apart:
+    # part BATCH judges it; a lone match's gate stops at its ending)
+    for kk in ("on_cadence", "off_cadence", "elimination", "clock", "zero_checks",
+               "live_held"):
+        if not tot.get(kk):
+            fail(f"terminal observation: case {kk!r} never reached (vacuous)")
 
 
 # ---------------------------------------------------------------------------
@@ -2305,6 +2464,7 @@ def part_gate():
     judge_full(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                + corpus_door() + corpus_turn() + corpus_list() + corpus_fire()
                + corpus_clock() + corpus_c())
+    judge_terminal()
     judge_books(corpus_a() + corpus_b() + corpus_d() + corpus_cover() + corpus_round()
                 + corpus_door() + corpus_turn() + corpus_list() + corpus_fire()
                 + corpus_clock(), BOOK_CENSUS)
@@ -2340,6 +2500,12 @@ def part_batch(n_list=(2, 4)):
                   f"after the env's end), {st['served']} steps served equal")
     if frozen == 0:
         fail("batch: no env's books were compared frozen after its end (vacuous)")
+    # P8.8b: the batch's terminal observations (envs ending at different ticks)
+    bt = {kk: sum(st.get(kk, 0) for lb, st in TERMSTATS.items() if lb.startswith("batch"))
+          for kk in ("on_cadence", "off_cadence", "zero_checks", "frozen_checks", "live_held")}
+    print(f"    terminal observation, batches: {bt}")
+    if not bt["frozen_checks"] or not bt["zero_checks"] or not (bt["on_cadence"] + bt["off_cadence"]):
+        fail(f"batch: the terminal observation was not exercised (vacuous): {bt}")
 
 
 def part_handover():

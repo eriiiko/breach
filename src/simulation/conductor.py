@@ -528,6 +528,11 @@ class DeviceConductor:
         self.ticks += 1
         try:
             self._books_read(words, entries)
+            # #29 P8.8b: the terminal observation of the envs whose match ended
+            # THIS tick (the books read's flags: no sync of its own), built on
+            # the tick's final state before any later tick enqueues
+            if self.obs is not None:
+                self.obs.terminal(self.ended_now)
         finally:
             if profile:
                 self.last_profile.append(("books fold (host)", None,
