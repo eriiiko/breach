@@ -7,6 +7,7 @@ paths:
   - "tools/match_pin_check.py"
   - "tools/suite_timing.py"
   - "tools/affected_tests.py"
+  - "tools/affected_cuda.py"
   - "tools/staging_gate.py"
   - "tools/staging_machines.toml"
 ---
@@ -39,6 +40,13 @@ the suite as `pytest tests -q` with this machine's breach env (`docs/dev_setup.m
 - It may over-select, never under-select: anything the closure cannot see (conftest, pyproject, a deleted or renamed file, an unnamed data path) runs the FULL suite. Only `docs/` and scratch output are inert, never a whole file type: tests read textures, goldens, `slow_tests.txt`, CLAUDE.md and the rules.
 - Combines with `-m "not slow"`; NEVER the merge gate.
 - `reach(path, candidates)` is THE per-path rule: `select` and the staging gate both call it, never a copy. `rooted(root)` reads another checkout (a staging worktree) and restores the module after.
+
+## Affected card checks
+- A card check is a test file with a test cuda_green's own `-k` collects (read through `staging_gate.cuda_green_select`, never re-typed) that launches the harness; it runs with that same `-k`. Its reach is read from the source, never hand-marked: `affected_tests.closure` for Python, the bindings that closure names (attributes, names, identifier strings, f-string patterns), and the C++ definitions those bindings run, followed to a fixed point. Python and data paths go through `affected_tests.reach`, never a copy.
+- The C++ grain is a DEFINITION (function, class with its inline members, namespace-scope variable, macro, enum), never a file: utility functions live in orchestrator TUs (`tstream` in `cuda_resident_tick.cu`), so file grain selects everything. A class member is never a name of its own (a local `h` must not reach every struct with a field `h`); an out-of-line member `C::m` is reached only while `C` is live in the reach. This rests on cpp/src having no virtual dispatch: the first `virtual` makes member gating unsound and must widen it.
+- FULL card set for what touches every check: `bindings.cpp`, the build files, the kits (`fixed_point.h`, `cuda_fixedpoint_device.cuh`), a header more than half the TUs include, `config.toml`, affected_tests' unseen files, a deleted or unknown file, a C++ file whose braces do not balance.
+- It may over-select, never under-select; NEVER the merge gate and never a substitute for `.cuda_green` == HEAD (Class P). Whether a sharded run could satisfy Class P is Erik's ruling (`docs/affected_cuda_evidence_2026-11-21.md`: what a static reach cannot see).
+- Its evidence is execution, not agreement: a tripwire at a mutation site records which checks RUN it, and every such check must be selected. A new reach rule is proven the same way.
 
 ## Staging gate
 - THE way ready branches share one full suite + one cuda_green (Erik, 2026-11-21: one full run covers parallel arcs). It merges the inputs `--no-ff`, in order, onto a throwaway `staging/<name>` in its OWN worktree; it never merges to main (it PRINTS the merge commands on green), never resolves a conflict (it stops, naming each file and the two sides), and pushes nothing but its staging branch.
