@@ -653,15 +653,18 @@ class DeviceConductor:
         # 10'. orders expire; the ruleset's tick end (conversion, the prune)
         L("10' order expiry")
         uk.expire_orders(st, tr)
-        if self.obs is not None and self.obs.early_vision:
+        if self.obs is not None and (self.obs.early_vision or self.obs.early_picture):
             self.obs.vision()                # THE BREAK (P8.2's check): one slot too early
+            if self.obs.early_picture:       # THE BREAK (P8.3's check): before the conversion
+                self.obs.picture.update()
         L("10 tick end (ruleset)")
         uk.convert_zombies(st)
         uk.prune_grenades(self.grenades)
-        # 11. the team picture: host, a match only, in no digest (not run)
-        # 11'. the device observation: who sees whom every tick (P8.2), then
-        # its blocks on a decision tick (P8.0), on the tick stream before the
-        # books read; no sync, no synced write
+        # 11. the team picture and 11'. the device observation (when one is
+        # attached; a match only, in no digest): who sees whom every tick
+        # (P8.2), the device team picture's update (P8.3, the reference's
+        # slot 11 itself), then the blocks on a decision tick (P8.0), on the
+        # tick stream before the books read; no sync, no synced write
         if self.obs is not None:
             L("11' observation")
             self.obs.stage()
@@ -721,6 +724,15 @@ class DeviceConductor:
                 for k_, x in b.items():
                     self.last_books[k_] = self.last_books.get(k_, 0) + np.asarray(
                         x, dtype=np.int64)
+            elif kind == "picture_faults":             # #29 P8.3: (N,) fault bits
+                if v.any():
+                    from simulation.device_picture import FAULT_BITS, fault_text
+                    e = first(v)
+                    over = {n for n, _ in FAULT_BITS if n.endswith("OVERFLOW")}
+                    bits = int(v[e])
+                    names = [n for i, (n, _) in enumerate(FAULT_BITS) if bits & (1 << i)]
+                    refuse(ConductorOverflow if over & set(names) else ConductorFault, e,
+                           f"the team picture: {fault_text(bits)}")
             elif kind in ("door_counts", "object_counts"):
                 c = v.reshape(N, -1)
                 f_ = c[:, 1]

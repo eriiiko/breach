@@ -47,11 +47,16 @@ __global__ void k_table_append(RecordListView v, const int64_t* src, const int64
         unit_lib::emit_record(s, src + ((size_t)e * k + j) * v.width);
 }
 
-__global__ void k_table_compact(RecordListView v, int live) {
+__global__ void k_table_compact(RecordListView v, int live, int64_t* side, int64_t side_stride,
+                                int64_t* known, int64_t known_stride) {
     if (threadIdx.x != 0 || blockIdx.x != 0) return;
     const int e = (int)benv();
     int64_t* rows = v.recs + (size_t)e * v.cap * v.width;
     const int64_t n = v.count[e];
+    // #29 P8.3: the side array moves with its rows; `known` is recounted
+    int64_t* sd = side ? side + (size_t)e * side_stride : nullptr;
+    const int64_t kn = known ? known[(size_t)e * known_stride] : 0;
+    int64_t kept_known = 0;
     int64_t m = 0;
     for (int64_t i = 0; i < n; ++i) {
         const int64_t* r = rows + i * v.width;
@@ -59,9 +64,12 @@ __global__ void k_table_compact(RecordListView v, int live) {
         if (m != i) {
             int64_t* d = rows + m * v.width;
             for (int f = 0; f < v.width; ++f) d[f] = r[f];
+            if (sd) sd[m] = sd[i];
         }
+        if (i < kn) ++kept_known;
         ++m;
     }
+    if (known) known[(size_t)e * known_stride] = kept_known;
     for (int64_t i = m; i < n; ++i)
         for (int f = 0; f < v.width; ++f) rows[i * v.width + f] = 0;
     v.count[e] = m;
@@ -107,8 +115,21 @@ ObjectTable::~ObjectTable() {
 }
 
 void ObjectTable::compact() {
-    k_table_compact<<<dim3(1, n_env()), 1, 0, tstream()>>>(list_view(*this), live_);
+    k_table_compact<<<dim3(1, n_env()), 1, 0, tstream()>>>(list_view(*this), live_, side_,
+                                                            side_stride_, known_, known_stride_);
     ot_check(cudaGetLastError(), "compact launch");
+}
+
+void ObjectTable::set_side(int64_t* side, int64_t side_stride, int64_t* known,
+                           int64_t known_stride) {
+    if ((side == nullptr) != (known == nullptr))
+        throw std::invalid_argument("ObjectTable::set_side: a side array needs its known count");
+    if (side && (side_stride < cap() || known_stride < 1))
+        throw std::invalid_argument("ObjectTable::set_side: a stride shorter than the table");
+    side_ = side;
+    side_stride_ = side_stride;
+    known_ = known;
+    known_stride_ = known_stride;
 }
 
 const char* object_tables_fingerprint() { return object_tables::OBJECT_TABLES_FINGERPRINT; }
