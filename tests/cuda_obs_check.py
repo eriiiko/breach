@@ -2165,6 +2165,15 @@ def part_batch(n_list=(2, 4)):
             print(f"  NOTE: every {group} env ends at the same tick")
         for n in n_list:
             gate(f"batch {group} N={n}", ps[:n])
+    # P8.7: the ended envs' frozen books (compared every tick after their end)
+    frozen = 0
+    for label, st in sorted(BOOKSTATS.items()):
+        if label.startswith("batch"):
+            frozen += st["frozen"]
+            print(f"    books {label}: {st['env_ticks']} env-ticks equal ({st['frozen']} frozen "
+                  f"after the env's end), {st['served']} steps served equal")
+    if frozen == 0:
+        fail("batch: no env's books were compared frozen after its end (vacuous)")
 
 
 def part_handover():
